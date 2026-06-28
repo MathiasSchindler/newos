@@ -14,7 +14,7 @@
 #define SOLVE_DEFAULT_MAX_ITERATIONS 128
 #define SOLVE_MAX_RATIONAL_DENOMINATOR 1000
 #define SOLVE_POLY_MAX_DEGREE 16
-#define SOLVE_RAT_POLY_MAX_DEGREE SOLVE_POLY_MAX_DEGREE
+#define SOLVE_RAT_POLY_MAX_DEGREE 8
 #define SOLVE_POLY_FACTOR_DENOMINATOR_LIMIT 100
 #define SOLVE_RAT_LIMIT 900000000000000000LL
 #define SOLVE_RAT_DIVISOR_LIMIT 1000000ULL
@@ -28,6 +28,15 @@ typedef enum {
     SOLVE_STATUS_CANDIDATE,
     SOLVE_STATUS_SUSPECT_DISCONTINUITY
 } SolveStatus;
+
+typedef enum {
+    SOLVE_RELATION_NONE = 0,
+    SOLVE_RELATION_EQ,
+    SOLVE_RELATION_LT,
+    SOLVE_RELATION_LE,
+    SOLVE_RELATION_GT,
+    SOLVE_RELATION_GE
+} SolveRelation;
 
 typedef struct {
     const char *text;
@@ -70,11 +79,13 @@ typedef struct {
     char left[SOLVE_EXPR_CAPACITY];
     char right[SOLVE_EXPR_CAPACITY];
     int has_equation;
+    SolveRelation relation;
 } SolveEquation;
 
 typedef struct {
     char var_name[SOLVE_NAME_CAPACITY];
     int have_scan;
+    int default_scan;
     int have_bracket;
     double scan_lo;
     double scan_hi;
@@ -85,6 +96,10 @@ typedef struct {
     int report_y;
     int explain;
     int quiet;
+    int have_diff;
+    int diff_order;
+    int have_integrate;
+    char integrate_spec[128];
     int scale;
     double tolerance;
     int max_iterations;
@@ -108,9 +123,29 @@ typedef struct {
     SolveResult results[SOLVE_MAX_RESULTS];
     size_t count;
     int identity;
+    int no_real_solutions;
     int numeric_failure;
     int suspected_discontinuity;
 } SolveResultSet;
+
+typedef struct {
+    double value;
+    SolveRat rat_value;
+    char label[96];
+    int exact;
+    int pole;
+} SolveBreakpoint;
+
+typedef struct {
+    int has_left;
+    int has_right;
+    double left;
+    double right;
+    char left_label[96];
+    char right_label[96];
+    int left_closed;
+    int right_closed;
+} SolveInterval;
 
 static int solve_add_result(SolveResultSet *set, const SolveResult *result, int all, double tolerance);
 static int solve_eval_function(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out, const char **message_out);
@@ -1948,6 +1983,7 @@ static void solve_explain_linear(const SolveEquation *equation, const SolveOptio
 }
 
 static int solve_try_linear(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set) {
+    SolvePoly polynomial_guard;
     double f0;
     double f1;
     double f2;
@@ -1959,6 +1995,9 @@ static int solve_try_linear(const SolveEquation *equation, const SolveOptions *o
     SolveResult result;
 
     if (rt_strcmp(options->method, "auto") != 0) {
+        return 0;
+    }
+    if (solve_equation_poly(equation, options, &polynomial_guard) != 0 || solve_poly_degree(&polynomial_guard, options->tolerance * 10.0) != 1) {
         return 0;
     }
     if (solve_eval_function(equation, options, 0.0, &f0, &message) != 0 ||
@@ -2010,6 +2049,119 @@ static int solve_root_is_simple_rational(double root, const SolveOptions *option
         return 1;
     }
     return solve_format_rational(root, rational, sizeof(rational)) == 0;
+}
+
+static void solve_sort_rat_roots(SolveRat *roots, double *values, int count) {
+    int i;
+    for (i = 0; i < count; ++i) {
+        int j;
+        for (j = i + 1; j < count; ++j) {
+            if (solve_rat_compare(roots[j], roots[i]) < 0) {
+                SolveRat root_temp = roots[i];
+                double value_temp = values[i];
+                roots[i] = roots[j];
+                values[i] = values[j];
+                roots[j] = root_temp;
+                values[j] = value_temp;
+            }
+        }
+    }
+}
+
+static int solve_rat_pow(SolveRat base, int power, SolveRat *out) {
+    SolveRat result;
+    int i;
+    if (power < 0) return -1;
+    if (solve_rat_make(1, 1, &result) != 0) return -1;
+    for (i = 0; i < power; ++i) {
+        if (solve_rat_mul(result, base, &result) != 0) return -1;
+    }
+    *out = result;
+    return 0;
+}
+
+static int solve_rat_abs_value(SolveRat value, SolveRat *out) {
+    return value.num < 0 ? solve_rat_neg(value, out) : solve_rat_make(value.num, value.den, out);
+}
+
+static int solve_rat_poly_derivative(const SolveRatPoly *poly, int order, SolveRatPoly *out) {
+    SolveRatPoly current = *poly;
+    int step;
+    for (step = 0; step < order; ++step) {
+        SolveRatPoly next;
+        int i;
+        solve_rat_poly_zero(&next);
+        for (i = 1; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+            SolveRat multiplier;
+            if (solve_rat_make(i, 1, &multiplier) != 0 || solve_rat_mul(current.coeff[i], multiplier, &next.coeff[i - 1]) != 0) return -1;
+        }
+        current = next;
+    }
+    *out = current;
+    return 0;
+}
+
+static int solve_rat_poly_antiderivative_eval(const SolveRatPoly *poly, SolveRat x, SolveRat *out) {
+    SolveRat sum;
+    int i;
+    if (solve_rat_make(0, 1, &sum) != 0) return -1;
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        SolveRat power;
+        SolveRat denom;
+        SolveRat term;
+        if (solve_rat_is_zero(poly->coeff[i])) continue;
+        if (solve_rat_pow(x, i + 1, &power) != 0 || solve_rat_mul(poly->coeff[i], power, &term) != 0) return -1;
+        if (solve_rat_make(i + 1, 1, &denom) != 0 || solve_rat_div(term, denom, &term) != 0) return -1;
+        if (solve_rat_add(sum, term, &sum) != 0) return -1;
+    }
+    *out = sum;
+    return 0;
+}
+
+static int solve_rat_poly_parse_bound(const char *text, const char *var_name, SolveRat *out) {
+    SolveRatPoly poly;
+    if (solve_parse_rat_text(text, var_name, &poly) != 0 || solve_rat_poly_degree(&poly) > 0) return -1;
+    *out = poly.coeff[0];
+    return 0;
+}
+
+static int solve_rat_poly_format(const SolveRatPoly *poly, const char *var_name, char *buffer, size_t buffer_size) {
+    int degree = solve_rat_poly_degree(poly);
+    int first = 1;
+    int i;
+    size_t length = 0U;
+
+    if (buffer_size == 0U) return -1;
+    buffer[0] = '\0';
+    if (degree < 0) {
+        return solve_append_char(buffer, buffer_size, &length, '0');
+    }
+    for (i = degree; i >= 0; --i) {
+        SolveRat coeff = poly->coeff[i];
+        SolveRat abs_coeff;
+        char coeff_text[96];
+        if (solve_rat_is_zero(coeff)) continue;
+        if (solve_rat_abs_value(coeff, &abs_coeff) != 0 || solve_rat_format(abs_coeff, coeff_text, sizeof(coeff_text)) != 0) return -1;
+        if (first) {
+            if (coeff.num < 0 && solve_append_text(buffer, buffer_size, &length, "-") != 0) return -1;
+        } else {
+            if (solve_append_text(buffer, buffer_size, &length, coeff.num < 0 ? " - " : " + ") != 0) return -1;
+        }
+        if (i == 0) {
+            if (solve_append_text(buffer, buffer_size, &length, coeff_text) != 0) return -1;
+        } else {
+            if (!(abs_coeff.num == 1 && abs_coeff.den == 1)) {
+                if (solve_append_text(buffer, buffer_size, &length, coeff_text) != 0 || solve_append_char(buffer, buffer_size, &length, '*') != 0) return -1;
+            }
+            if (solve_append_text(buffer, buffer_size, &length, var_name) != 0) return -1;
+            if (i > 1) {
+                if (solve_append_char(buffer, buffer_size, &length, '^') != 0) return -1;
+                if (solve_append_signed_ll(buffer, buffer_size, &length, i) != 0) return -1;
+            }
+        }
+        first = 0;
+    }
+    return 0;
 }
 
 static int solve_add_direct_root(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set, double root, const char *method) {
@@ -2078,6 +2230,10 @@ static void solve_explain_quadratic(const SolveOptions *options, double a, doubl
     rt_write_cstr(1, "discriminant: ");
     solve_format_answer(discriminant, options->scale, value, sizeof(value));
     rt_write_line(1, value);
+    if (discriminant < 0.0) {
+        rt_write_line(1, "discriminant < 0, so there are no real roots");
+        return;
+    }
     rt_write_line(1, "quadratic formula: x = (-b +/- sqrt(discriminant)) / (2a)");
     if (rt_strcmp(method, "factoring") == 0) {
         rt_write_cstr(1, "factor: ");
@@ -2154,16 +2310,19 @@ static int solve_try_rational_quadratic(const SolveEquation *equation, const Sol
         solve_rat_sub(b_squared, four_ac, &discriminant) != 0) {
         return -1;
     }
-    if (discriminant.num < 0) return set->count > 0U ? 0 : -1;
     if (explain) {
         double da = solve_rat_to_double(a);
         double db = solve_rat_to_double(b);
         double dc = solve_rat_to_double(c);
         double dd = solve_rat_to_double(discriminant);
-        double sr = solve_sqrt(dd);
-        double r1 = (-db - sr) / (2.0 * da);
-        double r2 = (-db + sr) / (2.0 * da);
+        double sr = dd < 0.0 ? 0.0 : solve_sqrt(dd);
+        double r1 = dd < 0.0 ? 0.0 : (-db - sr) / (2.0 * da);
+        double r2 = dd < 0.0 ? 0.0 : (-db + sr) / (2.0 * da);
         solve_explain_quadratic(options, da, db, dc, dd, r1 < r2 ? r1 : r2, r1 < r2 ? r2 : r1, solve_rat_sqrt_exact(discriminant, &sqrt_discriminant) == 0 ? "factoring" : "quadratic-formula");
+    }
+    if (discriminant.num < 0) {
+        set->no_real_solutions = 1;
+        return 1;
     }
     if (solve_rat_sqrt_exact(discriminant, &sqrt_discriminant) == 0) {
         if (solve_rat_neg(b, &minus_b) != 0 || solve_rat_make_i128((__int128)2 * a.num, a.den, &two_a) != 0) return -1;
@@ -2231,7 +2390,7 @@ static int solve_try_rational_polynomial(const SolveEquation *equation, const So
         return set->count > 0U ? 1 : 0;
     }
     reduced = poly;
-    while (degree > 2) {
+    while (original_degree > 2 && degree > 0) {
         SolveRat root;
         SolveRatPoly quotient;
         if (solve_find_exact_rational_root(&reduced, degree, &root) != 0) break;
@@ -2245,12 +2404,16 @@ static int solve_try_rational_polynomial(const SolveEquation *equation, const So
     if (original_degree > 2) {
         int root_index;
         if (rational_root_count == 0) return 0;
+        solve_sort_rat_roots(rational_roots, root_values, rational_root_count);
         solve_explain_higher_polynomial(options, original_degree, root_values, rational_root_count, degree);
         for (root_index = 0; root_index < rational_root_count; ++root_index) {
             int rc = solve_add_direct_rat_root(equation, options, set, rational_roots[root_index], "polynomial-factoring");
             if (rc > 0) return 1;
         }
         poly = reduced;
+        if (degree == 0) {
+            return set->count > 0U ? 1 : 0;
+        }
     }
     if (degree == 2) {
         return solve_try_rational_quadratic(equation, options, set, &poly, original_degree <= 2);
@@ -2397,7 +2560,9 @@ static int solve_parse_equation(const char *text, SolveEquation *equation) {
     size_t index;
     int depth = 0;
     int found = 0;
-    size_t equals_pos = 0U;
+    size_t relation_pos = 0U;
+    size_t relation_len = 0U;
+    SolveRelation relation = SOLVE_RELATION_NONE;
 
     for (index = 0U; text[index] != '\0'; ++index) {
         char ch = text[index];
@@ -2405,32 +2570,48 @@ static int solve_parse_equation(const char *text, SolveEquation *equation) {
             depth += 1;
         } else if (ch == ')' && depth > 0) {
             depth -= 1;
-        } else if (ch == '=' && depth == 0) {
-            char prev = index == 0U ? '\0' : text[index - 1U];
-            char next = text[index + 1U];
-            if (prev == '<' || prev == '>' || prev == '!' || prev == '=' || next == '=') {
-                continue;
+        } else if (depth == 0) {
+            SolveRelation candidate = SOLVE_RELATION_NONE;
+            size_t candidate_len = 0U;
+            if (ch == '<') {
+                candidate = text[index + 1U] == '=' ? SOLVE_RELATION_LE : SOLVE_RELATION_LT;
+                candidate_len = text[index + 1U] == '=' ? 2U : 1U;
+            } else if (ch == '>') {
+                candidate = text[index + 1U] == '=' ? SOLVE_RELATION_GE : SOLVE_RELATION_GT;
+                candidate_len = text[index + 1U] == '=' ? 2U : 1U;
+            } else if (ch == '=') {
+                char prev = index == 0U ? '\0' : text[index - 1U];
+                char next = text[index + 1U];
+                if (prev != '<' && prev != '>' && prev != '!' && prev != '=' && next != '=') {
+                    candidate = SOLVE_RELATION_EQ;
+                    candidate_len = 1U;
+                }
             }
-            if (found) {
-                return -1;
+            if (candidate != SOLVE_RELATION_NONE) {
+                if (found) return -1;
+                found = 1;
+                relation_pos = index;
+                relation_len = candidate_len;
+                relation = candidate;
+                if (candidate_len == 2U) index += 1U;
             }
-            found = 1;
-            equals_pos = index;
         }
     }
 
     if (found) {
-        if (solve_copy_range(equation->left, sizeof(equation->left), text, 0U, equals_pos) != 0 ||
-            solve_copy_range(equation->right, sizeof(equation->right), text, equals_pos + 1U, rt_strlen(text)) != 0) {
+        if (solve_copy_range(equation->left, sizeof(equation->left), text, 0U, relation_pos) != 0 ||
+            solve_copy_range(equation->right, sizeof(equation->right), text, relation_pos + relation_len, rt_strlen(text)) != 0) {
             return -1;
         }
         equation->has_equation = 1;
+        equation->relation = relation;
     } else {
         if (solve_copy_range(equation->left, sizeof(equation->left), text, 0U, rt_strlen(text)) != 0) {
             return -1;
         }
         rt_copy_string(equation->right, sizeof(equation->right), "0");
         equation->has_equation = 0;
+        equation->relation = SOLVE_RELATION_NONE;
     }
     return 0;
 }
@@ -2555,6 +2736,7 @@ static int solve_bisect(const SolveEquation *equation, const SolveOptions *optio
     double fmid = 0.0;
     const char *message = 0;
     int iteration;
+    int exact_sample = 0;
 
     rt_memset(result, 0, sizeof(*result));
     if (solve_eval_function(equation, options, lo, &flo, &message) != 0 || solve_eval_function(equation, options, hi, &fhi, &message) != 0) {
@@ -2564,10 +2746,12 @@ static int solve_bisect(const SolveEquation *equation, const SolveOptions *optio
         mid = lo;
         fmid = flo;
         iteration = 0;
+        exact_sample = flo == 0.0;
     } else if (solve_abs(fhi) <= options->tolerance) {
         mid = hi;
         fmid = fhi;
         iteration = 0;
+        exact_sample = fhi == 0.0;
     } else if ((flo < 0.0 && fhi < 0.0) || (flo > 0.0 && fhi > 0.0)) {
         return -1;
     } else {
@@ -2596,7 +2780,8 @@ static int solve_bisect(const SolveEquation *equation, const SolveOptions *optio
     result->hi = hi;
     result->iterations = iteration;
     result->status = solve_abs(fmid) <= options->tolerance ? SOLVE_STATUS_ROOT : SOLVE_STATUS_SUSPECT_DISCONTINUITY;
-    result->method = "bisection";
+    result->method = exact_sample ? "exact-sample" : "bisection";
+    result->approximate = !exact_sample;
     if (solve_eval_y(equation, options, mid, &result->y) != 0) {
         result->y = 0.0;
     }
@@ -2665,7 +2850,7 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
             result.hi = curr_x;
             result.iterations = 0;
             result.status = solve_abs(curr_value) <= options->tolerance ? SOLVE_STATUS_ROOT : SOLVE_STATUS_CANDIDATE;
-            result.method = "scan";
+            result.method = curr_value == 0.0 ? "exact-sample" : "scan";
             if (solve_eval_y(equation, options, curr_x, &result.y) != 0) {
                 result.y = 0.0;
             }
@@ -2701,9 +2886,25 @@ static int solve_explicit_bracket(const SolveEquation *equation, const SolveOpti
     return 0;
 }
 
-static int solve_write_json_result(const SolveOptions *options, const SolveResult *result) {
+static double solve_display_residual(const SolveEquation *equation, const SolveOptions *options, const SolveResult *result, const char *display_value) {
+    size_t pos = 0U;
+    double display_root;
+    double residual;
+    const char *message = 0;
+
+    if (!result->approximate || solve_parse_double(display_value, &pos, &display_root) != 0) {
+        return result->residual;
+    }
+    if (solve_eval_function(equation, options, display_root, &residual, &message) != 0) {
+        return result->residual;
+    }
+    return residual;
+}
+
+static int solve_write_json_result(const SolveEquation *equation, const SolveOptions *options, const SolveResult *result) {
     char value[96];
     const char *root_text;
+    double residual;
 
     if (tool_json_begin_event(1, "solve", "stdout", result->status == SOLVE_STATUS_CANDIDATE ? "solve_candidate" : "solve_result") != 0) return -1;
     rt_write_cstr(1, ",\"data\":{\"variable\":");
@@ -2722,7 +2923,8 @@ static int solve_write_json_result(const SolveOptions *options, const SolveResul
         tool_json_write_string(1, value);
     }
     rt_write_cstr(1, ",\"residual\":");
-    solve_format_double(result->residual, options->scale, value, sizeof(value));
+    residual = solve_display_residual(equation, options, result, root_text);
+    solve_format_double(residual, result->approximate ? SOLVE_MAX_SCALE : options->scale, value, sizeof(value));
     tool_json_write_string(1, value);
     rt_write_cstr(1, ",\"method\":");
     tool_json_write_string(1, result->method != 0 ? result->method : "bisection");
@@ -2741,9 +2943,11 @@ static int solve_write_json_result(const SolveOptions *options, const SolveResul
 
 static void solve_print_result(const SolveEquation *equation, const SolveOptions *options, const SolveResult *result) {
     char value[96];
+    char root_display[96];
+    double residual;
 
     if (tool_json_is_enabled()) {
-        (void)solve_write_json_result(options, result);
+        (void)solve_write_json_result(equation, options, result);
         return;
     }
     if (result->exact_value[0] != '\0') {
@@ -2751,6 +2955,7 @@ static void solve_print_result(const SolveEquation *equation, const SolveOptions
     } else {
         solve_format_result_answer(equation, options, result, value, sizeof(value));
     }
+    rt_copy_string(root_display, sizeof(root_display), value);
     if (options->quiet) {
         rt_write_line(1, value);
         return;
@@ -2763,7 +2968,8 @@ static void solve_print_result(const SolveEquation *equation, const SolveOptions
         rt_write_cstr(1, "y = ");
         rt_write_line(1, value);
     }
-    solve_format_double(result->residual, options->scale, value, sizeof(value));
+    residual = solve_display_residual(equation, options, result, root_display);
+    solve_format_double(residual, result->approximate ? SOLVE_MAX_SCALE : options->scale, value, sizeof(value));
     rt_write_cstr(1, "residual = ");
     rt_write_line(1, value);
     rt_write_cstr(1, "method = ");
@@ -2816,9 +3022,527 @@ static void solve_write_summary_json(size_t count, int status) {
     tool_json_end_event(1);
 }
 
+static int solve_finish_results(const SolveEquation *equation, const SolveOptions *options, const SolveResultSet *results) {
+    size_t index;
+
+    if (results->identity) {
+        solve_print_identity(options, results->identity == 1);
+        solve_write_summary_json(1U, 0);
+        return 0;
+    }
+    if (results->no_real_solutions) {
+        if (tool_json_is_enabled()) {
+            solve_write_summary_json(0U, 1);
+        } else if (!options->quiet) {
+            rt_write_line(1, "no real solutions");
+        }
+        return 1;
+    }
+
+    for (index = 0U; index < results->count; ++index) {
+        if (index > 0U && !tool_json_is_enabled() && !options->quiet) {
+            rt_write_char(1, '\n');
+        }
+        solve_print_result(equation, options, &results->results[index]);
+    }
+    if (results->count == 0U) {
+        if (tool_json_is_enabled()) {
+            solve_write_summary_json(0U, 1);
+        } else if (!options->quiet) {
+            if (options->have_bracket) {
+                rt_write_line(1, "no solution found in requested interval");
+            } else if (options->default_scan) {
+                rt_write_line(1, "no solution found in default scan range");
+            } else {
+                rt_write_line(1, "no solution found in requested range");
+            }
+        }
+        return results->suspected_discontinuity ? 3 : 1;
+    }
+    solve_write_summary_json(results->count, 0);
+    return 0;
+}
+
+static int solve_run_solver_equation(const SolveEquation *equation, const SolveOptions *options) {
+    SolveResultSet results;
+
+    solve_explain_start(equation, options);
+    rt_memset(&results, 0, sizeof(results));
+    if (!options->have_bracket && solve_try_rational_polynomial(equation, options, &results)) {
+        /* solved exactly by the rational polynomial front-end */
+    } else if (!options->have_bracket && solve_try_polynomial(equation, options, &results)) {
+        /* solved directly */
+    } else if (!options->have_bracket && solve_try_linear(equation, options, &results)) {
+        /* solved directly */
+    } else if (options->have_bracket) {
+        solve_explicit_bracket(equation, options, &results);
+    } else {
+        solve_scan(equation, options, &results);
+    }
+    return solve_finish_results(equation, options, &results);
+}
+
+static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions *options) {
+    SolveRatPoly poly;
+    SolveRatPoly derivative;
+    char text[SOLVE_EXPR_CAPACITY];
+    SolveEquation derived;
+
+    if (equation->has_equation && equation->relation != SOLVE_RELATION_EQ) {
+        tool_write_error("solve", "derivative solving supports equations, not inequalities", 0);
+        return 2;
+    }
+    if (equation->has_equation) {
+        if (solve_equation_rat_poly(equation, options, &poly) != 0) {
+            tool_write_error("solve", "derivative supported only for polynomials", 0);
+            return 2;
+        }
+    } else if (solve_parse_rat_text(equation->left, options->var_name, &poly) != 0) {
+        tool_write_error("solve", "derivative supported only for polynomials", 0);
+        return 2;
+    }
+    if (solve_rat_poly_derivative(&poly, options->diff_order, &derivative) != 0 || solve_rat_poly_format(&derivative, options->var_name, text, sizeof(text)) != 0) {
+        tool_write_error("solve", "derivative overflow", 0);
+        return 3;
+    }
+    if (!equation->has_equation) {
+        rt_write_line(1, text);
+        return 0;
+    }
+    rt_copy_string(derived.left, sizeof(derived.left), text);
+    rt_copy_string(derived.right, sizeof(derived.right), "0");
+    derived.has_equation = 1;
+    derived.relation = SOLVE_RELATION_EQ;
+    return solve_run_solver_equation(&derived, options);
+}
+
+static int solve_split_integral_bounds(const char *text, char *left, size_t left_size, char *right, size_t right_size) {
+    size_t index;
+    int depth = 0;
+
+    for (index = 0U; text[index] != '\0'; ++index) {
+        if (text[index] == '(') depth += 1;
+        else if (text[index] == ')' && depth > 0) depth -= 1;
+        else if (text[index] == ':' && depth == 0) {
+            return solve_copy_range(left, left_size, text, 0U, index) == 0 && solve_copy_range(right, right_size, text, index + 1U, rt_strlen(text)) == 0 ? 0 : -1;
+        }
+    }
+    return -1;
+}
+
+static int solve_eval_bound_expr(const char *text, const SolveOptions *options, double *out) {
+    const char *message = 0;
+    return solve_eval_expr(text, options->var_name, 0.0, out, &message);
+}
+
+static int solve_simpson_eval(const SolveEquation *equation, const SolveOptions *options, double a, double b, int n, double *out) {
+    double h = (b - a) / (double)n;
+    double sum = 0.0;
+    int i;
+    const char *message = 0;
+
+    if ((n % 2) != 0 || n <= 0) return -1;
+    for (i = 0; i <= n; ++i) {
+        double x = a + h * (double)i;
+        double y;
+        if (i == n) x = b;
+        if (solve_eval_function(equation, options, x, &y, &message) != 0 || solve_is_bad(y)) return -1;
+        if (i == 0 || i == n) sum += y;
+        else sum += (i % 2 == 0 ? 2.0 : 4.0) * y;
+    }
+    *out = sum * h / 3.0;
+    return solve_is_bad(*out) ? -1 : 0;
+}
+
+static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOptions *options) {
+    char lo_text[128];
+    char hi_text[128];
+    SolveRatPoly poly;
+    SolveRat lo_rat;
+    SolveRat hi_rat;
+    double lo;
+    double hi;
+
+    if (solve_split_integral_bounds(options->integrate_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) {
+        tool_write_error("solve", "invalid --integrate bounds", options->integrate_spec);
+        return 2;
+    }
+    if (solve_eval_bound_expr(lo_text, options, &lo) != 0 || solve_eval_bound_expr(hi_text, options, &hi) != 0) {
+        tool_write_error("solve", "invalid integration bound", options->integrate_spec);
+        return 2;
+    }
+
+    if ((equation->has_equation ? solve_equation_rat_poly(equation, options, &poly) : solve_parse_rat_text(equation->left, options->var_name, &poly)) == 0 &&
+        solve_rat_poly_parse_bound(lo_text, options->var_name, &lo_rat) == 0 && solve_rat_poly_parse_bound(hi_text, options->var_name, &hi_rat) == 0) {
+        SolveRat hi_value;
+        SolveRat lo_value;
+        SolveRat result;
+        char text[96];
+        if (solve_rat_poly_antiderivative_eval(&poly, hi_rat, &hi_value) != 0 || solve_rat_poly_antiderivative_eval(&poly, lo_rat, &lo_value) != 0 || solve_rat_sub(hi_value, lo_value, &result) != 0 || solve_rat_format(result, text, sizeof(text)) != 0) {
+            tool_write_error("solve", "exact integration overflow", 0);
+            return 3;
+        }
+        if (options->quiet) {
+            rt_write_line(1, text);
+        } else {
+            rt_write_cstr(1, "integral = ");
+            rt_write_line(1, text);
+            rt_write_line(1, "method = exact-polynomial");
+        }
+        return 0;
+    }
+
+    {
+        double coarse;
+        double fine;
+        double error;
+        char value[96];
+        if (solve_simpson_eval(equation, options, lo, hi, 1000, &coarse) != 0 || solve_simpson_eval(equation, options, lo, hi, 2000, &fine) != 0) {
+            if (!options->quiet) rt_write_line(1, "improper integral over a discontinuity or invalid point");
+            return 3;
+        }
+        error = solve_abs(fine - coarse) / 15.0;
+        if (options->quiet) {
+            solve_format_double(fine, options->scale, value, sizeof(value));
+            rt_write_line(1, value);
+        } else {
+            solve_format_double(fine, options->scale, value, sizeof(value));
+            rt_write_cstr(1, "integral = ");
+            rt_write_line(1, value);
+            solve_format_double(error, options->scale, value, sizeof(value));
+            rt_write_cstr(1, "estimated error = ");
+            rt_write_line(1, value);
+            rt_write_line(1, "method = simpson");
+            rt_write_line(1, "status = approximate");
+        }
+        return 0;
+    }
+}
+
+static int solve_relation_satisfied(double value, SolveRelation relation, double tolerance) {
+    switch (relation) {
+        case SOLVE_RELATION_LT: return value < -tolerance;
+        case SOLVE_RELATION_LE: return value <= tolerance;
+        case SOLVE_RELATION_GT: return value > tolerance;
+        case SOLVE_RELATION_GE: return value >= -tolerance;
+        default: return 0;
+    }
+}
+
+static int solve_relation_is_inclusive(SolveRelation relation) {
+    return relation == SOLVE_RELATION_LE || relation == SOLVE_RELATION_GE;
+}
+
+static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, double tolerance) {
+    int count = *count_io;
+    int i;
+    for (i = 0; i < count; ++i) {
+        int j;
+        for (j = i + 1; j < count; ++j) {
+            if (points[j].value < points[i].value) {
+                SolveBreakpoint temp = points[i];
+                points[i] = points[j];
+                points[j] = temp;
+            }
+        }
+    }
+    for (i = 0; i < count; ++i) {
+        int out_count;
+        if (i == 0 || solve_abs(points[i].value - points[i - 1].value) > tolerance * 10.0) continue;
+        points[i - 1].pole = points[i - 1].pole || points[i].pole;
+        for (out_count = i; out_count + 1 < count; ++out_count) points[out_count] = points[out_count + 1];
+        count -= 1;
+        i -= 1;
+    }
+    *count_io = count;
+}
+
+static void solve_write_interval_endpoint(const char *label, double value, int has_endpoint) {
+    char text[96];
+    if (!has_endpoint) {
+        rt_write_cstr(1, value < 0.0 ? "-inf" : "inf");
+    } else if (label[0] != '\0') {
+        rt_write_cstr(1, label);
+    } else {
+        solve_format_compact_decimal(value, SOLVE_DEFAULT_SCALE, text, sizeof(text));
+        rt_write_cstr(1, text);
+    }
+}
+
+static void solve_print_intervals(const SolveOptions *options, const SolveInterval *intervals, int count, int bounded) {
+    int i;
+    (void)options;
+    if (count == 1 && !intervals[0].has_left && !intervals[0].has_right) {
+        rt_write_line(1, "solution = all real x");
+        return;
+    }
+    rt_write_cstr(1, bounded ? "solution (within scan range) = " : "solution = ");
+    for (i = 0; i < count; ++i) {
+        if (i > 0) rt_write_cstr(1, " U ");
+        rt_write_char(1, intervals[i].left_closed ? '[' : '(');
+        solve_write_interval_endpoint(intervals[i].left_label, intervals[i].left, intervals[i].has_left);
+        rt_write_cstr(1, ", ");
+        solve_write_interval_endpoint(intervals[i].right_label, intervals[i].right, intervals[i].has_right);
+        rt_write_char(1, intervals[i].right_closed ? ']' : ')');
+    }
+    rt_write_char(1, '\n');
+}
+
+static int solve_add_interval(SolveInterval *intervals, int *count_io, const SolveInterval *interval) {
+    int count = *count_io;
+    if (count > 0 && intervals[count - 1].has_right && interval->has_left && solve_abs(intervals[count - 1].right - interval->left) <= SOLVE_DEFAULT_TOLERANCE * 10.0 && intervals[count - 1].right_closed && interval->left_closed) {
+        intervals[count - 1].has_right = interval->has_right;
+        intervals[count - 1].right = interval->right;
+        intervals[count - 1].right_closed = interval->right_closed;
+        rt_copy_string(intervals[count - 1].right_label, sizeof(intervals[count - 1].right_label), interval->right_label);
+        return 0;
+    }
+    if (count >= (int)SOLVE_MAX_RESULTS) return -1;
+    intervals[count] = *interval;
+    *count_io = count + 1;
+    return 0;
+}
+
+static int solve_collect_rat_poly_roots(const SolveRatPoly *input, SolveBreakpoint *points, int *count_out) {
+    SolveRatPoly poly = *input;
+    int degree = solve_rat_poly_degree(&poly);
+    int count = 0;
+    while (degree > 2) {
+        SolveRat root;
+        SolveRatPoly quotient;
+        if (solve_find_exact_rational_root(&poly, degree, &root) != 0) break;
+        if (solve_rat_poly_divide_linear(&poly, degree, root, &quotient) != 0) return -1;
+        points[count].value = solve_rat_to_double(root);
+        points[count].rat_value = root;
+        points[count].exact = 1;
+        points[count].pole = 0;
+        if (solve_rat_format(root, points[count].label, sizeof(points[count].label)) != 0) return -1;
+        count += 1;
+        poly = quotient;
+        degree -= 1;
+    }
+    if (degree == 2) {
+        SolveRat a = poly.coeff[2];
+        SolveRat b = poly.coeff[1];
+        SolveRat c = poly.coeff[0];
+        SolveRat disc;
+        SolveRat four;
+        SolveRat temp;
+        SolveRat sqrt_disc;
+        if (solve_rat_make(4, 1, &four) != 0 || solve_rat_mul(a, c, &temp) != 0 || solve_rat_mul(four, temp, &temp) != 0) return -1;
+        if (solve_rat_mul(b, b, &disc) != 0 || solve_rat_sub(disc, temp, &disc) != 0) return -1;
+        if (disc.num > 0) {
+            SolveRat minus_b;
+            SolveRat two_a;
+            if (solve_rat_neg(b, &minus_b) != 0 || solve_rat_make_i128((__int128)2 * a.num, a.den, &two_a) != 0) return -1;
+            if (solve_rat_sqrt_exact(disc, &sqrt_disc) == 0) {
+                SolveRat roots[2];
+                int i;
+                if (solve_rat_sub(minus_b, sqrt_disc, &roots[0]) != 0 || solve_rat_div(roots[0], two_a, &roots[0]) != 0) return -1;
+                if (solve_rat_add(minus_b, sqrt_disc, &roots[1]) != 0 || solve_rat_div(roots[1], two_a, &roots[1]) != 0) return -1;
+                for (i = 0; i < 2; ++i) {
+                    points[count].value = solve_rat_to_double(roots[i]);
+                    points[count].rat_value = roots[i];
+                    points[count].exact = 1;
+                    points[count].pole = 0;
+                    if (solve_rat_format(roots[i], points[count].label, sizeof(points[count].label)) != 0) return -1;
+                    count += 1;
+                }
+            } else {
+                double da = solve_rat_to_double(a);
+                double db = solve_rat_to_double(b);
+                double dd = solve_rat_to_double(disc);
+                double root1 = (-db - solve_sqrt(dd)) / (2.0 * da);
+                double root2 = (-db + solve_sqrt(dd)) / (2.0 * da);
+                solve_format_compact_decimal(root1, SOLVE_DEFAULT_SCALE, points[count].label, sizeof(points[count].label));
+                points[count].value = root1; points[count].exact = 0; points[count].pole = 0; (void)solve_rat_make(0, 1, &points[count].rat_value); count += 1;
+                solve_format_compact_decimal(root2, SOLVE_DEFAULT_SCALE, points[count].label, sizeof(points[count].label));
+                points[count].value = root2; points[count].exact = 0; points[count].pole = 0; (void)solve_rat_make(0, 1, &points[count].rat_value); count += 1;
+            }
+        } else if (disc.num == 0) {
+            SolveRat root;
+            SolveRat minus_b;
+            SolveRat two_a;
+            if (solve_rat_neg(b, &minus_b) != 0 || solve_rat_make_i128((__int128)2 * a.num, a.den, &two_a) != 0 || solve_rat_div(minus_b, two_a, &root) != 0) return -1;
+            points[count].value = solve_rat_to_double(root);
+            points[count].rat_value = root;
+            points[count].exact = 1;
+            points[count].pole = 0;
+            if (solve_rat_format(root, points[count].label, sizeof(points[count].label)) != 0) return -1;
+            count += 1;
+        }
+    } else if (degree == 1) {
+        SolveRat root;
+        if (solve_rat_neg(poly.coeff[0], &root) != 0 || solve_rat_div(root, poly.coeff[1], &root) != 0) return -1;
+        points[count].value = solve_rat_to_double(root);
+        points[count].rat_value = root;
+        points[count].exact = 1;
+        points[count].pole = 0;
+        if (solve_rat_format(root, points[count].label, sizeof(points[count].label)) != 0) return -1;
+        count += 1;
+    }
+    *count_out = count;
+    return 0;
+}
+
+static int solve_run_exact_poly_inequality(const SolveEquation *equation, const SolveOptions *options, const SolveRatPoly *poly) {
+    SolveBreakpoint points[SOLVE_MAX_RESULTS];
+    SolveInterval intervals[SOLVE_MAX_RESULTS];
+    int point_count = 0;
+    int interval_count = 0;
+    int degree = solve_rat_poly_degree(poly);
+    int inclusive = solve_relation_is_inclusive(equation->relation);
+    int segment;
+
+    if (degree < 0) {
+        if (solve_relation_satisfied(0.0, equation->relation, 0.0)) {
+            rt_write_line(1, "solution = all real x");
+            return 0;
+        }
+        rt_write_line(1, "solution = empty set");
+        return 1;
+    }
+    if (solve_collect_rat_poly_roots(poly, points, &point_count) != 0) return -1;
+    solve_sort_breakpoints(points, &point_count, options->tolerance);
+    if (point_count == 0) {
+        SolveRat zero;
+        SolveRat value;
+        (void)solve_rat_make(0, 1, &zero);
+        if (solve_rat_poly_eval(poly, degree, zero, &value) != 0) return -1;
+        if (solve_relation_satisfied(solve_rat_to_double(value), equation->relation, 0.0)) {
+            rt_write_line(1, "solution = all real x");
+            return 0;
+        }
+        rt_write_line(1, "solution = empty set");
+        return 1;
+    }
+    for (segment = 0; segment <= point_count; ++segment) {
+        SolveRat sample_rat;
+        SolveRat value;
+        SolveInterval interval;
+        if ((segment > 0 && !points[segment - 1].exact) || (segment < point_count && !points[segment].exact)) return -1;
+        if (segment == 0) {
+            SolveRat one;
+            if (solve_rat_make(1, 1, &one) != 0 || solve_rat_sub(points[0].rat_value, one, &sample_rat) != 0) return -1;
+        } else if (segment == point_count) {
+            SolveRat one;
+            if (solve_rat_make(1, 1, &one) != 0 || solve_rat_add(points[point_count - 1].rat_value, one, &sample_rat) != 0) return -1;
+        } else {
+            SolveRat sum;
+            SolveRat two;
+            if (solve_rat_add(points[segment - 1].rat_value, points[segment].rat_value, &sum) != 0 || solve_rat_make(2, 1, &two) != 0 || solve_rat_div(sum, two, &sample_rat) != 0) return -1;
+        }
+        if (solve_rat_poly_eval(poly, degree, sample_rat, &value) != 0) return -1;
+        if (!solve_relation_satisfied(solve_rat_to_double(value), equation->relation, 0.0)) continue;
+        rt_memset(&interval, 0, sizeof(interval));
+        interval.has_left = segment > 0;
+        interval.has_right = segment < point_count;
+        if (interval.has_left) {
+            interval.left = points[segment - 1].value;
+            interval.left_closed = inclusive;
+            rt_copy_string(interval.left_label, sizeof(interval.left_label), points[segment - 1].label);
+        } else {
+            interval.left = -1.0;
+        }
+        if (interval.has_right) {
+            interval.right = points[segment].value;
+            interval.right_closed = inclusive;
+            rt_copy_string(interval.right_label, sizeof(interval.right_label), points[segment].label);
+        } else {
+            interval.right = 1.0;
+        }
+        if (solve_add_interval(intervals, &interval_count, &interval) != 0) return -1;
+    }
+    if (interval_count == 0) {
+        rt_write_line(1, "solution = empty set");
+        return 1;
+    }
+    solve_print_intervals(options, intervals, interval_count, 0);
+    return 0;
+}
+
+static int solve_run_numeric_inequality(const SolveEquation *equation, const SolveOptions *options) {
+    SolveEquation zero_equation = *equation;
+    SolveOptions scan_options = *options;
+    SolveResultSet roots;
+    SolveBreakpoint points[SOLVE_MAX_RESULTS];
+    SolveInterval intervals[SOLVE_MAX_RESULTS];
+    int point_count = 0;
+    int interval_count = 0;
+    double lo = options->scan_lo < options->scan_hi ? options->scan_lo : options->scan_hi;
+    double hi = options->scan_lo < options->scan_hi ? options->scan_hi : options->scan_lo;
+    double step = (hi - lo) / (double)options->scan_steps;
+    int i;
+    const char *message = 0;
+
+    zero_equation.relation = SOLVE_RELATION_EQ;
+    scan_options.all = 1;
+    rt_memset(&roots, 0, sizeof(roots));
+    solve_scan(&zero_equation, &scan_options, &roots);
+    for (i = 0; i < (int)roots.count && point_count < (int)SOLVE_MAX_RESULTS; ++i) {
+        points[point_count].value = roots.results[i].root;
+        points[point_count].exact = roots.results[i].exact_value[0] != '\0';
+        points[point_count].pole = 0;
+        (void)solve_rat_make(0, 1, &points[point_count].rat_value);
+        solve_format_compact_decimal(points[point_count].value, options->scale, points[point_count].label, sizeof(points[point_count].label));
+        point_count += 1;
+    }
+    for (i = 0; i <= options->scan_steps && point_count < (int)SOLVE_MAX_RESULTS; ++i) {
+        double x = lo + step * (double)i;
+        double y;
+        if (i == options->scan_steps) x = hi;
+        if (solve_eval_function(equation, options, x, &y, &message) != 0) {
+            points[point_count].value = x;
+            (void)solve_rat_make(0, 1, &points[point_count].rat_value);
+            points[point_count].pole = 1;
+            points[point_count].exact = 0;
+            solve_format_compact_decimal(x, options->scale, points[point_count].label, sizeof(points[point_count].label));
+            point_count += 1;
+        }
+    }
+    solve_sort_breakpoints(points, &point_count, options->tolerance);
+    for (i = 0; i <= point_count; ++i) {
+        double left = i == 0 ? lo : points[i - 1].value;
+        double right = i == point_count ? hi : points[i].value;
+        double sample = (left + right) * 0.5;
+        double value;
+        SolveInterval interval;
+        if (right <= left || solve_eval_function(equation, options, sample, &value, &message) != 0) continue;
+        if (!solve_relation_satisfied(value, equation->relation, options->tolerance)) continue;
+        rt_memset(&interval, 0, sizeof(interval));
+        interval.has_left = 1;
+        interval.has_right = 1;
+        interval.left = left;
+        interval.right = right;
+        interval.left_closed = i == 0 || (!points[i - 1].pole && solve_relation_is_inclusive(equation->relation));
+        interval.right_closed = i == point_count || (!points[i].pole && solve_relation_is_inclusive(equation->relation));
+        if (i == 0) solve_format_compact_decimal(left, options->scale, interval.left_label, sizeof(interval.left_label));
+        else rt_copy_string(interval.left_label, sizeof(interval.left_label), points[i - 1].label);
+        if (i == point_count) solve_format_compact_decimal(right, options->scale, interval.right_label, sizeof(interval.right_label));
+        else rt_copy_string(interval.right_label, sizeof(interval.right_label), points[i].label);
+        if (solve_add_interval(intervals, &interval_count, &interval) != 0) return 3;
+    }
+    if (interval_count == 0) {
+        rt_write_line(1, "solution = empty set");
+        return 1;
+    }
+    solve_print_intervals(options, intervals, interval_count, 1);
+    return 0;
+}
+
+static int solve_run_inequality_mode(const SolveEquation *equation, const SolveOptions *options) {
+    SolveRatPoly poly;
+    if (solve_equation_rat_poly(equation, options, &poly) == 0) {
+        int rc = solve_run_exact_poly_inequality(equation, options, &poly);
+        if (rc >= 0) return rc;
+    }
+    return solve_run_numeric_inequality(equation, options);
+}
+
 static void solve_options_init(SolveOptions *options) {
     rt_copy_string(options->var_name, sizeof(options->var_name), "x");
     options->have_scan = 0;
+    options->default_scan = 0;
     options->have_bracket = 0;
     options->scan_lo = SOLVE_DEFAULT_SCAN_LO;
     options->scan_hi = SOLVE_DEFAULT_SCAN_HI;
@@ -2829,6 +3553,10 @@ static void solve_options_init(SolveOptions *options) {
     options->report_y = 0;
     options->explain = 0;
     options->quiet = 0;
+    options->have_diff = 0;
+    options->diff_order = 1;
+    options->have_integrate = 0;
+    options->integrate_spec[0] = '\0';
     options->scale = SOLVE_DEFAULT_SCALE;
     options->tolerance = SOLVE_DEFAULT_TOLERANCE;
     options->max_iterations = SOLVE_DEFAULT_MAX_ITERATIONS;
@@ -2862,11 +3590,9 @@ static int solve_join_expression(int start, int argc, char **argv, char *buffer,
 int main(int argc, char **argv) {
     SolveOptions options;
     SolveEquation equation;
-    SolveResultSet results;
     ToolOptState opt;
     char expression[SOLVE_EXPR_CAPACITY];
     int opt_result;
-    size_t index;
 
     solve_options_init(&options);
     tool_opt_init(&opt, argc, argv, tool_base_name(argv[0]), "[options] 'EXPRESSION = EXPRESSION'");
@@ -2904,6 +3630,22 @@ int main(int argc, char **argv) {
             options.explain = 1;
         } else if (rt_strcmp(opt.flag, "--quiet") == 0) {
             options.quiet = 1;
+        } else if (rt_strcmp(opt.flag, "--diff") == 0 || tool_starts_with(opt.flag, "--diff=")) {
+            const char *value = 0;
+            unsigned long long order = 1ULL;
+            options.have_diff = 1;
+            if (tool_starts_with(opt.flag, "--diff=")) {
+                value = opt.flag + 7;
+                if (rt_parse_uint(value, &order) != 0 || order > 64ULL) {
+                    tool_write_error("solve", "invalid --diff order", value);
+                    return 2;
+                }
+            }
+            options.diff_order = (int)order;
+        } else if (rt_strcmp(opt.flag, "--integrate") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.integrate_spec)) return 2;
+            options.have_integrate = 1;
+            rt_copy_string(options.integrate_spec, sizeof(options.integrate_spec), opt.value);
         } else if (rt_strcmp(opt.flag, "--method") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 2;
             if (rt_strcmp(opt.value, "auto") != 0 && rt_strcmp(opt.value, "bisection") != 0) {
@@ -2953,6 +3695,7 @@ int main(int argc, char **argv) {
     }
     if (!options.have_scan && !options.have_bracket) {
         options.have_scan = 1;
+        options.default_scan = 1;
     }
     if (solve_join_expression(opt.argi, argc, argv, expression, sizeof(expression)) != 0) {
         tool_write_error("solve", "missing or too large expression", 0);
@@ -2971,40 +3714,19 @@ int main(int argc, char **argv) {
         }
     }
 
-    solve_explain_start(&equation, &options);
-    rt_memset(&results, 0, sizeof(results));
-    if (!options.have_bracket && solve_try_rational_polynomial(&equation, &options, &results)) {
-        /* solved exactly by the rational polynomial front-end */
-    } else if (!options.have_bracket && solve_try_polynomial(&equation, &options, &results)) {
-        /* solved directly */
-    } else if (!options.have_bracket && solve_try_linear(&equation, &options, &results)) {
-        /* solved directly */
-    } else if (options.have_bracket) {
-        solve_explicit_bracket(&equation, &options, &results);
-    } else {
-        solve_scan(&equation, &options, &results);
+    if (options.have_diff && options.have_integrate) {
+        tool_write_error("solve", "--diff and --integrate cannot be combined", 0);
+        return 2;
+    }
+    if (options.have_integrate) {
+        return solve_run_integrate_mode(&equation, &options);
+    }
+    if (options.have_diff) {
+        return solve_run_diff_mode(&equation, &options);
+    }
+    if (equation.relation == SOLVE_RELATION_LT || equation.relation == SOLVE_RELATION_LE || equation.relation == SOLVE_RELATION_GT || equation.relation == SOLVE_RELATION_GE) {
+        return solve_run_inequality_mode(&equation, &options);
     }
 
-    if (results.identity) {
-        solve_print_identity(&options, results.identity == 1);
-        solve_write_summary_json(1U, 0);
-        return 0;
-    }
-
-    for (index = 0U; index < results.count; ++index) {
-        if (index > 0U && !tool_json_is_enabled() && !options.quiet) {
-            rt_write_char(1, '\n');
-        }
-        solve_print_result(&equation, &options, &results.results[index]);
-    }
-    if (results.count == 0U) {
-        if (tool_json_is_enabled()) {
-            solve_write_summary_json(0U, 1);
-        } else if (!options.quiet) {
-            rt_write_line(1, "no solution found in requested range");
-        }
-        return results.suspected_discontinuity ? 3 : 1;
-    }
-    solve_write_summary_json(results.count, 0);
-    return 0;
+    return solve_run_solver_equation(&equation, &options);
 }

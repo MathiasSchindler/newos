@@ -14,7 +14,7 @@ solve [OPTIONS] --report-y 'Y1 = Y2'
 
 ## DESCRIPTION
 
-`solve` finds real solutions for common high-school "solve for x" problems. It is not a general symbolic algebra system, but `auto` has a bounded polynomial front end. Exact polynomial claims are tried first with rational coefficient arithmetic for supported rational-literal expressions through degree 16; the older floating-point polynomial recognizer still handles supported polynomial expressions through degree 16 as a fallback. Outside those subsets, `solve` treats an equation as a numeric function and searches for values of one variable that make the equation true.
+`solve` finds real solutions for common high-school "solve for x" problems. It is not a general symbolic algebra system, but `auto` has a bounded polynomial front end. Exact polynomial claims are tried first with rational coefficient arithmetic for supported rational-literal expressions through degree 8; the older floating-point polynomial recognizer still handles supported polynomial expressions through degree 16 as a fallback. Outside those subsets, `solve` treats an equation as a numeric function and searches for values of one variable that make the equation true.
 
 For an input such as `x^2 - 2 = 0`, `solve` evaluates the left side minus the right side and looks for roots of that zero function. Intersections are the same problem: `x^2 = 2*x + 3` is solved as `x^2 - (2*x + 3) = 0`. With `--report-y`, `solve` also reports the corresponding y-value for the left side of the equation.
 
@@ -26,6 +26,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 
 - one real variable, defaulting to `x`
 - equation input as `left = right`, or zero-function input as a single expression where solutions satisfy `expression = 0`
+- inequality input as `left < right`, `left <= right`, `left > right`, or `left >= right`, reported as interval notation
 - intersection solving through the same equation form, with `--report-y` for y-value output
 - arithmetic operators `+`, `-`, `*`, `/`, `%`, and `^`
 - unary `+` and unary `-`
@@ -36,12 +37,14 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - math-library functions such as `sin(x)`, `cos(x)`, `atan(x)`, `log(x)`, and `exp(x)`
 - interval solving with `--lo` and `--hi`
 - automatic interval scanning to discover sign changes over a range
-- exact rational polynomial solving through degree 16 for supported rational-literal expressions
+- exact rational polynomial solving through degree 8 for supported rational-literal expressions
 - automatic direct solving for polynomial equations through degree 16 when the expression can be represented in the supported polynomial subset
 - exact factoring explanations for quadratics with rational roots
 - quadratic-formula solving for real quadratic roots
 - rational-root factoring for higher-degree polynomials in the supported subset
 - exact polynomial identity detection for rational-literal polynomial expressions, including finite decimal literals such as `0.1`
+- exact polynomial derivatives and definite integrals for supported rational-literal polynomial expressions
+- Simpson-rule numerical definite integration for non-polynomial expressions, with approximate labeling and an error estimate
 - approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
 - multiple-root reporting when scanning finds more than one candidate interval
 - likely touching-root reporting for repeated roots that do not change sign
@@ -62,6 +65,8 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--report-y` reports the y-value of the left side of an equation, useful for curve intersections
 - `--explain` prints a didactic trace of the solving process
 - `--quiet` prints only the final answer
+- `--diff[=N]` prints the Nth exact polynomial derivative; with an equation input, it solves the Nth derivative set equal to 0
+- `--integrate A:B` computes the definite integral over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
 - `--json` writes machine-readable result and diagnostic events
 - `--help` shows usage
 
@@ -75,7 +80,13 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 
 Linear equations are solved by moving the constant term and dividing by the coefficient. Quadratics and factored higher-degree polynomials report every real root found by the symbolic path, even without `--all`. If the equation is outside the supported polynomial subsets, `auto` means "scan if needed, then use bisection on bracketed intervals." When a scan finds multiple roots and `--all` is not used, `solve` reports the root closest to zero. If an explicit bracket is supplied, `auto` is equivalent to `bisection`.
 
-Quadratics are solved directly. When the exact rational discriminant is a perfect square, roots are reported exactly as integers or fractions and `--explain` shows a factored form. When the discriminant is positive but not a rational square, roots are reported as decimal approximations with `status = approximate`. Higher-degree rational polynomials are factored only when exact rational roots are proven; any remaining quadratic factor is solved with the same exact discriminant check. Rational-literal polynomial equations that reduce to 0 are reported as exact identities, including decimal forms such as `(x + 0.1)^2 = x^2 + 0.2*x + 0.01`.
+Quadratics are solved directly. When the exact rational discriminant is negative, `solve` reports that there are no real solutions. When the discriminant is a perfect square, roots are reported exactly as integers or fractions and `--explain` shows a factored form. When the discriminant is positive but not a rational square, roots are reported as decimal approximations with `status = approximate`. Higher-degree rational polynomials are factored only when exact rational roots are proven; any remaining quadratic factor is solved with the same exact discriminant check. Rational-literal polynomial equations that reduce to 0 are reported as exact identities, including decimal forms such as `(x + 0.1)^2 = x^2 + 0.2*x + 0.01`.
+
+Inequalities form the same zero function and report solution intervals. Supported rational polynomials use exact roots and exact sign tests, so unbounded intervals such as `(-inf, -2)` and `[2, inf)` are true real intervals rather than clipped scan ranges. Non-polynomial inequalities use the numeric evaluator over the scan range and say that the answer is within that range.
+
+`--diff` uses exact rational polynomial coefficients and the power rule. Without an equation, it prints the derivative polynomial. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions. Non-polynomial differentiation is intentionally rejected.
+
+`--integrate A:B` first tries exact rational polynomial integration by building an exact antiderivative and evaluating it at the bounds. If the integrand is outside the polynomial subset, it uses composite Simpson integration with one Richardson refinement and marks the result approximate. If evaluation fails inside the interval, for example across a pole, the integral is reported as improper and exits with numeric failure status.
 
 Repeated roots such as `x^2 - 6*x + 9 = 0` do not change sign. A scan therefore also looks for sampled points that are exact or near-zero, and for local minima or maxima where `abs(f(x))` becomes small. These are reported as touching-root candidates, with their residual, instead of silently saying no root was found.
 
@@ -93,6 +104,8 @@ A bisection explanation should include:
 - each midpoint approximation, function value, and retained interval
 - the stopping condition that ended the search
 - the final root approximation and residual
+
+Bisection-derived roots are decimal approximations and are marked with `status = approximate`. If scanning lands exactly on a root before interval refinement is needed, the method is reported as `exact-sample` with zero iterations.
 
 A linear explanation shows the equation after moving everything to one side, the constant term being moved to the other side, division by the variable coefficient, and the final answer.
 
@@ -119,6 +132,8 @@ iterations = 34
 
 Roots proven by exact rational polynomial solving are printed as exact integers or fractions, such as `x = 5` or `x = 5/3`. Numeric roots that are close to integers are printed compactly. When a numeric non-integer root is close to a simple fraction with a small denominator, normal text output includes a didactic hint in parentheses, such as `x = 1.6666666667 (1 2/3)`.
 
+Inequality output uses interval notation, for example `solution = (-inf, -2) U (2, inf)` or `solution = all real x`. Definite integral output uses `integral = VALUE`, followed by either `method = exact-polynomial` or `method = simpson` with `status = approximate`.
+
 For intersections, output includes the corresponding y-value:
 
 ```
@@ -131,7 +146,7 @@ iterations = 1
 
 When `--quiet` is used, only the root value is printed. When `--all` is used, each scan result is printed as a separate solution block; symbolic polynomial methods print every root they determine directly.
 
-If no root is found, normal output says so and includes the searched range or interval. The exit status distinguishes success from failure:
+If no root is found, normal output says whether this was an exact no-real-solution result, a miss in the default scan range, a miss in a requested scan range, or a miss in a requested interval. The exit status distinguishes success from failure:
 
 - `0` at least one solution or candidate solution was found
 - `1` no solution was found in the requested range
@@ -147,12 +162,14 @@ With `--json`, `solve` writes JSON Lines using the common envelope documented in
 - `solve_identity` for supported polynomial identities; its data includes `exact:true` for exact rational-literal identities and `exact:false` for approximate floating-point fallback identities
 - `solve_summary` for method, status, and count information
 
-A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Exact rational roots are emitted as fractions in the root string. Approximate quadratic roots from nonsquare rational discriminants include `exact:false`. Diagnostics are written to stderr.
+A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Exact rational roots are emitted as fractions in the root string. Approximate roots include `exact:false`. Diagnostics are written to stderr.
 
 ## LIMITATIONS
 
-- no general symbolic algebra; `auto` can directly handle supported exact rational polynomial expressions through degree 16 and supported floating-point polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in those subsets, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
+- no general symbolic algebra; `auto` can directly handle supported exact rational polynomial expressions through degree 8 and supported floating-point polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in those subsets, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
 - exact polynomial coefficient arithmetic is bounded; if rational numerators, denominators, common denominators, expansion products, divisor enumeration, or degree exceed the exact front-end limits, `solve` falls back to the floating-point polynomial or numeric path
+- exact inequalities, derivatives, and polynomial integration are limited to the supported rational polynomial subset; non-polynomial inequalities and integrals use bounded numerical methods, while non-polynomial differentiation is not implemented
+- numerical integration is composite Simpson integration, not a symbolic antiderivative engine, and improper integrals over detected discontinuities are rejected rather than assigned a finite number
 - finite decimal literals in the exact polynomial front end are parsed as exact rationals from their source spelling, so `0.1` means exactly `1/10` in that path
 - solves one variable at a time
 - repeated polynomial roots in the supported symbolic subset are solved directly; other touching roots are only candidates unless the residual is within tolerance
@@ -228,6 +245,26 @@ Show an exact decimal-rational identity:
 
 ```
 solve --explain '(x + 0.1)^2 = x^2 + 0.2*x + 0.01'
+```
+
+Solve an inequality exactly:
+
+```
+solve 'x^2 - 4 >= 0'
+```
+
+Print and solve a polynomial derivative:
+
+```
+solve --diff 'x^3 - 6*x^2 + 11*x - 6'
+solve --diff 'x^3 - 6*x^2 + 11*x - 6 = 0'
+```
+
+Compute exact and numerical definite integrals:
+
+```
+solve --integrate 0:1 'x^2'
+solve --integrate 0:pi 'sin(x)'
 ```
 
 ## SEE ALSO
