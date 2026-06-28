@@ -31,7 +31,8 @@ and `/* ... */` comments are ignored.
 - parentheses for grouping
 - unary `+` and unary `-`
 - variable assignment and reuse within the current input
-- the special variables `scale` (division precision, 0 through 256) and `last`
+- the special variables `scale` (division precision, 0 through 256; default 0,
+  or 32 with `-l`) and `last`
   (previous result)
 - base conversion via `ibase` and `obase` (2 through 16)
 - built-in functions `sqrt(x)`, `length(x)`, `scale(x)`, `abs(x)`,

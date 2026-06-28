@@ -139,23 +139,6 @@ static int bc_value_truth(BcValue value) {
     return !bn_is_zero(&value.mantissa);
 }
 
-static BcValue bc_normalize_value(BcValue value) {
-    Bignum quotient;
-    unsigned int remainder;
-    
-    while (value.scale > 0) {
-        if (bn_divide_digit(&value.mantissa, 10, &quotient, &remainder) != 0) {
-            break;
-        }
-        if (remainder != 0) {
-            break;
-        }
-        value.mantissa = quotient;
-        value.scale -= 1;
-    }
-    return value;
-}
-
 static BcValue bc_rescale(BcParser *parser, BcValue value, int target_scale) {
     int delta;
     Bignum result;
@@ -222,7 +205,7 @@ static BcValue bc_add_values(BcParser *parser, BcValue left, BcValue right) {
         bc_set_error(parser, "numeric overflow");
         return bc_make_int(0);
     }
-    return bc_normalize_value(bc_make_value_bn(&result, scale));
+    return bc_make_value_bn(&result, scale);
 }
 
 static BcValue bc_sub_values(BcParser *parser, BcValue left, BcValue right) {
@@ -238,29 +221,40 @@ static BcValue bc_sub_values(BcParser *parser, BcValue left, BcValue right) {
         bc_set_error(parser, "numeric overflow");
         return bc_make_int(0);
     }
-    return bc_normalize_value(bc_make_value_bn(&result, scale));
+    return bc_make_value_bn(&result, scale);
 }
 
 static BcValue bc_mul_values(BcParser *parser, BcValue left, BcValue right) {
     Bignum result;
     int scale = left.scale + right.scale;
+    int target_scale = bc_get_scale_setting(parser->env);
 
     if (bn_multiply(&left.mantissa, &right.mantissa, &result) != 0) {
         bc_set_error(parser, "numeric overflow");
         return bc_make_int(0);
     }
 
-    if (scale > BC_MAX_SCALE) {
+    if (left.scale > target_scale) {
+        target_scale = left.scale;
+    }
+    if (right.scale > target_scale) {
+        target_scale = right.scale;
+    }
+    if (target_scale > BC_MAX_SCALE) {
+        target_scale = BC_MAX_SCALE;
+    }
+
+    if (scale > target_scale) {
         Bignum scaled;
-        if (bn_scale(&result, -(scale - BC_MAX_SCALE), &scaled) != 0) {
+        if (bn_scale(&result, -(scale - target_scale), &scaled) != 0) {
             bc_set_error(parser, "numeric overflow");
             return bc_make_int(0);
         }
         result = scaled;
-        scale = BC_MAX_SCALE;
+        scale = target_scale;
     }
 
-    return bc_normalize_value(bc_make_value_bn(&result, scale));
+    return bc_make_value_bn(&result, scale);
 }
 
 static BcValue bc_div_values_with_scale(BcParser *parser, BcValue left, BcValue right, int requested_scale) {
@@ -333,7 +327,7 @@ static BcValue bc_mod_values(BcParser *parser, BcValue left, BcValue right) {
         return bc_make_int(0);
     }
 
-    return bc_normalize_value(bc_make_value_bn(&remainder, scale));
+    return bc_make_value_bn(&remainder, scale);
 }
 
 static int bc_compare_values(BcParser *parser, BcValue left, BcValue right) {
@@ -999,7 +993,7 @@ static void bc_store_var(BcParser *parser, const char *name, BcValue value) {
 
 static void bc_env_init(BcEnv *env, int math_mode) {
     env->var_count = 0;
-    env->scale_setting = math_mode ? 32 : 6;
+    env->scale_setting = math_mode ? 32 : 0;
     env->ibase_setting = 10;
     env->obase_setting = 10;
 
@@ -1647,7 +1641,7 @@ static BcValue bc_parse_logical_and(BcParser *parser, int evaluate) {
         BcValue right;
 
         parser->has_token = 0;
-        right = bc_parse_equality(parser, evaluate && bc_value_truth(value));
+        right = bc_parse_equality(parser, evaluate);
         if (!evaluate) {
             value = bc_make_int(0);
         } else {
@@ -1665,7 +1659,7 @@ static BcValue bc_parse_logical_or(BcParser *parser, int evaluate) {
         BcValue right;
 
         parser->has_token = 0;
-        right = bc_parse_logical_and(parser, evaluate && !bc_value_truth(value));
+        right = bc_parse_logical_and(parser, evaluate);
         if (!evaluate) {
             value = bc_make_int(0);
         } else {
