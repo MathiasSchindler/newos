@@ -14,7 +14,11 @@
 #define SOLVE_DEFAULT_MAX_ITERATIONS 128
 #define SOLVE_MAX_RATIONAL_DENOMINATOR 1000
 #define SOLVE_POLY_MAX_DEGREE 16
+#define SOLVE_RAT_POLY_MAX_DEGREE SOLVE_POLY_MAX_DEGREE
 #define SOLVE_POLY_FACTOR_DENOMINATOR_LIMIT 100
+#define SOLVE_RAT_LIMIT 900000000000000000LL
+#define SOLVE_RAT_DIVISOR_LIMIT 1000000ULL
+#define SOLVE_RAT_MAX_DIVISORS 512
 #define SOLVE_PI 3.14159265358979323846264338327950288419716939937510
 #define SOLVE_E 2.71828182845904523536028747135266249775724709369995
 #define SOLVE_HUGE 1.0e290
@@ -45,6 +49,22 @@ typedef struct {
     double coeff[SOLVE_POLY_MAX_DEGREE + 1];
     int exact;
 } SolvePoly;
+
+typedef struct {
+    long long num;
+    long long den;
+} SolveRat;
+
+typedef struct {
+    SolveRat coeff[SOLVE_RAT_POLY_MAX_DEGREE + 1];
+} SolveRatPoly;
+
+typedef struct {
+    const char *text;
+    size_t pos;
+    const char *var_name;
+    int error;
+} SolveRatParser;
 
 typedef struct {
     char left[SOLVE_EXPR_CAPACITY];
@@ -80,6 +100,8 @@ typedef struct {
     int iterations;
     SolveStatus status;
     const char *method;
+    int approximate;
+    char exact_value[96];
 } SolveResult;
 
 typedef struct {
@@ -92,6 +114,8 @@ typedef struct {
 
 static int solve_add_result(SolveResultSet *set, const SolveResult *result, int all, double tolerance);
 static int solve_eval_function(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out, const char **message_out);
+static int solve_eval_y(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out);
+static int solve_root_in_scan_range(const SolveOptions *options, double root);
 
 static double solve_abs(double value) {
     return value < 0.0 ? -value : value;
@@ -275,6 +299,173 @@ static int solve_format_rational_parts(double value, char *buffer, size_t buffer
 
 static int solve_format_rational(double value, char *buffer, size_t buffer_size) {
     return solve_format_rational_parts(value, buffer, buffer_size, 0);
+}
+
+static unsigned long long solve_abs_ll(long long value) {
+    if (value < 0) {
+        return (unsigned long long)(-(value + 1)) + 1ULL;
+    }
+    return (unsigned long long)value;
+}
+
+static unsigned long long solve_gcd_ll(long long a, long long b) {
+    return solve_gcd_ull(solve_abs_ll(a), solve_abs_ll(b));
+}
+
+static int solve_i128_to_ll(__int128 value, long long *out) {
+    if (value < -((__int128)SOLVE_RAT_LIMIT) || value > (__int128)SOLVE_RAT_LIMIT) {
+        return -1;
+    }
+    *out = (long long)value;
+    return 0;
+}
+
+static int solve_rat_make_i128(__int128 num, __int128 den, SolveRat *out) {
+    long long n;
+    long long d;
+    unsigned long long gcd;
+
+    if (den == 0) {
+        return -1;
+    }
+    if (den < 0) {
+        num = -num;
+        den = -den;
+    }
+    if (solve_i128_to_ll(num, &n) != 0 || solve_i128_to_ll(den, &d) != 0) {
+        return -1;
+    }
+    gcd = solve_gcd_ll(n, d);
+    if (gcd > 1ULL) {
+        n /= (long long)gcd;
+        d /= (long long)gcd;
+    }
+    if (d < 0) {
+        n = -n;
+        d = -d;
+    }
+    out->num = n;
+    out->den = d;
+    return 0;
+}
+
+static int solve_rat_make(long long num, long long den, SolveRat *out) {
+    return solve_rat_make_i128((__int128)num, (__int128)den, out);
+}
+
+static int solve_rat_add(SolveRat a, SolveRat b, SolveRat *out) {
+    return solve_rat_make_i128((__int128)a.num * b.den + (__int128)b.num * a.den, (__int128)a.den * b.den, out);
+}
+
+static int solve_rat_sub(SolveRat a, SolveRat b, SolveRat *out) {
+    return solve_rat_make_i128((__int128)a.num * b.den - (__int128)b.num * a.den, (__int128)a.den * b.den, out);
+}
+
+static int solve_rat_mul(SolveRat a, SolveRat b, SolveRat *out) {
+    return solve_rat_make_i128((__int128)a.num * b.num, (__int128)a.den * b.den, out);
+}
+
+static int solve_rat_div(SolveRat a, SolveRat b, SolveRat *out) {
+    if (b.num == 0) {
+        return -1;
+    }
+    return solve_rat_make_i128((__int128)a.num * b.den, (__int128)a.den * b.num, out);
+}
+
+static int solve_rat_neg(SolveRat value, SolveRat *out) {
+    return solve_rat_make_i128(-((__int128)value.num), value.den, out);
+}
+
+static int solve_rat_is_zero(SolveRat value) {
+    return value.num == 0;
+}
+
+static double solve_rat_to_double(SolveRat value) {
+    return (double)value.num / (double)value.den;
+}
+
+static int solve_append_signed_ll(char *buffer, size_t buffer_size, size_t *length_io, long long value) {
+    char digits[32];
+    size_t count = 0U;
+    unsigned long long magnitude = solve_abs_ll(value);
+
+    if (value < 0 && solve_append_char(buffer, buffer_size, length_io, '-') != 0) return -1;
+    if (magnitude == 0ULL) {
+        return solve_append_char(buffer, buffer_size, length_io, '0');
+    }
+    while (magnitude > 0ULL && count < sizeof(digits)) {
+        digits[count++] = (char)('0' + (magnitude % 10ULL));
+        magnitude /= 10ULL;
+    }
+    while (count > 0U) {
+        if (solve_append_char(buffer, buffer_size, length_io, digits[--count]) != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_rat_format(SolveRat value, char *buffer, size_t buffer_size) {
+    size_t length = 0U;
+
+    if (buffer_size == 0U) return -1;
+    buffer[0] = '\0';
+    if (solve_append_signed_ll(buffer, buffer_size, &length, value.num) != 0) return -1;
+    if (value.den != 1) {
+        if (solve_append_char(buffer, buffer_size, &length, '/') != 0) return -1;
+        if (solve_append_signed_ll(buffer, buffer_size, &length, value.den) != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_parse_rat_literal(const char *text, size_t *pos_io, SolveRat *out) {
+    size_t pos = *pos_io;
+    __int128 mantissa = 0;
+    __int128 den = 1;
+    int saw_digit = 0;
+    int frac_digits = 0;
+    int exp = 0;
+    int exp_negative = 0;
+
+    while (text[pos] >= '0' && text[pos] <= '9') {
+        mantissa = mantissa * 10 + (text[pos] - '0');
+        if (mantissa > (__int128)SOLVE_RAT_LIMIT) return -1;
+        saw_digit = 1;
+        pos += 1U;
+    }
+    if (text[pos] == '.') {
+        pos += 1U;
+        while (text[pos] >= '0' && text[pos] <= '9') {
+            mantissa = mantissa * 10 + (text[pos] - '0');
+            den *= 10;
+            if (mantissa > (__int128)SOLVE_RAT_LIMIT || den > (__int128)SOLVE_RAT_LIMIT) return -1;
+            saw_digit = 1;
+            frac_digits += 1;
+            pos += 1U;
+        }
+    }
+    (void)frac_digits;
+    if (!saw_digit) return -1;
+    if (text[pos] == 'e' || text[pos] == 'E') {
+        pos += 1U;
+        if (text[pos] == '+' || text[pos] == '-') {
+            exp_negative = text[pos] == '-';
+            pos += 1U;
+        }
+        if (text[pos] < '0' || text[pos] > '9') return -1;
+        while (text[pos] >= '0' && text[pos] <= '9') {
+            exp = exp * 10 + (text[pos] - '0');
+            if (exp > 18) return -1;
+            pos += 1U;
+        }
+        while (exp > 0) {
+            if (exp_negative) den *= 10;
+            else mantissa *= 10;
+            if (mantissa > (__int128)SOLVE_RAT_LIMIT || den > (__int128)SOLVE_RAT_LIMIT) return -1;
+            exp -= 1;
+        }
+    }
+    if (solve_rat_make_i128(mantissa, den, out) != 0) return -1;
+    *pos_io = pos;
+    return 0;
 }
 
 static void solve_format_compact_decimal(double value, int scale, char *buffer, size_t buffer_size) {
@@ -1202,6 +1393,457 @@ static int solve_equation_poly(const SolveEquation *equation, const SolveOptions
     return 0;
 }
 
+static void solve_rat_poly_zero(SolveRatPoly *poly) {
+    int i;
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        (void)solve_rat_make(0, 1, &poly->coeff[i]);
+    }
+}
+
+static SolveRatPoly solve_rat_poly_constant(SolveRat value) {
+    SolveRatPoly poly;
+    solve_rat_poly_zero(&poly);
+    poly.coeff[0] = value;
+    return poly;
+}
+
+static SolveRatPoly solve_rat_poly_variable(void) {
+    SolveRat one;
+    SolveRatPoly poly;
+    (void)solve_rat_make(1, 1, &one);
+    solve_rat_poly_zero(&poly);
+    poly.coeff[1] = one;
+    return poly;
+}
+
+static int solve_rat_poly_degree(const SolveRatPoly *poly) {
+    int degree;
+    for (degree = SOLVE_RAT_POLY_MAX_DEGREE; degree >= 0; --degree) {
+        if (!solve_rat_is_zero(poly->coeff[degree])) return degree;
+    }
+    return -1;
+}
+
+static int solve_rat_poly_is_constant(const SolveRatPoly *poly) {
+    return solve_rat_poly_degree(poly) <= 0;
+}
+
+static int solve_rat_poly_add(const SolveRatPoly *left, const SolveRatPoly *right, int subtract, SolveRatPoly *out) {
+    int i;
+    solve_rat_poly_zero(out);
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        if ((subtract ? solve_rat_sub(left->coeff[i], right->coeff[i], &out->coeff[i]) : solve_rat_add(left->coeff[i], right->coeff[i], &out->coeff[i])) != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_rat_poly_neg(const SolveRatPoly *poly, SolveRatPoly *out) {
+    int i;
+    solve_rat_poly_zero(out);
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        if (solve_rat_neg(poly->coeff[i], &out->coeff[i]) != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_rat_poly_mul(const SolveRatPoly *left, const SolveRatPoly *right, SolveRatPoly *out) {
+    int i;
+    int j;
+    solve_rat_poly_zero(out);
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        for (j = 0; j <= SOLVE_RAT_POLY_MAX_DEGREE; ++j) {
+            if (!solve_rat_is_zero(left->coeff[i]) && !solve_rat_is_zero(right->coeff[j])) {
+                SolveRat product;
+                SolveRat sum;
+                if (i + j > SOLVE_RAT_POLY_MAX_DEGREE) return -1;
+                if (solve_rat_mul(left->coeff[i], right->coeff[j], &product) != 0) return -1;
+                if (solve_rat_add(out->coeff[i + j], product, &sum) != 0) return -1;
+                out->coeff[i + j] = sum;
+            }
+        }
+    }
+    return 0;
+}
+
+static int solve_rat_poly_scale(const SolveRatPoly *poly, SolveRat scale, SolveRatPoly *out) {
+    int i;
+    solve_rat_poly_zero(out);
+    for (i = 0; i <= SOLVE_RAT_POLY_MAX_DEGREE; ++i) {
+        if (solve_rat_mul(poly->coeff[i], scale, &out->coeff[i]) != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_rat_poly_eval(const SolveRatPoly *poly, int degree, SolveRat x, SolveRat *out) {
+    SolveRat value;
+    (void)solve_rat_make(0, 1, &value);
+    while (degree >= 0) {
+        SolveRat product;
+        SolveRat sum;
+        if (solve_rat_mul(value, x, &product) != 0) return -1;
+        if (solve_rat_add(product, poly->coeff[degree], &sum) != 0) return -1;
+        value = sum;
+        degree -= 1;
+    }
+    *out = value;
+    return 0;
+}
+
+static int solve_rat_poly_divide_linear(const SolveRatPoly *poly, int degree, SolveRat root, SolveRatPoly *quotient_out) {
+    SolveRat remainder;
+    int i;
+    if (degree <= 0) return -1;
+    solve_rat_poly_zero(quotient_out);
+    quotient_out->coeff[degree - 1] = poly->coeff[degree];
+    for (i = degree - 2; i >= 0; --i) {
+        SolveRat product;
+        if (solve_rat_mul(root, quotient_out->coeff[i + 1], &product) != 0) return -1;
+        if (solve_rat_add(poly->coeff[i + 1], product, &quotient_out->coeff[i]) != 0) return -1;
+    }
+    if (solve_rat_mul(root, quotient_out->coeff[0], &remainder) != 0) return -1;
+    if (solve_rat_add(poly->coeff[0], remainder, &remainder) != 0) return -1;
+    return solve_rat_is_zero(remainder) ? 0 : -1;
+}
+
+static void solve_rat_skip_spaces(SolveRatParser *parser) {
+    while (parser->text[parser->pos] == ' ' || parser->text[parser->pos] == '\t' || parser->text[parser->pos] == '\r' || parser->text[parser->pos] == '\n') parser->pos += 1U;
+}
+
+static void solve_rat_set_error(SolveRatParser *parser) {
+    parser->error = 1;
+}
+
+static SolveRatPoly solve_parse_rat_expr(SolveRatParser *parser);
+
+static SolveRatPoly solve_parse_rat_primary(SolveRatParser *parser) {
+    char name[SOLVE_NAME_CAPACITY];
+    SolveRat value;
+    SolveRatPoly poly;
+
+    (void)solve_rat_make(0, 1, &value);
+
+    solve_rat_skip_spaces(parser);
+    if (parser->text[parser->pos] == '(') {
+        parser->pos += 1U;
+        poly = solve_parse_rat_expr(parser);
+        solve_rat_skip_spaces(parser);
+        if (parser->text[parser->pos] != ')') solve_rat_set_error(parser);
+        else parser->pos += 1U;
+        return poly;
+    }
+    if ((parser->text[parser->pos] >= '0' && parser->text[parser->pos] <= '9') || parser->text[parser->pos] == '.') {
+        if (solve_parse_rat_literal(parser->text, &parser->pos, &value) != 0) solve_rat_set_error(parser);
+        return solve_rat_poly_constant(value);
+    }
+    if (tool_ascii_is_identifier_start(parser->text[parser->pos])) {
+        SolveExprParser reader;
+        reader.text = parser->text;
+        reader.pos = parser->pos;
+        reader.var_name = parser->var_name;
+        reader.var_value = 0.0;
+        reader.error = 0;
+        reader.message = 0;
+        if (solve_read_identifier(&reader, name, sizeof(name)) != 0) {
+            solve_rat_set_error(parser);
+            return solve_rat_poly_constant(value);
+        }
+        parser->pos = reader.pos;
+        if (rt_strcmp(name, parser->var_name) == 0) return solve_rat_poly_variable();
+        solve_rat_set_error(parser);
+    } else {
+        solve_rat_set_error(parser);
+    }
+    (void)solve_rat_make(0, 1, &value);
+    return solve_rat_poly_constant(value);
+}
+
+static SolveRatPoly solve_parse_rat_unary(SolveRatParser *parser) {
+    SolveRatPoly poly;
+    SolveRatPoly neg;
+    solve_rat_skip_spaces(parser);
+    if (parser->text[parser->pos] == '+') {
+        parser->pos += 1U;
+        return solve_parse_rat_unary(parser);
+    }
+    if (parser->text[parser->pos] == '-') {
+        parser->pos += 1U;
+        poly = solve_parse_rat_unary(parser);
+        if (solve_rat_poly_neg(&poly, &neg) != 0) solve_rat_set_error(parser);
+        return neg;
+    }
+    return solve_parse_rat_primary(parser);
+}
+
+static SolveRatPoly solve_parse_rat_power(SolveRatParser *parser) {
+    SolveRatPoly base = solve_parse_rat_unary(parser);
+    solve_rat_skip_spaces(parser);
+    if (parser->text[parser->pos] == '^') {
+        SolveRatPoly exponent;
+        SolveRatPoly result;
+        int power;
+        int i;
+        parser->pos += 1U;
+        exponent = solve_parse_rat_power(parser);
+        if (parser->error || !solve_rat_poly_is_constant(&exponent) || exponent.coeff[0].den != 1) {
+            solve_rat_set_error(parser);
+            return base;
+        }
+        if (exponent.coeff[0].num < 0 || exponent.coeff[0].num > SOLVE_RAT_POLY_MAX_DEGREE) {
+            solve_rat_set_error(parser);
+            return base;
+        }
+        power = (int)exponent.coeff[0].num;
+        (void)solve_rat_make(1, 1, &exponent.coeff[0]);
+        result = solve_rat_poly_constant(exponent.coeff[0]);
+        for (i = 0; i < power; ++i) {
+            SolveRatPoly next;
+            if (solve_rat_poly_mul(&result, &base, &next) != 0) {
+                solve_rat_set_error(parser);
+                return result;
+            }
+            result = next;
+        }
+        return result;
+    }
+    return base;
+}
+
+static SolveRatPoly solve_parse_rat_term(SolveRatParser *parser) {
+    SolveRatPoly value = solve_parse_rat_power(parser);
+    while (!parser->error) {
+        char op;
+        SolveRatPoly right;
+        SolveRatPoly next;
+        solve_rat_skip_spaces(parser);
+        op = parser->text[parser->pos];
+        if (op != '*' && op != '/' && op != '%') break;
+        parser->pos += 1U;
+        right = solve_parse_rat_power(parser);
+        if (op == '*') {
+            if (solve_rat_poly_mul(&value, &right, &next) != 0) solve_rat_set_error(parser);
+            value = next;
+        } else if (op == '/') {
+            if (!solve_rat_poly_is_constant(&right) || solve_rat_is_zero(right.coeff[0])) {
+                solve_rat_set_error(parser);
+            } else {
+                SolveRat reciprocal;
+                if (solve_rat_make(right.coeff[0].den, right.coeff[0].num, &reciprocal) != 0 || solve_rat_poly_scale(&value, reciprocal, &next) != 0) solve_rat_set_error(parser);
+                else value = next;
+            }
+        } else {
+            solve_rat_set_error(parser);
+        }
+    }
+    return value;
+}
+
+static SolveRatPoly solve_parse_rat_expr(SolveRatParser *parser) {
+    SolveRatPoly value = solve_parse_rat_term(parser);
+    while (!parser->error) {
+        char op;
+        SolveRatPoly right;
+        SolveRatPoly next;
+        solve_rat_skip_spaces(parser);
+        op = parser->text[parser->pos];
+        if (op != '+' && op != '-') break;
+        parser->pos += 1U;
+        right = solve_parse_rat_term(parser);
+        if (solve_rat_poly_add(&value, &right, op == '-', &next) != 0) solve_rat_set_error(parser);
+        value = next;
+    }
+    return value;
+}
+
+static int solve_parse_rat_text(const char *expr, const char *var_name, SolveRatPoly *poly_out) {
+    SolveRatParser parser;
+    SolveRatPoly poly;
+    parser.text = expr;
+    parser.pos = 0U;
+    parser.var_name = var_name;
+    parser.error = 0;
+    poly = solve_parse_rat_expr(&parser);
+    solve_rat_skip_spaces(&parser);
+    if (parser.error || parser.text[parser.pos] != '\0') return -1;
+    *poly_out = poly;
+    return 0;
+}
+
+static int solve_equation_rat_poly(const SolveEquation *equation, const SolveOptions *options, SolveRatPoly *poly_out) {
+    SolveRatPoly left;
+    SolveRatPoly right;
+    if (solve_parse_rat_text(equation->left, options->var_name, &left) != 0 || solve_parse_rat_text(equation->right, options->var_name, &right) != 0) return -1;
+    return solve_rat_poly_add(&left, &right, 1, poly_out);
+}
+
+static int solve_rat_compare(SolveRat left, SolveRat right) {
+    __int128 diff = (__int128)left.num * right.den - (__int128)right.num * left.den;
+    if (diff < 0) return -1;
+    if (diff > 0) return 1;
+    return 0;
+}
+
+static int solve_ll_lcm(long long a, long long b, long long *out) {
+    unsigned long long aa = solve_abs_ll(a);
+    unsigned long long bb = solve_abs_ll(b);
+    unsigned long long gcd;
+    __int128 value;
+
+    if (aa == 0ULL || bb == 0ULL) return -1;
+    gcd = solve_gcd_ull(aa, bb);
+    value = (__int128)(aa / gcd) * bb;
+    return solve_i128_to_ll(value, out);
+}
+
+static int solve_rat_poly_to_integer(const SolveRatPoly *poly, int degree, long long *out) {
+    long long lcm = 1;
+    long long content = 0;
+    int i;
+
+    for (i = 0; i <= degree; ++i) {
+        if (solve_ll_lcm(lcm, poly->coeff[i].den, &lcm) != 0) return -1;
+    }
+    for (i = 0; i <= degree; ++i) {
+        __int128 value = (__int128)poly->coeff[i].num * (lcm / poly->coeff[i].den);
+        if (solve_i128_to_ll(value, &out[i]) != 0) return -1;
+        if (out[i] != 0) {
+            unsigned long long gcd = content == 0 ? solve_abs_ll(out[i]) : solve_gcd_ll(content, out[i]);
+            if (gcd > (unsigned long long)SOLVE_RAT_LIMIT) return -1;
+            content = (long long)gcd;
+        }
+    }
+    if (content > 1) {
+        for (i = 0; i <= degree; ++i) out[i] /= content;
+    }
+    if (out[degree] < 0) {
+        for (i = 0; i <= degree; ++i) out[i] = -out[i];
+    }
+    return 0;
+}
+
+static int solve_collect_divisors(unsigned long long value, unsigned long long *divisors, int *count_out) {
+    unsigned long long divisor;
+    int count = 0;
+
+    if (value > SOLVE_RAT_DIVISOR_LIMIT) return -1;
+    if (value == 0ULL) {
+        divisors[count++] = 0ULL;
+    } else {
+        for (divisor = 1ULL; divisor * divisor <= value; ++divisor) {
+            if (value % divisor == 0ULL) {
+                if (count >= SOLVE_RAT_MAX_DIVISORS) return -1;
+                divisors[count++] = divisor;
+                if (divisor != value / divisor) {
+                    if (count >= SOLVE_RAT_MAX_DIVISORS) return -1;
+                    divisors[count++] = value / divisor;
+                }
+            }
+        }
+    }
+    *count_out = count;
+    return 0;
+}
+
+static int solve_find_exact_rational_root(const SolveRatPoly *poly, int degree, SolveRat *root_out) {
+    long long ints[SOLVE_RAT_POLY_MAX_DEGREE + 1];
+    unsigned long long numerators[SOLVE_RAT_MAX_DIVISORS];
+    unsigned long long denominators[SOLVE_RAT_MAX_DIVISORS];
+    int numerator_count;
+    int denominator_count;
+    int numerator_index;
+    int denominator_index;
+
+    if (degree < 1 || solve_rat_poly_to_integer(poly, degree, ints) != 0) return -1;
+    if (ints[0] == 0) {
+        return solve_rat_make(0, 1, root_out);
+    }
+    if (solve_collect_divisors(solve_abs_ll(ints[0]), numerators, &numerator_count) != 0 ||
+        solve_collect_divisors(solve_abs_ll(ints[degree]), denominators, &denominator_count) != 0) {
+        return -1;
+    }
+    for (numerator_index = 0; numerator_index < numerator_count; ++numerator_index) {
+        for (denominator_index = 0; denominator_index < denominator_count; ++denominator_index) {
+            int sign;
+            for (sign = -1; sign <= 1; sign += 2) {
+                SolveRat candidate;
+                SolveRat value;
+                if (solve_rat_make((long long)(sign * (int)numerators[numerator_index]), (long long)denominators[denominator_index], &candidate) != 0) return -1;
+                if (solve_rat_poly_eval(poly, degree, candidate, &value) != 0) continue;
+                if (solve_rat_is_zero(value)) {
+                    *root_out = candidate;
+                    return 0;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+static int solve_sqrt_ull_exact(unsigned long long value, unsigned long long *root_out) {
+    unsigned long long lo = 0ULL;
+    unsigned long long hi = value < 3037000499ULL ? value : 3037000499ULL;
+
+    while (lo <= hi) {
+        unsigned long long mid = lo + (hi - lo) / 2ULL;
+        __int128 square = (__int128)mid * mid;
+        if (square == (__int128)value) {
+            *root_out = mid;
+            return 0;
+        }
+        if (square < (__int128)value) {
+            lo = mid + 1ULL;
+        } else {
+            if (mid == 0ULL) break;
+            hi = mid - 1ULL;
+        }
+    }
+    return -1;
+}
+
+static int solve_rat_sqrt_exact(SolveRat value, SolveRat *root_out) {
+    unsigned long long num_root;
+    unsigned long long den_root;
+
+    if (value.num < 0) return -1;
+    if (solve_sqrt_ull_exact(solve_abs_ll(value.num), &num_root) != 0 || solve_sqrt_ull_exact(solve_abs_ll(value.den), &den_root) != 0) return -1;
+    return solve_rat_make((long long)num_root, (long long)den_root, root_out);
+}
+
+static int solve_add_direct_rat_root(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set, SolveRat root, const char *method) {
+    SolveResult result;
+    const char *message = 0;
+
+    if (!solve_root_in_scan_range(options, solve_rat_to_double(root))) return 0;
+    rt_memset(&result, 0, sizeof(result));
+    result.root = solve_rat_to_double(root);
+    result.lo = result.root;
+    result.hi = result.root;
+    result.iterations = 0;
+    result.status = SOLVE_STATUS_ROOT;
+    result.method = method;
+    if (solve_rat_format(root, result.exact_value, sizeof(result.exact_value)) != 0) return -1;
+    if (solve_eval_function(equation, options, result.root, &result.residual, &message) != 0) result.residual = 0.0;
+    if (solve_eval_y(equation, options, result.root, &result.y) != 0) result.y = 0.0;
+    return solve_add_result(set, &result, 1, options->tolerance);
+}
+
+static int solve_add_direct_approx_root(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set, double root, const char *method) {
+    SolveResult result;
+    const char *message = 0;
+
+    if (!solve_root_in_scan_range(options, root)) return 0;
+    rt_memset(&result, 0, sizeof(result));
+    result.root = root;
+    result.lo = root;
+    result.hi = root;
+    result.iterations = 0;
+    result.status = SOLVE_STATUS_ROOT;
+    result.method = method;
+    result.approximate = 1;
+    if (solve_eval_function(equation, options, root, &result.residual, &message) != 0) result.residual = 0.0;
+    if (solve_eval_y(equation, options, root, &result.y) != 0) result.y = 0.0;
+    return solve_add_result(set, &result, 1, options->tolerance);
+}
+
 static int solve_eval_expr(const char *expr, const char *var_name, double var_value, double *value_out, const char **message_out) {
     SolveExprParser parser;
     double value;
@@ -1390,7 +2032,7 @@ static int solve_add_direct_root(const SolveEquation *equation, const SolveOptio
     if (solve_eval_y(equation, options, root, &result.y) != 0) {
         result.y = 0.0;
     }
-    return solve_add_result(set, &result, options->all, options->tolerance);
+    return solve_add_result(set, &result, 1, options->tolerance);
 }
 
 static void solve_write_linear_term(const SolveOptions *options, double root) {
@@ -1488,6 +2130,139 @@ static void solve_explain_higher_polynomial(const SolveOptions *options, int deg
         rt_write_cstr(1, "*(remaining linear factor)");
     }
     rt_write_line(1, " = 0");
+}
+
+static int solve_try_rational_quadratic(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set, const SolveRatPoly *poly, int explain) {
+    SolveRat a = poly->coeff[2];
+    SolveRat b = poly->coeff[1];
+    SolveRat c = poly->coeff[0];
+    SolveRat b_squared;
+    SolveRat four;
+    SolveRat ac;
+    SolveRat four_ac;
+    SolveRat discriminant;
+    SolveRat sqrt_discriminant;
+    SolveRat minus_b;
+    SolveRat two_a;
+    SolveRat root1;
+    SolveRat root2;
+    int rc;
+
+    if (solve_rat_is_zero(a)) return -1;
+    if (solve_rat_mul(b, b, &b_squared) != 0 || solve_rat_make(4, 1, &four) != 0 ||
+        solve_rat_mul(a, c, &ac) != 0 || solve_rat_mul(four, ac, &four_ac) != 0 ||
+        solve_rat_sub(b_squared, four_ac, &discriminant) != 0) {
+        return -1;
+    }
+    if (discriminant.num < 0) return set->count > 0U ? 0 : -1;
+    if (explain) {
+        double da = solve_rat_to_double(a);
+        double db = solve_rat_to_double(b);
+        double dc = solve_rat_to_double(c);
+        double dd = solve_rat_to_double(discriminant);
+        double sr = solve_sqrt(dd);
+        double r1 = (-db - sr) / (2.0 * da);
+        double r2 = (-db + sr) / (2.0 * da);
+        solve_explain_quadratic(options, da, db, dc, dd, r1 < r2 ? r1 : r2, r1 < r2 ? r2 : r1, solve_rat_sqrt_exact(discriminant, &sqrt_discriminant) == 0 ? "factoring" : "quadratic-formula");
+    }
+    if (solve_rat_sqrt_exact(discriminant, &sqrt_discriminant) == 0) {
+        if (solve_rat_neg(b, &minus_b) != 0 || solve_rat_make_i128((__int128)2 * a.num, a.den, &two_a) != 0) return -1;
+        if (solve_rat_sub(minus_b, sqrt_discriminant, &root1) != 0 || solve_rat_div(root1, two_a, &root1) != 0) return -1;
+        if (solve_rat_add(minus_b, sqrt_discriminant, &root2) != 0 || solve_rat_div(root2, two_a, &root2) != 0) return -1;
+        if (solve_rat_compare(root2, root1) < 0) {
+            SolveRat temp = root1;
+            root1 = root2;
+            root2 = temp;
+        }
+        rc = solve_add_direct_rat_root(equation, options, set, root1, "factoring");
+        if (rc > 0) return 1;
+        if (solve_rat_compare(root1, root2) != 0) {
+            rc = solve_add_direct_rat_root(equation, options, set, root2, "factoring");
+            if (rc > 0) return 1;
+        }
+    } else {
+        double da = solve_rat_to_double(a);
+        double db = solve_rat_to_double(b);
+        double dd = solve_rat_to_double(discriminant);
+        double root_low = (-db - solve_sqrt(dd)) / (2.0 * da);
+        double root_high = (-db + solve_sqrt(dd)) / (2.0 * da);
+        if (root_high < root_low) {
+            double temp = root_low;
+            root_low = root_high;
+            root_high = temp;
+        }
+        rc = solve_add_direct_approx_root(equation, options, set, root_low, "quadratic-formula");
+        if (rc > 0) return 1;
+        if (solve_abs(root_low - root_high) > options->tolerance * 2.0) {
+            rc = solve_add_direct_approx_root(equation, options, set, root_high, "quadratic-formula");
+            if (rc > 0) return 1;
+        }
+    }
+    return set->count > 0U ? 1 : 0;
+}
+
+static int solve_try_rational_polynomial(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set) {
+    SolveRatPoly poly;
+    SolveRatPoly reduced;
+    SolveRat rational_roots[SOLVE_RAT_POLY_MAX_DEGREE];
+    double root_values[SOLVE_RAT_POLY_MAX_DEGREE];
+    int rational_root_count = 0;
+    int degree;
+    int original_degree;
+
+    if (rt_strcmp(options->method, "auto") != 0) return 0;
+    if (solve_equation_rat_poly(equation, options, &poly) != 0) return 0;
+    degree = solve_rat_poly_degree(&poly);
+    if (degree < 0) {
+        set->identity = 1;
+        solve_explain_identity(options, 1);
+        return 1;
+    }
+    if (degree == 0) {
+        return 1;
+    }
+    original_degree = degree;
+    if (degree == 1) {
+        SolveRat root;
+        if (solve_rat_is_zero(poly.coeff[1])) return 0;
+        if (solve_rat_neg(poly.coeff[0], &root) != 0 || solve_rat_div(root, poly.coeff[1], &root) != 0) return 0;
+        solve_explain_linear(equation, options, solve_rat_to_double(poly.coeff[1]), solve_rat_to_double(poly.coeff[0]), solve_rat_to_double(root));
+        (void)solve_add_direct_rat_root(equation, options, set, root, "linear");
+        return set->count > 0U ? 1 : 0;
+    }
+    reduced = poly;
+    while (degree > 2) {
+        SolveRat root;
+        SolveRatPoly quotient;
+        if (solve_find_exact_rational_root(&reduced, degree, &root) != 0) break;
+        if (solve_rat_poly_divide_linear(&reduced, degree, root, &quotient) != 0) return 0;
+        rational_roots[rational_root_count] = root;
+        root_values[rational_root_count] = solve_rat_to_double(root);
+        rational_root_count += 1;
+        reduced = quotient;
+        degree -= 1;
+    }
+    if (original_degree > 2) {
+        int root_index;
+        if (rational_root_count == 0) return 0;
+        solve_explain_higher_polynomial(options, original_degree, root_values, rational_root_count, degree);
+        for (root_index = 0; root_index < rational_root_count; ++root_index) {
+            int rc = solve_add_direct_rat_root(equation, options, set, rational_roots[root_index], "polynomial-factoring");
+            if (rc > 0) return 1;
+        }
+        poly = reduced;
+    }
+    if (degree == 2) {
+        return solve_try_rational_quadratic(equation, options, set, &poly, original_degree <= 2);
+    }
+    if (degree == 1) {
+        SolveRat root;
+        if (solve_rat_is_zero(poly.coeff[1])) return set->count > 0U ? 1 : 0;
+        if (solve_rat_neg(poly.coeff[0], &root) != 0 || solve_rat_div(root, poly.coeff[1], &root) != 0) return set->count > 0U ? 1 : 0;
+        (void)solve_add_direct_rat_root(equation, options, set, root, original_degree > 2 ? "polynomial-factoring" : "linear");
+        return set->count > 0U ? 1 : 0;
+    }
+    return set->count > 0U ? 1 : 0;
 }
 
 static int solve_try_polynomial(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set) {
@@ -1709,6 +2484,35 @@ static int solve_add_result(SolveResultSet *set, const SolveResult *result, int 
     return all ? 0 : 1;
 }
 
+static void solve_keep_preferred_scan_result(SolveResultSet *set) {
+    size_t index;
+    size_t best = 0U;
+
+    if (set->count <= 1U) {
+        return;
+    }
+    for (index = 1U; index < set->count; ++index) {
+        double best_abs;
+        double current_abs;
+        if (set->results[index].status == SOLVE_STATUS_ROOT && set->results[best].status != SOLVE_STATUS_ROOT) {
+            best = index;
+            continue;
+        }
+        if (set->results[index].status != set->results[best].status) {
+            continue;
+        }
+        best_abs = solve_abs(set->results[best].root);
+        current_abs = solve_abs(set->results[index].root);
+        if (current_abs < best_abs || (solve_abs(current_abs - best_abs) <= 0.00000001 && set->results[index].root < set->results[best].root)) {
+            best = index;
+        }
+    }
+    if (best != 0U) {
+        set->results[0] = set->results[best];
+    }
+    set->count = 1U;
+}
+
 static void solve_explain_start(const SolveEquation *equation, const SolveOptions *options) {
     if (!options->explain || tool_json_is_enabled() || options->quiet) {
         return;
@@ -1752,6 +2556,7 @@ static int solve_bisect(const SolveEquation *equation, const SolveOptions *optio
     const char *message = 0;
     int iteration;
 
+    rt_memset(result, 0, sizeof(*result));
     if (solve_eval_function(equation, options, lo, &flo, &message) != 0 || solve_eval_function(equation, options, hi, &fhi, &message) != 0) {
         return -1;
     }
@@ -1845,12 +2650,15 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
         if (prev_ok && ((prev_value <= 0.0 && next_value >= 0.0) || (prev_value >= 0.0 && next_value <= 0.0))) {
             int rc = solve_bisect(equation, options, prev_x, next_x, &result);
             if (rc == 0) {
-                rc = solve_add_result(set, &result, options->all, options->tolerance);
-                if (rc > 0) return 0;
+                (void)solve_add_result(set, &result, 1, options->tolerance);
             } else if (rc == -2) {
                 set->suspected_discontinuity = 1;
+                if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+                    rt_write_line(1, "suspected discontinuity: sign change did not converge to a root with a valid residual");
+                }
             }
         } else if (i > 1 && curr_ok && solve_abs(curr_value) <= touch_tolerance && solve_abs(curr_value) <= solve_abs(prev_value) && solve_abs(curr_value) <= solve_abs(next_value)) {
+            rt_memset(&result, 0, sizeof(result));
             result.root = curr_x;
             result.residual = curr_value;
             result.lo = curr_x;
@@ -1861,7 +2669,7 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
             if (solve_eval_y(equation, options, curr_x, &result.y) != 0) {
                 result.y = 0.0;
             }
-            if (solve_add_result(set, &result, options->all, options->tolerance) > 0) return 0;
+            (void)solve_add_result(set, &result, 1, options->tolerance);
         }
         prev_x = next_x;
         prev_value = next_value;
@@ -1869,6 +2677,9 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
         curr_x = next_x;
         curr_value = next_value;
         curr_ok = 1;
+    }
+    if (!options->all) {
+        solve_keep_preferred_scan_result(set);
     }
     return 0;
 }
@@ -1883,19 +2694,28 @@ static int solve_explicit_bracket(const SolveEquation *equation, const SolveOpti
     }
     if (rc == -2) {
         set->suspected_discontinuity = 1;
+        if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+            rt_write_line(1, "suspected discontinuity: interval sign change did not converge to a root with a valid residual");
+        }
     }
     return 0;
 }
 
 static int solve_write_json_result(const SolveOptions *options, const SolveResult *result) {
     char value[96];
+    const char *root_text;
 
     if (tool_json_begin_event(1, "solve", "stdout", result->status == SOLVE_STATUS_CANDIDATE ? "solve_candidate" : "solve_result") != 0) return -1;
     rt_write_cstr(1, ",\"data\":{\"variable\":");
     tool_json_write_string(1, options->var_name);
     rt_write_cstr(1, ",\"root\":");
-    solve_format_double(result->root, options->scale, value, sizeof(value));
-    tool_json_write_string(1, value);
+    if (result->exact_value[0] != '\0') {
+        root_text = result->exact_value;
+    } else {
+        solve_format_double(result->root, options->scale, value, sizeof(value));
+        root_text = value;
+    }
+    tool_json_write_string(1, root_text);
     if (options->report_y) {
         rt_write_cstr(1, ",\"y\":");
         solve_format_double(result->y, options->scale, value, sizeof(value));
@@ -1910,6 +2730,10 @@ static int solve_write_json_result(const SolveOptions *options, const SolveResul
     rt_write_uint(1, (unsigned long long)result->iterations);
     rt_write_cstr(1, ",\"candidate\":");
     rt_write_cstr(1, result->status == SOLVE_STATUS_CANDIDATE ? "true" : "false");
+    if (result->exact_value[0] != '\0' || result->approximate) {
+        rt_write_cstr(1, ",\"exact\":");
+        rt_write_cstr(1, result->exact_value[0] != '\0' ? "true" : "false");
+    }
     rt_write_char(1, '}');
     tool_json_end_event(1);
     return 0;
@@ -1922,7 +2746,11 @@ static void solve_print_result(const SolveEquation *equation, const SolveOptions
         (void)solve_write_json_result(options, result);
         return;
     }
-    solve_format_result_answer(equation, options, result, value, sizeof(value));
+    if (result->exact_value[0] != '\0') {
+        rt_copy_string(value, sizeof(value), result->exact_value);
+    } else {
+        solve_format_result_answer(equation, options, result, value, sizeof(value));
+    }
     if (options->quiet) {
         rt_write_line(1, value);
         return;
@@ -1947,6 +2775,8 @@ static void solve_print_result(const SolveEquation *equation, const SolveOptions
         rt_write_line(1, "status = touching-root-candidate");
     } else if (result->status == SOLVE_STATUS_SUSPECT_DISCONTINUITY) {
         rt_write_line(1, "status = suspected-discontinuity");
+    } else if (result->approximate) {
+        rt_write_line(1, "status = approximate");
     }
 }
 
@@ -2143,7 +2973,9 @@ int main(int argc, char **argv) {
 
     solve_explain_start(&equation, &options);
     rt_memset(&results, 0, sizeof(results));
-    if (!options.have_bracket && solve_try_polynomial(&equation, &options, &results)) {
+    if (!options.have_bracket && solve_try_rational_polynomial(&equation, &options, &results)) {
+        /* solved exactly by the rational polynomial front-end */
+    } else if (!options.have_bracket && solve_try_polynomial(&equation, &options, &results)) {
         /* solved directly */
     } else if (!options.have_bracket && solve_try_linear(&equation, &options, &results)) {
         /* solved directly */

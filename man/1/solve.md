@@ -14,7 +14,7 @@ solve [OPTIONS] --report-y 'Y1 = Y2'
 
 ## DESCRIPTION
 
-`solve` finds real solutions for common high-school "solve for x" problems. It is not a general symbolic algebra system, but `auto` has a bounded symbolic front end for polynomial expressions through degree 16. Outside that subset, it treats an equation as a numeric function and searches for values of one variable that make the equation true.
+`solve` finds real solutions for common high-school "solve for x" problems. It is not a general symbolic algebra system, but `auto` has a bounded polynomial front end. Exact polynomial claims are tried first with rational coefficient arithmetic for supported rational-literal expressions through degree 16; the older floating-point polynomial recognizer still handles supported polynomial expressions through degree 16 as a fallback. Outside those subsets, `solve` treats an equation as a numeric function and searches for values of one variable that make the equation true.
 
 For an input such as `x^2 - 2 = 0`, `solve` evaluates the left side minus the right side and looks for roots of that zero function. Intersections are the same problem: `x^2 = 2*x + 3` is solved as `x^2 - (2*x + 3) = 0`. With `--report-y`, `solve` also reports the corresponding y-value for the left side of the equation.
 
@@ -36,11 +36,13 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - math-library functions such as `sin(x)`, `cos(x)`, `atan(x)`, `log(x)`, and `exp(x)`
 - interval solving with `--lo` and `--hi`
 - automatic interval scanning to discover sign changes over a range
+- exact rational polynomial solving through degree 16 for supported rational-literal expressions
 - automatic direct solving for polynomial equations through degree 16 when the expression can be represented in the supported polynomial subset
-- simple factoring explanations for quadratics with simple rational-looking roots
+- exact factoring explanations for quadratics with rational roots
 - quadratic-formula solving for real quadratic roots
 - rational-root factoring for higher-degree polynomials in the supported subset
-- exact polynomial identity detection for integer-literal polynomial expressions and approximate identity reporting for decimal-coefficient polynomial expressions that reduce to 0 within tolerance
+- exact polynomial identity detection for rational-literal polynomial expressions, including finite decimal literals such as `0.1`
+- approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
 - multiple-root reporting when scanning finds more than one candidate interval
 - likely touching-root reporting for repeated roots that do not change sign
 - didactic output that shows the chosen method, interval checks, iterations, approximations, and residual error
@@ -69,11 +71,15 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 
 `bisection` is the primary numeric method. It requires an interval where the function changes sign, such as `--lo 1 --hi 2` for `x^2 - 2 = 0`. It is slower than Newton-style methods but predictable, robust, and easy to explain.
 
-`auto` first tries to represent the transformed zero function as a polynomial through degree 16. Linear equations are solved by moving the constant term and dividing by the coefficient. Quadratics are solved directly; if the real roots look like simple rational values, `--explain` also shows a factored form, and otherwise it shows the quadratic formula path. Higher-degree polynomials in the supported subset are factored when rational roots can be found; any remaining quadratic factor is solved with the quadratic formula. Integer-literal polynomial equations that reduce to 0 are reported as exact identities; decimal-coefficient polynomial equations that reduce to 0 within tolerance are reported as approximate identities. If the equation is outside that subset, `auto` means "scan if needed, then use bisection on bracketed intervals." If an explicit bracket is supplied, `auto` is equivalent to `bisection`.
+`auto` first tries to represent the transformed zero function as a polynomial with exact rational coefficients. This exact front end accepts the polynomial operators `+`, `-`, `*`, `/` by a nonzero constant, and integer powers, with integer and finite-decimal rational literals. If exact rational parsing, expansion, factoring, or bounded arithmetic fails, `auto` falls back to the existing floating-point polynomial recognizer and then to numeric scanning plus bisection.
+
+Linear equations are solved by moving the constant term and dividing by the coefficient. Quadratics and factored higher-degree polynomials report every real root found by the symbolic path, even without `--all`. If the equation is outside the supported polynomial subsets, `auto` means "scan if needed, then use bisection on bracketed intervals." When a scan finds multiple roots and `--all` is not used, `solve` reports the root closest to zero. If an explicit bracket is supplied, `auto` is equivalent to `bisection`.
+
+Quadratics are solved directly. When the exact rational discriminant is a perfect square, roots are reported exactly as integers or fractions and `--explain` shows a factored form. When the discriminant is positive but not a rational square, roots are reported as decimal approximations with `status = approximate`. Higher-degree rational polynomials are factored only when exact rational roots are proven; any remaining quadratic factor is solved with the same exact discriminant check. Rational-literal polynomial equations that reduce to 0 are reported as exact identities, including decimal forms such as `(x + 0.1)^2 = x^2 + 0.2*x + 0.01`.
 
 Repeated roots such as `x^2 - 6*x + 9 = 0` do not change sign. A scan therefore also looks for sampled points that are exact or near-zero, and for local minima or maxima where `abs(f(x))` becomes small. These are reported as touching-root candidates, with their residual, instead of silently saying no root was found.
 
-Every reported root must pass a residual check. A sign change caused by a discontinuity, such as `1/(x-2) = 0`, may appear bracketed, but it is not a root if the final residual is not within tolerance. Such cases are rejected or reported as suspected discontinuities.
+Every reported root must pass a residual check. A sign change caused by a discontinuity, such as `1/(x-2) = 0`, may appear bracketed, but it is not a root if the final residual is not within tolerance. Such cases are rejected or reported as suspected discontinuities, and `--explain` prints that warning when the discontinuity is encountered.
 
 ## DIDACTIC OUTPUT
 
@@ -90,11 +96,11 @@ A bisection explanation should include:
 
 A linear explanation shows the equation after moving everything to one side, the constant term being moved to the other side, division by the variable coefficient, and the final answer.
 
-A quadratic explanation shows the standard coefficients, discriminant, quadratic formula, and, when the roots are simple rational-looking values, a factored form.
+A quadratic explanation shows the standard coefficients, discriminant, quadratic formula, and, when exact rational roots are proven, a factored form.
 
-A higher-degree polynomial explanation shows rational roots found by factoring and any remaining lower-degree factor that must be solved separately.
+A higher-degree polynomial explanation shows exact rational roots found by factoring and any remaining lower-degree factor that must be solved separately.
 
-A polynomial identity explanation says whether the transformed polynomial reduced to exact all-zero coefficients or only to floating-point coefficients that are zero within tolerance.
+A polynomial identity explanation says whether the transformed polynomial reduced to exact all-zero rational coefficients or only to floating-point coefficients that are zero within tolerance after fallback.
 
 For intersections, `--explain` also shows that the two input expressions were converted into a single zero function, then reports both `x` and `y` for the intersection.
 
@@ -111,7 +117,7 @@ method = bisection
 iterations = 34
 ```
 
-Roots that are very close to integers are printed compactly, such as `x = 5`. When a non-integer root is close to a simple fraction with a small denominator, normal text output includes a didactic hint in parentheses, such as `x = 1.6666666667 (1 2/3)`.
+Roots proven by exact rational polynomial solving are printed as exact integers or fractions, such as `x = 5` or `x = 5/3`. Numeric roots that are close to integers are printed compactly. When a numeric non-integer root is close to a simple fraction with a small denominator, normal text output includes a didactic hint in parentheses, such as `x = 1.6666666667 (1 2/3)`.
 
 For intersections, output includes the corresponding y-value:
 
@@ -123,7 +129,7 @@ method = bisection
 iterations = 1
 ```
 
-When `--quiet` is used, only the root value is printed. When `--all` is used, each result is printed as a separate solution block.
+When `--quiet` is used, only the root value is printed. When `--all` is used, each scan result is printed as a separate solution block; symbolic polynomial methods print every root they determine directly.
 
 If no root is found, normal output says so and includes the searched range or interval. The exit status distinguishes success from failure:
 
@@ -138,15 +144,16 @@ With `--json`, `solve` writes JSON Lines using the common envelope documented in
 
 - `solve_result` for each root or intersection found
 - `solve_candidate` for likely touching roots that meet the candidate rules but were not bracketed by a sign change
-- `solve_identity` for supported polynomial identities; its data includes `exact:true` for integer-literal identities and `exact:false` for approximate decimal-coefficient identities
+- `solve_identity` for supported polynomial identities; its data includes `exact:true` for exact rational-literal identities and `exact:false` for approximate floating-point fallback identities
 - `solve_summary` for method, status, and count information
 
-A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Diagnostics are written to stderr.
+A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Exact rational roots are emitted as fractions in the root string. Approximate quadratic roots from nonsquare rational discriminants include `exact:false`. Diagnostics are written to stderr.
 
 ## LIMITATIONS
 
-- no general symbolic algebra; `auto` can directly handle supported polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in that subset, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
-- polynomial coefficient arithmetic uses `double`; integer-literal polynomial identities are exact within the integer range of `double`, while decimal-coefficient identities are reported as approximate rather than exact
+- no general symbolic algebra; `auto` can directly handle supported exact rational polynomial expressions through degree 16 and supported floating-point polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in those subsets, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
+- exact polynomial coefficient arithmetic is bounded; if rational numerators, denominators, common denominators, expansion products, divisor enumeration, or degree exceed the exact front-end limits, `solve` falls back to the floating-point polynomial or numeric path
+- finite decimal literals in the exact polynomial front end are parsed as exact rationals from their source spelling, so `0.1` means exactly `1/10` in that path
 - solves one variable at a time
 - repeated polynomial roots in the supported symbolic subset are solved directly; other touching roots are only candidates unless the residual is within tolerance
 - discontinuities can create false sign changes and must be reported carefully
@@ -215,6 +222,12 @@ Show a polynomial identity:
 
 ```
 solve --explain '(x + 1)^2 = x^2 + 2*x + 1'
+```
+
+Show an exact decimal-rational identity:
+
+```
+solve --explain '(x + 0.1)^2 = x^2 + 0.2*x + 0.01'
 ```
 
 ## SEE ALSO

@@ -48,6 +48,15 @@ assert_file_contains "$WORK_DIR/repeated-quintic.out" '^x = 2$' "solve did not r
 "${TEST_BIN_DIR}/solve" --explain --all 'x^2 - 2 = 0' > "$WORK_DIR/quadratic-formula.out"
 assert_file_contains "$WORK_DIR/quadratic-formula.out" '^quadratic formula: x = ' "solve did not show the quadratic formula"
 assert_file_contains "$WORK_DIR/quadratic-formula.out" '^method = quadratic-formula$' "solve did not report the quadratic formula method"
+assert_file_contains "$WORK_DIR/quadratic-formula.out" '^status = approximate$' "solve did not mark irrational quadratic roots as approximate"
+
+"${TEST_BIN_DIR}/solve" --explain 'x^2 - x - 1 = 0' > "$WORK_DIR/golden-quadratic.out"
+assert_file_contains "$WORK_DIR/golden-quadratic.out" '^x = -0\.6180339887$' "solve did not report the negative golden-ratio quadratic root"
+assert_file_contains "$WORK_DIR/golden-quadratic.out" '^x = 1\.6180339887$' "solve did not report the positive golden-ratio quadratic root without --all"
+assert_file_contains "$WORK_DIR/golden-quadratic.out" '^status = approximate$' "solve did not mark golden-ratio roots as approximate"
+if grep -q '^x = .*(.*)' "$WORK_DIR/golden-quadratic.out"; then
+	fail "solve printed a false rational hint for irrational quadratic roots"
+fi
 
 "${TEST_BIN_DIR}/solve" --explain '(x + 1)^2 = x^2 + 2*x + 1' > "$WORK_DIR/identity.out"
 assert_file_contains "$WORK_DIR/identity.out" '^polynomial identity detected$' "solve did not detect a polynomial identity"
@@ -60,8 +69,16 @@ assert_file_contains "$WORK_DIR/degree8-identity.out" '^polynomial identity dete
 assert_file_contains "$WORK_DIR/degree16-identity.out" '^all real values$' "solve did not detect a degree-16 polynomial identity"
 
 "${TEST_BIN_DIR}/solve" --explain '(x + 0.1)^2 = x^2 + 0.2*x + 0.01' > "$WORK_DIR/decimal-identity.out"
-assert_file_contains "$WORK_DIR/decimal-identity.out" '^approximate polynomial identity detected$' "solve did not distinguish a decimal-coefficient approximate identity"
-assert_file_contains "$WORK_DIR/decimal-identity.out" '^identity = approximate$' "solve did not report approximate identity status"
+assert_file_contains "$WORK_DIR/decimal-identity.out" '^polynomial identity detected$' "solve did not prove a decimal-rational identity exactly"
+assert_file_contains "$WORK_DIR/decimal-identity.out" '^identity = true$' "solve did not report exact decimal-rational identity status"
+
+decimal_nonidentity_status=0
+"${TEST_BIN_DIR}/solve" --explain '(x + 0.1)^2 = x^2 + 0.2*x + 0.0100000001' > "$WORK_DIR/decimal-nonidentity.out" 2> "$WORK_DIR/decimal-nonidentity.err" || decimal_nonidentity_status=$?
+assert_text_equals "$decimal_nonidentity_status" '1' "solve should not report a mismatched decimal-rational identity"
+assert_file_contains "$WORK_DIR/decimal-nonidentity.out" 'no solution found' "solve decimal-rational non-identity output mismatch"
+if grep -q 'identity =' "$WORK_DIR/decimal-nonidentity.out"; then
+	fail "solve reported an identity for a mismatched decimal-rational equation"
+fi
 
 "${TEST_BIN_DIR}/solve" --json '(x + 1)^2 = x^2 + 2*x + 1' > "$WORK_DIR/identity.jsonl"
 assert_file_contains "$WORK_DIR/identity.jsonl" '"event":"solve_identity"' "solve --json did not emit a solve_identity event"
@@ -69,7 +86,7 @@ assert_file_contains "$WORK_DIR/identity.jsonl" '"exact":true' "solve --json did
 
 "${TEST_BIN_DIR}/solve" --json '(x + 0.1)^2 = x^2 + 0.2*x + 0.01' > "$WORK_DIR/decimal-identity.jsonl"
 assert_file_contains "$WORK_DIR/decimal-identity.jsonl" '"event":"solve_identity"' "solve --json did not emit decimal solve_identity event"
-assert_file_contains "$WORK_DIR/decimal-identity.jsonl" '"exact":false' "solve --json did not mark decimal polynomial identity as approximate"
+assert_file_contains "$WORK_DIR/decimal-identity.jsonl" '"exact":true' "solve --json did not mark decimal-rational identity as exact"
 
 "${TEST_BIN_DIR}/solve" --var t --all '(t - 3)*(t + 2) = 0' > "$WORK_DIR/custom-var.out"
 assert_file_contains "$WORK_DIR/custom-var.out" '^t = -2$' "solve did not report the first custom-variable root"
@@ -90,6 +107,9 @@ assert_text_equals "$solve_trig" '0.7390851332' "solve trigonometric equation ro
 
 solve_sine=$("${TEST_BIN_DIR}/solve" --quiet --lo 3 --hi 4 'sin(x) = 0' | tr -d '\r\n')
 assert_text_equals "$solve_sine" '3.1415926536' "solve sine root near pi mismatch"
+
+solve_default_sine=$("${TEST_BIN_DIR}/solve" --quiet 'sin(x) = 0' | tr -d '\r\n')
+assert_text_equals "$solve_default_sine" '0' "solve default scan should prefer the root closest to zero"
 
 solve_scaled=$("${TEST_BIN_DIR}/solve" --quiet --scale 4 --lo 1 --hi 2 'x^2 - 2 = 0' | tr -d '\r\n')
 assert_text_equals "$solve_scaled" '1.4142' "solve --scale did not control quiet precision"
@@ -114,9 +134,12 @@ assert_file_contains "$WORK_DIR/linear-explain.out" '^move constant term: x = 1\
 assert_file_contains "$WORK_DIR/linear-explain.out" '^method = linear$' "solve --explain did not report the linear method"
 
 "${TEST_BIN_DIR}/solve" 'x - 5 / 3 = 0' > "$WORK_DIR/fraction.out"
-assert_file_contains "$WORK_DIR/fraction.out" '^x = 1\.6666666667 (1 2/3)$' "solve did not print a simple mixed-number hint"
+assert_file_contains "$WORK_DIR/fraction.out" '^x = 5/3$' "solve did not print an exact rational root as a fraction"
 "${TEST_BIN_DIR}/solve" 'x - 5 = 0' > "$WORK_DIR/integer.out"
 assert_file_contains "$WORK_DIR/integer.out" '^x = 5$' "solve did not print an integer root compactly"
+
+"${TEST_BIN_DIR}/solve" --quiet '(10000000000*x + 1)^8 = (10000000000*x + 1)^8' > "$WORK_DIR/rational-overflow-fallback.out"
+assert_file_contains "$WORK_DIR/rational-overflow-fallback.out" '^all real values' "solve did not fall back after exact rational coefficient overflow"
 
 "${TEST_BIN_DIR}/solve" --json --lo 1 --hi 2 'x^2 - 2 = 0' > "$WORK_DIR/solve.jsonl"
 assert_file_contains "$WORK_DIR/solve.jsonl" '"event":"solve_result"' "solve --json did not emit a solve_result event"
@@ -127,6 +150,11 @@ no_root_status=0
 "${TEST_BIN_DIR}/solve" --lo 1 --hi 2 'x^2 + 1 = 0' > "$WORK_DIR/no_root.out" 2> "$WORK_DIR/no_root.err" || no_root_status=$?
 assert_text_equals "$no_root_status" '1' "solve should return 1 when no solution is found"
 assert_file_contains "$WORK_DIR/no_root.out" 'no solution found' "solve no-root output mismatch"
+
+discontinuity_status=0
+"${TEST_BIN_DIR}/solve" --explain --lo 1 --hi 3 '1/(x - 2) = 0' > "$WORK_DIR/discontinuity.out" 2> "$WORK_DIR/discontinuity.err" || discontinuity_status=$?
+assert_text_equals "$discontinuity_status" '3' "solve should return 3 for a suspected discontinuity"
+assert_file_contains "$WORK_DIR/discontinuity.out" 'suspected discontinuity' "solve --explain did not report the suspected discontinuity"
 
 unknown_status=0
 "${TEST_BIN_DIR}/solve" 'x + y = 3' > "$WORK_DIR/unknown.out" 2> "$WORK_DIR/unknown.err" || unknown_status=$?
