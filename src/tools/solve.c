@@ -8,11 +8,13 @@
 #define SOLVE_DEFAULT_SCAN_HI 100.0
 #define SOLVE_DEFAULT_SCAN_STEPS 400
 #define SOLVE_DEFAULT_SCALE 10
+#define SOLVE_MAX_SCALE 15
 #define SOLVE_INTERNAL_SCALE 20
 #define SOLVE_DEFAULT_TOLERANCE 0.0000000001
 #define SOLVE_DEFAULT_MAX_ITERATIONS 128
 #define SOLVE_MAX_RATIONAL_DENOMINATOR 1000
-#define SOLVE_POLY_MAX_DEGREE 2
+#define SOLVE_POLY_MAX_DEGREE 16
+#define SOLVE_POLY_FACTOR_DENOMINATOR_LIMIT 100
 #define SOLVE_PI 3.14159265358979323846264338327950288419716939937510
 #define SOLVE_E 2.71828182845904523536028747135266249775724709369995
 #define SOLVE_HUGE 1.0e290
@@ -41,6 +43,7 @@ typedef struct {
 
 typedef struct {
     double coeff[SOLVE_POLY_MAX_DEGREE + 1];
+    int exact;
 } SolvePoly;
 
 typedef struct {
@@ -88,6 +91,7 @@ typedef struct {
 } SolveResultSet;
 
 static int solve_add_result(SolveResultSet *set, const SolveResult *result, int all, double tolerance);
+static int solve_eval_function(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out, const char **message_out);
 
 static double solve_abs(double value) {
     return value < 0.0 ? -value : value;
@@ -117,6 +121,16 @@ static int solve_append_text(char *buffer, size_t buffer_size, size_t *length_io
     return 0;
 }
 
+static int solve_contains_char(const char *text, char ch) {
+    while (*text != '\0') {
+        if (*text == ch) {
+            return 1;
+        }
+        text += 1;
+    }
+    return 0;
+}
+
 static void solve_format_double(double value, int scale, char *buffer, size_t buffer_size) {
     char whole_digits[64];
     char frac_digits[32];
@@ -140,8 +154,8 @@ static void solve_format_double(double value, int scale, char *buffer, size_t bu
     if (scale < 0) {
         scale = SOLVE_DEFAULT_SCALE;
     }
-    if (scale > 18) {
-        scale = 18;
+    if (scale > SOLVE_MAX_SCALE) {
+        scale = SOLVE_MAX_SCALE;
     }
     if (value < 0.0) {
         negative = 1;
@@ -192,7 +206,7 @@ static unsigned long long solve_gcd_ull(unsigned long long a, unsigned long long
     return a;
 }
 
-static int solve_format_rational(double value, char *buffer, size_t buffer_size) {
+static int solve_format_rational_parts(double value, char *buffer, size_t buffer_size, double *candidate_out) {
     double absolute;
     unsigned long long best_num = 0ULL;
     unsigned long long best_den = 1ULL;
@@ -230,6 +244,9 @@ static int solve_format_rational(double value, char *buffer, size_t buffer_size)
     if (best_error > SOLVE_DEFAULT_TOLERANCE * 2.0) {
         return -1;
     }
+    if (candidate_out != 0) {
+        *candidate_out = (negative ? -1.0 : 1.0) * ((double)best_num / (double)best_den);
+    }
     gcd = solve_gcd_ull(best_num, best_den);
     if (gcd != 0ULL) {
         best_num /= gcd;
@@ -256,10 +273,11 @@ static int solve_format_rational(double value, char *buffer, size_t buffer_size)
     return 0;
 }
 
-static void solve_format_answer(double value, int scale, char *buffer, size_t buffer_size) {
-    char decimal[96];
-    char rational[96];
-    size_t length = 0U;
+static int solve_format_rational(double value, char *buffer, size_t buffer_size) {
+    return solve_format_rational_parts(value, buffer, buffer_size, 0);
+}
+
+static void solve_format_compact_decimal(double value, int scale, char *buffer, size_t buffer_size) {
     long long nearest_integer;
 
     if (value >= 0.0) {
@@ -271,8 +289,15 @@ static void solve_format_answer(double value, int scale, char *buffer, size_t bu
         solve_format_double((double)nearest_integer, 0, buffer, buffer_size);
         return;
     }
+    solve_format_double(value, scale, buffer, buffer_size);
+}
 
-    solve_format_double(value, scale, decimal, sizeof(decimal));
+static void solve_format_answer(double value, int scale, char *buffer, size_t buffer_size) {
+    char decimal[96];
+    char rational[96];
+    size_t length = 0U;
+
+    solve_format_compact_decimal(value, scale, decimal, sizeof(decimal));
     rt_copy_string(buffer, buffer_size, decimal);
     if (solve_format_rational(value, rational, sizeof(rational)) == 0) {
         length = rt_strlen(buffer);
@@ -280,6 +305,33 @@ static void solve_format_answer(double value, int scale, char *buffer, size_t bu
             solve_append_text(buffer, buffer_size, &length, rational) == 0) {
             (void)solve_append_char(buffer, buffer_size, &length, ')');
         }
+    }
+}
+
+static void solve_format_result_answer(const SolveEquation *equation, const SolveOptions *options, const SolveResult *result, char *buffer, size_t buffer_size) {
+    char decimal[96];
+    char rational[96];
+    double candidate;
+    double residual;
+    const char *message = 0;
+    size_t length;
+
+    solve_format_compact_decimal(result->root, options->scale, buffer, buffer_size);
+    if (solve_contains_char(buffer, '(') || solve_format_rational_parts(result->root, rational, sizeof(rational), &candidate) != 0) {
+        return;
+    }
+    if (solve_abs(candidate - result->root) > options->tolerance * 10.0) {
+        return;
+    }
+    if (solve_eval_function(equation, options, candidate, &residual, &message) != 0 || solve_abs(residual) > options->tolerance * 10.0) {
+        return;
+    }
+    solve_format_double(result->root, options->scale, decimal, sizeof(decimal));
+    rt_copy_string(buffer, buffer_size, decimal);
+    length = rt_strlen(buffer);
+    if (solve_append_text(buffer, buffer_size, &length, " (") == 0 &&
+        solve_append_text(buffer, buffer_size, &length, rational) == 0) {
+        (void)solve_append_char(buffer, buffer_size, &length, ')');
     }
 }
 
@@ -805,6 +857,7 @@ static void solve_poly_zero(SolvePoly *poly) {
     for (i = 0; i <= SOLVE_POLY_MAX_DEGREE; ++i) {
         poly->coeff[i] = 0.0;
     }
+    poly->exact = 1;
 }
 
 static SolvePoly solve_poly_constant(double value) {
@@ -812,6 +865,20 @@ static SolvePoly solve_poly_constant(double value) {
     solve_poly_zero(&poly);
     poly.coeff[0] = value;
     return poly;
+}
+
+static int solve_number_literal_is_exact_integer(const char *text, size_t start, size_t end, double value) {
+    size_t i;
+
+    if (value < -9007199254740992.0 || value > 9007199254740992.0) {
+        return 0;
+    }
+    for (i = start; i < end; ++i) {
+        if (text[i] == '.' || text[i] == 'e' || text[i] == 'E') {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static SolvePoly solve_poly_variable(void) {
@@ -842,6 +909,7 @@ static SolvePoly solve_poly_add(const SolvePoly *left, const SolvePoly *right, i
     for (i = 0; i <= SOLVE_POLY_MAX_DEGREE; ++i) {
         result.coeff[i] = left->coeff[i] + (subtract ? -right->coeff[i] : right->coeff[i]);
     }
+    result.exact = left->exact && right->exact;
     return result;
 }
 
@@ -852,6 +920,7 @@ static SolvePoly solve_poly_scale(const SolvePoly *poly, double scale) {
     for (i = 0; i <= SOLVE_POLY_MAX_DEGREE; ++i) {
         result.coeff[i] = poly->coeff[i] * scale;
     }
+    result.exact = poly->exact && (scale == 1.0 || scale == -1.0);
     return result;
 }
 
@@ -859,6 +928,7 @@ static int solve_poly_mul(const SolvePoly *left, const SolvePoly *right, SolvePo
     int i;
     int j;
     solve_poly_zero(result_out);
+    result_out->exact = left->exact && right->exact;
     for (i = 0; i <= SOLVE_POLY_MAX_DEGREE; ++i) {
         for (j = 0; j <= SOLVE_POLY_MAX_DEGREE; ++j) {
             if (left->coeff[i] != 0.0 && right->coeff[j] != 0.0) {
@@ -870,6 +940,62 @@ static int solve_poly_mul(const SolvePoly *left, const SolvePoly *right, SolvePo
         }
     }
     return 0;
+}
+
+static double solve_poly_eval(const SolvePoly *poly, int degree, double x) {
+    double value = 0.0;
+
+    while (degree >= 0) {
+        value = value * x + poly->coeff[degree];
+        degree -= 1;
+    }
+    return value;
+}
+
+static int solve_poly_divide_linear(const SolvePoly *poly, int degree, double root, SolvePoly *quotient_out, double tolerance) {
+    double remainder;
+    int i;
+
+    if (degree <= 0) {
+        return -1;
+    }
+    solve_poly_zero(quotient_out);
+    quotient_out->coeff[degree - 1] = poly->coeff[degree];
+    for (i = degree - 2; i >= 0; --i) {
+        quotient_out->coeff[i] = poly->coeff[i + 1] + root * quotient_out->coeff[i + 1];
+    }
+    remainder = poly->coeff[0] + root * quotient_out->coeff[0];
+    return solve_abs(remainder) <= tolerance ? 0 : -1;
+}
+
+static int solve_find_rational_poly_root(const SolvePoly *poly, int degree, const SolveOptions *options, double *root_out) {
+    double bound = 100.0;
+    double tolerance = options->tolerance * 1000.0;
+    int den;
+
+    if (options->have_scan) {
+        double lo_abs = solve_abs(options->scan_lo);
+        double hi_abs = solve_abs(options->scan_hi);
+        bound = lo_abs > hi_abs ? lo_abs : hi_abs;
+        if (bound < 1.0) {
+            bound = 1.0;
+        }
+    }
+    if (bound > 1000.0) {
+        bound = 1000.0;
+    }
+    for (den = 1; den <= SOLVE_POLY_FACTOR_DENOMINATOR_LIMIT; ++den) {
+        int limit = (int)(bound * (double)den + 0.5);
+        int num;
+        for (num = -limit; num <= limit; ++num) {
+            double candidate = (double)num / (double)den;
+            if (solve_abs(solve_poly_eval(poly, degree, candidate)) <= tolerance) {
+                *root_out = candidate;
+                return 0;
+            }
+        }
+    }
+    return -1;
 }
 
 static void solve_poly_skip_spaces(SolvePolyParser *parser) {
@@ -902,11 +1028,14 @@ static SolvePoly solve_parse_poly_primary(SolvePolyParser *parser) {
         return poly;
     }
     if ((parser->text[parser->pos] >= '0' && parser->text[parser->pos] <= '9') || parser->text[parser->pos] == '.') {
+        size_t start = parser->pos;
         if (solve_parse_double(parser->text, &parser->pos, &value) != 0) {
             solve_poly_set_error(parser);
             return solve_poly_constant(0.0);
         }
-        return solve_poly_constant(value);
+        poly = solve_poly_constant(value);
+        poly.exact = solve_number_literal_is_exact_integer(parser->text, start, parser->pos, value);
+        return poly;
     }
     if (tool_ascii_is_identifier_start(parser->text[parser->pos])) {
         SolveExprParser reader;
@@ -1015,6 +1144,9 @@ static SolvePoly solve_parse_poly_term(SolvePolyParser *parser) {
                 return solve_poly_constant(0.0);
             }
             value = solve_poly_scale(&value, 1.0 / right.coeff[0]);
+            if (solve_abs(right.coeff[0] - 1.0) > SOLVE_DEFAULT_TOLERANCE && solve_abs(right.coeff[0] + 1.0) > SOLVE_DEFAULT_TOLERANCE) {
+                value.exact = 0;
+            }
         } else {
             solve_poly_set_error(parser);
             return solve_poly_constant(0.0);
@@ -1277,12 +1409,12 @@ static void solve_write_linear_term(const SolveOptions *options, double root) {
     rt_write_cstr(1, ")");
 }
 
-static void solve_explain_identity(const SolveOptions *options) {
+static void solve_explain_identity(const SolveOptions *options, int exact) {
     if (!options->explain || tool_json_is_enabled() || options->quiet) {
         return;
     }
-    rt_write_line(1, "polynomial identity detected");
-    rt_write_line(1, "all coefficients reduce to 0, so the equation is true for every real x");
+    rt_write_line(1, exact ? "polynomial identity detected" : "approximate polynomial identity detected");
+    rt_write_line(1, exact ? "all exact coefficients reduce to 0, so the equation is true for every real x" : "floating-point coefficients reduce to 0 within tolerance, so the equation is numerically true across the supported polynomial form");
 }
 
 static void solve_explain_quadratic(const SolveOptions *options, double a, double b, double c, double discriminant, double root1, double root2, const char *method) {
@@ -1323,9 +1455,48 @@ static void solve_explain_quadratic(const SolveOptions *options, double a, doubl
     }
 }
 
+static void solve_explain_higher_polynomial(const SolveOptions *options, int degree, const double *roots, int root_count, int remaining_degree) {
+    int i;
+
+    if (!options->explain || tool_json_is_enabled() || options->quiet) {
+        return;
+    }
+    rt_write_line(1, "polynomial factoring detected");
+    rt_write_cstr(1, "degree: ");
+    rt_write_uint(1, (unsigned long long)degree);
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "rational roots: ");
+    for (i = 0; i < root_count; ++i) {
+        char value[96];
+        if (i > 0) {
+            rt_write_cstr(1, ", ");
+        }
+        solve_format_answer(roots[i], options->scale, value, sizeof(value));
+        rt_write_cstr(1, value);
+    }
+    rt_write_char(1, '\n');
+    rt_write_cstr(1, "factor: ");
+    for (i = 0; i < root_count; ++i) {
+        if (i > 0) {
+            rt_write_cstr(1, "*");
+        }
+        solve_write_linear_term(options, roots[i]);
+    }
+    if (remaining_degree == 2) {
+        rt_write_cstr(1, "*(remaining quadratic)");
+    } else if (remaining_degree == 1) {
+        rt_write_cstr(1, "*(remaining linear factor)");
+    }
+    rt_write_line(1, " = 0");
+}
+
 static int solve_try_polynomial(const SolveEquation *equation, const SolveOptions *options, SolveResultSet *set) {
     SolvePoly poly;
+    SolvePoly reduced;
     int degree;
+    int original_degree;
+    double rational_roots[SOLVE_POLY_MAX_DEGREE];
+    int rational_root_count = 0;
 
     if (rt_strcmp(options->method, "auto") != 0) {
         return 0;
@@ -1335,10 +1506,11 @@ static int solve_try_polynomial(const SolveEquation *equation, const SolveOption
     }
     degree = solve_poly_degree(&poly, options->tolerance * 10.0);
     if (degree < 0) {
-        set->identity = 1;
-        solve_explain_identity(options);
+        set->identity = poly.exact ? 1 : 2;
+        solve_explain_identity(options, poly.exact);
         return 1;
     }
+    original_degree = degree;
     if (degree == 1) {
         double slope = poly.coeff[1];
         double intercept = poly.coeff[0];
@@ -1351,6 +1523,33 @@ static int solve_try_polynomial(const SolveEquation *equation, const SolveOption
         (void)solve_add_direct_root(equation, options, set, root, "linear");
         return set->count > 0U ? 1 : 0;
     }
+    reduced = poly;
+    while (degree > 2 && reduced.exact) {
+        SolvePoly quotient;
+        double root;
+        if (solve_find_rational_poly_root(&reduced, degree, options, &root) != 0) {
+            break;
+        }
+        if (solve_poly_divide_linear(&reduced, degree, root, &quotient, options->tolerance * 1000.0) != 0) {
+            break;
+        }
+        rational_roots[rational_root_count++] = root;
+        reduced = quotient;
+        reduced.exact = 1;
+        degree -= 1;
+    }
+    if (original_degree > 2) {
+        int root_index;
+        if (rational_root_count == 0) {
+            return 0;
+        }
+        solve_explain_higher_polynomial(options, original_degree, rational_roots, rational_root_count, degree);
+        for (root_index = 0; root_index < rational_root_count; ++root_index) {
+            int rc = solve_add_direct_root(equation, options, set, rational_roots[root_index], "polynomial-factoring");
+            if (rc > 0) return 1;
+        }
+        poly = reduced;
+    }
     if (degree == 2) {
         double a = poly.coeff[2];
         double b = poly.coeff[1];
@@ -1362,7 +1561,7 @@ static int solve_try_polynomial(const SolveEquation *equation, const SolveOption
         int rc;
 
         if (solve_abs(a) <= options->tolerance || discriminant < -options->tolerance * 10.0) {
-            return 0;
+            return set->count > 0U ? 1 : 0;
         }
         if (discriminant < 0.0) {
             discriminant = 0.0;
@@ -1375,13 +1574,26 @@ static int solve_try_polynomial(const SolveEquation *equation, const SolveOption
             root2 = temp;
         }
         method = solve_root_is_simple_rational(root1, options) && solve_root_is_simple_rational(root2, options) ? "factoring" : "quadratic-formula";
-        solve_explain_quadratic(options, a, b, c, discriminant, root1, root2, method);
+        if (original_degree <= 2) {
+            solve_explain_quadratic(options, a, b, c, discriminant, root1, root2, method);
+        }
         rc = solve_add_direct_root(equation, options, set, root1, method);
         if (rc > 0) return 1;
         if (solve_abs(root1 - root2) > options->tolerance * 2.0) {
             rc = solve_add_direct_root(equation, options, set, root2, method);
             if (rc > 0) return 1;
         }
+        return set->count > 0U ? 1 : 0;
+    }
+    if (degree == 1) {
+        double slope = poly.coeff[1];
+        double intercept = poly.coeff[0];
+        double root;
+        if (solve_abs(slope) <= options->tolerance) {
+            return set->count > 0U ? 1 : 0;
+        }
+        root = -intercept / slope;
+        (void)solve_add_direct_root(equation, options, set, root, original_degree > 2 ? "polynomial-factoring" : "linear");
         return set->count > 0U ? 1 : 0;
     }
     return 0;
@@ -1703,14 +1915,14 @@ static int solve_write_json_result(const SolveOptions *options, const SolveResul
     return 0;
 }
 
-static void solve_print_result(const SolveOptions *options, const SolveResult *result) {
+static void solve_print_result(const SolveEquation *equation, const SolveOptions *options, const SolveResult *result) {
     char value[96];
 
     if (tool_json_is_enabled()) {
         (void)solve_write_json_result(options, result);
         return;
     }
-    solve_format_answer(result->root, options->scale, value, sizeof(value));
+    solve_format_result_answer(equation, options, result, value, sizeof(value));
     if (options->quiet) {
         rt_write_line(1, value);
         return;
@@ -1738,23 +1950,27 @@ static void solve_print_result(const SolveOptions *options, const SolveResult *r
     }
 }
 
-static void solve_print_identity(const SolveOptions *options) {
+static void solve_print_identity(const SolveOptions *options, int exact) {
     if (tool_json_is_enabled()) {
         if (tool_json_begin_event(1, "solve", "stdout", "solve_identity") != 0) return;
         rt_write_cstr(1, ",\"data\":{\"variable\":");
         tool_json_write_string(1, options->var_name);
-        rt_write_cstr(1, ",\"method\":\"polynomial-identity\"}");
+        rt_write_cstr(1, ",\"exact\":");
+        rt_write_cstr(1, exact ? "true" : "false");
+        rt_write_cstr(1, ",\"method\":");
+        tool_json_write_string(1, exact ? "polynomial-identity" : "polynomial-identity-approx");
+        rt_write_char(1, '}');
         tool_json_end_event(1);
         return;
     }
     if (options->quiet) {
-        rt_write_line(1, "all real values");
+        rt_write_line(1, exact ? "all real values" : "all real values (approximate)");
         return;
     }
-    rt_write_line(1, "identity = true");
+    rt_write_line(1, exact ? "identity = true" : "identity = approximate");
     rt_write_cstr(1, options->var_name);
-    rt_write_line(1, " = all real values");
-    rt_write_line(1, "method = polynomial-identity");
+    rt_write_line(1, exact ? " = all real values" : " = all real values (within tolerance)");
+    rt_write_line(1, exact ? "method = polynomial-identity" : "method = polynomial-identity-approx");
 }
 
 static void solve_write_summary_json(size_t count, int status) {
@@ -1867,7 +2083,7 @@ int main(int argc, char **argv) {
             options.method = opt.value;
         } else if (rt_strcmp(opt.flag, "--scale") == 0) {
             unsigned long long value;
-            if (tool_opt_require_value(&opt) != 0 || rt_parse_uint(opt.value, &value) != 0 || value > 18ULL) {
+            if (tool_opt_require_value(&opt) != 0 || rt_parse_uint(opt.value, &value) != 0 || value > (unsigned long long)SOLVE_MAX_SCALE) {
                 tool_write_error("solve", "invalid --scale value", opt.value);
                 return 2;
             }
@@ -1938,7 +2154,7 @@ int main(int argc, char **argv) {
     }
 
     if (results.identity) {
-        solve_print_identity(&options);
+        solve_print_identity(&options, results.identity == 1);
         solve_write_summary_json(1U, 0);
         return 0;
     }
@@ -1947,7 +2163,7 @@ int main(int argc, char **argv) {
         if (index > 0U && !tool_json_is_enabled() && !options.quiet) {
             rt_write_char(1, '\n');
         }
-        solve_print_result(&options, &results.results[index]);
+        solve_print_result(&equation, &options, &results.results[index]);
     }
     if (results.count == 0U) {
         if (tool_json_is_enabled()) {
