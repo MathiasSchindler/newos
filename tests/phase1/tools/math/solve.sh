@@ -31,6 +31,18 @@ assert_file_contains "$WORK_DIR/inequality-empty.out" '^solution = empty set$' "
 assert_file_contains "$WORK_DIR/inequality-touch-open.out" '^solution = (-inf, 3) U (3, inf)$' "solve did not exclude a strict touching root"
 "${TEST_BIN_DIR}/solve" '(x-3)^2 >= 0' > "$WORK_DIR/inequality-touch-closed.out"
 assert_file_contains "$WORK_DIR/inequality-touch-closed.out" '^solution = all real x$' "solve did not include a nonnegative touching-root polynomial everywhere"
+"${TEST_BIN_DIR}/solve" 'x^2 - 4 < 0' > "$WORK_DIR/inequality-inside.out"
+assert_file_contains "$WORK_DIR/inequality-inside.out" '^solution = (-2, 2)$' "solve did not report the strict interior interval of a quadratic inequality"
+"${TEST_BIN_DIR}/solve" '4 - x^2 > 0' > "$WORK_DIR/inequality-reversed.out"
+assert_file_contains "$WORK_DIR/inequality-reversed.out" '^solution = (-2, 2)$' "solve did not handle a reversed quadratic inequality"
+"${TEST_BIN_DIR}/solve" '2*x + 1 <= 5' > "$WORK_DIR/inequality-linear-right.out"
+assert_file_contains "$WORK_DIR/inequality-linear-right.out" '^solution = (-inf, 2\]$' "solve did not report a half-line for a linear inequality with a right-hand side"
+"${TEST_BIN_DIR}/solve" --var t 't^2 - 1 <= 0' > "$WORK_DIR/inequality-custom-var.out"
+assert_file_contains "$WORK_DIR/inequality-custom-var.out" '^solution = \[-1, 1\]$' "solve did not handle inequality intervals with a custom variable"
+"${TEST_BIN_DIR}/solve" --scan 0:4:80 'sin(x) > 0' > "$WORK_DIR/inequality-numeric-sine.out"
+assert_file_contains "$WORK_DIR/inequality-numeric-sine.out" '^solution (within scan range) = (0, 3\.1415926537)$' "solve did not report a bounded numeric sine inequality interval"
+"${TEST_BIN_DIR}/solve" --scan 0:4:80 '1/(x-2) > 0' > "$WORK_DIR/inequality-numeric-pole.out"
+assert_file_contains "$WORK_DIR/inequality-numeric-pole.out" '^solution (within scan range) = (2, 4\]$' "solve did not split a numeric inequality at a pole"
 
 "${TEST_BIN_DIR}/solve" --explain --all 'x^3 - 6*x^2 + 11*x - 6 = 0' > "$WORK_DIR/cubic-factor.out"
 assert_file_contains "$WORK_DIR/cubic-factor.out" '^polynomial factoring detected$' "solve did not detect a higher-degree polynomial factorization"
@@ -200,12 +212,36 @@ assert_file_contains "$WORK_DIR/diff2.out" '^6\*x - 12$' "solve --diff=2 second 
 assert_file_contains "$WORK_DIR/diff-solve.out" '^x = 1\.4226497308$' "solve --diff did not report the first extrema point"
 assert_file_contains "$WORK_DIR/diff-solve.out" '^x = 2\.5773502692$' "solve --diff did not report the second extrema point"
 assert_file_contains "$WORK_DIR/diff-solve.out" '^status = approximate$' "solve --diff did not mark irrational derivative roots as approximate"
+"${TEST_BIN_DIR}/solve" --diff=0 'x^2+3*x+2' > "$WORK_DIR/diff0.out"
+assert_file_contains "$WORK_DIR/diff0.out" '^x\^2 + 3\*x + 2$' "solve --diff=0 did not print the original polynomial"
+"${TEST_BIN_DIR}/solve" --diff=3 'x^2+3*x+2' > "$WORK_DIR/diff3.out"
+assert_file_contains "$WORK_DIR/diff3.out" '^0$' "solve did not reduce an over-differentiated polynomial to zero"
+diff_nonpoly_status=0
+"${TEST_BIN_DIR}/solve" --diff 'sin(x)' > "$WORK_DIR/diff-nonpoly.out" 2> "$WORK_DIR/diff-nonpoly.err" || diff_nonpoly_status=$?
+assert_text_equals "$diff_nonpoly_status" '2' "solve --diff should reject non-polynomial input"
+assert_file_contains "$WORK_DIR/diff-nonpoly.err" 'derivative supported only for polynomials' "solve --diff non-polynomial diagnostic mismatch"
+diff_inequality_status=0
+"${TEST_BIN_DIR}/solve" --diff 'x^2 > 1' > "$WORK_DIR/diff-inequality.out" 2> "$WORK_DIR/diff-inequality.err" || diff_inequality_status=$?
+assert_text_equals "$diff_inequality_status" '2' "solve --diff should reject inequality input"
+assert_file_contains "$WORK_DIR/diff-inequality.err" 'derivative solving supports equations, not inequalities' "solve --diff inequality diagnostic mismatch"
+diff_invalid_status=0
+"${TEST_BIN_DIR}/solve" --diff=65 'x^2' > "$WORK_DIR/diff-invalid.out" 2> "$WORK_DIR/diff-invalid.err" || diff_invalid_status=$?
+assert_text_equals "$diff_invalid_status" '2' "solve --diff should reject derivative orders above the limit"
+assert_file_contains "$WORK_DIR/diff-invalid.err" 'invalid --diff order' "solve --diff invalid-order diagnostic mismatch"
 
 "${TEST_BIN_DIR}/solve" --integrate 0:1 'x^2' > "$WORK_DIR/integral-square.out"
 assert_file_contains "$WORK_DIR/integral-square.out" '^integral = 1/3$' "solve did not integrate x^2 exactly"
 assert_file_contains "$WORK_DIR/integral-square.out" '^method = exact-polynomial$' "solve did not label exact polynomial integration"
 "${TEST_BIN_DIR}/solve" --integrate 0:1 'x^3' > "$WORK_DIR/integral-cube.out"
 assert_file_contains "$WORK_DIR/integral-cube.out" '^integral = 1/4$' "solve did not integrate x^3 exactly"
+"${TEST_BIN_DIR}/solve" --integrate 1:0 'x^2' > "$WORK_DIR/integral-reversed.out"
+assert_file_contains "$WORK_DIR/integral-reversed.out" '^integral = -1/3$' "solve did not preserve orientation for reversed integral bounds"
+"${TEST_BIN_DIR}/solve" --integrate 0.5:1.5 'x' > "$WORK_DIR/integral-decimal-bounds.out"
+assert_file_contains "$WORK_DIR/integral-decimal-bounds.out" '^integral = 1$' "solve did not integrate exactly over decimal rational bounds"
+"${TEST_BIN_DIR}/solve" --integrate 0:1 'x^2 = x' > "$WORK_DIR/integral-equation.out"
+assert_file_contains "$WORK_DIR/integral-equation.out" '^integral = -1/6$' "solve did not integrate the transformed zero-function for an equation"
+integral_quiet=$("${TEST_BIN_DIR}/solve" --quiet --integrate 0:1 'x^2' | tr -d '\r\n')
+assert_text_equals "$integral_quiet" '1/3' "solve --quiet --integrate did not print only the integral value"
 "${TEST_BIN_DIR}/solve" --integrate 0:pi 'sin(x)' > "$WORK_DIR/integral-sine.out"
 assert_file_contains "$WORK_DIR/integral-sine.out" '^integral = 2\.0000000000$' "solve did not numerically integrate sin from 0 to pi"
 assert_file_contains "$WORK_DIR/integral-sine.out" '^status = approximate$' "solve did not mark Simpson integration as approximate"
@@ -213,6 +249,18 @@ improper_integral_status=0
 "${TEST_BIN_DIR}/solve" --integrate 1:3 '1/(x-2)' > "$WORK_DIR/integral-improper.out" 2> "$WORK_DIR/integral-improper.err" || improper_integral_status=$?
 assert_text_equals "$improper_integral_status" '3' "solve should return 3 for an improper integral over a discontinuity"
 assert_file_contains "$WORK_DIR/integral-improper.out" 'improper integral' "solve did not warn about an improper integral"
+integral_invalid_status=0
+"${TEST_BIN_DIR}/solve" --integrate 0,1 'x^2' > "$WORK_DIR/integral-invalid.out" 2> "$WORK_DIR/integral-invalid.err" || integral_invalid_status=$?
+assert_text_equals "$integral_invalid_status" '2' "solve --integrate should reject malformed bounds"
+assert_file_contains "$WORK_DIR/integral-invalid.err" 'invalid --integrate bounds' "solve --integrate malformed-bounds diagnostic mismatch"
+integral_bad_bound_status=0
+"${TEST_BIN_DIR}/solve" --integrate 0:y 'x^2' > "$WORK_DIR/integral-bad-bound.out" 2> "$WORK_DIR/integral-bad-bound.err" || integral_bad_bound_status=$?
+assert_text_equals "$integral_bad_bound_status" '2' "solve --integrate should reject bounds with unknown identifiers"
+assert_file_contains "$WORK_DIR/integral-bad-bound.err" 'invalid integration bound' "solve --integrate bad-bound diagnostic mismatch"
+diff_integrate_status=0
+"${TEST_BIN_DIR}/solve" --diff --integrate 0:1 'x^2' > "$WORK_DIR/diff-integrate.out" 2> "$WORK_DIR/diff-integrate.err" || diff_integrate_status=$?
+assert_text_equals "$diff_integrate_status" '2' "solve should reject combining --diff and --integrate"
+assert_file_contains "$WORK_DIR/diff-integrate.err" 'diff and --integrate cannot be combined' "solve diff/integrate conflict diagnostic mismatch"
 
 "${TEST_BIN_DIR}/solve" --quiet '(10000000000*x + 1)^8 = (10000000000*x + 1)^8' > "$WORK_DIR/rational-overflow-fallback.out"
 assert_file_contains "$WORK_DIR/rational-overflow-fallback.out" '^all real values' "solve did not fall back after exact rational coefficient overflow"
