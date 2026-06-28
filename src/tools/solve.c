@@ -1078,6 +1078,105 @@ static double solve_parse_expr(SolveExprParser *parser) {
     return value;
 }
 
+static void solve_skip_text_spaces(const char *text, size_t *pos_io) {
+    while (tool_ascii_is_space(text[*pos_io])) {
+        *pos_io += 1U;
+    }
+}
+
+static int solve_match_name_at(const char *text, size_t *pos_io, const char *name) {
+    size_t length = rt_strlen(name);
+    if (rt_strncmp(text + *pos_io, name, length) != 0 || tool_ascii_is_identifier_char(text[*pos_io + length])) {
+        return 0;
+    }
+    *pos_io += length;
+    return 1;
+}
+
+static int solve_eval_unary_function_fast(const char *name, double argument, double *value_out) {
+    if (rt_strcmp(name, "sqrt") == 0 || rt_strcmp(name, "q") == 0) {
+        *value_out = solve_sqrt(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "abs") == 0) {
+        *value_out = solve_abs(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "sin") == 0 || rt_strcmp(name, "s") == 0) {
+        *value_out = solve_sin(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "cos") == 0 || rt_strcmp(name, "c") == 0) {
+        *value_out = solve_cos(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0) {
+        *value_out = solve_atan(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "log") == 0 || rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0) {
+        *value_out = solve_log(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0) {
+        *value_out = solve_exp(argument);
+        return 0;
+    }
+    return -1;
+}
+
+static int solve_eval_expr_fast(const char *expr, const char *var_name, double var_value, double *value_out) {
+    char name[SOLVE_NAME_CAPACITY];
+    size_t pos = 0U;
+    size_t used = 0U;
+
+    solve_skip_text_spaces(expr, &pos);
+    if (!tool_ascii_is_identifier_start(expr[pos])) {
+        return -1;
+    }
+    while (tool_ascii_is_identifier_char(expr[pos])) {
+        if (used + 1U >= sizeof(name)) {
+            return -1;
+        }
+        name[used++] = expr[pos++];
+    }
+    name[used] = '\0';
+    solve_skip_text_spaces(expr, &pos);
+    if (expr[pos] == '\0') {
+        if (rt_strcmp(name, var_name) == 0) {
+            *value_out = var_value;
+            return 0;
+        }
+        if (rt_strcmp(name, "pi") == 0) {
+            *value_out = SOLVE_PI;
+            return 0;
+        }
+        if (rt_strcmp(name, "e") == 0) {
+            *value_out = SOLVE_E;
+            return 0;
+        }
+        return -1;
+    }
+    if (expr[pos] != '(') {
+        return -1;
+    }
+    pos += 1U;
+    solve_skip_text_spaces(expr, &pos);
+    if (!solve_match_name_at(expr, &pos, var_name)) {
+        return -1;
+    }
+    solve_skip_text_spaces(expr, &pos);
+    if (expr[pos] != ')') {
+        return -1;
+    }
+    pos += 1U;
+    solve_skip_text_spaces(expr, &pos);
+    if (expr[pos] != '\0') {
+        return -1;
+    }
+    return solve_eval_unary_function_fast(name, var_value, value_out);
+}
+
 static void solve_poly_zero(SolvePoly *poly) {
     int i;
     for (i = 0; i <= SOLVE_POLY_MAX_DEGREE; ++i) {
@@ -1883,6 +1982,9 @@ static int solve_eval_expr(const char *expr, const char *var_name, double var_va
     SolveExprParser parser;
     double value;
 
+    if (solve_eval_expr_fast(expr, var_name, var_value, value_out) == 0) {
+        return solve_is_bad(*value_out) ? -1 : 0;
+    }
     parser.text = expr;
     parser.pos = 0U;
     parser.var_name = var_name;
