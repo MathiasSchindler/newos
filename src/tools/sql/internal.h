@@ -302,11 +302,7 @@ typedef struct {
     int eof;
 } SqlLineReader;
 
-typedef struct {
-    int fd;
-    char buffer[SQL_IO_BUFFER_SIZE];
-    size_t used;
-} SqlDatabaseWriter;
+typedef ToolOutputBuffer SqlDatabaseWriter;
 
 static int sql_copy_checked(char *dst, size_t dst_size, const char *src);
 static int sql_valid_identifier(const char *text);

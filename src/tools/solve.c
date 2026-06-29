@@ -360,23 +360,11 @@ static int solve_is_bad(double value) {
 }
 
 static int solve_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {
-    if (*length_io + 1U >= buffer_size) {
-        return -1;
-    }
-    buffer[*length_io] = ch;
-    *length_io += 1U;
-    buffer[*length_io] = '\0';
-    return 0;
+    return tool_buffer_append_char_checked(buffer, buffer_size, length_io, ch);
 }
 
 static int solve_append_text(char *buffer, size_t buffer_size, size_t *length_io, const char *text) {
-    while (*text != '\0') {
-        if (solve_append_char(buffer, buffer_size, length_io, *text) != 0) {
-            return -1;
-        }
-        text += 1;
-    }
-    return 0;
+    return tool_buffer_append_text_checked(buffer, buffer_size, length_io, text);
 }
 
 static int solve_contains_char(const char *text, char ch) {

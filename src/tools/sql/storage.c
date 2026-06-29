@@ -371,45 +371,19 @@ static char *sql_read_text_file(const char *path) {
 }
 
 static void sql_database_writer_init(SqlDatabaseWriter *writer, int fd) {
-    writer->fd = fd;
-    writer->used = 0U;
+    tool_output_buffer_init(writer, fd);
 }
 
 static int sql_database_writer_flush(SqlDatabaseWriter *writer) {
-    if (writer->used == 0U) {
-        return 0;
-    }
-    if (rt_write_all(writer->fd, writer->buffer, writer->used) != 0) {
-        return -1;
-    }
-    writer->used = 0U;
-    return 0;
-}
-
-static int sql_database_writer_bytes(SqlDatabaseWriter *writer, const char *data, size_t length) {
-    if (length == 0U) {
-        return 0;
-    }
-    if (length > sizeof(writer->buffer)) {
-        if (sql_database_writer_flush(writer) != 0) {
-            return -1;
-        }
-        return rt_write_all(writer->fd, data, length);
-    }
-    if (writer->used + length > sizeof(writer->buffer) && sql_database_writer_flush(writer) != 0) {
-        return -1;
-    }
-    memcpy(writer->buffer + writer->used, data, length);
-    writer->used += length;
-    return 0;
+    return tool_output_buffer_flush(writer);
 }
 
 static int sql_database_writer_cstr(SqlDatabaseWriter *writer, const char *text) {
-    return sql_database_writer_bytes(writer, text, rt_strlen(text));
+    return tool_output_buffer_write_cstr(writer, text);
 }
 
 static int sql_database_writer_char(SqlDatabaseWriter *writer, char ch) {
-    return sql_database_writer_bytes(writer, &ch, 1U);
+    return tool_output_buffer_write_char(writer, ch);
 }
 
 static int sql_database_writer_uint(SqlDatabaseWriter *writer, unsigned long long value) {
