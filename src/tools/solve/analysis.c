@@ -57,6 +57,77 @@ static int solve_rat_poly_format_antiderivative(const SolveRatPoly *poly, const 
     return solve_append_text(buffer, buffer_size, &length, "C");
 }
 
+static int solve_extract_unary_call_arg(const char *expr, const char *name, char *arg, size_t arg_size) {
+    size_t name_len = rt_strlen(name);
+    size_t pos;
+    int depth = 0;
+    if (rt_strncmp(expr, name, name_len) != 0 || expr[name_len] != '(') return -1;
+    for (pos = name_len; expr[pos] != '\0'; ++pos) {
+        if (expr[pos] == '(') depth += 1;
+        else if (expr[pos] == ')') {
+            depth -= 1;
+            if (depth == 0 && expr[pos + 1U] != '\0') return -1;
+        }
+    }
+    if (depth != 0) return -1;
+    return solve_copy_range(arg, arg_size, expr, name_len + 1U, rt_strlen(expr) - 1U);
+}
+
+static int solve_linear_slope(const char *expr, const SolveOptions *options, SolveRat *slope_out) {
+    SolveRatPoly poly;
+    if (solve_parse_rat_text(expr, options->var_name, &poly) != 0 || solve_rat_poly_degree(&poly) != 1 || solve_rat_is_zero(poly.coeff[1])) return -1;
+    *slope_out = poly.coeff[1];
+    return 0;
+}
+
+static int solve_append_divided_by_rat(char *buffer, size_t buffer_size, size_t *length_io, SolveRat slope) {
+    SolveRat abs_slope;
+    char text[96];
+    if (slope.den == 1 && (slope.num == 1 || slope.num == -1)) return 0;
+    if (solve_rat_abs_value(slope, &abs_slope) != 0 || solve_rat_format(abs_slope, text, sizeof(text)) != 0) return -1;
+    if (solve_append_char(buffer, buffer_size, length_io, '/') != 0) return -1;
+    return solve_append_text(buffer, buffer_size, length_io, text);
+}
+
+static int solve_format_symbolic_antiderivative(const char *expr, const SolveOptions *options, char *out, size_t out_size) {
+    char arg[SOLVE_EXPR_CAPACITY];
+    SolveRat slope;
+    SolveRat abs_slope;
+    size_t used = 0U;
+    const char *outer = 0;
+    int negative = 0;
+    if (solve_extract_unary_call_arg(expr, "sin", arg, sizeof(arg)) == 0 && solve_linear_slope(arg, options, &slope) == 0) {
+        outer = "cos";
+        negative = slope.num > 0;
+    } else if (solve_extract_unary_call_arg(expr, "cos", arg, sizeof(arg)) == 0 && solve_linear_slope(arg, options, &slope) == 0) {
+        outer = "sin";
+        negative = slope.num < 0;
+    } else if (solve_extract_unary_call_arg(expr, "exp", arg, sizeof(arg)) == 0 && solve_linear_slope(arg, options, &slope) == 0) {
+        outer = "exp";
+        negative = slope.num < 0;
+    } else if (rt_strcmp(expr, "1/x") == 0 || rt_strcmp(expr, "1 / x") == 0) {
+        if (rt_strlen("log(abs(x)) + C") >= out_size) return -1;
+        rt_copy_string(out, out_size, "log(abs(x)) + C");
+        return 0;
+    } else {
+        return -1;
+    }
+    out[0] = '\0';
+    if (solve_rat_abs_value(slope, &abs_slope) != 0) return -1;
+    if (negative && solve_append_char(out, out_size, &used, '-') != 0) return -1;
+    if (abs_slope.den != 1) {
+        char text[96];
+        SolveRat reciprocal;
+        if (solve_rat_make_i128(abs_slope.den, abs_slope.num, &reciprocal) != 0 || solve_rat_format(reciprocal, text, sizeof(text)) != 0) return -1;
+        if (!(reciprocal.num == 1 && reciprocal.den == 1)) {
+            if (solve_append_text(out, out_size, &used, text) != 0 || solve_append_char(out, out_size, &used, '*') != 0) return -1;
+        }
+    }
+    if (solve_append_text(out, out_size, &used, outer) != 0 || solve_append_char(out, out_size, &used, '(') != 0 || solve_append_text(out, out_size, &used, arg) != 0 || solve_append_char(out, out_size, &used, ')') != 0) return -1;
+    if (abs_slope.den == 1 && solve_append_divided_by_rat(out, out_size, &used, slope) != 0) return -1;
+    return solve_append_text(out, out_size, &used, " + C");
+}
+
 static int solve_format_fraction_hint(double value, char *buffer, size_t buffer_size) {
     double absolute = value < 0.0 ? -value : value;
     unsigned int den;
@@ -100,7 +171,21 @@ static int solve_run_antiderivative_mode(const SolveEquation *equation, const So
     SolveRatPoly anti;
     char text[SOLVE_EXPR_CAPACITY];
     if (solve_get_rat_poly_for_mode(equation, options, &poly) != 0) {
-        tool_write_error("solve", "derivative supported only for polynomials", 0);
+        if (!equation->has_equation && solve_format_symbolic_antiderivative(equation->left, options, text, sizeof(text)) == 0) {
+            if (solve_should_explain(options)) {
+                solve_explain_working_function("symbolic antiderivative", equation, options);
+                rt_write_line(1, "rule: narrow school-function table for sin(linear), cos(linear), exp(linear), and 1/x");
+                rt_write_cstr(1, "antiderivative: ");
+                rt_write_line(1, text);
+            }
+            rt_write_cstr(1, "F(");
+            rt_write_cstr(1, options->var_name);
+            rt_write_cstr(1, ") = ");
+            rt_write_line(1, text);
+            rt_write_line(1, "method = symbolic-table");
+            return 0;
+        }
+        tool_write_error("solve", "antiderivative supported only for polynomials and simple school functions", 0);
         return 2;
     }
     if (solve_rat_poly_antiderivative(&poly, &anti) != 0 || solve_rat_poly_format_antiderivative(&anti, options->var_name, text, sizeof(text)) != 0) {
@@ -339,6 +424,7 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
         double y_value;
         double slope_value;
         double intercept_value;
+        int exact_exp_poly_slope = 0;
         int ok;
         const char *message = 0;
         if (solve_parse_double_arg(options->point_spec, &point) != 0 || solve_eval_function(equation, options, point, &y_value, &message) != 0) {
@@ -347,13 +433,21 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
         }
         slope_value = solve_numeric_derivative_value(equation, options, point, 1, &ok);
         if (!ok) return 3;
+        if (!equation->has_equation) {
+            SolveRatPoly first_factor;
+            SolveRatPoly exp_arg;
+            if (solve_sym_exp_poly_derivative_factor(equation->left, options, 1, &first_factor, &exp_arg) == 0) {
+                slope_value = solve_exp(solve_rat_poly_eval_double_direct(&exp_arg, point)) * solve_rat_poly_eval_double_direct(&first_factor, point);
+                exact_exp_poly_slope = 1;
+            }
+        }
         if (normal) {
             if (solve_abs(slope_value) <= options->tolerance) {
                 if (solve_should_explain(options)) {
                     solve_explain_working_function("numeric normal", equation, options);
                     solve_explain_double_value_line("point a = ", point, options);
                     solve_explain_double_value_line("f(a) = ", y_value, options);
-                    solve_explain_double_value_line("numeric f'(a) = ", slope_value, options);
+                    solve_explain_double_value_line(exact_exp_poly_slope ? "exp-polynomial f'(a) = " : "numeric f'(a) = ", slope_value, options);
                     rt_write_line(1, "rule: tangent slope is 0, so the normal line is vertical");
                 }
                 rt_write_cstr(1, "normal approximate: x = ");
@@ -371,7 +465,7 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
             solve_explain_double_value_line("f(a) = ", y_value, options);
             solve_explain_double_value_line(normal ? "normal slope = " : "tangent slope = ", slope_value, options);
             rt_write_line(1, normal ? "rule: normal slope is -1/f'(a)" : "rule: tangent line is y - f(a) = f'(a)*(x - a)");
-            rt_write_line(1, "status reason: slope is computed by finite differences");
+            rt_write_line(1, exact_exp_poly_slope ? "status reason: slope uses an exact exp-polynomial derivative factor; values are numeric because exp is evaluated approximately" : "status reason: slope is computed by finite differences");
         }
         rt_write_cstr(1, normal ? "normal approximate: y = " : "tangent approximate: y = ");
         solve_write_double_value(slope_value, options->scale);
@@ -385,6 +479,7 @@ static int solve_run_tangent_normal_mode(const SolveEquation *equation, const So
             solve_write_double_value(intercept_value, options->scale);
         }
         rt_write_char(1, '\n');
+        if (exact_exp_poly_slope) rt_write_line(1, "method = exact-exp-polynomial-derivative-factor");
         rt_write_line(1, "status = approximate");
         return 0;
     }
@@ -865,7 +960,30 @@ static int solve_copy_unwrapped(char *dst, size_t dst_size, const char *src) {
     return solve_copy_range(dst, dst_size, src, start, end);
 }
 
-static int solve_split_rational_expr(const char *expr, char *num, size_t num_size, char *den, size_t den_size) {
+static int solve_has_top_level_sum(const char *expr) {
+    size_t index;
+    int depth = 0;
+    for (index = 0U; expr[index] != '\0'; ++index) {
+        char ch = expr[index];
+        if (ch == '(') depth += 1;
+        else if (ch == ')' && depth > 0) depth -= 1;
+        else if (depth == 0 && index > 0U && (ch == '+' || ch == '-')) return 1;
+    }
+    return 0;
+}
+
+static int solve_build_rational_sum_num(char *out, size_t out_size, const char *left, const char *op, const char *right, const char *quot_num, const char *quot_den, int quotient_on_right) {
+    size_t used = 0U;
+    out[0] = '\0';
+    if (quotient_on_right) {
+        if (solve_append_char(out, out_size, &used, '(') != 0 || solve_append_text(out, out_size, &used, left) != 0 || solve_append_text(out, out_size, &used, ")*(") != 0 || solve_append_text(out, out_size, &used, quot_den) != 0 || solve_append_text(out, out_size, &used, ") ") != 0 || solve_append_text(out, out_size, &used, op) != 0 || solve_append_text(out, out_size, &used, " (") != 0 || solve_append_text(out, out_size, &used, quot_num) != 0 || solve_append_char(out, out_size, &used, ')') != 0) return -1;
+    } else {
+        if (solve_append_char(out, out_size, &used, '(') != 0 || solve_append_text(out, out_size, &used, quot_num) != 0 || solve_append_text(out, out_size, &used, ") ") != 0 || solve_append_text(out, out_size, &used, op) != 0 || solve_append_text(out, out_size, &used, " (") != 0 || solve_append_text(out, out_size, &used, right) != 0 || solve_append_text(out, out_size, &used, ")*(") != 0 || solve_append_text(out, out_size, &used, quot_den) != 0 || solve_append_char(out, out_size, &used, ')') != 0) return -1;
+    }
+    return 0;
+}
+
+static int solve_split_rational_expr_inner(const char *expr, char *num, size_t num_size, char *den, size_t den_size, int allow_sum) {
     size_t index;
     int depth = 0;
     for (index = 0U; expr[index] != '\0'; ++index) {
@@ -875,10 +993,41 @@ static int solve_split_rational_expr(const char *expr, char *num, size_t num_siz
             char left[SOLVE_EXPR_CAPACITY];
             char right[SOLVE_EXPR_CAPACITY];
             if (solve_copy_range(left, sizeof(left), expr, 0U, index) != 0 || solve_copy_range(right, sizeof(right), expr, index + 1U, rt_strlen(expr)) != 0) return -1;
+            if (allow_sum && (solve_has_top_level_sum(left) || solve_has_top_level_sum(right))) continue;
             return solve_copy_unwrapped(num, num_size, left) == 0 && solve_copy_unwrapped(den, den_size, right) == 0 ? 0 : -1;
         }
     }
+    if (allow_sum) {
+        size_t length = rt_strlen(expr);
+        for (index = length; index > 0U; --index) {
+            size_t pos = index - 1U;
+            char ch = expr[pos];
+            if (ch == ')') depth += 1;
+            else if (ch == '(' && depth > 0) depth -= 1;
+            else if (depth == 0 && (ch == '+' || ch == '-') && pos > 0U) {
+                char left[SOLVE_EXPR_CAPACITY];
+                char right[SOLVE_EXPR_CAPACITY];
+                char quot_num[SOLVE_EXPR_CAPACITY];
+                char quot_den[SOLVE_EXPR_CAPACITY];
+                char built[SOLVE_EXPR_CAPACITY];
+                char op[2];
+                op[0] = ch;
+                op[1] = '\0';
+                if (solve_copy_range(left, sizeof(left), expr, 0U, pos) != 0 || solve_copy_range(right, sizeof(right), expr, pos + 1U, length) != 0) return -1;
+                if (solve_split_rational_expr_inner(right, quot_num, sizeof(quot_num), quot_den, sizeof(quot_den), 0) == 0 && solve_build_rational_sum_num(built, sizeof(built), left, op, right, quot_num, quot_den, 1) == 0) {
+                    return solve_copy_unwrapped(num, num_size, built) == 0 && solve_copy_unwrapped(den, den_size, quot_den) == 0 ? 0 : -1;
+                }
+                if (ch == '+' && solve_split_rational_expr_inner(left, quot_num, sizeof(quot_num), quot_den, sizeof(quot_den), 0) == 0 && solve_build_rational_sum_num(built, sizeof(built), left, op, right, quot_num, quot_den, 0) == 0) {
+                    return solve_copy_unwrapped(num, num_size, built) == 0 && solve_copy_unwrapped(den, den_size, quot_den) == 0 ? 0 : -1;
+                }
+            }
+        }
+    }
     return -1;
+}
+
+static int solve_split_rational_expr(const char *expr, char *num, size_t num_size, char *den, size_t den_size) {
+    return solve_split_rational_expr_inner(expr, num, num_size, den, den_size, 1);
 }
 
 static int solve_parse_two_curves(int start, int argc, char **argv, char *first, size_t first_size, char *second, size_t second_size) {
@@ -979,6 +1128,7 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
             SolveBreakpoint roots[SOLVE_MAX_RESULTS];
             int root_count = 0;
             if (solve_collect_rat_poly_roots(&diff, roots, &root_count) != 0 || root_count < 2) {
+                if (!options->have_area_quadrant) goto numeric_omitted_area_bounds;
                 tool_write_error("solve", "area bounds omitted but fewer than two intersections were found", 0);
                 return 2;
             }
@@ -1043,6 +1193,31 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
         rt_write_char(1, '\n');
         rt_write_line(1, "method = exact-polynomial");
         return 0;
+    }
+numeric_omitted_area_bounds:
+    if (lo_text[0] == '\0' && !options->have_area_quadrant) {
+        SolveEquation bounds_equation;
+        SolveOptions scan_options = *options;
+        SolveResultSet roots;
+        rt_memset(&roots, 0, sizeof(roots));
+        rt_copy_string(bounds_equation.left, sizeof(bounds_equation.left), first_expr);
+        rt_copy_string(bounds_equation.right, sizeof(bounds_equation.right), second_expr);
+        bounds_equation.has_equation = 1;
+        bounds_equation.relation = SOLVE_RELATION_EQ;
+        scan_options.all = 1;
+        scan_options.quiet = 1;
+        scan_options.explain = 0;
+        scan_options.have_bracket = 0;
+        scan_options.have_scan = 1;
+        if (scan_options.scan_steps < 800) scan_options.scan_steps = 800;
+        solve_scan(&bounds_equation, &scan_options, &roots);
+        if (roots.count < 2U) {
+            tool_write_error("solve", "area bounds omitted but fewer than two intersections were found", 0);
+            return 2;
+        }
+        solve_format_double(roots.results[0].root, SOLVE_MAX_SCALE, lo_text, sizeof(lo_text));
+        solve_format_double(roots.results[roots.count - 1U].root, SOLVE_MAX_SCALE, hi_text, sizeof(hi_text));
+        if (solve_should_explain(options)) rt_write_line(1, "numeric bounds: omitted bounds found by scan over the configured interval");
     }
 numeric_area:
     {

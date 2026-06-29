@@ -38,13 +38,35 @@ static int solve_sym_join3(char *out, size_t out_size, const char *a, const char
     return solve_append_text(out, out_size, &used, a) == 0 && solve_append_text(out, out_size, &used, b) == 0 && solve_append_text(out, out_size, &used, c) == 0 ? 0 : -1;
 }
 
+static int solve_sym_copy_trimmed_unwrapped(char *dst, size_t dst_size, const char *src);
+
+static int solve_sym_has_top_level_sum_text(const char *text) {
+    size_t index;
+    int depth = 0;
+    for (index = 0U; text[index] != '\0'; ++index) {
+        if (text[index] == '(') depth += 1;
+        else if (text[index] == ')' && depth > 0) depth -= 1;
+        else if (depth == 0 && index > 0U && (text[index] == '+' || text[index] == '-')) return 1;
+    }
+    return 0;
+}
+
+static const char *solve_sym_display_operand(const char *op, const char *text, char *scratch, size_t scratch_size) {
+    if ((rt_strcmp(op, "*") == 0 || rt_strcmp(op, "/") == 0) && solve_sym_copy_trimmed_unwrapped(scratch, scratch_size, text) == 0 && !solve_sym_has_top_level_sum_text(scratch)) return scratch;
+    return text;
+}
+
 static int solve_sym_binary(char *out, size_t out_size, const char *left, const char *op, const char *right) {
+    char left_scratch[SOLVE_EXPR_CAPACITY];
+    char right_scratch[SOLVE_EXPR_CAPACITY];
+    const char *display_left = solve_sym_display_operand(op, left, left_scratch, sizeof(left_scratch));
+    const char *display_right = solve_sym_display_operand(op, right, right_scratch, sizeof(right_scratch));
     size_t used = 0U;
     out[0] = '\0';
     if (solve_append_char(out, out_size, &used, '(') != 0) return -1;
-    if (solve_append_text(out, out_size, &used, left) != 0) return -1;
+    if (solve_append_text(out, out_size, &used, display_left) != 0) return -1;
     if (solve_append_text(out, out_size, &used, op) != 0) return -1;
-    if (solve_append_text(out, out_size, &used, right) != 0) return -1;
+    if (solve_append_text(out, out_size, &used, display_right) != 0) return -1;
     return solve_append_char(out, out_size, &used, ')');
 }
 
@@ -156,10 +178,25 @@ static int solve_sym_binary_simplified(char *out, size_t out_size, const char *l
     return solve_sym_binary(out, out_size, left, op, right);
 }
 
+static int solve_sym_numeric_constant_value(const SolveSymNode *node, double *value_out) {
+    return node->constant && solve_parse_double_arg(node->expr, value_out) == 0 ? 0 : -1;
+}
+
 static int solve_sym_assign_binary(SolveSymNode *out, const SolveSymNode *left, const char *op, const SolveSymNode *right) {
     char expr[SOLVE_EXPR_CAPACITY];
     char deriv[SOLVE_EXPR_CAPACITY];
-    if (solve_sym_binary_simplified(expr, sizeof(expr), left->expr, op, right->expr) != 0) return -1;
+    double folded = 0.0;
+    double left_value;
+    double right_value;
+    int have_folded = 0;
+    if (solve_sym_numeric_constant_value(left, &left_value) == 0 && solve_sym_numeric_constant_value(right, &right_value) == 0) {
+        if (rt_strcmp(op, " + ") == 0) { folded = left_value + right_value; have_folded = 1; }
+        else if (rt_strcmp(op, " - ") == 0) { folded = left_value - right_value; have_folded = 1; }
+        else if (rt_strcmp(op, "*") == 0) { folded = left_value * right_value; have_folded = 1; }
+        else if (rt_strcmp(op, "/") == 0 && right_value != 0.0) { folded = left_value / right_value; have_folded = 1; }
+    }
+    if (have_folded) solve_sym_format_number(folded, expr, sizeof(expr));
+    else if (solve_sym_binary_simplified(expr, sizeof(expr), left->expr, op, right->expr) != 0) return -1;
     if (rt_strcmp(op, " + ") == 0) {
         if (solve_sym_is_zero(left->deriv)) rt_copy_string(deriv, sizeof(deriv), right->deriv);
         else if (solve_sym_is_zero(right->deriv)) rt_copy_string(deriv, sizeof(deriv), left->deriv);
@@ -196,14 +233,23 @@ static int solve_sym_assign_binary(SolveSymNode *out, const SolveSymNode *left, 
     } else return -1;
     if (solve_sym_copy(out->expr, sizeof(out->expr), expr) != 0 || solve_sym_copy(out->deriv, sizeof(out->deriv), deriv) != 0) return -1;
     out->constant = left->constant && right->constant;
-    out->value = 0.0;
+    out->value = have_folded ? folded : 0.0;
     return 0;
 }
 
 static int solve_sym_assign_power(SolveSymNode *out, const SolveSymNode *base, const SolveSymNode *exponent) {
     char expr[SOLVE_EXPR_CAPACITY];
     char deriv[SOLVE_EXPR_CAPACITY];
-    if (solve_sym_binary_simplified(expr, sizeof(expr), base->expr, "^", exponent->expr) != 0) return -1;
+    double folded = 0.0;
+    double base_value;
+    double exponent_value;
+    int have_folded = 0;
+    if (solve_sym_numeric_constant_value(base, &base_value) == 0 && solve_sym_numeric_constant_value(exponent, &exponent_value) == 0) {
+        folded = solve_pow(base_value, exponent_value);
+        if (!solve_is_bad(folded)) have_folded = 1;
+    }
+    if (have_folded) solve_sym_format_number(folded, expr, sizeof(expr));
+    else if (solve_sym_binary_simplified(expr, sizeof(expr), base->expr, "^", exponent->expr) != 0) return -1;
     if (solve_sym_is_zero(base->deriv) && solve_sym_is_zero(exponent->deriv)) {
         rt_copy_string(deriv, sizeof(deriv), "0");
     } else if (exponent->constant) {
@@ -231,7 +277,7 @@ static int solve_sym_assign_power(SolveSymNode *out, const SolveSymNode *base, c
     }
     if (solve_sym_copy(out->expr, sizeof(out->expr), expr) != 0 || solve_sym_copy(out->deriv, sizeof(out->deriv), deriv) != 0) return -1;
     out->constant = base->constant && exponent->constant;
-    out->value = out->constant ? solve_pow(base->value, exponent->value) : 0.0;
+    out->value = have_folded ? folded : 0.0;
     return 0;
 }
 
@@ -512,6 +558,7 @@ static int solve_sym_exp_poly_derivative_text(const char *expr, const SolveOptio
 
 static int solve_symbolic_derivative_text(const char *expr, const SolveOptions *options, int order, char *out, size_t out_size) {
     char current[SOLVE_EXPR_CAPACITY];
+    char trimmed[SOLVE_EXPR_CAPACITY];
     int i;
     if (rt_strlen(expr) >= sizeof(current)) return -1;
     rt_copy_string(current, sizeof(current), expr);
@@ -531,7 +578,8 @@ static int solve_symbolic_derivative_text(const char *expr, const SolveOptions *
         if (parser.error || parser.text[parser.pos] != '\0') return -1;
         if (solve_sym_copy(current, sizeof(current), node.deriv) != 0) return -1;
     }
-    return solve_sym_copy(out, out_size, current);
+    if (solve_sym_copy_trimmed_unwrapped(trimmed, sizeof(trimmed), current) != 0) return -1;
+    return solve_sym_copy(out, out_size, trimmed);
 }
 
 static int solve_symbolic_simplify_text(const char *expr, const SolveOptions *options, char *out, size_t out_size) {

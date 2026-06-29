@@ -735,15 +735,56 @@ static int solve_eval_expr(const char *expr, const char *var_name, double var_va
     return 0;
 }
 
+static int solve_substitute_bound_params(const char *expr, const SolveOptions *options, char *out, size_t out_size) {
+    size_t in = 0U;
+    size_t used = 0U;
+    out[0] = '\0';
+    while (expr[in] != '\0') {
+        if (tool_ascii_is_identifier_start(expr[in])) {
+            size_t start = in;
+            char name[SOLVE_NAME_CAPACITY];
+            size_t name_len;
+            int param_index;
+            while (tool_ascii_is_identifier_char(expr[in])) in += 1U;
+            name_len = in - start;
+            if (name_len >= sizeof(name)) return -1;
+            if (solve_copy_range(name, sizeof(name), expr, start, in) != 0) return -1;
+            param_index = solve_find_param_index(options, name);
+            if (param_index >= 0 && options->param_has_value[param_index]) {
+                char value[96];
+                solve_format_double(options->param_values[param_index], SOLVE_MAX_SCALE, value, sizeof(value));
+                if (options->param_values[param_index] < 0.0 && solve_append_char(out, out_size, &used, '(') != 0) return -1;
+                if (solve_append_text(out, out_size, &used, value) != 0) return -1;
+                if (options->param_values[param_index] < 0.0 && solve_append_char(out, out_size, &used, ')') != 0) return -1;
+            } else {
+                while (start < in) {
+                    if (solve_append_char(out, out_size, &used, expr[start++]) != 0) return -1;
+                }
+            }
+        } else {
+            if (solve_append_char(out, out_size, &used, expr[in++]) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int solve_eval_options_expr(const char *expr, const SolveOptions *options, double var_value, double *value_out, const char **message_out) {
+    char substituted[SOLVE_EXPR_CAPACITY];
+    if (solve_substitute_bound_params(expr, options, substituted, sizeof(substituted)) == 0) {
+        return solve_eval_expr(substituted, options->var_name, var_value, value_out, message_out);
+    }
+    return solve_eval_expr(expr, options->var_name, var_value, value_out, message_out);
+}
+
 static int solve_eval_function(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out, const char **message_out) {
     double left;
     double right = 0.0;
 
-    if (solve_eval_expr(equation->left, options->var_name, x, &left, message_out) != 0) {
+    if (solve_eval_options_expr(equation->left, options, x, &left, message_out) != 0) {
         return -1;
     }
     if (equation->has_equation) {
-        if (solve_eval_expr(equation->right, options->var_name, x, &right, message_out) != 0) {
+        if (solve_eval_options_expr(equation->right, options, x, &right, message_out) != 0) {
             return -1;
         }
     }
@@ -754,7 +795,7 @@ static int solve_eval_function(const SolveEquation *equation, const SolveOptions
 static int solve_eval_y(const SolveEquation *equation, const SolveOptions *options, double x, double *value_out) {
     const char *message = 0;
     (void)equation;
-    return solve_eval_expr(equation->left, options->var_name, x, value_out, &message);
+    return solve_eval_options_expr(equation->left, options, x, value_out, &message);
 }
 
 

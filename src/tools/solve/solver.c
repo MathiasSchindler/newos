@@ -201,15 +201,37 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
                 }
             }
         } else if (i > 1 && curr_ok && solve_abs(curr_value) <= touch_tolerance && solve_abs(curr_value) <= solve_abs(prev_value) && solve_abs(curr_value) <= solve_abs(next_value)) {
+            double left = prev_x - step;
+            double right = next_x;
+            double best_x = curr_x;
+            double best_value = curr_value;
+            int refine;
+            if (left < lo) left = lo;
+            for (refine = 0; refine < 32; ++refine) {
+                double third = (right - left) / 3.0;
+                double m1 = left + third;
+                double m2 = right - third;
+                double v1;
+                double v2;
+                if (solve_eval_function(equation, options, m1, &v1, &message) != 0 || solve_eval_function(equation, options, m2, &v2, &message) != 0) break;
+                if (solve_abs(v1) < solve_abs(best_value)) { best_x = m1; best_value = v1; }
+                if (solve_abs(v2) < solve_abs(best_value)) { best_x = m2; best_value = v2; }
+                if (solve_abs(v1) < solve_abs(v2)) right = m2;
+                else left = m1;
+            }
             rt_memset(&result, 0, sizeof(result));
-            result.root = curr_x;
-            result.residual = curr_value;
-            result.lo = curr_x;
-            result.hi = curr_x;
-            result.iterations = 0;
-            result.status = solve_abs(curr_value) <= options->tolerance ? SOLVE_STATUS_ROOT : SOLVE_STATUS_CANDIDATE;
-            result.method = curr_value == 0.0 ? "exact-sample" : "scan";
-            if (solve_eval_y(equation, options, curr_x, &result.y) != 0) {
+            result.root = best_x;
+            result.residual = best_value;
+            result.lo = left;
+            result.hi = right;
+            result.iterations = refine;
+            result.status = solve_abs(best_value) <= options->tolerance ? SOLVE_STATUS_ROOT : SOLVE_STATUS_CANDIDATE;
+            result.method = best_value == 0.0 ? "exact-sample" : "adaptive-touching-scan";
+            result.approximate = best_value != 0.0;
+            if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+                rt_write_line(1, "adaptive scan: refined a near-zero local sample to check for a touching or flat root");
+            }
+            if (solve_eval_y(equation, options, best_x, &result.y) != 0) {
                 result.y = 0.0;
             }
             (void)solve_add_result(set, &result, 1, options->tolerance);

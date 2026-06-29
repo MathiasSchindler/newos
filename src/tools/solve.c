@@ -130,6 +130,8 @@ typedef struct {
     int have_asymptotes;
     int param_count;
     char param_names[SOLVE_MAX_PARAMS][SOLVE_NAME_CAPACITY];
+    int param_has_value[SOLVE_MAX_PARAMS];
+    double param_values[SOLVE_MAX_PARAMS];
     char at_spec[128];
     char subst_spec[128];
     char fit_points_spec[128];
@@ -192,10 +194,13 @@ static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, doubl
 static int solve_collect_rat_poly_roots(const SolveRatPoly *input, SolveBreakpoint *points, int *count_out);
 static void solve_print_rat_roots_line(const char *label, SolveBreakpoint *points, int count);
 static int solve_copy_range(char *dst, size_t dst_size, const char *src, size_t start, size_t end);
+static int solve_parse_double_arg(const char *text, double *value_out);
+static void solve_skip_text_spaces(const char *text, size_t *pos_io);
 static int solve_rat_poly_format_antiderivative(const SolveRatPoly *poly, const char *var_name, char *buffer, size_t buffer_size);
 static void solve_numeric_analysis_bounds(const SolveOptions *options, double *lo_out, double *hi_out);
 static double solve_numeric_derivative_value(const SolveEquation *equation, const SolveOptions *options, double x, int order, int *ok_out);
 static int solve_numeric_derivative_roots(const SolveEquation *equation, const SolveOptions *options, int order, double *roots, int *count_out);
+static int solve_split_rational_expr(const char *expr, char *num, size_t num_size, char *den, size_t den_size);
 
 static int solve_is_param_name(const SolveOptions *options, const char *name) {
     int i;
@@ -203,6 +208,36 @@ static int solve_is_param_name(const SolveOptions *options, const char *name) {
         if (rt_strcmp(options->param_names[i], name) == 0) return 1;
     }
     return 0;
+}
+
+static int solve_parse_param_option(const char *text, char *name, size_t name_size, int *has_value, double *value_out) {
+    size_t pos = 0U;
+    size_t start;
+    size_t end;
+    solve_skip_text_spaces(text, &pos);
+    start = pos;
+    if (!tool_ascii_is_identifier_start(text[pos])) return -1;
+    while (tool_ascii_is_identifier_char(text[pos])) pos += 1U;
+    end = pos;
+    if (solve_copy_range(name, name_size, text, start, end) != 0) return -1;
+    solve_skip_text_spaces(text, &pos);
+    *has_value = 0;
+    *value_out = 0.0;
+    if (text[pos] == '\0') return 0;
+    if (text[pos] != '=') return -1;
+    pos += 1U;
+    solve_skip_text_spaces(text, &pos);
+    if (text[pos] == '\0' || solve_parse_double_arg(text + pos, value_out) != 0) return -1;
+    *has_value = 1;
+    return 0;
+}
+
+static int solve_find_param_index(const SolveOptions *options, const char *name) {
+    int i;
+    for (i = 0; i < options->param_count; ++i) {
+        if (rt_strcmp(options->param_names[i], name) == 0) return i;
+    }
+    return -1;
 }
 
 static double solve_abs(double value) {
@@ -953,11 +988,17 @@ int main(int argc, char **argv) {
             options.quiet = 1;
         } else if (rt_strcmp(opt.flag, "--param") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 2;
-            if (options.param_count >= SOLVE_MAX_PARAMS || !tool_ascii_is_identifier_start(opt.value[0]) || rt_strlen(opt.value) >= SOLVE_NAME_CAPACITY) {
+            char param_name[SOLVE_NAME_CAPACITY];
+            int has_value;
+            double param_value;
+            if (options.param_count >= SOLVE_MAX_PARAMS || solve_parse_param_option(opt.value, param_name, sizeof(param_name), &has_value, &param_value) != 0) {
                 tool_write_error("solve", "invalid parameter name", opt.value);
                 return 2;
             }
-            rt_copy_string(options.param_names[options.param_count++], SOLVE_NAME_CAPACITY, opt.value);
+            rt_copy_string(options.param_names[options.param_count], SOLVE_NAME_CAPACITY, param_name);
+            options.param_has_value[options.param_count] = has_value;
+            options.param_values[options.param_count] = param_value;
+            options.param_count += 1;
         } else if (rt_strcmp(opt.flag, "--eval") == 0) {
             options.have_eval = 1;
         } else if (rt_strcmp(opt.flag, "--at") == 0) {

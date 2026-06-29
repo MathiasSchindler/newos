@@ -139,6 +139,9 @@ assert_file_contains "$WORK_DIR/custom-var.out" '^t = 3$' "solve did not report 
 "${TEST_BIN_DIR}/solve" --scan 0:6:120 'x^2 - 6*x + 9 = 0' > "$WORK_DIR/touching.out"
 assert_file_contains "$WORK_DIR/touching.out" '^x = 3$' "solve did not report a repeated/touching root"
 assert_file_contains "$WORK_DIR/touching.out" '^residual = 0\.0000000000$' "solve repeated root residual mismatch"
+"${TEST_BIN_DIR}/solve" --scan -1:1:40 'sin(x)^2 = 0' > "$WORK_DIR/adaptive-touching.out"
+assert_file_contains "$WORK_DIR/adaptive-touching.out" '^x = 0$' "solve adaptive scan did not refine a non-polynomial touching root"
+assert_file_contains "$WORK_DIR/adaptive-touching.out" '^method = adaptive-touching-scan$' "solve adaptive scan did not label the refined touching-root method"
 
 "${TEST_BIN_DIR}/solve" --report-y --scan -10:10 --all 'x^2 = 2*x + 3' > "$WORK_DIR/intersections.out"
 assert_file_contains "$WORK_DIR/intersections.out" '^x = -1$' "solve did not find the first intersection x-value"
@@ -229,6 +232,7 @@ assert_file_contains "$WORK_DIR/diff-product-exp-solve.out" '^x = 2$' "solve --d
 assert_file_contains "$WORK_DIR/diff-param.out" 'exp' "solve --diff should retain parameter factors"
 assert_file_contains "$WORK_DIR/diff-param.out" 'x - k' "solve --diff should differentiate with respect to x while treating k as a parameter"
 assert_file_contains "$WORK_DIR/diff-param.out" '3\*' "solve --diff should simplify constant factors in parameterized derivatives"
+assert_file_contains "$WORK_DIR/diff-param.out" '^exp[(]-k[)]\*[(][(]3\*[(]x - k[)]\^2[)] - 3[)]$' "solve --diff should keep parameterized derivatives readable"
 diff_inequality_status=0
 "${TEST_BIN_DIR}/solve" --diff 'x^2 > 1' > "$WORK_DIR/diff-inequality.out" 2> "$WORK_DIR/diff-inequality.err" || diff_inequality_status=$?
 assert_text_equals "$diff_inequality_status" '2' "solve --diff should reject inequality input"
@@ -258,6 +262,8 @@ improper_integral_status=0
 "${TEST_BIN_DIR}/solve" --integrate 1:3 '1/(x-2)' > "$WORK_DIR/integral-improper.out" 2> "$WORK_DIR/integral-improper.err" || improper_integral_status=$?
 assert_text_equals "$improper_integral_status" '3' "solve should return 3 for an improper integral over a discontinuity"
 assert_file_contains "$WORK_DIR/integral-improper.out" 'improper integral' "solve did not warn about an improper integral"
+assert_file_contains "$WORK_DIR/integral-improper.out" '^classification = divergent$' "solve did not classify the rational-pole improper integral as divergent"
+assert_file_contains "$WORK_DIR/integral-improper.out" '^method = rational-pole-detection$' "solve did not label rational-pole improper integral detection"
 integral_invalid_status=0
 "${TEST_BIN_DIR}/solve" --integrate 0,1 'x^2' > "$WORK_DIR/integral-invalid.out" 2> "$WORK_DIR/integral-invalid.err" || integral_invalid_status=$?
 assert_text_equals "$integral_invalid_status" '2' "solve --integrate should reject malformed bounds"
@@ -275,6 +281,15 @@ assert_file_contains "$WORK_DIR/diff-integrate.err" 'diff and --integrate cannot
 assert_file_contains "$WORK_DIR/antiderivative-square.out" '^F(x) = x\^3/3 + C$' "solve did not print the exact antiderivative of x^2"
 "${TEST_BIN_DIR}/solve" --antiderivative '3*x^2+2*x' > "$WORK_DIR/antiderivative-poly.out"
 assert_file_contains "$WORK_DIR/antiderivative-poly.out" '^F(x) = x\^3 + x\^2 + C$' "solve did not simplify an exact polynomial antiderivative"
+"${TEST_BIN_DIR}/solve" --antiderivative 'sin(x)' > "$WORK_DIR/antiderivative-sin.out"
+assert_file_contains "$WORK_DIR/antiderivative-sin.out" '^F[(]x[)] = -cos[(]x[)] [+] C$' "solve did not use the symbolic table for integral sin(x)"
+assert_file_contains "$WORK_DIR/antiderivative-sin.out" '^method = symbolic-table$' "solve did not label symbolic-table antiderivatives"
+"${TEST_BIN_DIR}/solve" --antiderivative 'cos(2*x)' > "$WORK_DIR/antiderivative-cos-linear.out"
+assert_file_contains "$WORK_DIR/antiderivative-cos-linear.out" '^F[(]x[)] = sin[(]2\*x[)]/2 [+] C$' "solve did not use the chain factor for integral cos(2*x)"
+"${TEST_BIN_DIR}/solve" --antiderivative 'exp(-0.5*x)' > "$WORK_DIR/antiderivative-exp-linear.out"
+assert_file_contains "$WORK_DIR/antiderivative-exp-linear.out" '^F[(]x[)] = -2\*exp[(]-0\.5\*x[)] [+] C$' "solve did not use the chain factor for integral exp(-0.5*x)"
+"${TEST_BIN_DIR}/solve" --antiderivative '1/x' > "$WORK_DIR/antiderivative-one-over-x.out"
+assert_file_contains "$WORK_DIR/antiderivative-one-over-x.out" '^F[(]x[)] = log[(]abs[(]x[)][)] [+] C$' "solve did not use the symbolic table for integral 1/x"
 
 "${TEST_BIN_DIR}/solve" --monotonicity 'x^2' > "$WORK_DIR/monotonicity-square.out"
 assert_file_contains "$WORK_DIR/monotonicity-square.out" '^decreasing = (-inf, 0)$' "solve did not report the decreasing interval of x^2"
@@ -293,6 +308,9 @@ assert_file_contains "$WORK_DIR/curvature-exp-poly.out" '^left-curved = (3\.4142
 
 "${TEST_BIN_DIR}/solve" --tangent 2 'x^2' > "$WORK_DIR/tangent-square.out"
 assert_file_contains "$WORK_DIR/tangent-square.out" '^tangent: y = 4\*x - 4$' "solve did not print the exact tangent line at x=2 for x^2"
+"${TEST_BIN_DIR}/solve" --explain --tangent 2 'x^2*exp(-x)' > "$WORK_DIR/tangent-exp-poly.out"
+assert_file_contains "$WORK_DIR/tangent-exp-poly.out" '^method = exact-exp-polynomial-derivative-factor$' "solve tangent should reuse the exact exp-polynomial derivative factor"
+assert_file_contains "$WORK_DIR/tangent-exp-poly.out" '^tangent approximate: y = 0\*x [+] 0\.5413411329$' "solve exp-polynomial tangent output mismatch"
 "${TEST_BIN_DIR}/solve" --normal 0 'x^2' > "$WORK_DIR/normal-vertical.out"
 assert_file_contains "$WORK_DIR/normal-vertical.out" '^normal: x = 0$' "solve did not report a vertical normal at a horizontal tangent"
 
@@ -331,6 +349,9 @@ assert_file_contains "$WORK_DIR/area-odd.out" '^area = 1/2$' "solve area must su
 assert_file_contains "$WORK_DIR/area-parabola-line.out" '^area = 4/3$' "solve exact area between 2*x and x^2 mismatch"
 "${TEST_BIN_DIR}/solve" --area '2*x' 'x^2' > "$WORK_DIR/area-auto-bounds.out"
 assert_file_contains "$WORK_DIR/area-auto-bounds.out" '^area = 4/3$' "solve did not infer area bounds from exact intersections"
+"${TEST_BIN_DIR}/solve" --scan 0:4:400 --area 'sin(x)' '0' > "$WORK_DIR/area-numeric-auto-bounds.out"
+assert_file_contains "$WORK_DIR/area-numeric-auto-bounds.out" '^area = 2\.0000000000$' "solve did not infer numeric omitted area bounds from scan roots"
+assert_file_contains "$WORK_DIR/area-numeric-auto-bounds.out" '^method = simpson$' "solve numeric omitted-bound area should use Simpson integration"
 "${TEST_BIN_DIR}/solve" --area-quadrant II 'x^3 - 3*x' '0' > "$WORK_DIR/area-quadrant.out"
 assert_file_contains "$WORK_DIR/area-quadrant.out" '^area = 2\.2500000000$' "solve quadrant area mismatch"
 assert_file_contains "$WORK_DIR/area-quadrant.out" '^rational area hint = 9/4$' "solve quadrant area should offer a rational hint for the irrational-endpoint polynomial lobe"
@@ -338,15 +359,28 @@ assert_file_contains "$WORK_DIR/area-quadrant.out" '^method = simpson$' "solve q
 
 "${TEST_BIN_DIR}/solve" --eval --at x=2 'x^2*exp(-x)' > "$WORK_DIR/eval-at.out"
 assert_file_contains "$WORK_DIR/eval-at.out" '^value = 0\.5413411329$' "solve --eval --at output mismatch"
+"${TEST_BIN_DIR}/solve" --param k=2 --eval --at x=3 'k*x + 1' > "$WORK_DIR/eval-param-value.out"
+assert_file_contains "$WORK_DIR/eval-param-value.out" '^value = 7\.0000000000$' "solve --param NAME=VALUE should bind numeric parameters during evaluation"
+assert_file_contains "$WORK_DIR/eval-param-value.out" '^method = direct-evaluation$' "solve numeric parameter evaluation should remain direct evaluation"
 "${TEST_BIN_DIR}/solve" --subst x=k 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/subst.out"
 assert_file_contains "$WORK_DIR/subst.out" '^exp(-k)' "solve --subst output missing leading factor"
 assert_file_contains "$WORK_DIR/subst.out" 'k\^2' "solve --subst should simplify substituted zero differences"
 if grep -q 'k-k' "$WORK_DIR/subst.out"; then
 	fail "solve --subst left an unsimplified k-k term"
 fi
+"${TEST_BIN_DIR}/solve" --subst x=2 'x^2 + 3*x' > "$WORK_DIR/subst-folded.out"
+assert_file_contains "$WORK_DIR/subst-folded.out" '^10$' "solve --subst should fold numeric constants after substitution"
 "${TEST_BIN_DIR}/solve" --eval --at x=k 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/eval-symbolic-at.out"
-assert_file_contains "$WORK_DIR/eval-symbolic-at.out" '^value expression = exp[(]-k[)]\*[(]k\^2[)]$' "solve --eval --at should fall back to symbolic substitution for parameter values"
+assert_file_contains "$WORK_DIR/eval-symbolic-at.out" '^value expression = exp[(]-k[)]\*k\^2$' "solve --eval --at should fall back to symbolic substitution for parameter values"
 assert_file_contains "$WORK_DIR/eval-symbolic-at.out" '^method = symbolic-substitution$' "solve symbolic --eval --at should label the fallback method"
+"${TEST_BIN_DIR}/solve" --explain --subst x=k 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/explain-subst.out"
+assert_file_contains "$WORK_DIR/explain-subst.out" '^after replacement: exp[(]-k[)]\*[(][(]k-k[)]\^3 - 3\*[(]k-k[)] [+] k\^2[)]$' "solve --explain --subst should show the expression before simplification"
+assert_file_contains "$WORK_DIR/explain-subst.out" '^- identical terms cancel: k - k = 0$' "solve --explain --subst should show the k-k cancellation step"
+assert_file_contains "$WORK_DIR/explain-subst.out" '^- positive powers of zero collapse: 0\^n = 0$' "solve --explain --subst should show the zero-power simplification rule"
+assert_file_contains "$WORK_DIR/explain-subst.out" '^simplified expression: exp[(]-k[)]\*k\^2$' "solve --explain --subst should show the simplified expression"
+"${TEST_BIN_DIR}/solve" --explain --eval --at x=k 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/explain-eval-symbolic-at.out"
+assert_file_contains "$WORK_DIR/explain-eval-symbolic-at.out" '^explain: symbolic evaluation$' "solve --explain symbolic eval should identify symbolic evaluation mode"
+assert_file_contains "$WORK_DIR/explain-eval-symbolic-at.out" '^simplified expression: exp[(]-k[)]\*k\^2$' "solve --explain symbolic eval should show the simplified value expression"
 "${TEST_BIN_DIR}/solve" --average-rate 11:21 '18 + 36*exp(-0.033*x)' > "$WORK_DIR/average-rate.out"
 assert_file_contains "$WORK_DIR/average-rate.out" '^average rate approximate = -0\.7038462161$' "solve average rate mismatch"
 "${TEST_BIN_DIR}/solve" --max --range -0.5:inf 'x^2*exp(-x)' > "$WORK_DIR/max-exp.out"
@@ -354,6 +388,9 @@ assert_file_contains "$WORK_DIR/max-exp.out" '^maximum: (2, 0\.5413411329)$' "so
 assert_file_contains "$WORK_DIR/max-exp.out" '^method = exact-exp-polynomial-critical-points$' "solve should use exact exp-polynomial critical points"
 "${TEST_BIN_DIR}/solve" --integrate -1.7320508075688772:0 'x^3 - 3*x' > "$WORK_DIR/integral-overflow-fallback.out"
 assert_file_contains "$WORK_DIR/integral-overflow-fallback.out" '^method = simpson$' "solve exact integration overflow should fall back to Simpson"
+"${TEST_BIN_DIR}/solve" --param b=2 --integrate 0:b 'x' > "$WORK_DIR/integral-param-bound.out"
+assert_file_contains "$WORK_DIR/integral-param-bound.out" '^integral = 2\.0000000000$' "solve --integrate should accept numeric parameter bounds"
+assert_file_contains "$WORK_DIR/integral-param-bound.out" '^method = simpson$' "solve numeric parameter bounds should use numeric integration when exact bounds are not literal rationals"
 "${TEST_BIN_DIR}/solve" --fit-exp-asymptote 18 --points '1:71,10:51' > "$WORK_DIR/fit-exp.out"
 assert_file_contains "$WORK_DIR/fit-exp.out" '^b = 55\.8648074527$' "solve exponential-asymptote fit b mismatch"
 assert_file_contains "$WORK_DIR/fit-exp.out" '^c = 0\.0526427058$' "solve exponential-asymptote fit c mismatch"
@@ -385,6 +422,9 @@ assert_file_contains "$WORK_DIR/limit-jump.out" '^right = 1$' "solve finite jump
 "${TEST_BIN_DIR}/solve" --asymptotes '(x^2 + 1)/(x - 1)' > "$WORK_DIR/asymptotes-rational.out"
 assert_file_contains "$WORK_DIR/asymptotes-rational.out" '^vertical: x = 1$' "solve did not report the vertical asymptote"
 assert_file_contains "$WORK_DIR/asymptotes-rational.out" '^oblique: y = x + 1$' "solve did not report the oblique asymptote"
+"${TEST_BIN_DIR}/solve" --asymptotes '1 + 2/(x-3)' > "$WORK_DIR/asymptotes-sum-rational.out"
+assert_file_contains "$WORK_DIR/asymptotes-sum-rational.out" '^vertical: x = 3$' "solve did not normalize quotient-plus-polynomial asymptote input"
+assert_file_contains "$WORK_DIR/asymptotes-sum-rational.out" '^horizontal: y = 1$' "solve did not report the horizontal asymptote of quotient-plus-polynomial input"
 
 "${TEST_BIN_DIR}/solve" --explain --antiderivative 'x^2' > "$WORK_DIR/explain-antiderivative.out"
 assert_file_contains "$WORK_DIR/explain-antiderivative.out" '^explain: antiderivative$' "solve --explain did not identify antiderivative mode"
@@ -528,13 +568,13 @@ assert_file_contains "$WORK_DIR/round.out" '^x = 1\.5000000000' "solve did not s
 
 # Symbolic derivatives of extended functions
 "${TEST_BIN_DIR}/solve" --diff 'tan(x)' > "$WORK_DIR/diff-tan.out"
-assert_file_contains "$WORK_DIR/diff-tan.out" '^[(]1/[(]cos[(]x[)]\^2[)][)]$' "solve --diff tan mismatch"
+assert_file_contains "$WORK_DIR/diff-tan.out" '^1/cos[(]x[)]\^2$' "solve --diff tan mismatch"
 "${TEST_BIN_DIR}/solve" --diff 'sinh(x)' > "$WORK_DIR/diff-sinh.out"
 assert_file_contains "$WORK_DIR/diff-sinh.out" '^cosh[(]x[)]$' "solve --diff sinh mismatch"
 "${TEST_BIN_DIR}/solve" --diff 'cosh(x)' > "$WORK_DIR/diff-cosh.out"
 assert_file_contains "$WORK_DIR/diff-cosh.out" '^sinh[(]x[)]$' "solve --diff cosh mismatch"
 "${TEST_BIN_DIR}/solve" --diff 'tanh(x)' > "$WORK_DIR/diff-tanh.out"
-assert_file_contains "$WORK_DIR/diff-tanh.out" '^[(]1/[(]cosh[(]x[)]\^2[)][)]$' "solve --diff tanh mismatch"
+assert_file_contains "$WORK_DIR/diff-tanh.out" '^1/cosh[(]x[)]\^2$' "solve --diff tanh mismatch"
 "${TEST_BIN_DIR}/solve" --diff 'asin(x)' > "$WORK_DIR/diff-asin.out"
 assert_file_contains "$WORK_DIR/diff-asin.out" 'sqrt' "solve --diff asin should contain sqrt(1 - x^2)"
 diff_floor_status=0

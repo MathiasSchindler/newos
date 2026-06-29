@@ -97,7 +97,7 @@ static int solve_split_integral_bounds(const char *text, char *left, size_t left
 
 static int solve_eval_bound_expr(const char *text, const SolveOptions *options, double *out) {
     const char *message = 0;
-    return solve_eval_expr(text, options->var_name, 0.0, out, &message);
+    return solve_eval_options_expr(text, options, 0.0, out, &message);
 }
 
 static int solve_parse_assignment_spec(const char *text, char *name, size_t name_size, char *value, size_t value_size) {
@@ -121,7 +121,7 @@ static int solve_parse_assignment_spec(const char *text, char *name, size_t name
 
 static int solve_eval_expr_at(const char *expr, const SolveOptions *options, double at, double *out) {
     const char *message = 0;
-    return solve_eval_expr(expr, options->var_name, at, out, &message);
+    return solve_eval_options_expr(expr, options, at, out, &message);
 }
 
 static int solve_identifier_substitute(const char *expr, const char *old_name, const char *new_text, char *out, size_t out_size);
@@ -153,6 +153,39 @@ static int solve_simplify_with_optional_symbol(const SolveOptions *options, cons
     return solve_symbolic_simplify_text(expr, &local, out, out_size);
 }
 
+static int solve_contains_subtext(const char *text, const char *needle) {
+    size_t needle_len = rt_strlen(needle);
+    size_t pos;
+    if (needle_len == 0U) return 1;
+    for (pos = 0U; text[pos] != '\0'; ++pos) {
+        if (rt_strncmp(text + pos, needle, needle_len) == 0) return 1;
+    }
+    return 0;
+}
+
+static void solve_explain_symbolic_simplification(const SolveOptions *options, const char *before, const char *after, const char *symbol_text) {
+    char symbol[SOLVE_NAME_CAPACITY];
+    if (!solve_should_explain(options) || rt_strcmp(before, after) == 0) return;
+    rt_write_line(1, "simplification steps:");
+    if (symbol_text != 0 && solve_identifier_name_only(symbol_text, symbol, sizeof(symbol)) == 0) {
+        char pattern[SOLVE_NAME_CAPACITY * 2];
+        size_t used = 0U;
+        pattern[0] = '\0';
+        if (solve_append_text(pattern, sizeof(pattern), &used, symbol) == 0 && solve_append_char(pattern, sizeof(pattern), &used, '-') == 0 && solve_append_text(pattern, sizeof(pattern), &used, symbol) == 0 && solve_contains_subtext(before, pattern)) {
+            rt_write_cstr(1, "- identical terms cancel: ");
+            rt_write_cstr(1, symbol);
+            rt_write_cstr(1, " - ");
+            rt_write_cstr(1, symbol);
+            rt_write_line(1, " = 0");
+        }
+    }
+    rt_write_line(1, "- zero factors collapse: 0*a = 0");
+    rt_write_line(1, "- positive powers of zero collapse: 0^n = 0");
+    rt_write_line(1, "- neutral terms are removed: a+0 = a, a-0 = a, a*1 = a, a/1 = a");
+    rt_write_cstr(1, "simplified expression: ");
+    rt_write_line(1, after);
+}
+
 static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
     SolveOptions local = *options;
     char name[SOLVE_NAME_CAPACITY];
@@ -177,6 +210,18 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
                 if (solve_identifier_substitute(expr, name, value_text, substituted, sizeof(substituted)) != 0 || solve_simplify_with_optional_symbol(options, substituted, value_text, simplified, sizeof(simplified)) != 0) {
                     tool_write_error("solve", "invalid --at value", value_text);
                     return 2;
+                }
+                if (solve_should_explain(options)) {
+                    rt_write_line(1, "explain: symbolic evaluation");
+                    rt_write_cstr(1, "expression: ");
+                    rt_write_line(1, expr);
+                    rt_write_cstr(1, "substitution: ");
+                    rt_write_cstr(1, name);
+                    rt_write_cstr(1, " = ");
+                    rt_write_line(1, value_text);
+                    rt_write_cstr(1, "after replacement: ");
+                    rt_write_line(1, substituted);
+                    solve_explain_symbolic_simplification(options, substituted, simplified, value_text);
                 }
                 if (tool_json_is_enabled()) solve_emit_kv("value expression", simplified);
                 else {
@@ -250,7 +295,21 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
         tool_write_error("solve", "substitution output too large", 0);
         return 2;
     }
-    if (solve_simplify_with_optional_symbol(options, out, replacement, simplified, sizeof(simplified)) == 0) rt_copy_string(out, sizeof(out), simplified);
+    if (solve_should_explain(options)) {
+        rt_write_line(1, "explain: substitution");
+        rt_write_cstr(1, "expression: ");
+        rt_write_line(1, expr);
+        rt_write_cstr(1, "replacement: ");
+        rt_write_cstr(1, name);
+        rt_write_cstr(1, " = ");
+        rt_write_line(1, replacement);
+        rt_write_cstr(1, "after replacement: ");
+        rt_write_line(1, out);
+    }
+    if (solve_simplify_with_optional_symbol(options, out, replacement, simplified, sizeof(simplified)) == 0) {
+        solve_explain_symbolic_simplification(options, out, simplified, replacement);
+        rt_copy_string(out, sizeof(out), simplified);
+    }
     if (tool_json_is_enabled()) {
         solve_emit_kv("expression", out);
     } else {
@@ -326,6 +385,31 @@ static int solve_simpson_square_eval(const SolveEquation *equation, const SolveO
     return solve_is_bad(*out) ? -1 : 0;
 }
 
+static int solve_report_improper_integral_pole(const SolveEquation *equation, const SolveOptions *options, double lo, double hi) {
+    char num_text[SOLVE_EXPR_CAPACITY];
+    char den_text[SOLVE_EXPR_CAPACITY];
+    SolveRatPoly num;
+    SolveRatPoly den;
+    SolveBreakpoint roots[SOLVE_MAX_RESULTS];
+    int root_count = 0;
+    int i;
+    if (equation->has_equation || solve_split_rational_expr(equation->left, num_text, sizeof(num_text), den_text, sizeof(den_text)) != 0 || solve_parse_rat_text(num_text, options->var_name, &num) != 0 || solve_parse_rat_text(den_text, options->var_name, &den) != 0) return 0;
+    if (solve_collect_rat_poly_roots(&den, roots, &root_count) != 0) return 0;
+    solve_sort_breakpoints(roots, &root_count, options->tolerance);
+    for (i = 0; i < root_count; ++i) {
+        SolveRat numerator_at_root;
+        double root = roots[i].value;
+        if (root <= lo || root >= hi || !roots[i].exact) continue;
+        if (solve_rat_poly_eval(&num, solve_rat_poly_degree(&num), roots[i].rat_value, &numerator_at_root) != 0 || solve_rat_is_zero(numerator_at_root)) continue;
+        rt_write_cstr(1, "improper integral: pole at x = ");
+        rt_write_line(1, roots[i].label);
+        rt_write_line(1, "classification = divergent");
+        rt_write_line(1, "method = rational-pole-detection");
+        return 1;
+    }
+    return 0;
+}
+
 static void solve_numeric_analysis_bounds(const SolveOptions *options, double *lo_out, double *hi_out) {
     *lo_out = options->default_scan ? -10.0 : options->scan_lo;
     *hi_out = options->default_scan ? 10.0 : options->scan_hi;
@@ -392,6 +476,7 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
         double error;
         char value[96];
         if (solve_simpson_eval(equation, options, lo, hi, 1000, &coarse) != 0 || solve_simpson_eval(equation, options, lo, hi, 2000, &fine) != 0) {
+            if (solve_report_improper_integral_pole(equation, options, lo, hi)) return 3;
             if (!options->quiet) solve_emit_kv("status", "improper integral over a discontinuity or invalid point");
             return 3;
         }
