@@ -12,8 +12,15 @@ solve [OPTIONS] 'EXPRESSION'
 solve [OPTIONS] --report-y 'Y1 = Y2'
 solve [OPTIONS] --area A:B 'F' 'G'
 solve [OPTIONS] --area 'F' 'G'
+solve [OPTIONS] --area-quadrant I|II|III|IV 'F' 'G'
 solve [OPTIONS] --volume A:B 'F'
 solve [OPTIONS] --mean A:B 'F'
+solve [OPTIONS] --average-rate A:B 'F'
+solve [OPTIONS] --max --range A:B 'F'
+solve [OPTIONS] --min --range A:B 'F'
+solve [OPTIONS] --eval [--at x=A] 'F'
+solve [OPTIONS] --subst x=EXPR 'F'
+solve [OPTIONS] --fit-exp-asymptote A --points 'T1:Y1,T2:Y2'
 ```
 
 ## DESCRIPTION
@@ -48,8 +55,14 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - rational-root factoring for higher-degree polynomials in the supported subset
 - exact polynomial identity detection for rational-literal polynomial expressions, including finite decimal literals such as `0.1`
 - exact polynomial derivatives and definite integrals for supported rational-literal polynomial expressions
+- bounded symbolic derivatives for common non-polynomial expressions using sum, product, quotient, power, and chain rules
+- parameter names declared with `--param NAME` for symbolic differentiation with respect to the selected variable only
+- direct expression evaluation with `--eval`, point evaluation with `--at`, and textual identifier substitution with `--subst`
 - exact polynomial antiderivatives, monotonicity, curvature, tangent and normal lines, end behavior, and curve-discussion summaries
+- average rates and numeric extrema over finite ranges, with exploratory finite windows for infinite range endpoints
 - exact polynomial area between two curves, rotation volume around the x-axis, and mean value over an interval
+- quadrant-lobe area selection for exam-style enclosed regions when polynomial intersections can be found
+- a two-point exponential-asymptote fit for models of the form `a + b*exp(-c*x)`
 - simple numeric limit checks and rational-polynomial asymptote detection
 - Simpson-rule numerical definite integration for non-polynomial expressions, with approximate labeling and an error estimate
 - approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
@@ -72,7 +85,8 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--report-y` reports the y-value of the left side of an equation, useful for curve intersections
 - `--explain` prints a didactic trace or certificate for the selected solving, inequality, calculus, or analysis mode
 - `--quiet` prints only the final answer
-- `--diff[=N]` prints the Nth exact polynomial derivative; with an equation input, it solves the Nth derivative set equal to 0
+- `--param NAME` declares `NAME` as a symbolic parameter rather than the solving variable
+- `--diff[=N]` prints the Nth derivative; exact rational-polynomial derivatives are preferred, then bounded symbolic differentiation is tried for common expression forms; with an equation input, it solves the Nth derivative set equal to 0
 - `--integrate A:B` computes the definite integral over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
 - `--antiderivative` prints an exact polynomial antiderivative plus `C`
 - `--monotonicity` reports increasing and decreasing intervals
@@ -82,8 +96,15 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--end-behavior` prints polynomial limits as `x` approaches positive and negative infinity
 - `--discuss` prints a compact curve discussion: domain, symmetry, zeros, extrema, inflection points, monotonicity, curvature, and end behavior when available
 - `--area A:B F G` computes area between two curves on `[A, B]`; if `A:B` is omitted, `--area F G` uses the leftmost and rightmost exact polynomial intersections when they can be proven
+- `--area-quadrant I|II|III|IV F G` chooses the enclosed lobe whose midpoint lies in the requested quadrant and computes its area
 - `--volume A:B F` computes the volume of rotation around the x-axis as `pi*(integral f(x)^2 dx)`, exactly for supported rational polynomials and numerically otherwise
 - `--mean A:B F` computes the mean value over `[A, B]`, exactly for supported rational polynomials and numerically otherwise
+- `--average-rate A:B F` computes `(F(B)-F(A))/(B-A)`
+- `--max --range A:B F` and `--min --range A:B F` compare endpoints and numeric critical points over the range; `inf` endpoints are sampled over an exploratory finite window
+- `--eval F` evaluates an expression at the current variable value 0 unless `--at` is supplied
+- `--at x=A` supplies a point for `--eval`
+- `--subst NAME=EXPR F` replaces identifier occurrences textually and prints the resulting expression
+- `--fit-exp-asymptote A --points T1:Y1,T2:Y2` fits `A + b*exp(-c*x)` through two points
 - `--limit x->A` samples a two-sided limit, with exact rational simplification for supported rational-polynomial quotients
 - `--asymptotes` reports vertical, horizontal, or oblique asymptotes for supported rational-polynomial quotients
 - `--json` writes machine-readable result and diagnostic events
@@ -103,11 +124,15 @@ Quadratics are solved directly. When the exact rational discriminant is negative
 
 Inequalities form the same zero function and report solution intervals. Supported rational polynomials use exact roots and exact sign tests, so unbounded intervals such as `(-inf, -2)` and `[2, inf)` are true real intervals rather than clipped scan ranges. Non-polynomial inequalities use the numeric evaluator over the scan range and say that the answer is within that range.
 
-`--diff` uses exact rational polynomial coefficients and the power rule. Without an equation, it prints the derivative polynomial. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions. Non-polynomial differentiation is intentionally rejected.
+`--diff` uses exact rational polynomial coefficients and the power rule when possible. If the expression is not in the polynomial subset, it tries a bounded symbolic differentiator for the existing expression language: sums, differences, products, quotients, constant powers, `sin`, `cos`, `exp`, `log`/`ln`, `sqrt`, `atan`, and the corresponding chain rule. Parameters declared with `--param` are treated as constants. Without an equation, `--diff` prints the derivative expression. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions.
 
-`--integrate A:B` first tries exact rational polynomial integration by building an exact antiderivative and evaluating it at the bounds. If the integrand is outside the polynomial subset, it uses composite Simpson integration with one Richardson refinement and marks the result approximate. If evaluation fails inside the interval, for example across a pole, the integral is reported as improper and exits with numeric failure status.
+`--integrate A:B` first tries exact rational polynomial integration by building an exact antiderivative and evaluating it at the bounds. If the integrand is outside the polynomial subset, or exact rational evaluation overflows because a decimal bound expands to a very large rational, it uses composite Simpson integration with one Richardson refinement and marks the result approximate. If evaluation fails inside the interval, for example across a pole, the integral is reported as improper and exits with numeric failure status.
 
 The analysis modes are additive front ends over the same evaluator, exact rational polynomial layer, root finder, and interval sign analysis. `--antiderivative`, `--monotonicity`, `--curvature`, `--tangent`, `--normal`, `--end-behavior`, `--area`, `--volume`, and `--mean` prefer exact rational polynomial arithmetic. Non-polynomial monotonicity, curvature, tangent, normal, discussion, area, volume, mean, and limit work use numerical sampling and label such output approximate. Exact claims are made only from the exact rational-polynomial path.
+
+`--eval`, `--at`, and `--subst` are convenience modes for Abitur-style intermediate work. `--eval --at x=A F` evaluates a function value directly; `--subst NAME=EXPR F` performs textual identifier substitution, useful for checking expressions such as `f_k(k)`. `--average-rate A:B F` evaluates the secant slope `(F(B)-F(A))/(B-A)`. `--max` and `--min` over `--range A:B` compare endpoints and numeric critical points; infinite endpoints are explored over a finite window, so the result is approximate. `--fit-exp-asymptote A --points T1:Y1,T2:Y2` fits `A + b*exp(-c*x)` by eliminating `b` from the two shifted point values.
+
+`--area-quadrant` is an exam-style helper for enclosed lobes. It finds consecutive polynomial intersections, selects the interval whose midpoint lies in the requested quadrant, and computes the lobe area. If the selected endpoints are exact rational roots, the area can be exact; otherwise it falls back to Simpson integration and labels the result approximate.
 
 `--discuss` combines the primitive analysis results. For supported polynomials it reports exact zeros, extrema classified by derivative sign change, saddle points where the first derivative does not change sign, inflection points from the second derivative, monotonicity and curvature intervals, and end behavior. For non-polynomial expressions it reports the sampled window, numeric zeros, critical points, inflection points, monotonicity and curvature intervals, and simple end-behavior or horizontal-asymptote hints where sampling supports them. Those results are approximate and bounded by the scan window.
 
@@ -208,6 +233,10 @@ A `solve_result` data object includes the variable name, root value, residual, m
 - no general symbolic algebra; `auto` can directly handle supported exact rational polynomial expressions through degree 8 and supported floating-point polynomial expressions through degree 16, including linear isolation, real quadratic roots, simple quadratic factoring explanations, rational-root factoring for higher degrees in those subsets, and polynomial identities, but it does not factor degree-17 or higher polynomials, isolate variables in arbitrary expressions, or prove non-polynomial identities
 - exact polynomial coefficient arithmetic is bounded; if rational numerators, denominators, common denominators, expansion products, divisor enumeration, or degree exceed the exact front-end limits, `solve` falls back to the floating-point polynomial or numeric path
 - exact inequalities, derivatives, polynomial integration, and most exact analysis results are limited to the supported rational polynomial subset; non-polynomial inequalities, integrals, volume, mean, and discussion use bounded numerical methods
+- symbolic non-polynomial derivatives are intentionally expression-level output, not a simplifier; results may contain explicit factors such as `*1`, `*(-1)`, or nested parentheses
+- `--param` affects symbolic differentiation and validation only; numeric evaluation still requires concrete numeric expressions
+- `--subst` is textual identifier substitution, not algebraic simplification
+- `--max` and `--min` over infinite ranges use finite exploratory windows and cannot prove global extrema in general
 - `--area F G` without explicit bounds requires at least two exact polynomial intersections; numeric omitted-bound discovery is not implemented
 - `--asymptotes` is limited to rational-polynomial quotients written as one numerator divided by one denominator
 - numerical integration is composite Simpson integration, not a symbolic antiderivative engine, and improper integrals over detected discontinuities are rejected rather than assigned a finite number

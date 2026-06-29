@@ -216,10 +216,14 @@ assert_file_contains "$WORK_DIR/diff-solve.out" '^status = approximate$' "solve 
 assert_file_contains "$WORK_DIR/diff0.out" '^x\^2 + 3\*x + 2$' "solve --diff=0 did not print the original polynomial"
 "${TEST_BIN_DIR}/solve" --diff=3 'x^2+3*x+2' > "$WORK_DIR/diff3.out"
 assert_file_contains "$WORK_DIR/diff3.out" '^0$' "solve did not reduce an over-differentiated polynomial to zero"
-diff_nonpoly_status=0
-"${TEST_BIN_DIR}/solve" --diff 'sin(x)' > "$WORK_DIR/diff-nonpoly.out" 2> "$WORK_DIR/diff-nonpoly.err" || diff_nonpoly_status=$?
-assert_text_equals "$diff_nonpoly_status" '2' "solve --diff should reject non-polynomial input"
-assert_file_contains "$WORK_DIR/diff-nonpoly.err" 'derivative supported only for polynomials' "solve --diff non-polynomial diagnostic mismatch"
+"${TEST_BIN_DIR}/solve" --diff 'sin(x)' > "$WORK_DIR/diff-nonpoly.out"
+assert_file_contains "$WORK_DIR/diff-nonpoly.out" '^[(]cos[(]x[)]\*1[)]$' "solve --diff should symbolically differentiate sin(x)"
+"${TEST_BIN_DIR}/solve" --diff 'x^2*exp(-x)' > "$WORK_DIR/diff-product-exp.out"
+assert_file_contains "$WORK_DIR/diff-product-exp.out" 'exp' "solve --diff product/chain output should contain exp"
+assert_file_contains "$WORK_DIR/diff-product-exp.out" '2\.0000000000\*' "solve --diff product output should contain the power-rule coefficient"
+"${TEST_BIN_DIR}/solve" --param k --var x --diff 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/diff-param.out"
+assert_file_contains "$WORK_DIR/diff-param.out" 'exp' "solve --diff should retain parameter factors"
+assert_file_contains "$WORK_DIR/diff-param.out" 'x - k' "solve --diff should differentiate with respect to x while treating k as a parameter"
 diff_inequality_status=0
 "${TEST_BIN_DIR}/solve" --diff 'x^2 > 1' > "$WORK_DIR/diff-inequality.out" 2> "$WORK_DIR/diff-inequality.err" || diff_inequality_status=$?
 assert_text_equals "$diff_inequality_status" '2' "solve --diff should reject inequality input"
@@ -312,6 +316,24 @@ assert_file_contains "$WORK_DIR/area-odd.out" '^area = 1/2$' "solve area must su
 assert_file_contains "$WORK_DIR/area-parabola-line.out" '^area = 4/3$' "solve exact area between 2*x and x^2 mismatch"
 "${TEST_BIN_DIR}/solve" --area '2*x' 'x^2' > "$WORK_DIR/area-auto-bounds.out"
 assert_file_contains "$WORK_DIR/area-auto-bounds.out" '^area = 4/3$' "solve did not infer area bounds from exact intersections"
+"${TEST_BIN_DIR}/solve" --area-quadrant II 'x^3 - 3*x' '0' > "$WORK_DIR/area-quadrant.out"
+assert_file_contains "$WORK_DIR/area-quadrant.out" '^area = 2\.2500000000$' "solve quadrant area mismatch"
+assert_file_contains "$WORK_DIR/area-quadrant.out" '^method = simpson$' "solve quadrant area with irrational endpoints should use numeric fallback"
+
+"${TEST_BIN_DIR}/solve" --eval --at x=2 'x^2*exp(-x)' > "$WORK_DIR/eval-at.out"
+assert_file_contains "$WORK_DIR/eval-at.out" '^value = 0\.5413411329$' "solve --eval --at output mismatch"
+"${TEST_BIN_DIR}/solve" --subst x=k 'exp(-k)*((x-k)^3 - 3*(x-k) + k^2)' > "$WORK_DIR/subst.out"
+assert_file_contains "$WORK_DIR/subst.out" '^exp(-k)' "solve --subst output missing leading factor"
+assert_file_contains "$WORK_DIR/subst.out" 'k-k' "solve --subst output did not replace x with k"
+"${TEST_BIN_DIR}/solve" --average-rate 11:21 '18 + 36*exp(-0.033*x)' > "$WORK_DIR/average-rate.out"
+assert_file_contains "$WORK_DIR/average-rate.out" '^average rate approximate = -0\.7038462161$' "solve average rate mismatch"
+"${TEST_BIN_DIR}/solve" --max --range -0.5:inf 'x^2*exp(-x)' > "$WORK_DIR/max-exp.out"
+assert_file_contains "$WORK_DIR/max-exp.out" '^maximum approximate: (2, 0\.5413411329)$' "solve numeric maximum mismatch"
+"${TEST_BIN_DIR}/solve" --integrate -1.7320508075688772:0 'x^3 - 3*x' > "$WORK_DIR/integral-overflow-fallback.out"
+assert_file_contains "$WORK_DIR/integral-overflow-fallback.out" '^method = simpson$' "solve exact integration overflow should fall back to Simpson"
+"${TEST_BIN_DIR}/solve" --fit-exp-asymptote 18 --points '1:71,10:51' > "$WORK_DIR/fit-exp.out"
+assert_file_contains "$WORK_DIR/fit-exp.out" '^b = 55\.8648074527$' "solve exponential-asymptote fit b mismatch"
+assert_file_contains "$WORK_DIR/fit-exp.out" '^c = 0\.0526427058$' "solve exponential-asymptote fit c mismatch"
 
 "${TEST_BIN_DIR}/solve" --volume 0:1 'x' > "$WORK_DIR/volume-line.out"
 assert_file_contains "$WORK_DIR/volume-line.out" '^volume = pi\*(1/3)$' "solve exact rotation volume mismatch"

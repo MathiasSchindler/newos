@@ -19,6 +19,7 @@
 #define SOLVE_RAT_LIMIT 900000000000000000LL
 #define SOLVE_RAT_DIVISOR_LIMIT 1000000ULL
 #define SOLVE_RAT_MAX_DIVISORS 512
+#define SOLVE_MAX_PARAMS 8
 #define SOLVE_PI 3.14159265358979323846264338327950288419716939937510
 #define SOLVE_E 2.71828182845904523536028747135266249775724709369995
 #define SOLVE_HUGE 1.0e290
@@ -110,11 +111,25 @@ typedef struct {
     int have_area;
     int have_volume;
     int have_mean;
+    int have_eval;
+    int have_at;
+    int have_subst;
+    int have_average_rate;
+    int have_minimum;
+    int have_maximum;
+    int have_area_quadrant;
+    int have_fit_exp_asymptote;
     int have_limit;
     int have_asymptotes;
+    int param_count;
+    char param_names[SOLVE_MAX_PARAMS][SOLVE_NAME_CAPACITY];
+    char at_spec[128];
+    char subst_spec[128];
+    char fit_points_spec[128];
     char point_spec[128];
     char range_spec[128];
     char limit_spec[128];
+    double fit_asymptote;
     int scale;
     double tolerance;
     int max_iterations;
@@ -169,10 +184,19 @@ static int solve_root_in_scan_range(const SolveOptions *options, double root);
 static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, double tolerance);
 static int solve_collect_rat_poly_roots(const SolveRatPoly *input, SolveBreakpoint *points, int *count_out);
 static void solve_print_rat_roots_line(const char *label, SolveBreakpoint *points, int count);
+static int solve_copy_range(char *dst, size_t dst_size, const char *src, size_t start, size_t end);
 static int solve_rat_poly_format_antiderivative(const SolveRatPoly *poly, const char *var_name, char *buffer, size_t buffer_size);
 static void solve_numeric_analysis_bounds(const SolveOptions *options, double *lo_out, double *hi_out);
 static double solve_numeric_derivative_value(const SolveEquation *equation, const SolveOptions *options, double x, int order, int *ok_out);
 static int solve_numeric_derivative_roots(const SolveEquation *equation, const SolveOptions *options, int order, double *roots, int *count_out);
+
+static int solve_is_param_name(const SolveOptions *options, const char *name) {
+    int i;
+    for (i = 0; i < options->param_count; ++i) {
+        if (rt_strcmp(options->param_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
 
 static double solve_abs(double value) {
     return value < 0.0 ? -value : value;
@@ -897,7 +921,7 @@ static int solve_is_known_function(const char *name) {
            rt_strcmp(name, "min") == 0 || rt_strcmp(name, "max") == 0;
 }
 
-static int solve_validate_identifiers(const char *expr, const char *var_name, const char **message_out) {
+static int solve_validate_identifiers(const char *expr, const SolveOptions *options, const char **message_out) {
     size_t pos = 0U;
 
     while (expr[pos] != '\0') {
@@ -914,7 +938,7 @@ static int solve_validate_identifiers(const char *expr, const char *var_name, co
                 name[used++] = expr[pos++];
             }
             name[used] = '\0';
-            if (rt_strcmp(name, var_name) == 0 || rt_strcmp(name, "pi") == 0 || rt_strcmp(name, "e") == 0) {
+            if (rt_strcmp(name, options->var_name) == 0 || solve_is_param_name(options, name) || rt_strcmp(name, "pi") == 0 || rt_strcmp(name, "e") == 0) {
                 continue;
             }
             lookahead = pos;
@@ -3422,24 +3446,361 @@ static int solve_run_solver_equation(const SolveEquation *equation, const SolveO
     return solve_finish_results(equation, options, &results);
 }
 
+typedef struct {
+    const char *text;
+    size_t pos;
+    const SolveOptions *options;
+    int error;
+    const char *message;
+} SolveSymParser;
+
+typedef struct {
+    char expr[SOLVE_EXPR_CAPACITY];
+    char deriv[SOLVE_EXPR_CAPACITY];
+    int constant;
+    double value;
+} SolveSymNode;
+
+static void solve_sym_set_error(SolveSymParser *parser, const char *message) {
+    if (!parser->error) {
+        parser->error = 1;
+        parser->message = message;
+    }
+}
+
+static int solve_sym_copy(char *dst, size_t dst_size, const char *src) {
+    if (rt_strlen(src) >= dst_size) return -1;
+    rt_copy_string(dst, dst_size, src);
+    return 0;
+}
+
+static int solve_sym_join3(char *out, size_t out_size, const char *a, const char *b, const char *c) {
+    size_t used = 0U;
+    out[0] = '\0';
+    return solve_append_text(out, out_size, &used, a) == 0 && solve_append_text(out, out_size, &used, b) == 0 && solve_append_text(out, out_size, &used, c) == 0 ? 0 : -1;
+}
+
+static int solve_sym_binary(char *out, size_t out_size, const char *left, const char *op, const char *right) {
+    size_t used = 0U;
+    out[0] = '\0';
+    if (solve_append_char(out, out_size, &used, '(') != 0) return -1;
+    if (solve_append_text(out, out_size, &used, left) != 0) return -1;
+    if (solve_append_text(out, out_size, &used, op) != 0) return -1;
+    if (solve_append_text(out, out_size, &used, right) != 0) return -1;
+    return solve_append_char(out, out_size, &used, ')');
+}
+
+static int solve_sym_function(char *out, size_t out_size, const char *name, const char *arg) {
+    size_t used = 0U;
+    out[0] = '\0';
+    if (solve_append_text(out, out_size, &used, name) != 0) return -1;
+    if (solve_append_char(out, out_size, &used, '(') != 0) return -1;
+    if (solve_append_text(out, out_size, &used, arg) != 0) return -1;
+    return solve_append_char(out, out_size, &used, ')');
+}
+
+static void solve_sym_make_zero(SolveSymNode *node) {
+    rt_copy_string(node->expr, sizeof(node->expr), "0");
+    rt_copy_string(node->deriv, sizeof(node->deriv), "0");
+    node->constant = 1;
+    node->value = 0.0;
+}
+
+static int solve_sym_make_const(SolveSymNode *node, const char *text, double value) {
+    if (solve_sym_copy(node->expr, sizeof(node->expr), text) != 0 || solve_sym_copy(node->deriv, sizeof(node->deriv), "0") != 0) return -1;
+    node->constant = 1;
+    node->value = value;
+    return 0;
+}
+
+static int solve_sym_make_var(SolveSymNode *node, const char *name) {
+    if (solve_sym_copy(node->expr, sizeof(node->expr), name) != 0 || solve_sym_copy(node->deriv, sizeof(node->deriv), "1") != 0) return -1;
+    node->constant = 0;
+    node->value = 0.0;
+    return 0;
+}
+
+static int solve_sym_is_zero(const char *text) { return rt_strcmp(text, "0") == 0; }
+static int solve_sym_is_one(const char *text) { return rt_strcmp(text, "1") == 0; }
+
+static int solve_sym_parse_expr(SolveSymParser *parser, SolveSymNode *out);
+
+static int solve_sym_assign_binary(SolveSymNode *out, const SolveSymNode *left, const char *op, const SolveSymNode *right) {
+    char expr[SOLVE_EXPR_CAPACITY];
+    char deriv[SOLVE_EXPR_CAPACITY];
+    if (solve_sym_binary(expr, sizeof(expr), left->expr, op, right->expr) != 0) return -1;
+    if (rt_strcmp(op, " + ") == 0) {
+        if (solve_sym_is_zero(left->deriv)) rt_copy_string(deriv, sizeof(deriv), right->deriv);
+        else if (solve_sym_is_zero(right->deriv)) rt_copy_string(deriv, sizeof(deriv), left->deriv);
+        else if (solve_sym_binary(deriv, sizeof(deriv), left->deriv, " + ", right->deriv) != 0) return -1;
+    } else if (rt_strcmp(op, " - ") == 0) {
+        if (solve_sym_is_zero(right->deriv)) rt_copy_string(deriv, sizeof(deriv), left->deriv);
+        else if (solve_sym_binary(deriv, sizeof(deriv), left->deriv, " - ", right->deriv) != 0) return -1;
+    } else if (rt_strcmp(op, "*") == 0) {
+        char left_part[SOLVE_EXPR_CAPACITY];
+        char right_part[SOLVE_EXPR_CAPACITY];
+        if (solve_sym_is_zero(left->deriv) && solve_sym_is_zero(right->deriv)) rt_copy_string(deriv, sizeof(deriv), "0");
+        else if (solve_sym_is_zero(left->deriv)) {
+            if (solve_sym_binary(deriv, sizeof(deriv), left->expr, "*", right->deriv) != 0) return -1;
+        } else if (solve_sym_is_zero(right->deriv)) {
+            if (solve_sym_binary(deriv, sizeof(deriv), left->deriv, "*", right->expr) != 0) return -1;
+        } else {
+            if (solve_sym_binary(left_part, sizeof(left_part), left->deriv, "*", right->expr) != 0) return -1;
+            if (solve_sym_binary(right_part, sizeof(right_part), left->expr, "*", right->deriv) != 0) return -1;
+            if (solve_sym_binary(deriv, sizeof(deriv), left_part, " + ", right_part) != 0) return -1;
+        }
+    } else if (rt_strcmp(op, "/") == 0) {
+        char left_part[SOLVE_EXPR_CAPACITY];
+        char right_part[SOLVE_EXPR_CAPACITY];
+        char numerator[SOLVE_EXPR_CAPACITY];
+        char denom_power[SOLVE_EXPR_CAPACITY];
+        if (solve_sym_is_zero(left->deriv) && solve_sym_is_zero(right->deriv)) rt_copy_string(deriv, sizeof(deriv), "0");
+        else {
+            if (solve_sym_binary(left_part, sizeof(left_part), left->deriv, "*", right->expr) != 0) return -1;
+            if (solve_sym_binary(right_part, sizeof(right_part), left->expr, "*", right->deriv) != 0) return -1;
+            if (solve_sym_binary(numerator, sizeof(numerator), left_part, " - ", right_part) != 0) return -1;
+            if (solve_sym_binary(denom_power, sizeof(denom_power), right->expr, "^", "2") != 0) return -1;
+            if (solve_sym_binary(deriv, sizeof(deriv), numerator, "/", denom_power) != 0) return -1;
+        }
+    } else return -1;
+    if (solve_sym_copy(out->expr, sizeof(out->expr), expr) != 0 || solve_sym_copy(out->deriv, sizeof(out->deriv), deriv) != 0) return -1;
+    out->constant = left->constant && right->constant;
+    out->value = 0.0;
+    return 0;
+}
+
+static int solve_sym_assign_power(SolveSymNode *out, const SolveSymNode *base, const SolveSymNode *exponent) {
+    char expr[SOLVE_EXPR_CAPACITY];
+    char deriv[SOLVE_EXPR_CAPACITY];
+    if (solve_sym_binary(expr, sizeof(expr), base->expr, "^", exponent->expr) != 0) return -1;
+    if (solve_sym_is_zero(base->deriv) && solve_sym_is_zero(exponent->deriv)) {
+        rt_copy_string(deriv, sizeof(deriv), "0");
+    } else if (exponent->constant) {
+        char n_text[64];
+        char minus_one[64];
+        char power[SOLVE_EXPR_CAPACITY];
+        char coeff_power[SOLVE_EXPR_CAPACITY];
+        solve_format_double(exponent->value, 10, n_text, sizeof(n_text));
+        solve_format_double(exponent->value - 1.0, 10, minus_one, sizeof(minus_one));
+        if (solve_abs(exponent->value) <= 0.0000000001) rt_copy_string(deriv, sizeof(deriv), "0");
+        else if (solve_sym_binary(power, sizeof(power), base->expr, "^", minus_one) != 0 || solve_sym_binary(coeff_power, sizeof(coeff_power), n_text, "*", power) != 0) return -1;
+        else if (solve_sym_is_one(base->deriv)) rt_copy_string(deriv, sizeof(deriv), coeff_power);
+        else if (solve_sym_binary(deriv, sizeof(deriv), coeff_power, "*", base->deriv) != 0) return -1;
+    } else {
+        char log_base[SOLVE_EXPR_CAPACITY];
+        char exp_log[SOLVE_EXPR_CAPACITY];
+        char base_ratio[SOLVE_EXPR_CAPACITY];
+        char sum[SOLVE_EXPR_CAPACITY];
+        if (solve_sym_function(log_base, sizeof(log_base), "log", base->expr) != 0) return -1;
+        if (solve_sym_binary(exp_log, sizeof(exp_log), exponent->deriv, "*", log_base) != 0) return -1;
+        if (solve_sym_binary(base_ratio, sizeof(base_ratio), base->deriv, "/", base->expr) != 0) return -1;
+        if (solve_sym_binary(base_ratio, sizeof(base_ratio), exponent->expr, "*", base_ratio) != 0) return -1;
+        if (solve_sym_binary(sum, sizeof(sum), exp_log, " + ", base_ratio) != 0) return -1;
+        if (solve_sym_binary(deriv, sizeof(deriv), expr, "*", sum) != 0) return -1;
+    }
+    if (solve_sym_copy(out->expr, sizeof(out->expr), expr) != 0 || solve_sym_copy(out->deriv, sizeof(out->deriv), deriv) != 0) return -1;
+    out->constant = base->constant && exponent->constant;
+    out->value = out->constant ? solve_pow(base->value, exponent->value) : 0.0;
+    return 0;
+}
+
+static int solve_sym_read_identifier(SolveSymParser *parser, char *name, size_t name_size) {
+    size_t used = 0U;
+    if (!tool_ascii_is_identifier_start(parser->text[parser->pos])) return -1;
+    while (tool_ascii_is_identifier_char(parser->text[parser->pos])) {
+        if (used + 1U >= name_size) { solve_sym_set_error(parser, "identifier too long"); return -1; }
+        name[used++] = parser->text[parser->pos++];
+    }
+    name[used] = '\0';
+    return 0;
+}
+
+static int solve_sym_parse_primary(SolveSymParser *parser, SolveSymNode *out) {
+    char name[SOLVE_NAME_CAPACITY];
+    solve_skip_text_spaces(parser->text, &parser->pos);
+    if (parser->text[parser->pos] == '(') {
+        parser->pos += 1U;
+        if (solve_sym_parse_expr(parser, out) != 0) return -1;
+        solve_skip_text_spaces(parser->text, &parser->pos);
+        if (parser->text[parser->pos] != ')') { solve_sym_set_error(parser, "missing ')'"); return -1; }
+        parser->pos += 1U;
+        return 0;
+    }
+    if ((parser->text[parser->pos] >= '0' && parser->text[parser->pos] <= '9') || parser->text[parser->pos] == '.') {
+        size_t start = parser->pos;
+        double value;
+        char text[128];
+        if (solve_parse_double(parser->text, &parser->pos, &value) != 0 || solve_copy_range(text, sizeof(text), parser->text, start, parser->pos) != 0) return -1;
+        return solve_sym_make_const(out, text, value);
+    }
+    if (!tool_ascii_is_identifier_start(parser->text[parser->pos])) { solve_sym_set_error(parser, "syntax error"); return -1; }
+    if (solve_sym_read_identifier(parser, name, sizeof(name)) != 0) return -1;
+    solve_skip_text_spaces(parser->text, &parser->pos);
+    if (rt_strcmp(name, parser->options->var_name) == 0 && parser->text[parser->pos] != '(') return solve_sym_make_var(out, name);
+    if ((rt_strcmp(name, "pi") == 0 || rt_strcmp(name, "e") == 0 || solve_is_param_name(parser->options, name)) && parser->text[parser->pos] != '(') return solve_sym_make_const(out, name, rt_strcmp(name, "pi") == 0 ? SOLVE_PI : (rt_strcmp(name, "e") == 0 ? SOLVE_E : 0.0));
+    if (parser->text[parser->pos] == '(' && solve_is_known_function(name)) {
+        SolveSymNode arg;
+        char expr[SOLVE_EXPR_CAPACITY];
+        char deriv[SOLVE_EXPR_CAPACITY];
+        parser->pos += 1U;
+        if (solve_sym_parse_expr(parser, &arg) != 0) return -1;
+        solve_skip_text_spaces(parser->text, &parser->pos);
+        if (parser->text[parser->pos] == ',') { solve_sym_set_error(parser, "symbolic derivative supports unary functions only"); return -1; }
+        if (parser->text[parser->pos] != ')') { solve_sym_set_error(parser, "missing ')'"); return -1; }
+        parser->pos += 1U;
+        if (rt_strcmp(name, "e") == 0) rt_copy_string(name, sizeof(name), "exp");
+        if (rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0) rt_copy_string(name, sizeof(name), "log");
+        if (rt_strcmp(name, "s") == 0) rt_copy_string(name, sizeof(name), "sin");
+        if (rt_strcmp(name, "c") == 0) rt_copy_string(name, sizeof(name), "cos");
+        if (rt_strcmp(name, "q") == 0) rt_copy_string(name, sizeof(name), "sqrt");
+        if (solve_sym_function(expr, sizeof(expr), name, arg.expr) != 0) return -1;
+        if (solve_sym_is_zero(arg.deriv)) rt_copy_string(deriv, sizeof(deriv), "0");
+        else if (rt_strcmp(name, "sin") == 0) { char inner[SOLVE_EXPR_CAPACITY]; if (solve_sym_function(inner, sizeof(inner), "cos", arg.expr) != 0 || solve_sym_binary(deriv, sizeof(deriv), inner, "*", arg.deriv) != 0) return -1; }
+        else if (rt_strcmp(name, "cos") == 0) { char inner[SOLVE_EXPR_CAPACITY]; char neg[SOLVE_EXPR_CAPACITY]; if (solve_sym_function(inner, sizeof(inner), "sin", arg.expr) != 0 || solve_sym_join3(neg, sizeof(neg), "(-", inner, ")") != 0 || solve_sym_binary(deriv, sizeof(deriv), neg, "*", arg.deriv) != 0) return -1; }
+        else if (rt_strcmp(name, "exp") == 0) { if (solve_sym_binary(deriv, sizeof(deriv), expr, "*", arg.deriv) != 0) return -1; }
+        else if (rt_strcmp(name, "log") == 0) { if (solve_sym_binary(deriv, sizeof(deriv), arg.deriv, "/", arg.expr) != 0) return -1; }
+        else if (rt_strcmp(name, "sqrt") == 0) { char denom[SOLVE_EXPR_CAPACITY]; if (solve_sym_join3(denom, sizeof(denom), "(2*", expr, ")") != 0 || solve_sym_binary(deriv, sizeof(deriv), arg.deriv, "/", denom) != 0) return -1; }
+        else if (rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0) { char square[SOLVE_EXPR_CAPACITY]; char denom[SOLVE_EXPR_CAPACITY]; if (solve_sym_binary(square, sizeof(square), arg.expr, "^", "2") != 0 || solve_sym_binary(denom, sizeof(denom), "1", " + ", square) != 0 || solve_sym_binary(deriv, sizeof(deriv), arg.deriv, "/", denom) != 0) return -1; }
+        else { solve_sym_set_error(parser, "symbolic derivative unsupported for this function"); return -1; }
+        if (solve_sym_copy(out->expr, sizeof(out->expr), expr) != 0 || solve_sym_copy(out->deriv, sizeof(out->deriv), deriv) != 0) return -1;
+        out->constant = arg.constant;
+        out->value = 0.0;
+        return 0;
+    }
+    solve_sym_set_error(parser, "unknown identifier");
+    return -1;
+}
+
+static int solve_sym_parse_unary(SolveSymParser *parser, SolveSymNode *out) {
+    solve_skip_text_spaces(parser->text, &parser->pos);
+    if (parser->text[parser->pos] == '+') { parser->pos += 1U; return solve_sym_parse_unary(parser, out); }
+    if (parser->text[parser->pos] == '-') {
+        SolveSymNode inner;
+        parser->pos += 1U;
+        if (solve_sym_parse_unary(parser, &inner) != 0) return -1;
+        if (solve_sym_join3(out->expr, sizeof(out->expr), "(-", inner.expr, ")") != 0 || solve_sym_join3(out->deriv, sizeof(out->deriv), "(-", inner.deriv, ")") != 0) return -1;
+        out->constant = inner.constant;
+        out->value = -inner.value;
+        return 0;
+    }
+    return solve_sym_parse_primary(parser, out);
+}
+
+static int solve_sym_parse_power(SolveSymParser *parser, SolveSymNode *out) {
+    SolveSymNode base;
+    if (solve_sym_parse_unary(parser, &base) != 0) return -1;
+    solve_skip_text_spaces(parser->text, &parser->pos);
+    if (parser->text[parser->pos] == '^') {
+        SolveSymNode exponent;
+        parser->pos += 1U;
+        if (solve_sym_parse_power(parser, &exponent) != 0 || solve_sym_assign_power(out, &base, &exponent) != 0) return -1;
+        return 0;
+    }
+    *out = base;
+    return 0;
+}
+
+static int solve_sym_parse_term(SolveSymParser *parser, SolveSymNode *out) {
+    if (solve_sym_parse_power(parser, out) != 0) return -1;
+    while (!parser->error) {
+        char op;
+        SolveSymNode right;
+        char op_text[2];
+        solve_skip_text_spaces(parser->text, &parser->pos);
+        op = parser->text[parser->pos];
+        if (op != '*' && op != '/') break;
+        parser->pos += 1U;
+        if (solve_sym_parse_power(parser, &right) != 0) return -1;
+        op_text[0] = op; op_text[1] = '\0';
+        if (solve_sym_assign_binary(out, out, op_text, &right) != 0) { solve_sym_set_error(parser, "symbolic derivative too large"); return -1; }
+    }
+    return 0;
+}
+
+static int solve_sym_parse_expr(SolveSymParser *parser, SolveSymNode *out) {
+    if (solve_sym_parse_term(parser, out) != 0) return -1;
+    while (!parser->error) {
+        char op;
+        SolveSymNode right;
+        const char *op_text;
+        solve_skip_text_spaces(parser->text, &parser->pos);
+        op = parser->text[parser->pos];
+        if (op != '+' && op != '-') break;
+        parser->pos += 1U;
+        if (solve_sym_parse_term(parser, &right) != 0) return -1;
+        op_text = op == '+' ? " + " : " - ";
+        if (solve_sym_assign_binary(out, out, op_text, &right) != 0) { solve_sym_set_error(parser, "symbolic derivative too large"); return -1; }
+    }
+    return 0;
+}
+
+static int solve_symbolic_derivative_text(const char *expr, const SolveOptions *options, int order, char *out, size_t out_size) {
+    char current[SOLVE_EXPR_CAPACITY];
+    int i;
+    if (rt_strlen(expr) >= sizeof(current)) return -1;
+    rt_copy_string(current, sizeof(current), expr);
+    if (order == 0) return solve_sym_copy(out, out_size, current);
+    for (i = 0; i < order; ++i) {
+        SolveSymParser parser;
+        SolveSymNode node;
+        parser.text = current;
+        parser.pos = 0U;
+        parser.options = options;
+        parser.error = 0;
+        parser.message = 0;
+        solve_sym_make_zero(&node);
+        if (solve_sym_parse_expr(&parser, &node) != 0) return -1;
+        solve_skip_text_spaces(parser.text, &parser.pos);
+        if (parser.error || parser.text[parser.pos] != '\0') return -1;
+        if (solve_sym_copy(current, sizeof(current), node.deriv) != 0) return -1;
+    }
+    return solve_sym_copy(out, out_size, current);
+}
+
 static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions *options) {
     SolveRatPoly poly;
     SolveRatPoly derivative;
     char text[SOLVE_EXPR_CAPACITY];
     SolveEquation derived;
+    const char *source_text;
 
     if (equation->has_equation && equation->relation != SOLVE_RELATION_EQ) {
         tool_write_error("solve", "derivative solving supports equations, not inequalities", 0);
         return 2;
     }
+    source_text = equation->has_equation ? equation->left : equation->left;
     if (equation->has_equation) {
         if (solve_equation_rat_poly(equation, options, &poly) != 0) {
-            tool_write_error("solve", "derivative supported only for polynomials", 0);
-            return 2;
+            if (solve_symbolic_derivative_text(equation->left, options, options->diff_order, text, sizeof(text)) != 0) {
+                tool_write_error("solve", "symbolic derivative unsupported for expression", 0);
+                return 2;
+            }
+            if (solve_should_explain(options)) {
+                solve_explain_working_function("symbolic derivative", equation, options);
+                rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
+                rt_write_cstr(1, "derivative: ");
+                rt_write_line(1, text);
+                rt_write_line(1, "next: solve derivative = 0");
+            }
+            rt_copy_string(derived.left, sizeof(derived.left), text);
+            rt_copy_string(derived.right, sizeof(derived.right), "0");
+            derived.has_equation = 1;
+            derived.relation = SOLVE_RELATION_EQ;
+            return solve_run_solver_equation(&derived, options);
         }
     } else if (solve_parse_rat_text(equation->left, options->var_name, &poly) != 0) {
-        tool_write_error("solve", "derivative supported only for polynomials", 0);
-        return 2;
+        if (solve_symbolic_derivative_text(source_text, options, options->diff_order, text, sizeof(text)) != 0) {
+            tool_write_error("solve", "symbolic derivative unsupported for expression", 0);
+            return 2;
+        }
+        if (solve_should_explain(options)) {
+            solve_explain_working_function("symbolic derivative", equation, options);
+            rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
+            rt_write_cstr(1, "derivative: ");
+            rt_write_line(1, text);
+        }
+        rt_write_line(1, text);
+        return 0;
     }
     if (solve_rat_poly_derivative(&poly, options->diff_order, &derivative) != 0 || solve_rat_poly_format(&derivative, options->var_name, text, sizeof(text)) != 0) {
         tool_write_error("solve", "derivative overflow", 0);
@@ -3484,6 +3845,148 @@ static int solve_split_integral_bounds(const char *text, char *left, size_t left
 static int solve_eval_bound_expr(const char *text, const SolveOptions *options, double *out) {
     const char *message = 0;
     return solve_eval_expr(text, options->var_name, 0.0, out, &message);
+}
+
+static int solve_parse_assignment_spec(const char *text, char *name, size_t name_size, char *value, size_t value_size) {
+    size_t pos = 0U;
+    size_t start;
+    size_t end;
+    solve_skip_text_spaces(text, &pos);
+    start = pos;
+    if (!tool_ascii_is_identifier_start(text[pos])) return -1;
+    while (tool_ascii_is_identifier_char(text[pos])) pos += 1U;
+    end = pos;
+    solve_skip_text_spaces(text, &pos);
+    if (text[pos] != '=') return -1;
+    if (solve_copy_range(name, name_size, text, start, end) != 0) return -1;
+    pos += 1U;
+    solve_skip_text_spaces(text, &pos);
+    if (text[pos] == '\0' || rt_strlen(text + pos) >= value_size) return -1;
+    rt_copy_string(value, value_size, text + pos);
+    return 0;
+}
+
+static int solve_eval_expr_at(const char *expr, const SolveOptions *options, double at, double *out) {
+    const char *message = 0;
+    return solve_eval_expr(expr, options->var_name, at, out, &message);
+}
+
+static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
+    SolveOptions local = *options;
+    char name[SOLVE_NAME_CAPACITY];
+    char value_text[128];
+    double at = 0.0;
+    double value;
+    char text[96];
+
+    if (options->have_at) {
+        if (solve_contains_char(options->at_spec, '=')) {
+            if (solve_parse_assignment_spec(options->at_spec, name, sizeof(name), value_text, sizeof(value_text)) != 0) {
+                tool_write_error("solve", "invalid --at assignment", options->at_spec);
+                return 2;
+            }
+            if (rt_strcmp(name, options->var_name) != 0) {
+                tool_write_error("solve", "--at variable does not match --var", name);
+                return 2;
+            }
+            if (solve_eval_bound_expr(value_text, options, &at) != 0) {
+                tool_write_error("solve", "invalid --at value", value_text);
+                return 2;
+            }
+        } else if (solve_eval_bound_expr(options->at_spec, options, &at) != 0) {
+            tool_write_error("solve", "invalid --at value", options->at_spec);
+            return 2;
+        }
+    }
+    if (solve_eval_expr_at(expr, &local, at, &value) != 0) {
+        tool_write_error("solve", "evaluation failed", 0);
+        return 3;
+    }
+    if (solve_should_explain(options)) {
+        rt_write_line(1, "explain: evaluation");
+        rt_write_cstr(1, "expression: ");
+        rt_write_line(1, expr);
+        if (options->have_at) {
+            rt_write_cstr(1, "substitution: ");
+            rt_write_cstr(1, options->var_name);
+            rt_write_cstr(1, " = ");
+            solve_write_double_value(at, options->scale);
+            rt_write_char(1, '\n');
+        }
+    }
+    solve_format_double(value, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "value = ");
+    rt_write_line(1, text);
+    rt_write_line(1, "method = direct-evaluation");
+    if (!options->quiet) rt_write_line(1, "status = approximate");
+    return 0;
+}
+
+static int solve_identifier_substitute(const char *expr, const char *old_name, const char *new_text, char *out, size_t out_size) {
+    size_t in = 0U;
+    size_t used = 0U;
+    size_t old_len = rt_strlen(old_name);
+    out[0] = '\0';
+    while (expr[in] != '\0') {
+        if (tool_ascii_is_identifier_start(expr[in])) {
+            size_t start = in;
+            while (tool_ascii_is_identifier_char(expr[in])) in += 1U;
+            if (in - start == old_len && rt_strncmp(expr + start, old_name, old_len) == 0) {
+                if (solve_append_text(out, out_size, &used, new_text) != 0) return -1;
+            } else {
+                while (start < in) {
+                    if (solve_append_char(out, out_size, &used, expr[start++]) != 0) return -1;
+                }
+            }
+        } else {
+            if (solve_append_char(out, out_size, &used, expr[in++]) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
+    char name[SOLVE_NAME_CAPACITY];
+    char replacement[SOLVE_EXPR_CAPACITY];
+    char out[SOLVE_EXPR_CAPACITY];
+    if (solve_parse_assignment_spec(options->subst_spec, name, sizeof(name), replacement, sizeof(replacement)) != 0) {
+        tool_write_error("solve", "invalid --subst assignment", options->subst_spec);
+        return 2;
+    }
+    if (solve_identifier_substitute(expr, name, replacement, out, sizeof(out)) != 0) {
+        tool_write_error("solve", "substitution output too large", 0);
+        return 2;
+    }
+    rt_write_line(1, out);
+    return 0;
+}
+
+static int solve_run_average_rate_mode(const SolveEquation *equation, const SolveOptions *options) {
+    char lo_text[128];
+    char hi_text[128];
+    double lo;
+    double hi;
+    double y_lo;
+    double y_hi;
+    double rate;
+    char text[96];
+    const char *message = 0;
+    if (solve_split_integral_bounds(options->range_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) return 2;
+    if (solve_eval_bound_expr(lo_text, options, &lo) != 0 || solve_eval_bound_expr(hi_text, options, &hi) != 0 || hi == lo) return 2;
+    if (solve_eval_function(equation, options, lo, &y_lo, &message) != 0 || solve_eval_function(equation, options, hi, &y_hi, &message) != 0) return 3;
+    rate = (y_hi - y_lo) / (hi - lo);
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("average rate", equation, options);
+        solve_explain_double_value_line("f(a) = ", y_lo, options);
+        solve_explain_double_value_line("f(b) = ", y_hi, options);
+        rt_write_line(1, "formula: average rate = (f(b)-f(a))/(b-a)");
+    }
+    solve_format_double(rate, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "average rate approximate = ");
+    rt_write_line(1, text);
+    rt_write_line(1, "method = endpoint-evaluation");
+    rt_write_line(1, "status = approximate");
+    return 0;
 }
 
 static int solve_simpson_eval(const SolveEquation *equation, const SolveOptions *options, double a, double b, int n, double *out) {
@@ -3556,35 +4059,35 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
         SolveRat result;
         char text[96];
         if (solve_rat_poly_antiderivative_eval(&poly, hi_rat, &hi_value) != 0 || solve_rat_poly_antiderivative_eval(&poly, lo_rat, &lo_value) != 0 || solve_rat_sub(hi_value, lo_value, &result) != 0 || solve_rat_format(result, text, sizeof(text)) != 0) {
-            tool_write_error("solve", "exact integration overflow", 0);
-            return 3;
-        }
-        if (solve_should_explain(options)) {
-            SolveRatPoly anti;
-            char anti_text[SOLVE_EXPR_CAPACITY];
-            solve_explain_working_function("definite integral", equation, options);
-            solve_explain_rat_poly_line("integrand polynomial: ", &poly, options);
-            rt_write_cstr(1, "bounds: ");
-            solve_write_rat_value(lo_rat);
-            rt_write_cstr(1, " to ");
-            solve_write_rat_value(hi_rat);
-            rt_write_char(1, '\n');
-            if (solve_rat_poly_antiderivative(&poly, &anti) == 0 && solve_rat_poly_format_antiderivative(&anti, options->var_name, anti_text, sizeof(anti_text)) == 0) {
-                rt_write_cstr(1, "antiderivative: ");
-                rt_write_line(1, anti_text);
-            }
-            solve_explain_rat_value_line("F(upper) = ", hi_value, options);
-            solve_explain_rat_value_line("F(lower) = ", lo_value, options);
-            rt_write_line(1, "rule: integral from a to b = F(b) - F(a)");
-        }
-        if (options->quiet) {
-            rt_write_line(1, text);
+            if (solve_should_explain(options)) rt_write_line(1, "status reason: exact rational integration overflowed; falling back to numeric Simpson integration");
         } else {
-            rt_write_cstr(1, "integral = ");
-            rt_write_line(1, text);
-            rt_write_line(1, "method = exact-polynomial");
+            if (solve_should_explain(options)) {
+                SolveRatPoly anti;
+                char anti_text[SOLVE_EXPR_CAPACITY];
+                solve_explain_working_function("definite integral", equation, options);
+                solve_explain_rat_poly_line("integrand polynomial: ", &poly, options);
+                rt_write_cstr(1, "bounds: ");
+                solve_write_rat_value(lo_rat);
+                rt_write_cstr(1, " to ");
+                solve_write_rat_value(hi_rat);
+                rt_write_char(1, '\n');
+                if (solve_rat_poly_antiderivative(&poly, &anti) == 0 && solve_rat_poly_format_antiderivative(&anti, options->var_name, anti_text, sizeof(anti_text)) == 0) {
+                    rt_write_cstr(1, "antiderivative: ");
+                    rt_write_line(1, anti_text);
+                }
+                solve_explain_rat_value_line("F(upper) = ", hi_value, options);
+                solve_explain_rat_value_line("F(lower) = ", lo_value, options);
+                rt_write_line(1, "rule: integral from a to b = F(b) - F(a)");
+            }
+            if (options->quiet) {
+                rt_write_line(1, text);
+            } else {
+                rt_write_cstr(1, "integral = ");
+                rt_write_line(1, text);
+                rt_write_line(1, "method = exact-polynomial");
+            }
+            return 0;
         }
-        return 0;
     }
 
     {
@@ -4715,8 +5218,13 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
     SolveRat lo;
     SolveRat hi;
     SolveRat area;
+    int force_numeric_area = 0;
 
-    if (solve_contains_char(options->range_spec, ':')) {
+    if (options->have_area_quadrant) {
+        if (solve_parse_two_curves(start, argc, argv, first_expr, sizeof(first_expr), second_expr, sizeof(second_expr)) != 0) return 2;
+        lo_text[0] = '\0';
+        hi_text[0] = '\0';
+    } else if (solve_contains_char(options->range_spec, ':')) {
         if (solve_split_integral_bounds(options->range_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) {
             tool_write_error("solve", "invalid --area bounds", options->range_spec);
             return 2;
@@ -4762,8 +5270,46 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
             }
             solve_sort_breakpoints(roots, &root_count, options->tolerance);
             if (solve_should_explain(options)) solve_print_rat_roots_line("intersections:", roots, root_count);
-            lo = roots[0].rat_value;
-            hi = roots[root_count - 1].rat_value;
+            if (options->have_area_quadrant) {
+                int wanted_x_negative = rt_strcmp(options->range_spec, "II") == 0 || rt_strcmp(options->range_spec, "III") == 0 || rt_strcmp(options->range_spec, "2") == 0 || rt_strcmp(options->range_spec, "3") == 0;
+                int wanted_y_positive = rt_strcmp(options->range_spec, "I") == 0 || rt_strcmp(options->range_spec, "II") == 0 || rt_strcmp(options->range_spec, "1") == 0 || rt_strcmp(options->range_spec, "2") == 0;
+                int found = 0;
+                int i;
+                for (i = 0; i + 1 < root_count; ++i) {
+                    double left = roots[i].value;
+                    double right = roots[i + 1].value;
+                    double sample = (left + right) * 0.5;
+                    double y;
+                    const char *message = 0;
+                    SolveEquation curve;
+                    rt_copy_string(curve.left, sizeof(curve.left), first_expr);
+                    rt_copy_string(curve.right, sizeof(curve.right), "0");
+                    curve.has_equation = 0;
+                    curve.relation = SOLVE_RELATION_NONE;
+                    if (solve_eval_function(&curve, options, sample, &y, &message) != 0) continue;
+                    if (((sample < 0.0) == wanted_x_negative) && ((y >= 0.0) == wanted_y_positive)) {
+                        if (roots[i].exact && roots[i + 1].exact) {
+                            lo = roots[i].rat_value;
+                            hi = roots[i + 1].rat_value;
+                        } else {
+                            solve_format_double(left, SOLVE_MAX_SCALE, lo_text, sizeof(lo_text));
+                            solve_format_double(right, SOLVE_MAX_SCALE, hi_text, sizeof(hi_text));
+                            force_numeric_area = 1;
+                        }
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    tool_write_error("solve", "no exact polynomial lobe found in requested quadrant", options->range_spec);
+                    return 1;
+                }
+                if (solve_should_explain(options)) rt_write_line(1, "quadrant rule: choose consecutive intersections whose midpoint lies in the requested quadrant");
+                if (force_numeric_area) goto numeric_area;
+            } else {
+                lo = roots[0].rat_value;
+                hi = roots[root_count - 1].rat_value;
+            }
         }
         if (solve_should_explain(options)) {
             SolveBreakpoint area_roots[SOLVE_MAX_RESULTS];
@@ -4784,6 +5330,7 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
         rt_write_line(1, "method = exact-polynomial");
         return 0;
     }
+numeric_area:
     {
         SolveEquation equation;
         SolveOptions local = *options;
@@ -4964,6 +5511,153 @@ static int solve_run_asymptotes_mode(const SolveOptions *options, const char *ex
     return 0;
 }
 
+static int solve_parse_range_bound(const char *text, const SolveOptions *options, double *value_out, int *is_neg_inf_out, int *is_pos_inf_out) {
+    *is_neg_inf_out = 0;
+    *is_pos_inf_out = 0;
+    if (rt_strcmp(text, "inf") == 0 || rt_strcmp(text, "+inf") == 0) {
+        *is_pos_inf_out = 1;
+        *value_out = 0.0;
+        return 0;
+    }
+    if (rt_strcmp(text, "-inf") == 0) {
+        *is_neg_inf_out = 1;
+        *value_out = 0.0;
+        return 0;
+    }
+    return solve_eval_bound_expr(text, options, value_out);
+}
+
+static int solve_parse_numeric_range(const char *spec, const SolveOptions *options, double *lo_out, double *hi_out, int *lo_inf_out, int *hi_inf_out) {
+    char lo_text[128];
+    char hi_text[128];
+    int lo_pos;
+    int hi_neg;
+    if (solve_split_integral_bounds(spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) return -1;
+    if (solve_parse_range_bound(lo_text, options, lo_out, lo_inf_out, &lo_pos) != 0) return -1;
+    if (solve_parse_range_bound(hi_text, options, hi_out, &hi_neg, hi_inf_out) != 0) return -1;
+    if (lo_pos || hi_neg) return -1;
+    if (*lo_inf_out) *lo_out = *hi_inf_out ? -10.0 : *hi_out - 40.0;
+    if (*hi_inf_out) *hi_out = *lo_inf_out ? 10.0 : *lo_out + 40.0;
+    return *hi_out > *lo_out ? 0 : -1;
+}
+
+static int solve_run_extreme_mode(const SolveEquation *equation, const SolveOptions *options, int want_max) {
+    SolveOptions local = *options;
+    double lo;
+    double hi;
+    int lo_inf;
+    int hi_inf;
+    double roots[SOLVE_MAX_RESULTS];
+    int count = 0;
+    int i;
+    int have_best = 0;
+    double best_x = 0.0;
+    double best_y = 0.0;
+    char text[96];
+    const char *message = 0;
+
+    if (solve_parse_numeric_range(options->range_spec, options, &lo, &hi, &lo_inf, &hi_inf) != 0) {
+        tool_write_error("solve", "invalid extremum range", options->range_spec);
+        return 2;
+    }
+    local.default_scan = 0;
+    local.have_scan = 1;
+    local.scan_lo = lo;
+    local.scan_hi = hi;
+    if (local.scan_steps < 1600) local.scan_steps = 1600;
+    if (solve_should_explain(options)) {
+        solve_explain_working_function(want_max ? "maximum" : "minimum", equation, options);
+        rt_write_line(1, "rule: compare endpoints and numeric critical points where f' changes sign");
+        if (lo_inf || hi_inf) rt_write_line(1, "range note: infinite endpoint is sampled over a finite exploratory window");
+    }
+    if (!lo_inf && solve_eval_function(equation, &local, lo, &best_y, &message) == 0) {
+        best_x = lo;
+        have_best = 1;
+    }
+    if (!hi_inf) {
+        double y;
+        if (solve_eval_function(equation, &local, hi, &y, &message) == 0 && (!have_best || (want_max ? y > best_y : y < best_y))) {
+            best_x = hi;
+            best_y = y;
+            have_best = 1;
+        }
+    }
+    solve_numeric_derivative_roots(equation, &local, 1, roots, &count);
+    for (i = 0; i < count; ++i) {
+        double y;
+        if (roots[i] < lo || roots[i] > hi) continue;
+        if (solve_eval_function(equation, &local, roots[i], &y, &message) != 0) continue;
+        if (!have_best || (want_max ? y > best_y : y < best_y)) {
+            best_x = roots[i];
+            best_y = y;
+            have_best = 1;
+        }
+    }
+    if (!have_best) return 3;
+    rt_write_cstr(1, want_max ? "maximum approximate: " : "minimum approximate: ");
+    solve_write_point_double(best_x, best_y, options->scale);
+    rt_write_char(1, '\n');
+    solve_format_double(best_y, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "value approximate = ");
+    rt_write_line(1, text);
+    rt_write_line(1, "method = numeric-critical-points");
+    rt_write_line(1, "status = approximate");
+    return 0;
+}
+
+static int solve_parse_point_pair(const char *text, size_t *pos_io, double *x_out, double *y_out) {
+    if (solve_parse_double(text, pos_io, x_out) != 0) return -1;
+    if (text[*pos_io] != ':') return -1;
+    *pos_io += 1U;
+    if (solve_parse_double(text, pos_io, y_out) != 0) return -1;
+    return 0;
+}
+
+static int solve_run_fit_exp_mode(const SolveOptions *options) {
+    size_t pos = 0U;
+    double t1;
+    double y1;
+    double t2;
+    double y2;
+    double d1;
+    double d2;
+    double ratio;
+    double c;
+    double b;
+    char text[96];
+    if (solve_parse_point_pair(options->fit_points_spec, &pos, &t1, &y1) != 0 || options->fit_points_spec[pos] != ',') return 2;
+    pos += 1U;
+    if (solve_parse_point_pair(options->fit_points_spec, &pos, &t2, &y2) != 0 || options->fit_points_spec[pos] != '\0' || t1 == t2) return 2;
+    d1 = y1 - options->fit_asymptote;
+    d2 = y2 - options->fit_asymptote;
+    if (d1 == 0.0 || d2 == 0.0 || d1 * d2 <= 0.0) return 3;
+    ratio = d2 / d1;
+    if (ratio <= 0.0) return 3;
+    c = -solve_log(ratio) / (t2 - t1);
+    b = d1 * solve_exp(c * t1);
+    if (solve_should_explain(options)) {
+        rt_write_line(1, "explain: exponential cooling fit");
+        rt_write_line(1, "model: a + b*exp(-c*x)");
+        rt_write_line(1, "rule: divide y-a values to eliminate b, then solve for c");
+    }
+    rt_write_cstr(1, "model: ");
+    solve_write_double_value(options->fit_asymptote, options->scale);
+    rt_write_cstr(1, " + ");
+    solve_write_double_value(b, options->scale);
+    rt_write_cstr(1, "*exp(-");
+    solve_write_double_value(c, options->scale);
+    rt_write_line(1, "*x)");
+    solve_format_double(options->fit_asymptote, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "a = "); rt_write_line(1, text);
+    solve_format_double(b, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "b = "); rt_write_line(1, text);
+    solve_format_double(c, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "c = "); rt_write_line(1, text);
+    rt_write_line(1, "method = exponential-asymptote-fit");
+    rt_write_line(1, "status = approximate");
+    return 0;
+}
+
 static void solve_options_init(SolveOptions *options) {
     rt_copy_string(options->var_name, sizeof(options->var_name), "x");
     options->have_scan = 0;
@@ -4992,11 +5686,24 @@ static void solve_options_init(SolveOptions *options) {
     options->have_area = 0;
     options->have_volume = 0;
     options->have_mean = 0;
+    options->have_eval = 0;
+    options->have_at = 0;
+    options->have_subst = 0;
+    options->have_average_rate = 0;
+    options->have_minimum = 0;
+    options->have_maximum = 0;
+    options->have_area_quadrant = 0;
+    options->have_fit_exp_asymptote = 0;
     options->have_limit = 0;
     options->have_asymptotes = 0;
+    options->param_count = 0;
+    options->at_spec[0] = '\0';
+    options->subst_spec[0] = '\0';
+    options->fit_points_spec[0] = '\0';
     options->point_spec[0] = '\0';
     options->range_spec[0] = '\0';
     options->limit_spec[0] = '\0';
+    options->fit_asymptote = 0.0;
     options->scale = SOLVE_DEFAULT_SCALE;
     options->tolerance = SOLVE_DEFAULT_TOLERANCE;
     options->max_iterations = SOLVE_DEFAULT_MAX_ITERATIONS;
@@ -5070,6 +5777,24 @@ int main(int argc, char **argv) {
             options.explain = 1;
         } else if (rt_strcmp(opt.flag, "--quiet") == 0) {
             options.quiet = 1;
+        } else if (rt_strcmp(opt.flag, "--param") == 0) {
+            if (tool_opt_require_value(&opt) != 0) return 2;
+            if (options.param_count >= SOLVE_MAX_PARAMS || !tool_ascii_is_identifier_start(opt.value[0]) || rt_strlen(opt.value) >= SOLVE_NAME_CAPACITY) {
+                tool_write_error("solve", "invalid parameter name", opt.value);
+                return 2;
+            }
+            rt_copy_string(options.param_names[options.param_count++], SOLVE_NAME_CAPACITY, opt.value);
+        } else if (rt_strcmp(opt.flag, "--eval") == 0) {
+            options.have_eval = 1;
+        } else if (rt_strcmp(opt.flag, "--at") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.at_spec)) return 2;
+            options.have_at = 1;
+            options.have_eval = 1;
+            rt_copy_string(options.at_spec, sizeof(options.at_spec), opt.value);
+        } else if (rt_strcmp(opt.flag, "--subst") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.subst_spec)) return 2;
+            options.have_subst = 1;
+            rt_copy_string(options.subst_spec, sizeof(options.subst_spec), opt.value);
         } else if (rt_strcmp(opt.flag, "--diff") == 0 || tool_starts_with(opt.flag, "--diff=")) {
             const char *value = 0;
             unsigned long long order = 1ULL;
@@ -5108,6 +5833,11 @@ int main(int argc, char **argv) {
             if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
             options.have_area = 1;
             rt_copy_string(options.range_spec, sizeof(options.range_spec), opt.value);
+        } else if (rt_strcmp(opt.flag, "--area-quadrant") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
+            options.have_area = 1;
+            options.have_area_quadrant = 1;
+            rt_copy_string(options.range_spec, sizeof(options.range_spec), opt.value);
         } else if (rt_strcmp(opt.flag, "--volume") == 0) {
             if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
             options.have_volume = 1;
@@ -5116,12 +5846,29 @@ int main(int argc, char **argv) {
             if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
             options.have_mean = 1;
             rt_copy_string(options.range_spec, sizeof(options.range_spec), opt.value);
+        } else if (rt_strcmp(opt.flag, "--average-rate") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
+            options.have_average_rate = 1;
+            rt_copy_string(options.range_spec, sizeof(options.range_spec), opt.value);
+        } else if (rt_strcmp(opt.flag, "--range") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.range_spec)) return 2;
+            rt_copy_string(options.range_spec, sizeof(options.range_spec), opt.value);
+        } else if (rt_strcmp(opt.flag, "--max") == 0) {
+            options.have_maximum = 1;
+        } else if (rt_strcmp(opt.flag, "--min") == 0) {
+            options.have_minimum = 1;
         } else if (rt_strcmp(opt.flag, "--limit") == 0) {
             if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.limit_spec)) return 2;
             options.have_limit = 1;
             rt_copy_string(options.limit_spec, sizeof(options.limit_spec), opt.value);
         } else if (rt_strcmp(opt.flag, "--asymptotes") == 0) {
             options.have_asymptotes = 1;
+        } else if (rt_strcmp(opt.flag, "--fit-exp-asymptote") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || solve_parse_double_arg(opt.value, &options.fit_asymptote) != 0) return 2;
+            options.have_fit_exp_asymptote = 1;
+        } else if (rt_strcmp(opt.flag, "--points") == 0) {
+            if (tool_opt_require_value(&opt) != 0 || rt_strlen(opt.value) >= sizeof(options.fit_points_spec)) return 2;
+            rt_copy_string(options.fit_points_spec, sizeof(options.fit_points_spec), opt.value);
         } else if (rt_strcmp(opt.flag, "--method") == 0) {
             if (tool_opt_require_value(&opt) != 0) return 2;
             if (rt_strcmp(opt.value, "auto") != 0 && rt_strcmp(opt.value, "bisection") != 0) {
@@ -5173,12 +5920,25 @@ int main(int argc, char **argv) {
         options.have_scan = 1;
         options.default_scan = 1;
     }
+    if (options.have_fit_exp_asymptote) {
+        if (options.fit_points_spec[0] == '\0') {
+            tool_write_error("solve", "--fit-exp-asymptote requires --points", 0);
+            return 2;
+        }
+        return solve_run_fit_exp_mode(&options);
+    }
     if (options.have_area) {
         return solve_run_area_mode(&options, opt.argi, argc, argv);
     }
     if (solve_join_expression(opt.argi, argc, argv, expression, sizeof(expression)) != 0) {
         tool_write_error("solve", "missing or too large expression", 0);
         return 2;
+    }
+    if (options.have_subst) {
+        return solve_run_subst_mode(&options, expression);
+    }
+    if (options.have_eval) {
+        return solve_run_eval_mode(&options, expression);
     }
     if (options.have_limit) {
         return solve_run_limit_mode(&options, expression);
@@ -5195,8 +5955,8 @@ int main(int argc, char **argv) {
     }
     {
         const char *validation_message = 0;
-        if (solve_validate_identifiers(equation.left, options.var_name, &validation_message) != 0 ||
-            solve_validate_identifiers(equation.right, options.var_name, &validation_message) != 0) {
+        if (solve_validate_identifiers(equation.left, &options, &validation_message) != 0 ||
+            solve_validate_identifiers(equation.right, &options, &validation_message) != 0) {
             tool_write_error("solve", validation_message != 0 ? validation_message : "invalid expression", 0);
             return 2;
         }
@@ -5223,6 +5983,15 @@ int main(int argc, char **argv) {
     }
     if (options.have_discuss) {
         return solve_run_discuss_mode(&equation, &options);
+    }
+    if (options.have_average_rate) {
+        return solve_run_average_rate_mode(&equation, &options);
+    }
+    if (options.have_maximum || options.have_minimum) {
+        if (options.range_spec[0] == '\0') {
+            rt_copy_string(options.range_spec, sizeof(options.range_spec), "-10:10");
+        }
+        return solve_run_extreme_mode(&equation, &options, options.have_maximum);
     }
     if (options.have_integrate) {
         return solve_run_integrate_mode(&equation, &options);
