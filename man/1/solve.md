@@ -219,12 +219,14 @@ If no root is found, normal output says whether this was an exact no-real-soluti
 
 ## JSON OUTPUT
 
-With `--json`, `solve` writes JSON Lines using the common envelope documented in `json-output`. Events include:
+With `--json`, `solve` writes JSON Lines using the common envelope documented in `json-output`. Every mode emits JSON only; no plain text leaks onto stdout. Events include:
 
 - `solve_result` for each root or intersection found
 - `solve_candidate` for likely touching roots that meet the candidate rules but were not bracketed by a sign change
 - `solve_identity` for supported polynomial identities; its data includes `exact:true` for exact rational-literal identities and `exact:false` for approximate floating-point fallback identities
 - `solve_summary` for method, status, and count information
+- `solve_value` for single-field analysis results such as `--eval`, `--diff`, `--integrate`, and `--average-rate`, with `data` of the form `{"key":...,"value":...}`
+- `solve_output` for the remaining analysis, inequality, calculus, and curve-discussion lines, with `data` of the form `{"text":...}`; one event is emitted per logical output line
 
 A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Exact rational roots are emitted as fractions in the root string. Approximate roots include `exact:false`. Diagnostics are written to stderr.
 

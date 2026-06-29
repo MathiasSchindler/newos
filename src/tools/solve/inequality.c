@@ -4,6 +4,10 @@
 #endif
 #include "../solve.c"
 #else
+#define rt_write_cstr solve_sp_cstr
+#define rt_write_line solve_sp_line
+#define rt_write_char solve_sp_char
+#define rt_write_uint solve_sp_uint
 static int solve_relation_satisfied(double value, SolveRelation relation, double tolerance) {
     switch (relation) {
         case SOLVE_RELATION_LT: return value < -tolerance;

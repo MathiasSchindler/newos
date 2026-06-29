@@ -4,6 +4,10 @@
 #endif
 #include "../solve.c"
 #else
+#define rt_write_cstr solve_sp_cstr
+#define rt_write_line solve_sp_line
+#define rt_write_char solve_sp_char
+#define rt_write_uint solve_sp_uint
 static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions *options) {
     SolveRatPoly poly;
     SolveRatPoly derivative;
@@ -46,7 +50,8 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
             rt_write_cstr(1, "derivative: ");
             rt_write_line(1, text);
         }
-        rt_write_line(1, text);
+        if (tool_json_is_enabled()) solve_emit_kv("derivative", text);
+        else rt_write_line(1, text);
         return 0;
     }
     if (solve_rat_poly_derivative(&poly, options->diff_order, &derivative) != 0 || solve_rat_poly_format(&derivative, options->var_name, text, sizeof(text)) != 0) {
@@ -65,7 +70,8 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
         if (equation->has_equation) rt_write_line(1, "next: solve derivative = 0");
     }
     if (!equation->has_equation) {
-        rt_write_line(1, text);
+        if (tool_json_is_enabled()) solve_emit_kv("derivative", text);
+        else rt_write_line(1, text);
         return 0;
     }
     rt_copy_string(derived.left, sizeof(derived.left), text);
@@ -162,10 +168,9 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
         }
     }
     solve_format_double(value, options->scale, text, sizeof(text));
-    rt_write_cstr(1, "value = ");
-    rt_write_line(1, text);
-    rt_write_line(1, "method = direct-evaluation");
-    if (!options->quiet) rt_write_line(1, "status = approximate");
+    solve_emit_kv("value", text);
+    solve_emit_kv("method", "direct-evaluation");
+    if (!options->quiet) solve_emit_kv("status", "approximate");
     return 0;
 }
 
@@ -204,7 +209,11 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
         tool_write_error("solve", "substitution output too large", 0);
         return 2;
     }
-    rt_write_line(1, out);
+    if (tool_json_is_enabled()) {
+        solve_emit_kv("expression", out);
+    } else {
+        rt_write_line(1, out);
+    }
     return 0;
 }
 
@@ -229,10 +238,9 @@ static int solve_run_average_rate_mode(const SolveEquation *equation, const Solv
         rt_write_line(1, "formula: average rate = (f(b)-f(a))/(b-a)");
     }
     solve_format_double(rate, options->scale, text, sizeof(text));
-    rt_write_cstr(1, "average rate approximate = ");
-    rt_write_line(1, text);
-    rt_write_line(1, "method = endpoint-evaluation");
-    rt_write_line(1, "status = approximate");
+    solve_emit_kv("average rate approximate", text);
+    solve_emit_kv("method", "endpoint-evaluation");
+    solve_emit_kv("status", "approximate");
     return 0;
 }
 
@@ -326,12 +334,11 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
                 solve_explain_rat_value_line("F(lower) = ", lo_value, options);
                 rt_write_line(1, "rule: integral from a to b = F(b) - F(a)");
             }
-            if (options->quiet) {
+            if (options->quiet && !tool_json_is_enabled()) {
                 rt_write_line(1, text);
             } else {
-                rt_write_cstr(1, "integral = ");
-                rt_write_line(1, text);
-                rt_write_line(1, "method = exact-polynomial");
+                solve_emit_kv("integral", text);
+                if (!options->quiet) solve_emit_kv("method", "exact-polynomial");
             }
             return 0;
         }
@@ -343,7 +350,7 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
         double error;
         char value[96];
         if (solve_simpson_eval(equation, options, lo, hi, 1000, &coarse) != 0 || solve_simpson_eval(equation, options, lo, hi, 2000, &fine) != 0) {
-            if (!options->quiet) rt_write_line(1, "improper integral over a discontinuity or invalid point");
+            if (!options->quiet) solve_emit_kv("status", "improper integral over a discontinuity or invalid point");
             return 3;
         }
         error = solve_abs(fine - coarse) / 15.0;
@@ -356,18 +363,18 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
             solve_explain_double_value_line("fine estimate = ", fine, options);
             rt_write_line(1, "status reason: numeric integration uses sampled double values");
         }
-        if (options->quiet) {
+        if (options->quiet && !tool_json_is_enabled()) {
             solve_format_double(fine, options->scale, value, sizeof(value));
             rt_write_line(1, value);
         } else {
             solve_format_double(fine, options->scale, value, sizeof(value));
-            rt_write_cstr(1, "integral = ");
-            rt_write_line(1, value);
-            solve_format_double(error, options->scale, value, sizeof(value));
-            rt_write_cstr(1, "estimated error = ");
-            rt_write_line(1, value);
-            rt_write_line(1, "method = simpson");
-            rt_write_line(1, "status = approximate");
+            solve_emit_kv("integral", value);
+            if (!options->quiet) {
+                solve_format_double(error, options->scale, value, sizeof(value));
+                solve_emit_kv("estimated error", value);
+                solve_emit_kv("method", "simpson");
+                solve_emit_kv("status", "approximate");
+            }
         }
         return 0;
     }

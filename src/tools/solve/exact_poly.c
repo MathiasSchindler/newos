@@ -562,16 +562,16 @@ static int solve_rat_poly_divide(const SolveRatPoly *num, const SolveRatPoly *de
 
 static void solve_write_rat_value(SolveRat value) {
     char text[96];
-    if (solve_rat_format(value, text, sizeof(text)) != 0) rt_write_cstr(1, "?");
-    else rt_write_cstr(1, text);
+    if (solve_rat_format(value, text, sizeof(text)) != 0) solve_sp_cstr(1, "?");
+    else solve_sp_cstr(1, text);
 }
 
 static void solve_write_point_rat(SolveRat x, SolveRat y) {
-    rt_write_cstr(1, "(");
+    solve_sp_cstr(1, "(");
     solve_write_rat_value(x);
-    rt_write_cstr(1, ", ");
+    solve_sp_cstr(1, ", ");
     solve_write_rat_value(y);
-    rt_write_cstr(1, ")");
+    solve_sp_cstr(1, ")");
 }
 
 

@@ -204,7 +204,7 @@ static void solve_sort_rat_roots(SolveRat *roots, double *values, int count) {
 static void solve_write_double_value(double value, int scale) {
     char text[96];
     solve_format_compact_decimal(value, scale, text, sizeof(text));
-    rt_write_cstr(1, text);
+    solve_sp_cstr(1, text);
 }
 
 static void solve_explain_rat_poly_line(const char *label, const SolveRatPoly *poly, const SolveOptions *options) {
@@ -272,7 +272,7 @@ static void solve_print_labeled_intervals(const char *positive_label, const char
     if (solve_collect_rat_poly_roots(poly, points, &point_count) != 0) return;
     solve_sort_breakpoints(points, &point_count, options->tolerance);
     if (degree < 0) {
-        rt_write_line(1, "constant zero");
+        solve_sp_line(1, "constant zero");
         return;
     }
     if (point_count == 0) {
@@ -280,8 +280,8 @@ static void solve_print_labeled_intervals(const char *positive_label, const char
         SolveRat value;
         (void)solve_rat_make(0, 1, &zero);
         if (solve_rat_poly_eval(poly, degree, zero, &value) != 0) return;
-        rt_write_cstr(1, solve_rat_sign(value) >= 0 ? positive_label : negative_label);
-        rt_write_line(1, " = (-inf, inf)");
+        solve_sp_cstr(1, solve_rat_sign(value) >= 0 ? positive_label : negative_label);
+        solve_sp_line(1, " = (-inf, inf)");
         return;
     }
     for (segment = 0; segment <= point_count; ++segment) {
@@ -299,13 +299,13 @@ static void solve_print_labeled_intervals(const char *positive_label, const char
             if (solve_rat_add(points[segment - 1].rat_value, points[segment].rat_value, &sum) != 0 || solve_rat_make(2, 1, &two) != 0 || solve_rat_div(sum, two, &sample) != 0) return;
         }
         if (solve_rat_poly_eval(poly, degree, sample, &value) != 0 || solve_rat_sign(value) == 0) continue;
-        rt_write_cstr(1, solve_rat_sign(value) > 0 ? positive_label : negative_label);
-        rt_write_cstr(1, " = ");
-        rt_write_char(1, '(');
-        if (segment == 0) rt_write_cstr(1, "-inf"); else rt_write_cstr(1, points[segment - 1].label);
-        rt_write_cstr(1, ", ");
-        if (segment == point_count) rt_write_cstr(1, "inf"); else rt_write_cstr(1, points[segment].label);
-        rt_write_line(1, ")");
+        solve_sp_cstr(1, solve_rat_sign(value) > 0 ? positive_label : negative_label);
+        solve_sp_cstr(1, " = ");
+        solve_sp_char(1, '(');
+        if (segment == 0) solve_sp_cstr(1, "-inf"); else solve_sp_cstr(1, points[segment - 1].label);
+        solve_sp_cstr(1, ", ");
+        if (segment == point_count) solve_sp_cstr(1, "inf"); else solve_sp_cstr(1, points[segment].label);
+        solve_sp_line(1, ")");
     }
 }
 
@@ -313,15 +313,15 @@ static void solve_write_poly_end_behavior(const SolveRatPoly *poly) {
     int degree = solve_rat_poly_degree(poly);
     int lead_sign;
     if (degree < 0) {
-        rt_write_line(1, "limit x->-inf: 0");
-        rt_write_line(1, "limit x->inf: 0");
+        solve_sp_line(1, "limit x->-inf: 0");
+        solve_sp_line(1, "limit x->inf: 0");
         return;
     }
     lead_sign = solve_rat_sign(poly->coeff[degree]);
-    rt_write_cstr(1, "limit x->-inf: ");
-    rt_write_line(1, (degree % 2 == 0 ? lead_sign : -lead_sign) > 0 ? "+inf" : "-inf");
-    rt_write_cstr(1, "limit x->inf: ");
-    rt_write_line(1, lead_sign > 0 ? "+inf" : "-inf");
+    solve_sp_cstr(1, "limit x->-inf: ");
+    solve_sp_line(1, (degree % 2 == 0 ? lead_sign : -lead_sign) > 0 ? "+inf" : "-inf");
+    solve_sp_cstr(1, "limit x->inf: ");
+    solve_sp_line(1, lead_sign > 0 ? "+inf" : "-inf");
 }
 
 static int solve_rat_poly_roots_in_range(const SolveRatPoly *poly, SolveRat lo, SolveRat hi, SolveBreakpoint *points, int *count_out) {

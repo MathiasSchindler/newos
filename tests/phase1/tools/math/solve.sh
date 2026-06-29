@@ -422,6 +422,24 @@ assert_file_contains "$WORK_DIR/solve.jsonl" '"event":"solve_result"' "solve --j
 assert_file_contains "$WORK_DIR/solve.jsonl" '"root":"1\.4142135624"' "solve --json root value mismatch"
 assert_file_contains "$WORK_DIR/solve.jsonl" '"event":"solve_summary"' "solve --json did not emit a solve_summary event"
 
+# --json must be universal: every mode emits only JSON objects, never plain text
+for json_mode in '--eval --at x=3 x^2' '--diff x^3' '--integrate 0:1 x^2' '--discuss x^3-3*x' '--monotonicity x^2' '--tangent 2 x^2' '--end-behavior x^3' '--limit x->2 (x^2-4)/(x-2)' '--volume 0:1 x' '--mean 0:2 2*x' '--average-rate 0:2 x^2' 'x^2-4>0'; do
+	"${TEST_BIN_DIR}/solve" --json $json_mode > "$WORK_DIR/json-universal.out" 2>/dev/null || true
+	while IFS= read -r json_line; do
+		[ -z "$json_line" ] && continue
+		case "$json_line" in
+			'{"schema":"newos.tool.v1"'*) ;;
+			*) fail "solve --json emitted non-JSON line for [$json_mode]: $json_line" ;;
+		esac
+	done < "$WORK_DIR/json-universal.out"
+done
+"${TEST_BIN_DIR}/solve" --json --eval --at x=3 'x^2' > "$WORK_DIR/json-eval.out"
+assert_file_contains "$WORK_DIR/json-eval.out" '"event":"solve_value"' "solve --json --eval did not emit a solve_value event"
+assert_file_contains "$WORK_DIR/json-eval.out" '"key":"value","value":"9\.0000000000"' "solve --json --eval value field mismatch"
+"${TEST_BIN_DIR}/solve" --json --discuss 'x^3-3*x' > "$WORK_DIR/json-discuss.out"
+assert_file_contains "$WORK_DIR/json-discuss.out" '"event":"solve_output"' "solve --json --discuss did not emit solve_output events"
+assert_file_contains "$WORK_DIR/json-discuss.out" '"text":"maximum: (-1, 2)"' "solve --json --discuss point text mismatch"
+
 no_root_status=0
 "${TEST_BIN_DIR}/solve" --lo 1 --hi 2 'x^2 + 1 = 0' > "$WORK_DIR/no_root.out" 2> "$WORK_DIR/no_root.err" || no_root_status=$?
 assert_text_equals "$no_root_status" '1' "solve should return 1 when no solution is found"
@@ -441,3 +459,61 @@ conflict_status=0
 "${TEST_BIN_DIR}/solve" --scan 0:1 --lo 0 --hi 1 'x = 0' > "$WORK_DIR/conflict.out" 2> "$WORK_DIR/conflict.err" || conflict_status=$?
 assert_text_equals "$conflict_status" '2' "solve should reject --scan combined with --lo/--hi"
 assert_file_contains "$WORK_DIR/conflict.err" 'cannot be combined' "solve interval conflict diagnostic mismatch"
+
+# Regression: a cubic with one real root plus a complex pair must report the real root
+"${TEST_BIN_DIR}/solve" 'x^3 - 8 = 0' > "$WORK_DIR/cubic-single-real.out"
+assert_file_contains "$WORK_DIR/cubic-single-real.out" '^x = 2$' "solve must report the lone real root of x^3 - 8"
+if grep -q '^no real solutions$' "$WORK_DIR/cubic-single-real.out"; then
+	fail "solve must not discard a real cubic root when the leftover factor is complex"
+fi
+"${TEST_BIN_DIR}/solve" 'x^3 = 27' > "$WORK_DIR/cubic-perfect.out"
+assert_file_contains "$WORK_DIR/cubic-perfect.out" '^x = 3$' "solve must report the cube root of 27"
+
+# Regression: exact polynomial roots must report even outside the default scan window
+"${TEST_BIN_DIR}/solve" --all 'x^2 = 40000' > "$WORK_DIR/quad-wide.out"
+assert_file_contains "$WORK_DIR/quad-wide.out" '^x = -200$' "solve must report exact root -200 outside default scan window"
+assert_file_contains "$WORK_DIR/quad-wide.out" '^x = 200$' "solve must report exact root 200 outside default scan window"
+"${TEST_BIN_DIR}/solve" --all 'x^2 = 1000000000000' > "$WORK_DIR/quad-million.out"
+assert_file_contains "$WORK_DIR/quad-million.out" '^x = 1000000$' "solve must report large exact quadratic root"
+# An explicit scan window still clips reported roots
+quad_clip_status=0
+"${TEST_BIN_DIR}/solve" --scan -100:100 'x^2 = 40000' > "$WORK_DIR/quad-clip.out" 2> "$WORK_DIR/quad-clip.err" || quad_clip_status=$?
+assert_text_equals "$quad_clip_status" '1' "solve should report no roots inside an explicit window that excludes them"
+assert_file_contains "$WORK_DIR/quad-clip.out" 'no solution found in requested range' "solve did not clip exact roots to an explicit scan window"
+
+# Extended built-in functions
+tan_root=$("${TEST_BIN_DIR}/solve" --quiet --lo 0 --hi 1 'tan(x) = 1' | tr -d '\r\n')
+assert_text_equals "$tan_root" '0.7853981634' "solve tan(x)=1 root mismatch"
+asin_root=$("${TEST_BIN_DIR}/solve" --quiet --lo 0 --hi 1 'asin(x) = 0.5' | tr -d '\r\n')
+assert_text_equals "$asin_root" '0.4794255386' "solve asin(x)=0.5 root mismatch"
+acos_root=$("${TEST_BIN_DIR}/solve" --quiet --lo 0 --hi 1 'acos(x) = 1' | tr -d '\r\n')
+assert_text_equals "$acos_root" '0.5403023059' "solve acos(x)=1 root mismatch"
+tanh_root=$("${TEST_BIN_DIR}/solve" --quiet --lo 0 --hi 2 'tanh(x) = 0.5' | tr -d '\r\n')
+assert_text_equals "$tanh_root" '0.5493061442' "solve tanh(x)=0.5 root mismatch"
+"${TEST_BIN_DIR}/solve" --all 'cosh(x) = 2' > "$WORK_DIR/cosh.out"
+assert_file_contains "$WORK_DIR/cosh.out" '^x = -1\.3169578969$' "solve did not report the negative cosh root"
+assert_file_contains "$WORK_DIR/cosh.out" '^x = 1\.3169578969$' "solve did not report the positive cosh root"
+sinh_root=$("${TEST_BIN_DIR}/solve" --quiet --lo 0 --hi 2 'sinh(x) = 1' | tr -d '\r\n')
+assert_text_equals "$sinh_root" '0.8813735871' "solve sinh(x)=1 root mismatch"
+"${TEST_BIN_DIR}/solve" 'floor(x) = 3' > "$WORK_DIR/floor.out"
+assert_file_contains "$WORK_DIR/floor.out" '^x = 3$' "solve did not solve floor(x)=3"
+"${TEST_BIN_DIR}/solve" 'ceil(x) = 3' > "$WORK_DIR/ceil.out"
+assert_file_contains "$WORK_DIR/ceil.out" '^x = 2\.5000000000' "solve did not solve ceil(x)=3"
+"${TEST_BIN_DIR}/solve" 'round(x) = 2' > "$WORK_DIR/round.out"
+assert_file_contains "$WORK_DIR/round.out" '^x = 1\.5000000000' "solve did not solve round(x)=2"
+
+# Symbolic derivatives of extended functions
+"${TEST_BIN_DIR}/solve" --diff 'tan(x)' > "$WORK_DIR/diff-tan.out"
+assert_file_contains "$WORK_DIR/diff-tan.out" '^[(]1/[(]cos[(]x[)]\^2[)][)]$' "solve --diff tan mismatch"
+"${TEST_BIN_DIR}/solve" --diff 'sinh(x)' > "$WORK_DIR/diff-sinh.out"
+assert_file_contains "$WORK_DIR/diff-sinh.out" '^[(]cosh[(]x[)]\*1[)]$' "solve --diff sinh mismatch"
+"${TEST_BIN_DIR}/solve" --diff 'cosh(x)' > "$WORK_DIR/diff-cosh.out"
+assert_file_contains "$WORK_DIR/diff-cosh.out" '^[(]sinh[(]x[)]\*1[)]$' "solve --diff cosh mismatch"
+"${TEST_BIN_DIR}/solve" --diff 'tanh(x)' > "$WORK_DIR/diff-tanh.out"
+assert_file_contains "$WORK_DIR/diff-tanh.out" '^[(]1/[(]cosh[(]x[)]\^2[)][)]$' "solve --diff tanh mismatch"
+"${TEST_BIN_DIR}/solve" --diff 'asin(x)' > "$WORK_DIR/diff-asin.out"
+assert_file_contains "$WORK_DIR/diff-asin.out" 'sqrt' "solve --diff asin should contain sqrt(1 - x^2)"
+diff_floor_status=0
+"${TEST_BIN_DIR}/solve" --diff 'floor(x)' > "$WORK_DIR/diff-floor.out" 2> "$WORK_DIR/diff-floor.err" || diff_floor_status=$?
+assert_text_equals "$diff_floor_status" '2' "solve --diff should reject floor (no symbolic derivative)"
+assert_file_contains "$WORK_DIR/diff-floor.err" 'symbolic derivative unsupported' "solve --diff floor diagnostic mismatch"

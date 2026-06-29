@@ -209,6 +209,96 @@ static double solve_abs(double value) {
     return value < 0.0 ? -value : value;
 }
 
+static void solve_emit_kv(const char *key, const char *value) {
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "solve", "stdout", "solve_value") != 0) return;
+        rt_write_cstr(1, ",\"data\":{\"key\":");
+        tool_json_write_string(1, key);
+        rt_write_cstr(1, ",\"value\":");
+        tool_json_write_string(1, value != 0 ? value : "");
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return;
+    }
+    rt_write_cstr(1, key);
+    rt_write_cstr(1, " = ");
+    rt_write_line(1, value);
+}
+
+static void solve_emit_pair(const char *key, const char *value) {
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "solve", "stdout", "solve_value") != 0) return;
+        rt_write_cstr(1, ",\"data\":{\"key\":");
+        tool_json_write_string(1, key);
+        rt_write_cstr(1, ",\"value\":");
+        tool_json_write_string(1, value != 0 ? value : "");
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+        return;
+    }
+    rt_write_cstr(1, key);
+    rt_write_cstr(1, ": ");
+    rt_write_line(1, value);
+}
+
+static char g_solve_line[8192];
+static size_t g_solve_line_len = 0U;
+
+static void solve_sp_flush(void) {
+    g_solve_line[g_solve_line_len] = '\0';
+    if (tool_json_begin_event(1, "solve", "stdout", "solve_output") == 0) {
+        rt_write_cstr(1, ",\"data\":{\"text\":");
+        tool_json_write_string(1, g_solve_line);
+        rt_write_char(1, '}');
+        tool_json_end_event(1);
+    }
+    g_solve_line_len = 0U;
+}
+
+static int solve_sp_char(int fd, char ch) {
+    if (fd != 1 || !tool_json_is_enabled()) return rt_write_char(fd, ch);
+    if (ch == '\n') {
+        solve_sp_flush();
+        return 0;
+    }
+    if (g_solve_line_len + 1U < sizeof(g_solve_line)) {
+        g_solve_line[g_solve_line_len++] = ch;
+    }
+    return 0;
+}
+
+static int solve_sp_cstr(int fd, const char *text) {
+    if (fd != 1 || !tool_json_is_enabled()) return rt_write_cstr(fd, text);
+    while (*text != '\0') {
+        solve_sp_char(1, *text);
+        text += 1;
+    }
+    return 0;
+}
+
+static int solve_sp_line(int fd, const char *text) {
+    if (fd != 1 || !tool_json_is_enabled()) return rt_write_line(fd, text);
+    solve_sp_cstr(1, text);
+    solve_sp_flush();
+    return 0;
+}
+
+static int solve_sp_uint(int fd, unsigned long long value) {
+    char digits[24];
+    size_t n = 0U;
+    if (fd != 1 || !tool_json_is_enabled()) return rt_write_uint(fd, value);
+    if (value == 0ULL) {
+        solve_sp_char(1, '0');
+        return 0;
+    }
+    while (value > 0ULL && n < sizeof(digits)) {
+        digits[n++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    }
+    while (n > 0U) solve_sp_char(1, digits[--n]);
+    return 0;
+}
+
 static int solve_is_bad(double value) {
     return value != value || value > SOLVE_HUGE || value < -SOLVE_HUGE;
 }

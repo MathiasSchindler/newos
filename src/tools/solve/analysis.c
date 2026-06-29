@@ -4,6 +4,10 @@
 #endif
 #include "../solve.c"
 #else
+#define rt_write_cstr solve_sp_cstr
+#define rt_write_line solve_sp_line
+#define rt_write_char solve_sp_char
+#define rt_write_uint solve_sp_uint
 static int solve_format_antiderivative_term(SolveRat coeff, int power, const char *var_name, char *buffer, size_t buffer_size, size_t *length_io, int first) {
     SolveRat abs_coeff;
     if (solve_rat_abs_value(coeff, &abs_coeff) != 0) return -1;
