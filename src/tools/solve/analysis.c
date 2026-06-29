@@ -8,6 +8,10 @@
 #define rt_write_line solve_sp_line
 #define rt_write_char solve_sp_char
 #define rt_write_uint solve_sp_uint
+static void solve_print_exp_poly_factor_intervals(const char *positive_label, const char *negative_label, const SolveOptions *options, const SolveRatPoly *factor);
+static void solve_write_point_double(double x, double y, int scale);
+static void solve_write_numeric_end_behavior(const SolveEquation *equation, const SolveOptions *options);
+
 static int solve_format_antiderivative_term(SolveRat coeff, int power, const char *var_name, char *buffer, size_t buffer_size, size_t *length_io, int first) {
     SolveRat abs_coeff;
     if (solve_rat_abs_value(coeff, &abs_coeff) != 0) return -1;
@@ -53,6 +57,44 @@ static int solve_rat_poly_format_antiderivative(const SolveRatPoly *poly, const 
     return solve_append_text(buffer, buffer_size, &length, "C");
 }
 
+static int solve_format_fraction_hint(double value, char *buffer, size_t buffer_size) {
+    double absolute = value < 0.0 ? -value : value;
+    unsigned int den;
+    unsigned long long best_num = 0ULL;
+    unsigned long long best_den = 1ULL;
+    double best_error = 1.0;
+    size_t length = 0U;
+    if (buffer_size == 0U || solve_is_bad(value) || absolute > 1000000.0) return -1;
+    for (den = 1U; den <= SOLVE_MAX_RATIONAL_DENOMINATOR; ++den) {
+        double scaled = absolute * (double)den;
+        unsigned long long num = (unsigned long long)(scaled + 0.5);
+        double candidate = (double)num / (double)den;
+        double error = solve_abs(candidate - absolute);
+        if (error < best_error) {
+            best_error = error;
+            best_num = num;
+            best_den = (unsigned long long)den;
+        }
+    }
+    if (best_error > 0.0000001) return -1;
+    {
+        unsigned long long gcd = solve_gcd_ull(best_num, best_den);
+        char text[64];
+        if (gcd != 0ULL) {
+            best_num /= gcd;
+            best_den /= gcd;
+        }
+        buffer[0] = '\0';
+        if (value < 0.0 && solve_append_char(buffer, buffer_size, &length, '-') != 0) return -1;
+        solve_format_double((double)best_num, 0, text, sizeof(text));
+        if (solve_append_text(buffer, buffer_size, &length, text) != 0) return -1;
+        if (best_den == 1ULL) return 0;
+        if (solve_append_char(buffer, buffer_size, &length, '/') != 0) return -1;
+        solve_format_double((double)best_den, 0, text, sizeof(text));
+        return solve_append_text(buffer, buffer_size, &length, text);
+    }
+}
+
 static int solve_run_antiderivative_mode(const SolveEquation *equation, const SolveOptions *options) {
     SolveRatPoly poly;
     SolveRatPoly anti;
@@ -88,6 +130,18 @@ static int solve_run_monotonicity_mode(const SolveEquation *equation, const Solv
     SolveRatPoly poly;
     SolveRatPoly derivative;
     if (solve_get_rat_poly_for_mode(equation, options, &poly) != 0) {
+        SolveRatPoly exp_factor;
+        SolveRatPoly exp_arg;
+        if (!equation->has_equation && solve_sym_exp_poly_derivative_factor(equation->left, options, curvature ? 2 : 1, &exp_factor, &exp_arg) == 0) {
+            if (solve_should_explain(options)) {
+                solve_explain_working_function(curvature ? "exp-polynomial curvature" : "exp-polynomial monotonicity", equation, options);
+                solve_explain_rat_poly_line(curvature ? "second-derivative factor: " : "first-derivative factor: ", &exp_factor, options);
+                rt_write_line(1, "rule: exp(linear) is always positive, so this exact polynomial factor decides the sign");
+            }
+            solve_print_exp_poly_factor_intervals(curvature ? "left-curved" : "increasing", curvature ? "right-curved" : "decreasing", options, &exp_factor);
+            rt_write_line(1, "method = exact-exp-polynomial-sign");
+            return 0;
+        }
         double roots[SOLVE_MAX_RESULTS];
         int count = 0;
         double lo = options->default_scan ? -10.0 : options->scan_lo;
@@ -127,6 +181,118 @@ static int solve_run_monotonicity_mode(const SolveEquation *equation, const Solv
     }
     solve_print_labeled_intervals(curvature ? "left-curved" : "increasing", curvature ? "right-curved" : "decreasing", options, &derivative);
     rt_write_line(1, "method = exact-polynomial");
+    return 0;
+}
+
+static double solve_rat_poly_eval_double_direct(const SolveRatPoly *poly, double x) {
+    int degree = solve_rat_poly_degree(poly);
+    double value = 0.0;
+    while (degree >= 0) {
+        value = value * x + solve_rat_to_double(poly->coeff[degree]);
+        degree -= 1;
+    }
+    return value;
+}
+
+static void solve_print_exp_poly_factor_intervals(const char *positive_label, const char *negative_label, const SolveOptions *options, const SolveRatPoly *factor) {
+    SolveBreakpoint points[SOLVE_MAX_RESULTS];
+    int point_count = 0;
+    int segment;
+    if (solve_collect_rat_poly_roots(factor, points, &point_count) != 0) return;
+    solve_sort_breakpoints(points, &point_count, options->tolerance);
+    if (solve_rat_poly_degree(factor) < 0) {
+        rt_write_line(1, "constant zero");
+        return;
+    }
+    for (segment = 0; segment <= point_count; ++segment) {
+        double sample;
+        double value;
+        if (point_count == 0) sample = 0.0;
+        else if (segment == 0) sample = points[0].value - 1.0;
+        else if (segment == point_count) sample = points[point_count - 1].value + 1.0;
+        else sample = (points[segment - 1].value + points[segment].value) * 0.5;
+        value = solve_rat_poly_eval_double_direct(factor, sample);
+        if (solve_abs(value) <= options->tolerance) continue;
+        rt_write_cstr(1, value > 0.0 ? positive_label : negative_label);
+        rt_write_cstr(1, " = (");
+        if (segment == 0) rt_write_cstr(1, "-inf");
+        else rt_write_cstr(1, points[segment - 1].label);
+        rt_write_cstr(1, ", ");
+        if (segment == point_count) rt_write_cstr(1, "inf");
+        else rt_write_cstr(1, points[segment].label);
+        rt_write_line(1, ")");
+        if (point_count == 0) break;
+    }
+}
+
+static const char *solve_classify_exp_poly_critical(const SolveRatPoly *first, const SolveRatPoly *second, double x, const SolveOptions *options) {
+    double second_value = solve_rat_poly_eval_double_direct(second, x);
+    if (second_value > options->tolerance) return "minimum";
+    if (second_value < -options->tolerance) return "maximum";
+    {
+        double left = solve_rat_poly_eval_double_direct(first, x - 0.01);
+        double right = solve_rat_poly_eval_double_direct(first, x + 0.01);
+        if (left > 0.0 && right < 0.0) return "maximum";
+        if (left < 0.0 && right > 0.0) return "minimum";
+    }
+    return "saddle";
+}
+
+static int solve_print_exp_poly_discussion(const SolveEquation *equation, const SolveOptions *options) {
+    SolveRatPoly zero_factor;
+    SolveRatPoly first;
+    SolveRatPoly second;
+    SolveRatPoly exp_arg;
+    SolveBreakpoint zeros[SOLVE_MAX_RESULTS];
+    SolveBreakpoint critical[SOLVE_MAX_RESULTS];
+    SolveBreakpoint inflections[SOLVE_MAX_RESULTS];
+    int zero_count = 0;
+    int critical_count = 0;
+    int inflection_count = 0;
+    int i;
+    if (equation->has_equation || solve_sym_exp_poly_derivative_factor(equation->left, options, 0, &zero_factor, &exp_arg) != 0 || solve_sym_exp_poly_derivative_factor(equation->left, options, 1, &first, &exp_arg) != 0 || solve_sym_exp_poly_derivative_factor(equation->left, options, 2, &second, &exp_arg) != 0) return -1;
+    if (solve_should_explain(options)) {
+        solve_explain_working_function("exp-polynomial curve discussion", equation, options);
+        solve_explain_rat_poly_line("zero factor: ", &zero_factor, options);
+        solve_explain_rat_poly_line("first-derivative factor: ", &first, options);
+        solve_explain_rat_poly_line("second-derivative factor: ", &second, options);
+        rt_write_line(1, "rule: the exponential factor is positive, so exact polynomial factors decide zeros, critical points, and curvature changes");
+    }
+    rt_write_line(1, "domain: all real x");
+    rt_write_line(1, "structure: exp(linear)*polynomial");
+    (void)solve_collect_rat_poly_roots(&zero_factor, zeros, &zero_count);
+    solve_sort_breakpoints(zeros, &zero_count, options->tolerance);
+    solve_print_rat_roots_line("zeros:", zeros, zero_count);
+    (void)solve_collect_rat_poly_roots(&first, critical, &critical_count);
+    solve_sort_breakpoints(critical, &critical_count, options->tolerance);
+    for (i = 0; i < critical_count; ++i) {
+        double y;
+        const char *message = 0;
+        const char *label;
+        if (solve_eval_function(equation, options, critical[i].value, &y, &message) != 0) continue;
+        label = solve_classify_exp_poly_critical(&first, &second, critical[i].value, options);
+        rt_write_cstr(1, label);
+        rt_write_cstr(1, " approximate: ");
+        solve_write_point_double(critical[i].value, y, options->scale);
+        rt_write_char(1, '\n');
+    }
+    (void)solve_collect_rat_poly_roots(&second, inflections, &inflection_count);
+    solve_sort_breakpoints(inflections, &inflection_count, options->tolerance);
+    for (i = 0; i < inflection_count; ++i) {
+        double left = solve_rat_poly_eval_double_direct(&second, inflections[i].value - 0.01);
+        double right = solve_rat_poly_eval_double_direct(&second, inflections[i].value + 0.01);
+        double y;
+        const char *message = 0;
+        if (left * right > 0.0 || solve_eval_function(equation, options, inflections[i].value, &y, &message) != 0) continue;
+        rt_write_cstr(1, "inflection approximate: ");
+        solve_write_point_double(inflections[i].value, y, options->scale);
+        rt_write_char(1, '\n');
+    }
+    solve_print_exp_poly_factor_intervals("increasing", "decreasing", options, &first);
+    solve_print_exp_poly_factor_intervals("left-curved", "right-curved", options, &second);
+    solve_write_numeric_end_behavior(equation, options);
+    rt_write_line(1, "method = exact-exp-polynomial-critical-points");
+    rt_write_line(1, "status = approximate-values");
     return 0;
 }
 
@@ -559,6 +725,7 @@ static int solve_run_discuss_mode(const SolveEquation *equation, const SolveOpti
         rt_write_line(1, "method = exact-polynomial");
         return 0;
     }
+    if (solve_print_exp_poly_discussion(equation, options) == 0) return 0;
     {
         double zeros[SOLVE_MAX_RESULTS];
         double roots[SOLVE_MAX_RESULTS];
@@ -764,6 +931,7 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
     SolveRat hi;
     SolveRat area;
     int force_numeric_area = 0;
+    int have_poly_diff = 0;
 
     if (options->have_area_quadrant) {
         if (solve_parse_two_curves(start, argc, argv, first_expr, sizeof(first_expr), second_expr, sizeof(second_expr)) != 0) return 2;
@@ -806,6 +974,7 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
     }
     if (solve_parse_rat_text(first_expr, options->var_name, &first) == 0 && solve_parse_rat_text(second_expr, options->var_name, &second) == 0 && solve_rat_poly_add(&first, &second, 1, &diff) == 0 &&
         ((lo_text[0] != '\0' && solve_rat_poly_parse_bound(lo_text, options->var_name, &lo) == 0 && solve_rat_poly_parse_bound(hi_text, options->var_name, &hi) == 0) || lo_text[0] == '\0')) {
+        have_poly_diff = 1;
         if (lo_text[0] == '\0') {
             SolveBreakpoint roots[SOLVE_MAX_RESULTS];
             int root_count = 0;
@@ -886,6 +1055,8 @@ numeric_area:
         int n = 2000;
         int i;
         char value[96];
+        char hint[96];
+        double result;
         if (lo_text[0] == '\0' || solve_eval_bound_expr(lo_text, options, &lo_d) != 0 || solve_eval_bound_expr(hi_text, options, &hi_d) != 0) return 2;
         rt_copy_string(equation.left, sizeof(equation.left), first_expr);
         rt_copy_string(equation.right, sizeof(equation.right), second_expr);
@@ -906,10 +1077,15 @@ numeric_area:
             solve_explain_double_value_line("numeric lower bound = ", lo_d, options);
             solve_explain_double_value_line("numeric upper bound = ", hi_d, options);
             rt_write_line(1, "method detail: composite Simpson rule samples |f(x)-g(x)| directly with 2000 subintervals");
-            rt_write_line(1, "status reason: non-polynomial area is numeric and approximate");
+            rt_write_line(1, have_poly_diff ? "status reason: polynomial area has non-rational bounds here, so the printed area is numeric" : "status reason: non-polynomial area is numeric and approximate");
         }
-        solve_format_double(sum * h / 3.0, options->scale, value, sizeof(value));
+        result = sum * h / 3.0;
+        solve_format_double(result, options->scale, value, sizeof(value));
         rt_write_cstr(1, "area = "); rt_write_line(1, value);
+        if (have_poly_diff && solve_format_fraction_hint(result, hint, sizeof(hint)) == 0) {
+            rt_write_cstr(1, "rational area hint = ");
+            rt_write_line(1, hint);
+        }
         rt_write_line(1, "method = simpson");
         rt_write_line(1, "status = approximate");
         return 0;
@@ -1086,6 +1262,85 @@ static int solve_parse_numeric_range(const char *spec, const SolveOptions *optio
     return *hi_out > *lo_out ? 0 : -1;
 }
 
+static int solve_exp_poly_limit_endpoint_safe(const SolveRatPoly *exp_arg, int lo_inf, int hi_inf) {
+    int degree = solve_rat_poly_degree(exp_arg);
+    int slope_sign;
+    if (!lo_inf && !hi_inf) return 1;
+    if (degree != 1) return 0;
+    slope_sign = solve_rat_sign(exp_arg->coeff[1]);
+    if (hi_inf && slope_sign >= 0) return 0;
+    if (lo_inf && slope_sign <= 0) return 0;
+    return 1;
+}
+
+static int solve_run_exp_poly_extreme_mode(const SolveEquation *equation, const SolveOptions *options, int want_max) {
+    SolveRatPoly factor;
+    SolveRatPoly exp_arg;
+    SolveBreakpoint roots[SOLVE_MAX_RESULTS];
+    SolveOptions local = *options;
+    double lo;
+    double hi;
+    int lo_inf;
+    int hi_inf;
+    int root_count = 0;
+    int i;
+    int have_best = 0;
+    int have_critical_candidate = 0;
+    double best_x = 0.0;
+    double best_y = 0.0;
+    char text[96];
+    const char *message = 0;
+
+    if (equation->has_equation || solve_parse_numeric_range(options->range_spec, options, &lo, &hi, &lo_inf, &hi_inf) != 0) return -1;
+    if (solve_sym_exp_poly_derivative_factor(equation->left, options, 1, &factor, &exp_arg) != 0 || !solve_exp_poly_limit_endpoint_safe(&exp_arg, lo_inf, hi_inf)) return -1;
+    if (solve_collect_rat_poly_roots(&factor, roots, &root_count) != 0 || root_count <= 0) return -1;
+    solve_sort_breakpoints(roots, &root_count, options->tolerance);
+
+    local.default_scan = 0;
+    local.have_scan = 1;
+    local.scan_lo = lo;
+    local.scan_hi = hi;
+    if (solve_should_explain(options)) {
+        solve_explain_working_function(want_max ? "maximum" : "minimum", equation, options);
+        rt_write_line(1, "method detail: expression recognized as exp(linear)*polynomial");
+        solve_explain_rat_poly_line("critical factor after removing nonzero exponential: ", &factor, options);
+        rt_write_line(1, "rule: exp(linear) is never zero, so critical x-values come from this exact polynomial factor");
+    }
+    if (!lo_inf && solve_eval_function(equation, &local, lo, &best_y, &message) == 0) {
+        best_x = lo;
+        have_best = 1;
+    }
+    if (!hi_inf) {
+        double y;
+        if (solve_eval_function(equation, &local, hi, &y, &message) == 0 && (!have_best || (want_max ? y > best_y : y < best_y))) {
+            best_x = hi;
+            best_y = y;
+            have_best = 1;
+        }
+    }
+    for (i = 0; i < root_count; ++i) {
+        double y;
+        if (roots[i].value < lo || roots[i].value > hi) continue;
+        if (solve_eval_function(equation, &local, roots[i].value, &y, &message) != 0) continue;
+        have_critical_candidate = 1;
+        if (!have_best || (want_max ? y > best_y : y < best_y)) {
+            best_x = roots[i].value;
+            best_y = y;
+            have_best = 1;
+        }
+    }
+    if (!have_best || !have_critical_candidate) return -1;
+    rt_write_cstr(1, want_max ? "maximum: " : "minimum: ");
+    solve_write_point_double(best_x, best_y, options->scale);
+    rt_write_char(1, '\n');
+    solve_format_double(best_y, options->scale, text, sizeof(text));
+    rt_write_cstr(1, "value approximate = ");
+    rt_write_line(1, text);
+    rt_write_line(1, "method = exact-exp-polynomial-critical-points");
+    rt_write_line(1, "status = approximate-value");
+    return 0;
+}
+
 static int solve_run_extreme_mode(const SolveEquation *equation, const SolveOptions *options, int want_max) {
     SolveOptions local = *options;
     double lo;
@@ -1100,6 +1355,11 @@ static int solve_run_extreme_mode(const SolveEquation *equation, const SolveOpti
     double best_y = 0.0;
     char text[96];
     const char *message = 0;
+
+    {
+        int exp_poly_status = solve_run_exp_poly_extreme_mode(equation, options, want_max);
+        if (exp_poly_status == 0) return 0;
+    }
 
     if (solve_parse_numeric_range(options->range_spec, options, &lo, &hi, &lo_inf, &hi_inf) != 0) {
         tool_write_error("solve", "invalid extremum range", options->range_spec);

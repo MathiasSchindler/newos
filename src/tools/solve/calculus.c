@@ -124,6 +124,35 @@ static int solve_eval_expr_at(const char *expr, const SolveOptions *options, dou
     return solve_eval_expr(expr, options->var_name, at, out, &message);
 }
 
+static int solve_identifier_substitute(const char *expr, const char *old_name, const char *new_text, char *out, size_t out_size);
+
+static int solve_identifier_name_only(const char *text, char *name, size_t name_size) {
+    size_t pos = 0U;
+    size_t start;
+    size_t end;
+    solve_skip_text_spaces(text, &pos);
+    start = pos;
+    if (!tool_ascii_is_identifier_start(text[pos])) return -1;
+    while (tool_ascii_is_identifier_char(text[pos])) pos += 1U;
+    end = pos;
+    solve_skip_text_spaces(text, &pos);
+    if (text[pos] != '\0') return -1;
+    return solve_copy_range(name, name_size, text, start, end);
+}
+
+static void solve_options_add_symbolic_param(SolveOptions *options, const char *name) {
+    if (rt_strcmp(name, options->var_name) == 0 || solve_is_param_name(options, name) || options->param_count >= SOLVE_MAX_PARAMS) return;
+    if (!tool_ascii_is_identifier_start(name[0]) || rt_strlen(name) >= SOLVE_NAME_CAPACITY) return;
+    rt_copy_string(options->param_names[options->param_count++], SOLVE_NAME_CAPACITY, name);
+}
+
+static int solve_simplify_with_optional_symbol(const SolveOptions *options, const char *expr, const char *symbol_text, char *out, size_t out_size) {
+    SolveOptions local = *options;
+    char symbol[SOLVE_NAME_CAPACITY];
+    if (symbol_text != 0 && solve_identifier_name_only(symbol_text, symbol, sizeof(symbol)) == 0) solve_options_add_symbolic_param(&local, symbol);
+    return solve_symbolic_simplify_text(expr, &local, out, out_size);
+}
+
 static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
     SolveOptions local = *options;
     char name[SOLVE_NAME_CAPACITY];
@@ -143,8 +172,19 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
                 return 2;
             }
             if (solve_eval_bound_expr(value_text, options, &at) != 0) {
-                tool_write_error("solve", "invalid --at value", value_text);
-                return 2;
+                char substituted[SOLVE_EXPR_CAPACITY];
+                char simplified[SOLVE_EXPR_CAPACITY];
+                if (solve_identifier_substitute(expr, name, value_text, substituted, sizeof(substituted)) != 0 || solve_simplify_with_optional_symbol(options, substituted, value_text, simplified, sizeof(simplified)) != 0) {
+                    tool_write_error("solve", "invalid --at value", value_text);
+                    return 2;
+                }
+                if (tool_json_is_enabled()) solve_emit_kv("value expression", simplified);
+                else {
+                    rt_write_cstr(1, "value expression = ");
+                    rt_write_line(1, simplified);
+                }
+                solve_emit_kv("method", "symbolic-substitution");
+                return 0;
             }
         } else if (solve_eval_bound_expr(options->at_spec, options, &at) != 0) {
             tool_write_error("solve", "invalid --at value", options->at_spec);
@@ -201,6 +241,7 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
     char name[SOLVE_NAME_CAPACITY];
     char replacement[SOLVE_EXPR_CAPACITY];
     char out[SOLVE_EXPR_CAPACITY];
+    char simplified[SOLVE_EXPR_CAPACITY];
     if (solve_parse_assignment_spec(options->subst_spec, name, sizeof(name), replacement, sizeof(replacement)) != 0) {
         tool_write_error("solve", "invalid --subst assignment", options->subst_spec);
         return 2;
@@ -209,6 +250,7 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
         tool_write_error("solve", "substitution output too large", 0);
         return 2;
     }
+    if (solve_simplify_with_optional_symbol(options, out, replacement, simplified, sizeof(simplified)) == 0) rt_copy_string(out, sizeof(out), simplified);
     if (tool_json_is_enabled()) {
         solve_emit_kv("expression", out);
     } else {
