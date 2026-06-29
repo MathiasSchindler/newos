@@ -233,6 +233,8 @@ assert_file_contains "$WORK_DIR/diff-param.out" 'exp' "solve --diff should retai
 assert_file_contains "$WORK_DIR/diff-param.out" 'x - k' "solve --diff should differentiate with respect to x while treating k as a parameter"
 assert_file_contains "$WORK_DIR/diff-param.out" '3\*' "solve --diff should simplify constant factors in parameterized derivatives"
 assert_file_contains "$WORK_DIR/diff-param.out" '^exp[(]-k[)]\*[(][(]3\*[(]x - k[)]\^2[)] - 3[)]$' "solve --diff should keep parameterized derivatives readable"
+"${TEST_BIN_DIR}/solve" --param k=2 --diff 'k*x' > "$WORK_DIR/diff-param-value.out"
+assert_file_contains "$WORK_DIR/diff-param-value.out" '^2$' "solve --diff should apply numeric parameter bindings before differentiating"
 diff_inequality_status=0
 "${TEST_BIN_DIR}/solve" --diff 'x^2 > 1' > "$WORK_DIR/diff-inequality.out" 2> "$WORK_DIR/diff-inequality.err" || diff_inequality_status=$?
 assert_text_equals "$diff_inequality_status" '2' "solve --diff should reject inequality input"
@@ -352,6 +354,10 @@ assert_file_contains "$WORK_DIR/area-auto-bounds.out" '^area = 4/3$' "solve did 
 "${TEST_BIN_DIR}/solve" --scan 0:4:400 --area 'sin(x)' '0' > "$WORK_DIR/area-numeric-auto-bounds.out"
 assert_file_contains "$WORK_DIR/area-numeric-auto-bounds.out" '^area = 2\.0000000000$' "solve did not infer numeric omitted area bounds from scan roots"
 assert_file_contains "$WORK_DIR/area-numeric-auto-bounds.out" '^method = simpson$' "solve numeric omitted-bound area should use Simpson integration"
+area_numeric_no_scan_status=0
+"${TEST_BIN_DIR}/solve" --area 'sin(x)' '0' > "$WORK_DIR/area-numeric-no-scan.out" 2> "$WORK_DIR/area-numeric-no-scan.err" || area_numeric_no_scan_status=$?
+assert_text_equals "$area_numeric_no_scan_status" '2' "solve numeric omitted-bound area should require an explicit scan range"
+assert_file_contains "$WORK_DIR/area-numeric-no-scan.err" 'numeric omitted area bounds require --scan' "solve numeric omitted-bound area diagnostic mismatch"
 "${TEST_BIN_DIR}/solve" --area-quadrant II 'x^3 - 3*x' '0' > "$WORK_DIR/area-quadrant.out"
 assert_file_contains "$WORK_DIR/area-quadrant.out" '^area = 2\.2500000000$' "solve quadrant area mismatch"
 assert_file_contains "$WORK_DIR/area-quadrant.out" '^rational area hint = 9/4$' "solve quadrant area should offer a rational hint for the irrational-endpoint polynomial lobe"

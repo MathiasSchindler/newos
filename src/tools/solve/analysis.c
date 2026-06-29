@@ -1199,6 +1199,10 @@ numeric_omitted_area_bounds:
         SolveEquation bounds_equation;
         SolveOptions scan_options = *options;
         SolveResultSet roots;
+        if (options->default_scan || !options->have_scan) {
+            tool_write_error("solve", "numeric omitted area bounds require --scan", 0);
+            return 2;
+        }
         rt_memset(&roots, 0, sizeof(roots));
         rt_copy_string(bounds_equation.left, sizeof(bounds_equation.left), first_expr);
         rt_copy_string(bounds_equation.right, sizeof(bounds_equation.right), second_expr);

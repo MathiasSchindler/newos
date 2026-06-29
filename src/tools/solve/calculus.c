@@ -12,22 +12,36 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
     SolveRatPoly poly;
     SolveRatPoly derivative;
     char text[SOLVE_EXPR_CAPACITY];
+    char left_with_params[SOLVE_EXPR_CAPACITY];
+    char right_with_params[SOLVE_EXPR_CAPACITY];
+    SolveEquation parameterized;
     SolveEquation derived;
+    const SolveEquation *work_equation = equation;
     const char *source_text;
 
     if (equation->has_equation && equation->relation != SOLVE_RELATION_EQ) {
         tool_write_error("solve", "derivative solving supports equations, not inequalities", 0);
         return 2;
     }
-    source_text = equation->has_equation ? equation->left : equation->left;
-    if (equation->has_equation) {
-        if (solve_equation_rat_poly(equation, options, &poly) != 0) {
-            if (solve_symbolic_derivative_text(equation->left, options, options->diff_order, text, sizeof(text)) != 0) {
+    if (solve_substitute_bound_params(equation->left, options, left_with_params, sizeof(left_with_params)) != 0 || (equation->has_equation && solve_substitute_bound_params(equation->right, options, right_with_params, sizeof(right_with_params)) != 0)) {
+        tool_write_error("solve", "parameter substitution output too large", 0);
+        return 2;
+    }
+    if (rt_strcmp(left_with_params, equation->left) != 0 || (equation->has_equation && rt_strcmp(right_with_params, equation->right) != 0)) {
+        parameterized = *equation;
+        rt_copy_string(parameterized.left, sizeof(parameterized.left), left_with_params);
+        if (equation->has_equation) rt_copy_string(parameterized.right, sizeof(parameterized.right), right_with_params);
+        work_equation = &parameterized;
+    }
+    source_text = work_equation->left;
+    if (work_equation->has_equation) {
+        if (solve_equation_rat_poly(work_equation, options, &poly) != 0) {
+            if (solve_symbolic_derivative_text(work_equation->left, options, options->diff_order, text, sizeof(text)) != 0) {
                 tool_write_error("solve", "symbolic derivative unsupported for expression", 0);
                 return 2;
             }
             if (solve_should_explain(options)) {
-                solve_explain_working_function("symbolic derivative", equation, options);
+                solve_explain_working_function("symbolic derivative", work_equation, options);
                 rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
                 rt_write_cstr(1, "derivative: ");
                 rt_write_line(1, text);
@@ -39,13 +53,13 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
             derived.relation = SOLVE_RELATION_EQ;
             return solve_run_solver_equation(&derived, options);
         }
-    } else if (solve_parse_rat_text(equation->left, options->var_name, &poly) != 0) {
+    } else if (solve_parse_rat_text(work_equation->left, options->var_name, &poly) != 0) {
         if (solve_symbolic_derivative_text(source_text, options, options->diff_order, text, sizeof(text)) != 0) {
             tool_write_error("solve", "symbolic derivative unsupported for expression", 0);
             return 2;
         }
         if (solve_should_explain(options)) {
-            solve_explain_working_function("symbolic derivative", equation, options);
+            solve_explain_working_function("symbolic derivative", work_equation, options);
             rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
             rt_write_cstr(1, "derivative: ");
             rt_write_line(1, text);
@@ -59,7 +73,7 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
         return 3;
     }
     if (solve_should_explain(options)) {
-        solve_explain_working_function("derivative", equation, options);
+        solve_explain_working_function("derivative", work_equation, options);
         solve_explain_rat_poly_line("polynomial: ", &poly, options);
         rt_write_cstr(1, "order: ");
         rt_write_uint(1, (unsigned long long)options->diff_order);
@@ -67,9 +81,9 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
         rt_write_line(1, "rule: d/dx a*x^n = a*n*x^(n-1)");
         rt_write_cstr(1, "derivative: ");
         rt_write_line(1, text);
-        if (equation->has_equation) rt_write_line(1, "next: solve derivative = 0");
+        if (work_equation->has_equation) rt_write_line(1, "next: solve derivative = 0");
     }
-    if (!equation->has_equation) {
+    if (!work_equation->has_equation) {
         if (tool_json_is_enabled()) solve_emit_kv("derivative", text);
         else rt_write_line(1, text);
         return 0;
