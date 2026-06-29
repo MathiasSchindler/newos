@@ -201,11 +201,17 @@ Inequality output uses interval notation, for example `solution = (-inf, -2) U (
 For intersections, output includes the corresponding y-value:
 
 ```
+x = -1
+y = 1
+residual = 0.0000000000
+method = factoring
+iterations = 0
+
 x = 3
 y = 9
-residual = 0
-method = bisection
-iterations = 1
+residual = 0.0000000000
+method = factoring
+iterations = 0
 ```
 
 When `--quiet` is used, only the root value is printed. When `--all` is used, each scan result is printed as a separate solution block; symbolic polynomial methods print every root they determine directly.
@@ -225,7 +231,7 @@ With `--json`, `solve` writes JSON Lines using the common envelope documented in
 - `solve_candidate` for likely touching roots that meet the candidate rules but were not bracketed by a sign change
 - `solve_identity` for supported polynomial identities; its data includes `exact:true` for exact rational-literal identities and `exact:false` for approximate floating-point fallback identities
 - `solve_summary` for method, status, and count information
-- `solve_value` for single-field analysis results such as `--eval`, `--diff`, `--integrate`, and `--average-rate`, with `data` of the form `{"key":...,"value":...}`
+- `solve_value` for single-field analysis results such as `--eval`, `--diff`, `--integrate`, `--average-rate`, and `--subst`, with `data` of the form `{"key":...,"value":...}`
 - `solve_output` for the remaining analysis, inequality, calculus, and curve-discussion lines, with `data` of the form `{"text":...}`; one event is emitted per logical output line
 
 A `solve_result` data object includes the variable name, root value, residual, method, iteration count, and, for intersections, the y-value. Exact rational roots are emitted as fractions in the root string. Approximate roots include `exact:false`. Diagnostics are written to stderr.
