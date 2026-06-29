@@ -10,74 +10,8 @@ typedef struct {
     long long atime;
     long long mtime;
 } TouchOptions;
-
-
-
-
-static int touch_matches_zone_name(const char *text, size_t index, const char *name) {
-    size_t offset = 0;
-
-    if (text == 0 || name == 0) {
-        return 0;
-    }
-
-    while (name[offset] != '\0') {
-        if (text[index + offset] == '\0' ||
-            tool_ascii_tolower(text[index + offset]) != tool_ascii_tolower(name[offset])) {
-            return 0;
-        }
-        offset += 1U;
-    }
-
-    return 1;
-}
-
 static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-acm] [-d DATETIME | -t STAMP | -r FILE] path ...");
-}
-
-static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out) {
-    size_t index = *index_io;
-
-    while (rt_is_space(text[index])) {
-        index += 1U;
-    }
-
-    if (text[index] == '\0') {
-        *offset_seconds_out = 0;
-        *index_io = index;
-        return 0;
-    }
-
-    if (tool_ascii_tolower(text[index]) == 'z') {
-        *offset_seconds_out = 0;
-        *index_io = index + 1U;
-        return 0;
-    }
-
-    if (touch_matches_zone_name(text, index, "utc") ||
-        touch_matches_zone_name(text, index, "gmt")) {
-        index += 3U;
-        if (text[index] == '+' || text[index] == '-') {
-            if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
-                return -1;
-            }
-        } else {
-            *offset_seconds_out = 0;
-        }
-        *index_io = index;
-        return 0;
-    }
-
-    if (text[index] == '+' || text[index] == '-') {
-        if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
-            return -1;
-        }
-        *index_io = index;
-        return 0;
-    }
-
-    return -1;
 }
 
 static int parse_datetime_text(const char *text, long long *epoch_out) {
@@ -124,7 +58,7 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
 
         if (text[offset] == '+' || text[offset] == '-' || text[offset] == 'Z' ||
             tool_ascii_tolower(text[offset]) == 'u' || tool_ascii_tolower(text[offset]) == 'g') {
-            if (parse_timezone_suffix(text, &offset, &timezone_offset_seconds) != 0) {
+            if (tool_parse_timezone_suffix(text, &offset, &timezone_offset_seconds, 1) != 0) {
                 return -1;
             }
         } else {
@@ -151,7 +85,7 @@ static int parse_datetime_text(const char *text, long long *epoch_out) {
                     offset += 1U;
                 }
             }
-            if (parse_timezone_suffix(text, &offset, &timezone_offset_seconds) != 0) {
+            if (tool_parse_timezone_suffix(text, &offset, &timezone_offset_seconds, 1) != 0) {
                 return -1;
             }
         }

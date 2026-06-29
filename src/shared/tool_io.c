@@ -1159,6 +1159,65 @@ int tool_parse_numeric_timezone_offset(const char *text, size_t *index_io, int *
     return 0;
 }
 
+static int tool_timezone_word_at(const char *text, size_t index, const char *name, size_t *end_out) {
+    size_t offset = 0U;
+
+    while (name[offset] != '\0') {
+        if (tool_ascii_tolower(text[index + offset]) != tool_ascii_tolower(name[offset])) {
+            return 0;
+        }
+        offset += 1U;
+    }
+    *end_out = index + offset;
+    return 1;
+}
+
+int tool_parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out, int accept_empty) {
+    size_t index;
+    size_t end = 0U;
+
+    if (text == 0 || index_io == 0 || offset_seconds_out == 0) {
+        return -1;
+    }
+    index = *index_io;
+    while (rt_is_space(text[index])) {
+        index += 1U;
+    }
+    if (text[index] == '\0') {
+        if (!accept_empty) {
+            return -1;
+        }
+        *offset_seconds_out = 0;
+        *index_io = index;
+        return 0;
+    }
+    if (tool_ascii_tolower(text[index]) == 'z') {
+        *offset_seconds_out = 0;
+        *index_io = index + 1U;
+        return 0;
+    }
+    if (tool_timezone_word_at(text, index, "utc", &end) || tool_timezone_word_at(text, index, "gmt", &end)) {
+        index = end;
+        if (text[index] == '+' || text[index] == '-') {
+            if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+                return -1;
+            }
+        } else {
+            *offset_seconds_out = 0;
+        }
+        *index_io = index;
+        return 0;
+    }
+    if ((text[index] == '+' || text[index] == '-') && text[index + 1U] >= '0' && text[index + 1U] <= '9') {
+        if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
+            return -1;
+        }
+        *index_io = index;
+        return 0;
+    }
+    return -1;
+}
+
 int tool_parse_duration_ms(const char *text, unsigned long long *milliseconds_out) {
     unsigned long long whole = 0;
     unsigned long long fraction = 0;

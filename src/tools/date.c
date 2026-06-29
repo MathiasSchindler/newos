@@ -130,38 +130,6 @@ static int checked_add_seconds(long long *epoch_io, long long delta) {
     return 0;
 }
 
-static int parse_timezone_suffix(const char *text, size_t *index_io, int *offset_seconds_out) {
-    size_t index = *index_io;
-    size_t end;
-
-    skip_spaces(text, &index);
-    if (tool_ascii_tolower(text[index]) == 'z') {
-        *offset_seconds_out = 0;
-        *index_io = index + 1U;
-        return 0;
-    }
-    if (date_word_at(text, index, "utc", &end) || date_word_at(text, index, "gmt", &end)) {
-        index = end;
-        if (text[index] == '+' || text[index] == '-') {
-            if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
-                return -1;
-            }
-        } else {
-            *offset_seconds_out = 0;
-        }
-        *index_io = index;
-        return 0;
-    }
-    if ((text[index] == '+' || text[index] == '-') && text[index + 1U] >= '0' && text[index + 1U] <= '9') {
-        if (tool_parse_numeric_timezone_offset(text, &index, offset_seconds_out) != 0) {
-            return -1;
-        }
-        *index_io = index;
-        return 0;
-    }
-    return -1;
-}
-
 static int parse_calendar_value(const char *text, size_t *index_io, long long *epoch_out) {
     size_t index = *index_io;
     unsigned int year;
@@ -205,7 +173,7 @@ static int parse_calendar_value(const char *text, size_t *index_io, long long *e
             }
         }
     }
-    if (parse_timezone_suffix(text, &index, &timezone_offset_seconds) != 0) {
+    if (tool_parse_timezone_suffix(text, &index, &timezone_offset_seconds, 0) != 0) {
         timezone_offset_seconds = 0;
     }
     if (tool_build_epoch_timestamp((int)year, month, day, hour, minute, second, epoch_out) != 0) {
