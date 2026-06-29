@@ -253,10 +253,6 @@ static int next_token(const char **cursor_io, char *token, size_t token_size) {
     return length == 0U ? 0 : 1;
 }
 
-static int symbol_type_is_function(const char *type) {
-    return rt_strcmp(type, "T") == 0 || rt_strcmp(type, "t") == 0 || rt_strcmp(type, "W") == 0 || rt_strcmp(type, "w") == 0;
-}
-
 static const char *display_symbol_name(const char *name) {
     if (name != 0 && name[0] == '_' && name[1] != '\0') return name + 1;
     return name;
@@ -358,7 +354,7 @@ static int read_symbols(const char *path) {
         if (parse_address_token(first, &address) != 0) continue;
         if (!next_token(&cursor, second, sizeof(second))) continue;
         if (rt_strlen(second) == 1U && next_token(&cursor, third, sizeof(third))) {
-            if (symbol_type_is_function(second)) add_symbol(address, third, 1);
+            if (tool_symbol_type_is_function(second)) add_symbol(address, third, 1);
         } else {
             add_symbol(address, second, 1);
         }
@@ -470,20 +466,6 @@ static void write_hex_address(unsigned long long value) {
     while (count > 0U) rt_write_char(1, digits[--count]);
 }
 
-static void write_percent_2(unsigned long long value, unsigned long long total) {
-    unsigned long long scaled;
-
-    if (total == 0ULL) {
-        rt_write_cstr(1, "0.00");
-        return;
-    }
-    scaled = (value * 10000ULL) / total;
-    rt_write_uint(1, scaled / 100ULL);
-    rt_write_char(1, '.');
-    rt_write_char(1, (char)('0' + ((scaled / 10ULL) % 10ULL)));
-    rt_write_char(1, (char)('0' + (scaled % 10ULL)));
-}
-
 static void print_results(unsigned int count, int csv, unsigned long long elapsed_ns, int exit_status) {
     size_t i;
     size_t limit;
@@ -514,7 +496,7 @@ static void print_results(unsigned int count, int csv, unsigned long long elapse
             rt_write_char(1, ',');
             rt_write_uint(1, row->samples);
             rt_write_char(1, ',');
-            write_percent_2(row->samples, perf_total_samples);
+            tool_write_percent_2(1, row->samples, perf_total_samples);
             rt_write_char(1, ',');
             write_hex_address(row->address);
             rt_write_char(1, ',');
@@ -524,7 +506,7 @@ static void print_results(unsigned int count, int csv, unsigned long long elapse
             rt_write_char(1, ' ');
             rt_write_uint(1, row->samples);
             rt_write_char(1, ' ');
-            write_percent_2(row->samples, perf_total_samples);
+            tool_write_percent_2(1, row->samples, perf_total_samples);
             rt_write_char(1, ' ');
             write_hex_address(row->address);
             rt_write_char(1, ' ');

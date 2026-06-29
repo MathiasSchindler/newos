@@ -117,26 +117,19 @@ static const PdfObjectSpan *find_object(const PdfDocument *document, const PdfEx
     return 0;
 }
 
-static void write_field(const char *label, const char *value) {
-    if (value == 0 || value[0] == '\0') return;
-    rt_write_cstr(1, label);
-    rt_write_cstr(1, ": ");
-    rt_write_line(1, value);
-}
-
 static int write_metadata(const PdfDocumentInfo *info) {
     if (!pdf_document_info_has_fields(info)) {
         rt_write_line(2, "pdfextract: no document-info metadata found");
         return 1;
     }
-    write_field("title", info->title);
-    write_field("author", info->author);
-    write_field("subject", info->subject);
-    write_field("keywords", info->keywords);
-    write_field("creator", info->creator);
-    write_field("producer", info->producer);
-    write_field("creation_date", info->creation_date);
-    write_field("modification_date", info->modification_date);
+    tool_write_labeled_text_line(1, "title", info->title);
+    tool_write_labeled_text_line(1, "author", info->author);
+    tool_write_labeled_text_line(1, "subject", info->subject);
+    tool_write_labeled_text_line(1, "keywords", info->keywords);
+    tool_write_labeled_text_line(1, "creator", info->creator);
+    tool_write_labeled_text_line(1, "producer", info->producer);
+    tool_write_labeled_text_line(1, "creation_date", info->creation_date);
+    tool_write_labeled_text_line(1, "modification_date", info->modification_date);
     return 0;
 }
 

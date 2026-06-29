@@ -4,10 +4,6 @@
 #endif
 #include "../solve.c"
 #else
-#define rt_write_cstr solve_sp_cstr
-#define rt_write_line solve_sp_line
-#define rt_write_char solve_sp_char
-#define rt_write_uint solve_sp_uint
 static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions *options) {
     SolveRatPoly poly;
     SolveRatPoly derivative;
@@ -42,10 +38,10 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
             }
             if (solve_should_explain(options)) {
                 solve_explain_working_function("symbolic derivative", work_equation, options);
-                rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
-                rt_write_cstr(1, "derivative: ");
-                rt_write_line(1, text);
-                rt_write_line(1, "next: solve derivative = 0");
+                solve_sp_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
+                solve_sp_cstr(1, "derivative: ");
+                solve_sp_line(1, text);
+                solve_sp_line(1, "next: solve derivative = 0");
             }
             rt_copy_string(derived.left, sizeof(derived.left), text);
             rt_copy_string(derived.right, sizeof(derived.right), "0");
@@ -60,12 +56,12 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
         }
         if (solve_should_explain(options)) {
             solve_explain_working_function("symbolic derivative", work_equation, options);
-            rt_write_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
-            rt_write_cstr(1, "derivative: ");
-            rt_write_line(1, text);
+            solve_sp_line(1, "rule: symbolic sum, product, quotient, power, and chain rules");
+            solve_sp_cstr(1, "derivative: ");
+            solve_sp_line(1, text);
         }
         if (tool_json_is_enabled()) solve_emit_kv("derivative", text);
-        else rt_write_line(1, text);
+        else solve_sp_line(1, text);
         return 0;
     }
     if (solve_rat_poly_derivative(&poly, options->diff_order, &derivative) != 0 || solve_rat_poly_format(&derivative, options->var_name, text, sizeof(text)) != 0) {
@@ -75,17 +71,17 @@ static int solve_run_diff_mode(const SolveEquation *equation, const SolveOptions
     if (solve_should_explain(options)) {
         solve_explain_working_function("derivative", work_equation, options);
         solve_explain_rat_poly_line("polynomial: ", &poly, options);
-        rt_write_cstr(1, "order: ");
-        rt_write_uint(1, (unsigned long long)options->diff_order);
-        rt_write_char(1, '\n');
-        rt_write_line(1, "rule: d/dx a*x^n = a*n*x^(n-1)");
-        rt_write_cstr(1, "derivative: ");
-        rt_write_line(1, text);
-        if (work_equation->has_equation) rt_write_line(1, "next: solve derivative = 0");
+        solve_sp_cstr(1, "order: ");
+        solve_sp_uint(1, (unsigned long long)options->diff_order);
+        solve_sp_char(1, '\n');
+        solve_sp_line(1, "rule: d/dx a*x^n = a*n*x^(n-1)");
+        solve_sp_cstr(1, "derivative: ");
+        solve_sp_line(1, text);
+        if (work_equation->has_equation) solve_sp_line(1, "next: solve derivative = 0");
     }
     if (!work_equation->has_equation) {
         if (tool_json_is_enabled()) solve_emit_kv("derivative", text);
-        else rt_write_line(1, text);
+        else solve_sp_line(1, text);
         return 0;
     }
     rt_copy_string(derived.left, sizeof(derived.left), text);
@@ -180,24 +176,24 @@ static int solve_contains_subtext(const char *text, const char *needle) {
 static void solve_explain_symbolic_simplification(const SolveOptions *options, const char *before, const char *after, const char *symbol_text) {
     char symbol[SOLVE_NAME_CAPACITY];
     if (!solve_should_explain(options) || rt_strcmp(before, after) == 0) return;
-    rt_write_line(1, "simplification steps:");
+    solve_sp_line(1, "simplification steps:");
     if (symbol_text != 0 && solve_identifier_name_only(symbol_text, symbol, sizeof(symbol)) == 0) {
         char pattern[SOLVE_NAME_CAPACITY * 2];
         size_t used = 0U;
         pattern[0] = '\0';
         if (solve_append_text(pattern, sizeof(pattern), &used, symbol) == 0 && solve_append_char(pattern, sizeof(pattern), &used, '-') == 0 && solve_append_text(pattern, sizeof(pattern), &used, symbol) == 0 && solve_contains_subtext(before, pattern)) {
-            rt_write_cstr(1, "- identical terms cancel: ");
-            rt_write_cstr(1, symbol);
-            rt_write_cstr(1, " - ");
-            rt_write_cstr(1, symbol);
-            rt_write_line(1, " = 0");
+            solve_sp_cstr(1, "- identical terms cancel: ");
+            solve_sp_cstr(1, symbol);
+            solve_sp_cstr(1, " - ");
+            solve_sp_cstr(1, symbol);
+            solve_sp_line(1, " = 0");
         }
     }
-    rt_write_line(1, "- zero factors collapse: 0*a = 0");
-    rt_write_line(1, "- positive powers of zero collapse: 0^n = 0");
-    rt_write_line(1, "- neutral terms are removed: a+0 = a, a-0 = a, a*1 = a, a/1 = a");
-    rt_write_cstr(1, "simplified expression: ");
-    rt_write_line(1, after);
+    solve_sp_line(1, "- zero factors collapse: 0*a = 0");
+    solve_sp_line(1, "- positive powers of zero collapse: 0^n = 0");
+    solve_sp_line(1, "- neutral terms are removed: a+0 = a, a-0 = a, a*1 = a, a/1 = a");
+    solve_sp_cstr(1, "simplified expression: ");
+    solve_sp_line(1, after);
 }
 
 static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
@@ -226,21 +222,21 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
                     return 2;
                 }
                 if (solve_should_explain(options)) {
-                    rt_write_line(1, "explain: symbolic evaluation");
-                    rt_write_cstr(1, "expression: ");
-                    rt_write_line(1, expr);
-                    rt_write_cstr(1, "substitution: ");
-                    rt_write_cstr(1, name);
-                    rt_write_cstr(1, " = ");
-                    rt_write_line(1, value_text);
-                    rt_write_cstr(1, "after replacement: ");
-                    rt_write_line(1, substituted);
+                    solve_sp_line(1, "explain: symbolic evaluation");
+                    solve_sp_cstr(1, "expression: ");
+                    solve_sp_line(1, expr);
+                    solve_sp_cstr(1, "substitution: ");
+                    solve_sp_cstr(1, name);
+                    solve_sp_cstr(1, " = ");
+                    solve_sp_line(1, value_text);
+                    solve_sp_cstr(1, "after replacement: ");
+                    solve_sp_line(1, substituted);
                     solve_explain_symbolic_simplification(options, substituted, simplified, value_text);
                 }
                 if (tool_json_is_enabled()) solve_emit_kv("value expression", simplified);
                 else {
-                    rt_write_cstr(1, "value expression = ");
-                    rt_write_line(1, simplified);
+                    solve_sp_cstr(1, "value expression = ");
+                    solve_sp_line(1, simplified);
                 }
                 solve_emit_kv("method", "symbolic-substitution");
                 return 0;
@@ -255,15 +251,15 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
         return 3;
     }
     if (solve_should_explain(options)) {
-        rt_write_line(1, "explain: evaluation");
-        rt_write_cstr(1, "expression: ");
-        rt_write_line(1, expr);
+        solve_sp_line(1, "explain: evaluation");
+        solve_sp_cstr(1, "expression: ");
+        solve_sp_line(1, expr);
         if (options->have_at) {
-            rt_write_cstr(1, "substitution: ");
-            rt_write_cstr(1, options->var_name);
-            rt_write_cstr(1, " = ");
+            solve_sp_cstr(1, "substitution: ");
+            solve_sp_cstr(1, options->var_name);
+            solve_sp_cstr(1, " = ");
             solve_write_double_value(at, options->scale);
-            rt_write_char(1, '\n');
+            solve_sp_char(1, '\n');
         }
     }
     solve_format_double(value, options->scale, text, sizeof(text));
@@ -310,15 +306,15 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
         return 2;
     }
     if (solve_should_explain(options)) {
-        rt_write_line(1, "explain: substitution");
-        rt_write_cstr(1, "expression: ");
-        rt_write_line(1, expr);
-        rt_write_cstr(1, "replacement: ");
-        rt_write_cstr(1, name);
-        rt_write_cstr(1, " = ");
-        rt_write_line(1, replacement);
-        rt_write_cstr(1, "after replacement: ");
-        rt_write_line(1, out);
+        solve_sp_line(1, "explain: substitution");
+        solve_sp_cstr(1, "expression: ");
+        solve_sp_line(1, expr);
+        solve_sp_cstr(1, "replacement: ");
+        solve_sp_cstr(1, name);
+        solve_sp_cstr(1, " = ");
+        solve_sp_line(1, replacement);
+        solve_sp_cstr(1, "after replacement: ");
+        solve_sp_line(1, out);
     }
     if (solve_simplify_with_optional_symbol(options, out, replacement, simplified, sizeof(simplified)) == 0) {
         solve_explain_symbolic_simplification(options, out, simplified, replacement);
@@ -327,7 +323,7 @@ static int solve_run_subst_mode(const SolveOptions *options, const char *expr) {
     if (tool_json_is_enabled()) {
         solve_emit_kv("expression", out);
     } else {
-        rt_write_line(1, out);
+        solve_sp_line(1, out);
     }
     return 0;
 }
@@ -350,7 +346,7 @@ static int solve_run_average_rate_mode(const SolveEquation *equation, const Solv
         solve_explain_working_function("average rate", equation, options);
         solve_explain_double_value_line("f(a) = ", y_lo, options);
         solve_explain_double_value_line("f(b) = ", y_hi, options);
-        rt_write_line(1, "formula: average rate = (f(b)-f(a))/(b-a)");
+        solve_sp_line(1, "formula: average rate = (f(b)-f(a))/(b-a)");
     }
     solve_format_double(rate, options->scale, text, sizeof(text));
     solve_emit_kv("average rate approximate", text);
@@ -415,10 +411,10 @@ static int solve_report_improper_integral_pole(const SolveEquation *equation, co
         double root = roots[i].value;
         if (root <= lo || root >= hi || !roots[i].exact) continue;
         if (solve_rat_poly_eval(&num, solve_rat_poly_degree(&num), roots[i].rat_value, &numerator_at_root) != 0 || solve_rat_is_zero(numerator_at_root)) continue;
-        rt_write_cstr(1, "improper integral: pole at x = ");
-        rt_write_line(1, roots[i].label);
-        rt_write_line(1, "classification = divergent");
-        rt_write_line(1, "method = rational-pole-detection");
+        solve_sp_cstr(1, "improper integral: pole at x = ");
+        solve_sp_line(1, roots[i].label);
+        solve_sp_line(1, "classification = divergent");
+        solve_sp_line(1, "method = rational-pole-detection");
         return 1;
     }
     return 0;
@@ -454,28 +450,28 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
         SolveRat result;
         char text[96];
         if (solve_rat_poly_antiderivative_eval(&poly, hi_rat, &hi_value) != 0 || solve_rat_poly_antiderivative_eval(&poly, lo_rat, &lo_value) != 0 || solve_rat_sub(hi_value, lo_value, &result) != 0 || solve_rat_format(result, text, sizeof(text)) != 0) {
-            if (solve_should_explain(options)) rt_write_line(1, "status reason: exact rational integration overflowed; falling back to numeric Simpson integration");
+            if (solve_should_explain(options)) solve_sp_line(1, "status reason: exact rational integration overflowed; falling back to numeric Simpson integration");
         } else {
             if (solve_should_explain(options)) {
                 SolveRatPoly anti;
                 char anti_text[SOLVE_EXPR_CAPACITY];
                 solve_explain_working_function("definite integral", equation, options);
                 solve_explain_rat_poly_line("integrand polynomial: ", &poly, options);
-                rt_write_cstr(1, "bounds: ");
+                solve_sp_cstr(1, "bounds: ");
                 solve_write_rat_value(lo_rat);
-                rt_write_cstr(1, " to ");
+                solve_sp_cstr(1, " to ");
                 solve_write_rat_value(hi_rat);
-                rt_write_char(1, '\n');
+                solve_sp_char(1, '\n');
                 if (solve_rat_poly_antiderivative(&poly, &anti) == 0 && solve_rat_poly_format_antiderivative(&anti, options->var_name, anti_text, sizeof(anti_text)) == 0) {
-                    rt_write_cstr(1, "antiderivative: ");
-                    rt_write_line(1, anti_text);
+                    solve_sp_cstr(1, "antiderivative: ");
+                    solve_sp_line(1, anti_text);
                 }
                 solve_explain_rat_value_line("F(upper) = ", hi_value, options);
                 solve_explain_rat_value_line("F(lower) = ", lo_value, options);
-                rt_write_line(1, "rule: integral from a to b = F(b) - F(a)");
+                solve_sp_line(1, "rule: integral from a to b = F(b) - F(a)");
             }
             if (options->quiet && !tool_json_is_enabled()) {
-                rt_write_line(1, text);
+                solve_sp_line(1, text);
             } else {
                 solve_emit_kv("integral", text);
                 if (!options->quiet) solve_emit_kv("method", "exact-polynomial");
@@ -499,14 +495,14 @@ static int solve_run_integrate_mode(const SolveEquation *equation, const SolveOp
             solve_explain_working_function("numeric definite integral", equation, options);
             solve_explain_double_value_line("lower bound = ", lo, options);
             solve_explain_double_value_line("upper bound = ", hi, options);
-            rt_write_line(1, "method detail: composite Simpson rule with 1000 and 2000 subintervals");
+            solve_sp_line(1, "method detail: composite Simpson rule with 1000 and 2000 subintervals");
             solve_explain_double_value_line("coarse estimate = ", coarse, options);
             solve_explain_double_value_line("fine estimate = ", fine, options);
-            rt_write_line(1, "status reason: numeric integration uses sampled double values");
+            solve_sp_line(1, "status reason: numeric integration uses sampled double values");
         }
         if (options->quiet && !tool_json_is_enabled()) {
             solve_format_double(fine, options->scale, value, sizeof(value));
-            rt_write_line(1, value);
+            solve_sp_line(1, value);
         } else {
             solve_format_double(fine, options->scale, value, sizeof(value));
             solve_emit_kv("integral", value);

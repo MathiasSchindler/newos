@@ -785,6 +785,97 @@ void tool_write_padding(int fd, size_t count) {
     }
 }
 
+void tool_write_percent_2(int fd, unsigned long long value, unsigned long long total) {
+    unsigned long long scaled;
+
+    if (total == 0ULL) {
+        rt_write_cstr(fd, "0.00");
+        return;
+    }
+    scaled = (value * 10000ULL) / total;
+    rt_write_uint(fd, scaled / 100ULL);
+    rt_write_char(fd, '.');
+    rt_write_char(fd, (char)('0' + ((scaled / 10ULL) % 10ULL)));
+    rt_write_char(fd, (char)('0' + (scaled % 10ULL)));
+}
+
+void tool_write_labeled_text_line(int fd, const char *label, const char *value) {
+    if (value == 0 || value[0] == '\0') return;
+    rt_write_cstr(fd, label);
+    rt_write_cstr(fd, ": ");
+    rt_write_line(fd, value);
+}
+
+int tool_stream_from_line(int input_fd, int output_fd, unsigned long long start_line) {
+    char buffer[8192];
+    long bytes_read;
+    unsigned long long current_line = 1ULL;
+    int writing = 0;
+
+    if (start_line <= 1ULL) {
+        start_line = 1ULL;
+    }
+
+    while ((bytes_read = platform_read(input_fd, buffer, sizeof(buffer))) > 0) {
+        long index;
+
+        if (writing) {
+            if (rt_write_all(output_fd, buffer, (size_t)bytes_read) != 0) {
+                return -1;
+            }
+            continue;
+        }
+
+        for (index = 0; index < bytes_read; ++index) {
+            if (current_line >= start_line) {
+                if (rt_write_all(output_fd, buffer + index, (size_t)(bytes_read - index)) != 0) {
+                    return -1;
+                }
+                writing = 1;
+                break;
+            }
+
+            if (buffer[index] == '\n') {
+                current_line += 1ULL;
+            }
+        }
+    }
+
+    return bytes_read < 0 ? -1 : 0;
+}
+
+int tool_stream_from_byte(int input_fd, int output_fd, unsigned long long start_byte) {
+    char buffer[8192];
+    long bytes_read;
+    unsigned long long current_byte = 1ULL;
+    int writing = 0;
+
+    if (start_byte <= 1ULL) {
+        start_byte = 1ULL;
+    }
+
+    while ((bytes_read = platform_read(input_fd, buffer, sizeof(buffer))) > 0) {
+        size_t start = 0U;
+
+        if (!writing) {
+            if (current_byte + (unsigned long long)bytes_read <= start_byte) {
+                current_byte += (unsigned long long)bytes_read;
+                continue;
+            }
+            if (start_byte > current_byte) {
+                start = (size_t)(start_byte - current_byte);
+            }
+            writing = 1;
+        }
+        if (rt_write_all(output_fd, buffer + start, (size_t)bytes_read - start) != 0) {
+            return -1;
+        }
+        current_byte += (unsigned long long)bytes_read;
+    }
+
+    return bytes_read < 0 ? -1 : 0;
+}
+
 unsigned int tool_pager_page_lines(unsigned int default_lines) {
     const char *text = platform_getenv("LINES");
     unsigned long long value = 0;
@@ -835,6 +926,26 @@ void tool_format_size(unsigned long long value, int human_readable, char *buffer
     }
 
     (void)tool_buffer_append_char(buffer, buffer_size, length, units[unit_index]);
+}
+
+void tool_format_block_size(unsigned long long value, int human_readable, unsigned long long block_size, char *buffer, size_t buffer_size) {
+    if (human_readable) {
+        tool_format_size(value, 1, buffer, buffer_size);
+        return;
+    }
+
+    if (block_size > 1ULL) {
+        unsigned long long scaled = (value == 0ULL) ? 0ULL : ((value + block_size - 1ULL) / block_size);
+        rt_unsigned_to_string(scaled, buffer, buffer_size);
+        return;
+    }
+
+    rt_unsigned_to_string(value, buffer, buffer_size);
+}
+
+int tool_symbol_type_is_function(const char *type) {
+    return rt_strcmp(type, "T") == 0 || rt_strcmp(type, "t") == 0 ||
+           rt_strcmp(type, "W") == 0 || rt_strcmp(type, "w") == 0;
 }
 
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what) {

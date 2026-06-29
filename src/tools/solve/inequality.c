@@ -4,10 +4,6 @@
 #endif
 #include "../solve.c"
 #else
-#define rt_write_cstr solve_sp_cstr
-#define rt_write_line solve_sp_line
-#define rt_write_char solve_sp_char
-#define rt_write_uint solve_sp_uint
 static int solve_relation_satisfied(double value, SolveRelation relation, double tolerance) {
     switch (relation) {
         case SOLVE_RELATION_LT: return value < -tolerance;
@@ -49,12 +45,12 @@ static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, doubl
 static void solve_write_interval_endpoint(const char *label, double value, int has_endpoint) {
     char text[96];
     if (!has_endpoint) {
-        rt_write_cstr(1, value < 0.0 ? "-inf" : "inf");
+        solve_sp_cstr(1, value < 0.0 ? "-inf" : "inf");
     } else if (label[0] != '\0') {
-        rt_write_cstr(1, label);
+        solve_sp_cstr(1, label);
     } else {
         solve_format_compact_decimal(value, SOLVE_DEFAULT_SCALE, text, sizeof(text));
-        rt_write_cstr(1, text);
+        solve_sp_cstr(1, text);
     }
 }
 
@@ -62,19 +58,19 @@ static void solve_print_intervals(const SolveOptions *options, const SolveInterv
     int i;
     (void)options;
     if (count == 1 && !intervals[0].has_left && !intervals[0].has_right) {
-        rt_write_line(1, "solution = all real x");
+        solve_sp_line(1, "solution = all real x");
         return;
     }
-    rt_write_cstr(1, bounded ? "solution (within scan range) = " : "solution = ");
+    solve_sp_cstr(1, bounded ? "solution (within scan range) = " : "solution = ");
     for (i = 0; i < count; ++i) {
-        if (i > 0) rt_write_cstr(1, " U ");
-        rt_write_char(1, intervals[i].left_closed ? '[' : '(');
+        if (i > 0) solve_sp_cstr(1, " U ");
+        solve_sp_char(1, intervals[i].left_closed ? '[' : '(');
         solve_write_interval_endpoint(intervals[i].left_label, intervals[i].left, intervals[i].has_left);
-        rt_write_cstr(1, ", ");
+        solve_sp_cstr(1, ", ");
         solve_write_interval_endpoint(intervals[i].right_label, intervals[i].right, intervals[i].has_right);
-        rt_write_char(1, intervals[i].right_closed ? ']' : ')');
+        solve_sp_char(1, intervals[i].right_closed ? ']' : ')');
     }
-    rt_write_char(1, '\n');
+    solve_sp_char(1, '\n');
 }
 
 static int solve_add_interval(SolveInterval *intervals, int *count_io, const SolveInterval *interval) {
@@ -186,17 +182,17 @@ static int solve_run_exact_poly_inequality(const SolveEquation *equation, const 
     if (solve_should_explain(options)) {
         solve_explain_working_function("inequality", equation, options);
         solve_explain_rat_poly_line("zero-function polynomial: ", poly, options);
-        rt_write_cstr(1, "target sign: f(x) ");
-        rt_write_line(1, solve_relation_text(equation->relation));
-        rt_write_line(1, "method detail: exact roots split the real line; one exact test value decides each interval");
+        solve_sp_cstr(1, "target sign: f(x) ");
+        solve_sp_line(1, solve_relation_text(equation->relation));
+        solve_sp_line(1, "method detail: exact roots split the real line; one exact test value decides each interval");
     }
 
     if (degree < 0) {
         if (solve_relation_satisfied(0.0, equation->relation, 0.0)) {
-            rt_write_line(1, "solution = all real x");
+            solve_sp_line(1, "solution = all real x");
             return 0;
         }
-        rt_write_line(1, "solution = empty set");
+        solve_sp_line(1, "solution = empty set");
         return 1;
     }
     if (solve_collect_rat_poly_roots(poly, points, &point_count) != 0) return -1;
@@ -208,10 +204,10 @@ static int solve_run_exact_poly_inequality(const SolveEquation *equation, const 
         (void)solve_rat_make(0, 1, &zero);
         if (solve_rat_poly_eval(poly, degree, zero, &value) != 0) return -1;
         if (solve_relation_satisfied(solve_rat_to_double(value), equation->relation, 0.0)) {
-            rt_write_line(1, "solution = all real x");
+            solve_sp_line(1, "solution = all real x");
             return 0;
         }
-        rt_write_line(1, "solution = empty set");
+        solve_sp_line(1, "solution = empty set");
         return 1;
     }
     for (segment = 0; segment <= point_count; ++segment) {
@@ -252,7 +248,7 @@ static int solve_run_exact_poly_inequality(const SolveEquation *equation, const 
         if (solve_add_interval(intervals, &interval_count, &interval) != 0) return -1;
     }
     if (interval_count == 0) {
-        rt_write_line(1, "solution = empty set");
+        solve_sp_line(1, "solution = empty set");
         return 1;
     }
     solve_print_intervals(options, intervals, interval_count, 0);
@@ -275,10 +271,10 @@ static int solve_run_numeric_inequality(const SolveEquation *equation, const Sol
 
     if (solve_should_explain(options)) {
         solve_explain_working_function("numeric inequality", equation, options);
-        rt_write_cstr(1, "target sign: f(x) ");
-        rt_write_line(1, solve_relation_text(equation->relation));
+        solve_sp_cstr(1, "target sign: f(x) ");
+        solve_sp_line(1, solve_relation_text(equation->relation));
         solve_explain_scan_window_line(options);
-        rt_write_line(1, "method detail: scan for zero crossings and invalid sample points, then test each interval midpoint");
+        solve_sp_line(1, "method detail: scan for zero crossings and invalid sample points, then test each interval midpoint");
     }
 
     zero_equation.relation = SOLVE_RELATION_EQ;
@@ -329,7 +325,7 @@ static int solve_run_numeric_inequality(const SolveEquation *equation, const Sol
         if (solve_add_interval(intervals, &interval_count, &interval) != 0) return 3;
     }
     if (interval_count == 0) {
-        rt_write_line(1, "solution = empty set");
+        solve_sp_line(1, "solution = empty set");
         return 1;
     }
     solve_print_intervals(options, intervals, interval_count, 1);

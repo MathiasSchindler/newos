@@ -56,13 +56,6 @@ static void write_metric(const char *label, unsigned long long value) {
     rt_write_char(1, '\n');
 }
 
-static void write_text_field(const char *label, const char *value) {
-    if (value == 0 || value[0] == '\0') return;
-    rt_write_cstr(1, label);
-    rt_write_cstr(1, ": ");
-    rt_write_line(1, value);
-}
-
 static void write_date_field(const char *label, const char *value) {
     char formatted[PDF_TEXT_CAPACITY];
 
@@ -111,12 +104,12 @@ static void write_summary(const char *path, size_t size, const PdfInfo *info) {
         rt_write_line(1, "unknown");
     }
     write_metric("bytes", (unsigned long long)size);
-    write_text_field("title", info->document_info.title);
-    write_text_field("author", info->document_info.author);
-    write_text_field("subject", info->document_info.subject);
-    write_text_field("keywords", info->document_info.keywords);
-    write_text_field("creator", info->document_info.creator);
-    write_text_field("producer", info->document_info.producer);
+    tool_write_labeled_text_line(1, "title", info->document_info.title);
+    tool_write_labeled_text_line(1, "author", info->document_info.author);
+    tool_write_labeled_text_line(1, "subject", info->document_info.subject);
+    tool_write_labeled_text_line(1, "keywords", info->document_info.keywords);
+    tool_write_labeled_text_line(1, "creator", info->document_info.creator);
+    tool_write_labeled_text_line(1, "producer", info->document_info.producer);
     write_date_field("creation_date", info->document_info.creation_date);
     write_date_field("modification_date", info->document_info.modification_date);
     write_metric("objects", info->object_count);

@@ -342,75 +342,6 @@ static int print_seekable_tail_lines(int fd, unsigned long long line_limit, unsi
     return 0;
 }
 
-static int print_from_start_lines(int fd, unsigned long long start_line) {
-    char buffer[TAIL_IO_BUFFER_SIZE];
-    long bytes_read;
-    unsigned long long current_line = 1ULL;
-    int writing = 0;
-
-    if (start_line <= 1ULL) {
-        start_line = 1ULL;
-    }
-
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        long i;
-
-        if (writing) {
-            if (rt_write_all(1, buffer, (size_t)bytes_read) != 0) {
-                return -1;
-            }
-            continue;
-        }
-
-        for (i = 0; i < bytes_read; ++i) {
-            if (current_line >= start_line) {
-                if (rt_write_all(1, buffer + i, (size_t)(bytes_read - i)) != 0) {
-                    return -1;
-                }
-                writing = 1;
-                break;
-            }
-            if (buffer[i] == '\n') {
-                current_line += 1ULL;
-            }
-        }
-    }
-
-    return bytes_read < 0 ? -1 : 0;
-}
-
-static int print_from_start_bytes(int fd, unsigned long long start_byte) {
-    char buffer[TAIL_IO_BUFFER_SIZE];
-    long bytes_read;
-    unsigned long long current_byte = 1ULL;
-    int writing = 0;
-
-    if (start_byte <= 1ULL) {
-        start_byte = 1ULL;
-    }
-
-    while ((bytes_read = platform_read(fd, buffer, sizeof(buffer))) > 0) {
-        size_t start = 0U;
-
-        if (!writing) {
-            if (current_byte + (unsigned long long)bytes_read <= start_byte) {
-                current_byte += (unsigned long long)bytes_read;
-                continue;
-            }
-            if (start_byte > current_byte) {
-                start = (size_t)(start_byte - current_byte);
-            }
-            writing = 1;
-        }
-        if (rt_write_all(1, buffer + start, (size_t)bytes_read - start) != 0) {
-            return -1;
-        }
-        current_byte += (unsigned long long)bytes_read;
-    }
-
-    return bytes_read < 0 ? -1 : 0;
-}
-
 static int print_from_start_bytes_seekable(int fd, unsigned long long start_byte, unsigned long long *offset_out) {
     unsigned long long offset = 0ULL;
     long long start = 0LL;
@@ -558,8 +489,8 @@ int main(int argc, char **argv) {
 
     if (path_count <= 0) {
         if (options.style == TAIL_COUNT_FROM_START) {
-            return ((options.mode == TAIL_MODE_BYTES ? print_from_start_bytes(0, options.count)
-                                                     : print_from_start_lines(0, options.count)) == 0)
+            return ((options.mode == TAIL_MODE_BYTES ? tool_stream_from_byte(0, 1, options.count)
+                                                     : tool_stream_from_line(0, 1, options.count)) == 0)
                        ? 0
                        : 1;
         }
@@ -614,7 +545,7 @@ int main(int argc, char **argv) {
                     if (options.mode == TAIL_MODE_BYTES) {
                         result = print_from_start_bytes_seekable(state.fd, options.count, &state.offset);
                         if (result != 0) {
-                            result = print_from_start_bytes(state.fd, options.count);
+                            result = tool_stream_from_byte(state.fd, 1, options.count);
                             if (result == 0) {
                                 long long end = platform_seek(state.fd, 0, PLATFORM_SEEK_END);
                                 if (end >= 0) {
@@ -623,7 +554,7 @@ int main(int argc, char **argv) {
                             }
                         }
                     } else {
-                        result = print_from_start_lines(state.fd, options.count);
+                        result = tool_stream_from_line(state.fd, 1, options.count);
                         if (result == 0) {
                             long long end = platform_seek(state.fd, 0, PLATFORM_SEEK_END);
                             if (end >= 0) {
@@ -713,9 +644,9 @@ int main(int argc, char **argv) {
 
         if (options.style == TAIL_COUNT_FROM_START) {
             int result = (options.mode == TAIL_MODE_BYTES ? print_from_start_bytes_seekable(fd, options.count, 0)
-                                                          : print_from_start_lines(fd, options.count));
+                                                          : tool_stream_from_line(fd, 1, options.count));
             if (result != 0 && options.mode == TAIL_MODE_BYTES) {
-                result = print_from_start_bytes(fd, options.count);
+                result = tool_stream_from_byte(fd, 1, options.count);
             }
             if (result != 0) {
                 tool_write_error("tail", "read error on ", argv[i]);

@@ -36,19 +36,6 @@ static void write_text_cell(const char *text, size_t width) {
     rt_write_char(1, ' ');
 }
 
-static void format_size_text(unsigned long long value, const DfOptions *options, char *buffer, size_t buffer_size) {
-    if (options->human_readable) {
-        tool_format_size(value, 1, buffer, buffer_size);
-        return;
-    }
-    if (options->block_size > 1ULL) {
-        unsigned long long scaled = (value == 0ULL) ? 0ULL : ((value + options->block_size - 1ULL) / options->block_size);
-        rt_unsigned_to_string(scaled, buffer, buffer_size);
-        return;
-    }
-    rt_unsigned_to_string(value, buffer, buffer_size);
-}
-
 static void format_percent_text(unsigned long long used, unsigned long long total, char *buffer, size_t buffer_size) {
     unsigned long long use_percent = (total == 0ULL) ? 0ULL : (used * 100ULL) / total;
     char digits[32];
@@ -185,9 +172,9 @@ static void build_layout(const DfRow *rows, size_t count, const DfOptions *optio
             format_percent_text(used_inodes, rows[i].info.total_inodes, use_text, sizeof(use_text));
         } else {
             used_bytes = (rows[i].info.total_bytes >= rows[i].info.free_bytes) ? (rows[i].info.total_bytes - rows[i].info.free_bytes) : 0ULL;
-            format_size_text(rows[i].info.total_bytes, options, total_text, sizeof(total_text));
-            format_size_text(used_bytes, options, used_text, sizeof(used_text));
-            format_size_text(rows[i].info.available_bytes, options, avail_text, sizeof(avail_text));
+            tool_format_block_size(rows[i].info.total_bytes, options->human_readable, options->block_size, total_text, sizeof(total_text));
+            tool_format_block_size(used_bytes, options->human_readable, options->block_size, used_text, sizeof(used_text));
+            tool_format_block_size(rows[i].info.available_bytes, options->human_readable, options->block_size, avail_text, sizeof(avail_text));
             format_percent_text(used_bytes, rows[i].info.total_bytes, use_text, sizeof(use_text));
         }
 
@@ -248,9 +235,9 @@ static void print_row(const DfRow *row, const DfOptions *options, const DfLayout
         format_percent_text(used_inodes, row->info.total_inodes, use_text, sizeof(use_text));
     } else {
         used_bytes = (row->info.total_bytes >= row->info.free_bytes) ? (row->info.total_bytes - row->info.free_bytes) : 0ULL;
-        format_size_text(row->info.total_bytes, options, total_text, sizeof(total_text));
-        format_size_text(used_bytes, options, used_text, sizeof(used_text));
-        format_size_text(row->info.available_bytes, options, avail_text, sizeof(avail_text));
+        tool_format_block_size(row->info.total_bytes, options->human_readable, options->block_size, total_text, sizeof(total_text));
+        tool_format_block_size(used_bytes, options->human_readable, options->block_size, used_text, sizeof(used_text));
+        tool_format_block_size(row->info.available_bytes, options->human_readable, options->block_size, avail_text, sizeof(avail_text));
         format_percent_text(used_bytes, row->info.total_bytes, use_text, sizeof(use_text));
     }
 

@@ -61,25 +61,10 @@ static int parse_block_size_text(const char *text, unsigned long long *size_out)
     return *size_out == 0ULL ? -1 : 0;
 }
 
-static void format_total_text(unsigned long long total, const DuOptions *options, char *size_text, size_t size_text_size) {
-    if (options->human_readable) {
-        tool_format_size(total, 1, size_text, size_text_size);
-        return;
-    }
-
-    if (options->block_size > 1ULL) {
-        unsigned long long scaled = (total == 0ULL) ? 0ULL : ((total + options->block_size - 1ULL) / options->block_size);
-        rt_unsigned_to_string(scaled, size_text, size_text_size);
-        return;
-    }
-
-    rt_unsigned_to_string(total, size_text, size_text_size);
-}
-
 static void print_total(unsigned long long total, const char *path, const DuOptions *options) {
     char size_text[32];
 
-    format_total_text(total, options, size_text, sizeof(size_text));
+    tool_format_block_size(total, options->human_readable, options->block_size, size_text, sizeof(size_text));
     rt_write_cstr(1, size_text);
     rt_write_char(1, '\t');
     rt_write_line(1, path);

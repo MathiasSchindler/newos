@@ -58,20 +58,16 @@ static int compare_stream_ranges(const void *left_ptr, const void *right_ptr) {
     return 0;
 }
 
-static void pdfcheck_context_init(PdfCheckContext *context) {
-    rt_memset(context, 0, sizeof(*context));
-}
-
 static void pdfcheck_context_free(PdfCheckContext *context) {
     rt_free(context->objects);
     rt_free(context->streams);
-    pdfcheck_context_init(context);
+    rt_memset(context, 0, sizeof(*context));
 }
 
 static int pdfcheck_context_build(PdfCheckContext *context, const PdfDocument *document) {
     size_t index;
 
-    pdfcheck_context_init(context);
+    rt_memset(context, 0, sizeof(*context));
     if (document->info.objects_len != 0U) {
         context->objects = (PdfCheckObjectKey *)rt_malloc_array(document->info.objects_len, sizeof(context->objects[0]));
         if (context->objects == 0) return -1;
@@ -194,10 +190,6 @@ typedef struct {
     size_t cap;
 } CheckMessageList;
 
-static void message_list_init(CheckMessageList *list) {
-    rt_memset(list, 0, sizeof(*list));
-}
-
 static void message_list_free(CheckMessageList *list) {
     rt_free(list->items);
     list->items = 0;
@@ -275,8 +267,6 @@ static void check_report_init(CheckReport *report, const char *path) {
     rt_memset(report, 0, sizeof(*report));
     report->path = path;
     report->ok = 1;
-    message_list_init(&report->notices);
-    message_list_init(&report->errors);
 }
 
 static void check_report_free(CheckReport *report) {

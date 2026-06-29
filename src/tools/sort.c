@@ -352,10 +352,6 @@ static void sort_collection_prepare_order(SortCollection *collection) {
     }
 }
 
-static void sort_run_set_init(SortRunSet *runs) {
-    rt_memset(runs, 0, sizeof(*runs));
-}
-
 static void sort_run_set_cleanup(SortRunSet *runs) {
     size_t i;
 
@@ -1637,7 +1633,7 @@ static int merge_run_set_to_output(SortRunSet *runs, int output_fd, const SortOp
     while (runs->count > SORT_MAX_INPUTS) {
         size_t index = 0U;
 
-        sort_run_set_init(&next_runs);
+        rt_memset(&next_runs, 0, sizeof(next_runs));
         while (index < runs->count) {
             size_t group_count = runs->count - index;
             int fd;
@@ -1711,7 +1707,7 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
         rt_write_line(2, "sort: input too large for available memory");
         return 1;
     }
-    sort_run_set_init(&runs);
+    rt_memset(&runs, 0, sizeof(runs));
 
     if (argi == argc) {
         int collect_status = collect_external_from_fd(0, &collection, options, &runs);
