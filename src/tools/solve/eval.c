@@ -236,6 +236,68 @@ static double solve_cos(double value) {
     return sum;
 }
 
+static double solve_tan(double value) {
+    double cosine = solve_cos(value);
+    if (cosine == 0.0) {
+        return 0.0 / 0.0;
+    }
+    return solve_sin(value) / cosine;
+}
+
+static double solve_asin(double value) {
+    if (value < -1.0 || value > 1.0) {
+        return 0.0 / 0.0;
+    }
+    if (value == 1.0) return SOLVE_PI / 2.0;
+    if (value == -1.0) return -SOLVE_PI / 2.0;
+    return solve_atan(value / solve_sqrt(1.0 - value * value));
+}
+
+static double solve_acos(double value) {
+    if (value < -1.0 || value > 1.0) {
+        return 0.0 / 0.0;
+    }
+    return SOLVE_PI / 2.0 - solve_asin(value);
+}
+
+static double solve_sinh(double value) {
+    double ex = solve_exp(value);
+    return 0.5 * (ex - 1.0 / ex);
+}
+
+static double solve_cosh(double value) {
+    double ex = solve_exp(value);
+    return 0.5 * (ex + 1.0 / ex);
+}
+
+static double solve_tanh(double value) {
+    double e2;
+    if (value > 350.0) return 1.0;
+    if (value < -350.0) return -1.0;
+    e2 = solve_exp(2.0 * value);
+    return (e2 - 1.0) / (e2 + 1.0);
+}
+
+static double solve_floor(double value) {
+    double truncated = (double)(long long)value;
+    if (truncated > value) {
+        truncated -= 1.0;
+    }
+    return truncated;
+}
+
+static double solve_ceil(double value) {
+    double truncated = (double)(long long)value;
+    if (truncated < value) {
+        truncated += 1.0;
+    }
+    return truncated;
+}
+
+static double solve_round(double value) {
+    return value >= 0.0 ? solve_floor(value + 0.5) : solve_ceil(value - 0.5);
+}
+
 static double solve_pow_int(double base, long long exponent) {
     double result = 1.0;
     unsigned long long power;
@@ -312,6 +374,10 @@ static int solve_is_known_function(const char *name) {
            rt_strcmp(name, "abs") == 0 ||
            rt_strcmp(name, "sin") == 0 || rt_strcmp(name, "s") == 0 ||
            rt_strcmp(name, "cos") == 0 || rt_strcmp(name, "c") == 0 ||
+           rt_strcmp(name, "tan") == 0 || rt_strcmp(name, "t") == 0 ||
+           rt_strcmp(name, "asin") == 0 || rt_strcmp(name, "acos") == 0 ||
+           rt_strcmp(name, "sinh") == 0 || rt_strcmp(name, "cosh") == 0 || rt_strcmp(name, "tanh") == 0 ||
+           rt_strcmp(name, "floor") == 0 || rt_strcmp(name, "ceil") == 0 || rt_strcmp(name, "round") == 0 ||
            rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0 ||
            rt_strcmp(name, "log") == 0 || rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0 ||
            rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0 ||
@@ -382,6 +448,15 @@ static double solve_call_function(SolveExprParser *parser, const char *name) {
     if ((rt_strcmp(name, "abs") == 0) && !have_second) return solve_abs(first);
     if ((rt_strcmp(name, "sin") == 0 || rt_strcmp(name, "s") == 0) && !have_second) return solve_sin(first);
     if ((rt_strcmp(name, "cos") == 0 || rt_strcmp(name, "c") == 0) && !have_second) return solve_cos(first);
+    if ((rt_strcmp(name, "tan") == 0 || rt_strcmp(name, "t") == 0) && !have_second) return solve_tan(first);
+    if (rt_strcmp(name, "asin") == 0 && !have_second) return solve_asin(first);
+    if (rt_strcmp(name, "acos") == 0 && !have_second) return solve_acos(first);
+    if (rt_strcmp(name, "sinh") == 0 && !have_second) return solve_sinh(first);
+    if (rt_strcmp(name, "cosh") == 0 && !have_second) return solve_cosh(first);
+    if (rt_strcmp(name, "tanh") == 0 && !have_second) return solve_tanh(first);
+    if (rt_strcmp(name, "floor") == 0 && !have_second) return solve_floor(first);
+    if (rt_strcmp(name, "ceil") == 0 && !have_second) return solve_ceil(first);
+    if (rt_strcmp(name, "round") == 0 && !have_second) return solve_round(first);
     if ((rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0) && !have_second) return solve_atan(first);
     if ((rt_strcmp(name, "log") == 0 || rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0) && !have_second) return solve_log(first);
     if ((rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0) && !have_second) return solve_exp(first);
@@ -553,6 +628,18 @@ static int solve_eval_unary_function_fast(const char *name, double argument, dou
         *value_out = solve_cos(argument);
         return 0;
     }
+    if (rt_strcmp(name, "tan") == 0 || rt_strcmp(name, "t") == 0) {
+        *value_out = solve_tan(argument);
+        return 0;
+    }
+    if (rt_strcmp(name, "asin") == 0) { *value_out = solve_asin(argument); return 0; }
+    if (rt_strcmp(name, "acos") == 0) { *value_out = solve_acos(argument); return 0; }
+    if (rt_strcmp(name, "sinh") == 0) { *value_out = solve_sinh(argument); return 0; }
+    if (rt_strcmp(name, "cosh") == 0) { *value_out = solve_cosh(argument); return 0; }
+    if (rt_strcmp(name, "tanh") == 0) { *value_out = solve_tanh(argument); return 0; }
+    if (rt_strcmp(name, "floor") == 0) { *value_out = solve_floor(argument); return 0; }
+    if (rt_strcmp(name, "ceil") == 0) { *value_out = solve_ceil(argument); return 0; }
+    if (rt_strcmp(name, "round") == 0) { *value_out = solve_round(argument); return 0; }
     if (rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0) {
         *value_out = solve_atan(argument);
         return 0;

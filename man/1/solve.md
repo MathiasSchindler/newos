@@ -45,7 +45,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - decimal numeric constants
 - predefined constants `pi` and `e`
 - built-in functions such as `sqrt(x)`, `abs(x)`, `min(x, y)`, and `max(x, y)`
-- math-library functions such as `sin(x)`, `cos(x)`, `atan(x)`, `log(x)`, and `exp(x)`
+- math-library functions such as `sin(x)`, `cos(x)`, `tan(x)`, `asin(x)`, `acos(x)`, `atan(x)`, `sinh(x)`, `cosh(x)`, `tanh(x)`, `log(x)`, `exp(x)`, and rounding helpers `floor(x)`, `ceil(x)`, `round(x)`
 - interval solving with `--lo` and `--hi`
 - automatic interval scanning to discover sign changes over a range
 - exact rational polynomial solving through degree 8 for supported rational-literal expressions
@@ -124,7 +124,7 @@ Quadratics are solved directly. When the exact rational discriminant is negative
 
 Inequalities form the same zero function and report solution intervals. Supported rational polynomials use exact roots and exact sign tests, so unbounded intervals such as `(-inf, -2)` and `[2, inf)` are true real intervals rather than clipped scan ranges. Non-polynomial inequalities use the numeric evaluator over the scan range and say that the answer is within that range.
 
-`--diff` uses exact rational polynomial coefficients and the power rule when possible. If the expression is not in the polynomial subset, it tries a bounded symbolic differentiator for the existing expression language: sums, differences, products, quotients, constant powers, `sin`, `cos`, `exp`, `log`/`ln`, `sqrt`, `atan`, and the corresponding chain rule. Parameters declared with `--param` are treated as constants. Without an equation, `--diff` prints the derivative expression. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions.
+`--diff` uses exact rational polynomial coefficients and the power rule when possible. If the expression is not in the polynomial subset, it tries a bounded symbolic differentiator for the existing expression language: sums, differences, products, quotients, constant powers, `sin`, `cos`, `tan`, `asin`, `acos`, `sinh`, `cosh`, `tanh`, `exp`, `log`/`ln`, `sqrt`, `atan`, and the corresponding chain rule. Parameters declared with `--param` are treated as constants. Without an equation, `--diff` prints the derivative expression. With an equation, it solves the derivative equal to 0, which is useful for extrema and inflection-point discussions.
 
 `--integrate A:B` first tries exact rational polynomial integration by building an exact antiderivative and evaluating it at the bounds. If the integrand is outside the polynomial subset, or exact rational evaluation overflows because a decimal bound expands to a very large rational, it uses composite Simpson integration with one Richardson refinement and marks the result approximate. If evaluation fails inside the interval, for example across a pole, the integral is reported as improper and exits with numeric failure status.
 
@@ -241,6 +241,8 @@ A `solve_result` data object includes the variable name, root value, residual, m
 - `--asymptotes` is limited to rational-polynomial quotients written as one numerator divided by one denominator
 - numerical integration is composite Simpson integration, not a symbolic antiderivative engine, and improper integrals over detected discontinuities are rejected rather than assigned a finite number
 - finite decimal literals in the exact polynomial front end are parsed as exact rationals from their source spelling, so `0.1` means exactly `1/10` in that path
+- exact rational and floating-point polynomial roots are reported even when they fall outside the default scan window, so a perfect square such as `x^2 = 40000` reports `x = +/-200`; an explicit `--scan LO:HI` still clips reported roots to that window
+- the unary functions `sqrt`, `abs`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `log`/`ln`, `exp`, `floor`, `ceil`, `round` and the binary `min`/`max` are built in; `tan` near its asymptotes can present sign changes that are screened by the residual check, and `floor`, `ceil`, `round` are evaluated but have no symbolic derivative
 - solves one variable at a time
 - repeated polynomial roots in the supported symbolic subset are solved directly; other touching roots are only candidates unless the residual is within tolerance
 - discontinuities can create false sign changes and must be reported carefully

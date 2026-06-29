@@ -388,7 +388,7 @@ static int solve_finish_results(const SolveEquation *equation, const SolveOption
         solve_write_summary_json(1U, 0);
         return 0;
     }
-    if (results->no_real_solutions) {
+    if (results->no_real_solutions && results->count == 0U) {
         if (tool_json_is_enabled()) {
             solve_write_summary_json(0U, 1);
         } else if (!options->quiet) {

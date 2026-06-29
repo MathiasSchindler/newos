@@ -169,7 +169,7 @@ static int solve_root_in_scan_range(const SolveOptions *options, double root) {
     double hi = options->scan_lo < options->scan_hi ? options->scan_hi : options->scan_lo;
     double slack = options->tolerance * 10.0;
 
-    if (!options->have_scan) {
+    if (!options->have_scan || options->default_scan) {
         return 1;
     }
     return root >= lo - slack && root <= hi + slack;
