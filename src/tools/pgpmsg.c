@@ -208,25 +208,6 @@ static int add_recipient_option(PgpMsgOptions *options, const char *recipient) {
     return 0;
 }
 
-static unsigned int pgpmsg_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_PGPMSG_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > PGPMSG_DEFAULT_MAX_WORKERS ? PGPMSG_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) {
-        return PGPMSG_DEFAULT_MAX_WORKERS;
-    }
-    if (value > RT_TASK_POOL_MAX_WORKERS) {
-        return RT_TASK_POOL_MAX_WORKERS;
-    }
-    return (unsigned int)value;
-}
-
 static int write_output_data(const char *path, const unsigned char *data, size_t size, int armor_signature) {
     int fd = path != 0 ? platform_open_write(path, 0644U) : 1;
     int result;
@@ -1910,7 +1891,7 @@ static int build_encrypted_session_key_packets(const PgpPublicKeyInfo *recipient
     }
     rt_memset(&pool, 0, sizeof(pool));
     rt_memset(jobs, 0, sizeof(jobs));
-    if (rt_task_pool_init(&pool, pgpmsg_worker_count_from_env()) != 0) {
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_PGPMSG_WORKERS", PGPMSG_DEFAULT_MAX_WORKERS)) != 0) {
         rt_task_pool_destroy(&pool);
         return build_encrypted_session_key_packets_serial(recipients, recipient_count, session_key, packets);
     }
@@ -2225,7 +2206,7 @@ static int pgpmsg_run_gcm_tasks(RtTaskFn task_fn, void *jobs, size_t job_count, 
     if (job_count == 0U) return 0;
     if (job_count < 2U) return task_fn(0U, jobs);
     rt_memset(&pool, 0, sizeof(pool));
-    if (rt_task_pool_init(&pool, pgpmsg_worker_count_from_env()) != 0) {
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_PGPMSG_WORKERS", PGPMSG_DEFAULT_MAX_WORKERS)) != 0) {
         rt_task_pool_destroy(&pool);
         result = 0;
         for (job_index = 0U; result == 0 && job_index < job_count; ++job_index) {

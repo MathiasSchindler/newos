@@ -39,33 +39,6 @@ static int resolve_copy_target(const char *source_path, const char *dest_path, i
     return tool_resolve_destination(source_path, dest_path, buffer, buffer_size);
 }
 
-static int should_copy_to_target(const char *source_path, const char *target_path, int source_is_directory, const CpOptions *options) {
-    PlatformDirEntry source_info;
-    PlatformDirEntry target_info;
-
-    if (!tool_path_exists(target_path)) {
-        return 1;
-    }
-
-    if (options->no_clobber) {
-        return 0;
-    }
-
-    if (options->update_only &&
-        !source_is_directory &&
-        platform_get_path_info(source_path, &source_info) == 0 &&
-        platform_get_path_info(target_path, &target_info) == 0 &&
-        source_info.mtime <= target_info.mtime) {
-        return 0;
-    }
-
-    if (options->interactive) {
-        return tool_prompt_yes_no("cp: overwrite ", target_path);
-    }
-
-    return 1;
-}
-
 static void preserve_copy_metadata(const char *source_path, const char *target_path, const CpOptions *options) {
     PlatformDirEntry source_info;
 
@@ -115,7 +88,7 @@ static int copy_one_path(const char *source_path, const char *dest_path, const C
         return 1;
     }
 
-    if (!should_copy_to_target(source_path, target_path, source_is_directory, options)) {
+    if (!tool_should_replace_path(source_path, target_path, source_is_directory, options->no_clobber, options->update_only, options->interactive, "cp: overwrite ")) {
         return 0;
     }
 

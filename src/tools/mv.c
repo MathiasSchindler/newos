@@ -17,29 +17,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-i] [-f] [-n] [-u] [-v] source... destination");
 }
 
-static int should_replace(const char *source_path, const char *target_path, int source_is_dir, const MvOptions *options) {
-    PlatformDirEntry source_info;
-    PlatformDirEntry target_info;
-
-    if (!tool_path_exists(target_path)) {
-        return 1;
-    }
-    if (options->no_clobber) {
-        return 0;
-    }
-    if (options->update_only &&
-        !source_is_dir &&
-        platform_get_path_info(source_path, &source_info) == 0 &&
-        platform_get_path_info(target_path, &target_info) == 0 &&
-        source_info.mtime <= target_info.mtime) {
-        return 0;
-    }
-    if (options->interactive) {
-        return tool_prompt_yes_no("mv: overwrite ", target_path);
-    }
-    return 1;
-}
-
 static int move_one_path(const char *source_path, const char *dest_path, const MvOptions *options) {
     char target_path[MV_PATH_CAPACITY];
     char path_scratch[MV_PATH_CAPACITY * 2U];
@@ -68,7 +45,7 @@ static int move_one_path(const char *source_path, const char *dest_path, const M
         return 1;
     }
 
-    if (!should_replace(source_path, target_path, source_is_dir, options)) {
+    if (!tool_should_replace_path(source_path, target_path, source_is_dir, options->no_clobber, options->update_only, options->interactive, "mv: overwrite ")) {
         return 0;
     }
 

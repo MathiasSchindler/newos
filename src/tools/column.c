@@ -150,25 +150,6 @@ static int collect_rows_from_fd(int fd, ColumnRow *rows, size_t *row_count, cons
     return 0;
 }
 
-static int write_spaces(size_t count) {
-    char spaces[COLUMN_SPACE_BUFFER_SIZE];
-    size_t i;
-
-    for (i = 0U; i < sizeof(spaces); ++i) {
-        spaces[i] = ' ';
-    }
-
-    while (count > 0U) {
-        size_t chunk = count > sizeof(spaces) ? sizeof(spaces) : count;
-        if (rt_write_all(1, spaces, chunk) != 0) {
-            return -1;
-        }
-        count -= chunk;
-    }
-
-    return 0;
-}
-
 static int write_separator(const ColumnOptions *options, size_t *used) {
     if (options->output_separator_len > 0U) {
         if (rt_write_all(1, options->output_separator, options->output_separator_len) != 0) {
@@ -259,7 +240,7 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
                     if (options->max_width != 0ULL && used + padding > (size_t)options->max_width) {
                         padding = (size_t)options->max_width - used;
                     }
-                    if (write_spaces(padding) != 0) {
+                    if (tool_write_repeated_char(1, ' ', padding) != 0) {
                         return -1;
                     }
                     used += padding;
@@ -332,7 +313,7 @@ static int print_rows(ColumnRow *rows, size_t row_count, const ColumnOptions *op
                 if (options->max_width != 0ULL && used + padding > (size_t)options->max_width) {
                     padding = (size_t)options->max_width - used;
                 }
-                if (write_spaces(padding) != 0) {
+                if (tool_write_repeated_char(1, ' ', padding) != 0) {
                     return -1;
                 }
                 used += padding;

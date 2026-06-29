@@ -1,3 +1,4 @@
+#include "concurrency.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -779,10 +780,24 @@ void tool_http_connection_close(ToolHttpConnection *connection) {
 }
 
 void tool_write_padding(int fd, size_t count) {
-    while (count > 0U) {
-        (void)rt_write_char(fd, ' ');
-        count -= 1U;
+    (void)tool_write_repeated_char(fd, ' ', count);
+}
+
+int tool_write_repeated_char(int fd, char ch, size_t count) {
+    char buffer[64];
+    size_t index;
+
+    for (index = 0U; index < sizeof(buffer); ++index) {
+        buffer[index] = ch;
     }
+    while (count > 0U) {
+        size_t chunk = count > sizeof(buffer) ? sizeof(buffer) : count;
+        if (rt_write_all(fd, buffer, chunk) != 0) {
+            return -1;
+        }
+        count -= chunk;
+    }
+    return 0;
 }
 
 void tool_write_percent_2(int fd, unsigned long long value, unsigned long long total) {
@@ -804,6 +819,25 @@ void tool_write_labeled_text_line(int fd, const char *label, const char *value) 
     rt_write_cstr(fd, label);
     rt_write_cstr(fd, ": ");
     rt_write_line(fd, value);
+}
+
+unsigned int tool_worker_count_from_env(const char *env_name, unsigned int default_max_workers) {
+    const char *value_text = platform_getenv(env_name);
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > default_max_workers ? default_max_workers : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return default_max_workers;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
 }
 
 int tool_stream_from_line(int input_fd, int output_fd, unsigned long long start_line) {

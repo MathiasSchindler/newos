@@ -64,21 +64,6 @@ static int bunzip2_write_callback(void *context, const unsigned char *data, size
     return tool_output_buffer_write(output, (const char *)data, size);
 }
 
-static unsigned int bunzip2_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_BUNZIP2_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > BUNZIP2_DEFAULT_MAX_WORKERS ? BUNZIP2_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) return BUNZIP2_DEFAULT_MAX_WORKERS;
-    if (value > RT_TASK_POOL_MAX_WORKERS) return RT_TASK_POOL_MAX_WORKERS;
-    return (unsigned int)value;
-}
-
 static int bunzip2_decompress_real_parallel(const char *input_path, ToolOutputBuffer *output, unsigned int worker_count) {
     unsigned char *data = 0;
     size_t size = 0U;
@@ -98,7 +83,7 @@ static int bunzip2_decompress_real(const char *input_path, int output_fd) {
     unsigned int worker_count;
 
     tool_output_buffer_init(&output, output_fd);
-    worker_count = bunzip2_worker_count_from_env();
+    worker_count = tool_worker_count_from_env("NEWOS_BUNZIP2_WORKERS", BUNZIP2_DEFAULT_MAX_WORKERS);
     result = bunzip2_decompress_real_parallel(input_path, &output, worker_count);
     if (result == 1) {
         input.fd = platform_open_read(input_path);

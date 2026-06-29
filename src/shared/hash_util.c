@@ -49,25 +49,6 @@ int hash_print_digest_line(const unsigned char *digest, size_t digest_size, cons
     return 0;
 }
 
-static unsigned int hash_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_HASH_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > HASH_DEFAULT_MAX_WORKERS ? HASH_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) {
-        return HASH_DEFAULT_MAX_WORKERS;
-    }
-    if (value > RT_TASK_POOL_MAX_WORKERS) {
-        return RT_TASK_POOL_MAX_WORKERS;
-    }
-    return (unsigned int)value;
-}
-
 static int hash_path_is_stdin(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
 }
@@ -299,7 +280,7 @@ static int hash_sum_files_parallel(const char *tool_name, size_t digest_size, Ha
     batch.results = results;
     batch.hash_stream = hash_stream;
 
-    if (rt_task_pool_init(&pool, hash_worker_count_from_env()) != 0) {
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_HASH_WORKERS", HASH_DEFAULT_MAX_WORKERS)) != 0) {
         result = hash_sum_file_range(0U, (size_t)file_count, 0U, &batch);
     } else {
         result = rt_parallel_for(&pool, (size_t)file_count, 1U, hash_sum_file_range, &batch);

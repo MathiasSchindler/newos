@@ -68,25 +68,6 @@ static void print_usage(void) {
     tool_write_usage("zip", "[-0] [-r] [-v] ARCHIVE FILE ...");
 }
 
-static unsigned int zip_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_ZIP_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > ZIP_DEFAULT_MAX_WORKERS ? ZIP_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) {
-        return ZIP_DEFAULT_MAX_WORKERS;
-    }
-    if (value > RT_TASK_POOL_MAX_WORKERS) {
-        return RT_TASK_POOL_MAX_WORKERS;
-    }
-    return (unsigned int)value;
-}
-
 static int write_u16_le(int fd, unsigned int value) {
     unsigned char bytes[2];
     bytes[0] = (unsigned char)(value & 0xffU);
@@ -497,7 +478,7 @@ int main(int argc, char **argv) {
         if (collect_path(&context, argv[i], 0) != 0) context.status = 1;
     }
     if (context.status == 0 && context.pending_count > 1U) {
-        if (rt_task_pool_init(&context.pool, zip_worker_count_from_env()) == 0) {
+        if (rt_task_pool_init(&context.pool, tool_worker_count_from_env("NEWOS_ZIP_WORKERS", ZIP_DEFAULT_MAX_WORKERS)) == 0) {
             context.pool_initialized = 1;
         } else {
             rt_task_pool_destroy(&context.pool);

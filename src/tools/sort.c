@@ -1098,25 +1098,6 @@ static int compare_lines(const SortLine *left, const SortLine *right, const Sort
     return options->reverse ? -result : result;
 }
 
-static unsigned int sort_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_SORT_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > SORT_DEFAULT_MAX_WORKERS ? SORT_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) {
-        return SORT_DEFAULT_MAX_WORKERS;
-    }
-    if (value > RT_TASK_POOL_MAX_WORKERS) {
-        return RT_TASK_POOL_MAX_WORKERS;
-    }
-    return (unsigned int)value;
-}
-
 static void merge_line_order(SortLine **order,
                              SortLine **scratch,
                              size_t left,
@@ -1206,7 +1187,7 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     int result;
 
     rt_memset(&pool, 0, sizeof(pool));
-    if (rt_task_pool_init(&pool, sort_worker_count_from_env()) != 0) {
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_SORT_WORKERS", SORT_DEFAULT_MAX_WORKERS)) != 0) {
         rt_task_pool_destroy(&pool);
         merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
         return;

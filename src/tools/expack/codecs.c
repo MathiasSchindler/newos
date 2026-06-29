@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "tool_util.h"
 
 static const ExpackLzssProfile expack_lzss_profiles[] = {
     {COMPRESSION_LZSS_PROFILE_WIDE_WINDOW, 3U, 0x07U},
@@ -1807,25 +1808,6 @@ static void expack_run_candidate_jobs_serial(ExpackCandidateJob *jobs, unsigned 
     }
 }
 
-static unsigned int expack_worker_count_from_env(void) {
-    const char *value_text = platform_getenv("NEWOS_EXPACK_WORKERS");
-    unsigned long long value;
-    unsigned int platform_width;
-
-    if (value_text == 0 || value_text[0] == '\0') {
-        platform_width = platform_worker_thread_count();
-        if (platform_width == 0U) return 0U;
-        return platform_width > EXPACK_DEFAULT_MAX_WORKERS ? EXPACK_DEFAULT_MAX_WORKERS : platform_width;
-    }
-    if (rt_parse_uint(value_text, &value) != 0) {
-        return EXPACK_DEFAULT_MAX_WORKERS;
-    }
-    if (value > RT_TASK_POOL_MAX_WORKERS) {
-        return RT_TASK_POOL_MAX_WORKERS;
-    }
-    return (unsigned int)value;
-}
-
 static int expack_candidate_task(unsigned int worker_index, void *arg) {
     (void)worker_index;
     expack_run_candidate_job((ExpackCandidateJob *)arg);
@@ -1843,7 +1825,7 @@ static void expack_run_candidate_jobs(ExpackCandidateJob *jobs, unsigned int job
         return;
     }
     rt_memset(&pool, 0, sizeof(pool));
-    if (rt_task_pool_init(&pool, expack_worker_count_from_env()) != 0) {
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_EXPACK_WORKERS", EXPACK_DEFAULT_MAX_WORKERS)) != 0) {
         expack_run_candidate_jobs_serial(jobs, job_count);
         return;
     }

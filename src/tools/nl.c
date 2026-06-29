@@ -40,25 +40,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-ba|-bt|-bn] [-h STYLE] [-b STYLE] [-f STYLE] [-d CC] [-n FORMAT] [-v START] [-i INCREMENT] [-w WIDTH] [-s SEP] [file ...]");
 }
 
-static int write_padding(size_t count, char fill) {
-    char padding[NL_PADDING_BUFFER_SIZE];
-    size_t i;
-
-    for (i = 0U; i < sizeof(padding); ++i) {
-        padding[i] = fill;
-    }
-
-    while (count > 0U) {
-        size_t chunk = count > sizeof(padding) ? sizeof(padding) : count;
-        if (rt_write_all(1, padding, chunk) != 0) {
-            return -1;
-        }
-        count -= chunk;
-    }
-
-    return 0;
-}
-
 static int parse_style_value(const char *text, NlStyle *style_out) {
     if (rt_strcmp(text, "a") == 0) {
         *style_out = NL_STYLE_ALL;
@@ -134,12 +115,12 @@ static int emit_line(const char *line, int should_number, unsigned long long *li
 
         if (options->format == NL_FORMAT_LEFT) {
             if (rt_write_uint(1, *line_no) != 0 ||
-                write_padding(padding, ' ') != 0 ||
+                tool_write_repeated_char(1, ' ', padding) != 0 ||
                 (options->separator_len > 0U && rt_write_all(1, options->separator, options->separator_len) != 0) ||
                 rt_write_line(1, line) != 0) {
                 return -1;
             }
-        } else if (write_padding(padding, fill) != 0 ||
+        } else if (tool_write_repeated_char(1, fill, padding) != 0 ||
                    rt_write_uint(1, *line_no) != 0 ||
                    (options->separator_len > 0U && rt_write_all(1, options->separator, options->separator_len) != 0) ||
                    rt_write_line(1, line) != 0) {
@@ -150,7 +131,7 @@ static int emit_line(const char *line, int should_number, unsigned long long *li
         return 0;
     }
 
-    return write_padding((size_t)options->width, ' ') == 0 &&
+    return tool_write_repeated_char(1, ' ', (size_t)options->width) == 0 &&
            (options->separator_len == 0U || rt_write_all(1, options->separator, options->separator_len) == 0) &&
            rt_write_line(1, line) == 0
                ? 0
