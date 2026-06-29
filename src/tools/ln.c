@@ -97,16 +97,6 @@ static const char *skip_path_separators(const char *path) {
     return path;
 }
 
-static size_t path_component_length(const char *path) {
-    size_t length = 0U;
-
-    while (path[length] != '\0' && path[length] != '/') {
-        length += 1U;
-    }
-
-    return length;
-}
-
 static int path_components_match(const char *left, size_t left_length, const char *right, size_t right_length) {
     size_t i;
 
@@ -185,8 +175,8 @@ static int build_relative_target_path(const char *target_path, const char *link_
     link_cursor = skip_path_separators(link_parent_absolute);
 
     while (*target_cursor != '\0' && *link_cursor != '\0') {
-        size_t target_length = path_component_length(target_cursor);
-        size_t link_length = path_component_length(link_cursor);
+        size_t target_length = tool_path_component_length(target_cursor);
+        size_t link_length = tool_path_component_length(link_cursor);
 
         if (!path_components_match(target_cursor, target_length, link_cursor, link_length)) {
             break;
@@ -199,7 +189,7 @@ static int build_relative_target_path(const char *target_path, const char *link_
     }
 
     while (*link_cursor != '\0') {
-        size_t link_length = path_component_length(link_cursor);
+        size_t link_length = tool_path_component_length(link_cursor);
 
         if (link_length != 0U && append_fragment(buffer, buffer_size, &length, "../") != 0) {
             return -1;
@@ -210,7 +200,7 @@ static int build_relative_target_path(const char *target_path, const char *link_
     }
 
     while (*target_cursor != '\0') {
-        size_t target_length = path_component_length(target_cursor);
+        size_t target_length = tool_path_component_length(target_cursor);
 
         if (append_path_component(buffer, buffer_size, &length, target_cursor, target_length) != 0) {
             return -1;

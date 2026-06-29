@@ -15,17 +15,6 @@ static void print_usage(const char *program_name) {
     tool_write_usage(program_name, "[-iz] [-t TABSTOP[,TABSTOP...]] [file ...]");
 }
 
-static int write_spaces(unsigned long long count) {
-    while (count > 0ULL) {
-        if (rt_write_char(1, ' ') != 0) {
-            return -1;
-        }
-        count -= 1ULL;
-    }
-
-    return 0;
-}
-
 #define parse_tabstop_list(text, options) tool_parse_tabstop_list((text), (options)->stops, EXPAND_MAX_TABSTOPS, &(options)->stop_count)
 
 static int expand_stream(int fd, const ExpandOptions *options) {
@@ -56,7 +45,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
             if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
                 unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
                 unsigned long long spaces = stop > column ? stop - column : 1ULL;
-                if (write_spaces(spaces) != 0) {
+                if (tool_write_repeated_char(1, ' ', (size_t)spaces) != 0) {
                     return -1;
                 }
                 column += spaces;
@@ -102,7 +91,7 @@ static int expand_stream(int fd, const ExpandOptions *options) {
         if (segment.codepoint == '\t' && (!options->initial_only || leading)) {
             unsigned long long stop = tool_next_tabstop(options->stops, options->stop_count, column);
             unsigned long long spaces = stop > column ? stop - column : 1ULL;
-            if (write_spaces(spaces) != 0) {
+            if (tool_write_repeated_char(1, ' ', (size_t)spaces) != 0) {
                 return -1;
             }
             column += spaces;

@@ -305,13 +305,6 @@ static int matches_empty_filter(const char *path, const PlatformDirEntry *entry)
     return entry->size == 0ULL;
 }
 
-static int emit_path(const char *path, int nul_terminated) {
-    if (rt_write_cstr(1, path) != 0) {
-        return -1;
-    }
-    return rt_write_char(1, nul_terminated ? '\0' : '\n');
-}
-
 static int run_exec_action(const char *path, const FindOptions *options, const FindNode *node) {
     char *spawn_argv[FIND_MAX_EXEC_ARGS + 1];
     int pid;
@@ -404,12 +397,12 @@ static int evaluate_node(
         case FIND_NODE_EMPTY:
             return matches_empty_filter(path, entry);
         case FIND_NODE_PRINT:
-            if (state->allow_action && emit_path(path, 0) != 0) {
+            if (state->allow_action && tool_write_record_text(1, path, 0) != 0) {
                 state->error = 1;
             }
             return 1;
         case FIND_NODE_PRINT0:
-            if (state->allow_action && emit_path(path, 1) != 0) {
+            if (state->allow_action && tool_write_record_text(1, path, 1) != 0) {
                 state->error = 1;
             }
             return 1;
@@ -762,7 +755,7 @@ static int find_walk_callback(const char *path, const PlatformDirEntry *entry, i
 
     if (evaluate_node(options->root_node, path, entry, options, context->now, &state) &&
         !options->has_output_action && state.allow_action) {
-        if (emit_path(path, 0) != 0) {
+        if (tool_write_record_text(1, path, 0) != 0) {
             return -1;
         }
     }

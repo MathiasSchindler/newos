@@ -1335,16 +1335,6 @@ static int git_diff_index_pair(const GitRepo *repo, const GitIndex *old_index, c
     return 0;
 }
 
-static int git_write_spaces(size_t count) {
-    while (count > 0U) {
-        if (rt_write_char(1, ' ') != 0) {
-            return -1;
-        }
-        count -= 1U;
-    }
-    return 0;
-}
-
 static int git_write_size(size_t value) {
     char digits[32];
 
@@ -1466,7 +1456,7 @@ static int git_render_diff_stat(const GitDiffStatList *stats, int color_mode) {
         size_t minuses;
 
         git_diff_scaled_bar(stats->entries[i].insertions, stats->entries[i].deletions, max_changes, graph_width, &pluses, &minuses);
-        if (rt_write_char(1, ' ') != 0 || rt_write_cstr(1, stats->entries[i].path) != 0 || git_write_spaces(path_width - rt_strlen(stats->entries[i].path)) != 0 || rt_write_cstr(1, " | ") != 0 || git_write_spaces(changes_width - tool_count_decimal_digits((unsigned long long)changes)) != 0 || git_write_size(changes) != 0 || rt_write_char(1, ' ') != 0 || git_write_diff_stat_bar(pluses, minuses, color_mode) != 0 || rt_write_char(1, '\n') != 0) {
+        if (rt_write_char(1, ' ') != 0 || rt_write_cstr(1, stats->entries[i].path) != 0 || tool_write_repeated_char(1, ' ', path_width - rt_strlen(stats->entries[i].path)) != 0 || rt_write_cstr(1, " | ") != 0 || tool_write_repeated_char(1, ' ', changes_width - tool_count_decimal_digits((unsigned long long)changes)) != 0 || git_write_size(changes) != 0 || rt_write_char(1, ' ') != 0 || git_write_diff_stat_bar(pluses, minuses, color_mode) != 0 || rt_write_char(1, '\n') != 0) {
             return -1;
         }
     }

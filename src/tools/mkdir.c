@@ -11,11 +11,6 @@ static void print_usage(const char *program_name) {
     rt_write_line(2, " [-p] [-v] [-m mode] directory ...");
 }
 
-static int path_is_directory(const char *path) {
-    int is_directory = 0;
-    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
-}
-
 static int parse_octal_mode(const char *text, unsigned int *mode_out) {
     unsigned long long value = 0;
     size_t i = 0;
@@ -65,8 +60,8 @@ static int make_one_directory(const char *path, int create_parents, unsigned int
         for (i = 1; buffer[i] != '\0'; ++i) {
             if (buffer[i] == '/') {
                 buffer[i] = '\0';
-                if (buffer[0] != '\0' && !path_is_directory(buffer)) {
-                    if (platform_make_directory(buffer, mode) != 0 && !path_is_directory(buffer)) {
+                if (buffer[0] != '\0' && !tool_path_is_directory(buffer)) {
+                    if (platform_make_directory(buffer, mode) != 0 && !tool_path_is_directory(buffer)) {
                         return -1;
                     }
                 }
@@ -74,7 +69,7 @@ static int make_one_directory(const char *path, int create_parents, unsigned int
             }
         }
 
-        if (platform_make_directory(buffer, mode) != 0 && !path_is_directory(buffer)) {
+        if (platform_make_directory(buffer, mode) != 0 && !tool_path_is_directory(buffer)) {
             return -1;
         }
     }

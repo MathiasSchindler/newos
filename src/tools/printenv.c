@@ -4,14 +4,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static int write_with_separator(const char *text, int zero_terminated) {
-    if (rt_write_cstr(1, text) != 0) {
-        return -1;
-    }
-
-    return rt_write_char(1, zero_terminated ? '\0' : '\n');
-}
-
 static int write_name_with_separator(const char *text, int zero_terminated) {
     size_t index = 0;
 
@@ -74,7 +66,7 @@ int main(int argc, char **argv) {
             if (current == 0) {
                 break;
             }
-            if ((names_only ? write_name_with_separator(current, zero_terminated) : write_with_separator(current, zero_terminated)) != 0) {
+            if ((names_only ? write_name_with_separator(current, zero_terminated) : tool_write_record_text(1, current, zero_terminated)) != 0) {
                 return 1;
             }
             index += 1;
@@ -86,7 +78,7 @@ int main(int argc, char **argv) {
         const char *value = platform_getenv(argv[argi]);
         if (value != 0) {
             if (!quiet &&
-                (names_only ? write_with_separator(argv[argi], zero_terminated) : write_with_separator(value, zero_terminated)) != 0) {
+                (names_only ? tool_write_record_text(1, argv[argi], zero_terminated) : tool_write_record_text(1, value, zero_terminated)) != 0) {
                 return 1;
             }
         } else {

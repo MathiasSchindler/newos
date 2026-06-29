@@ -50,37 +50,6 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
     return 0;
 }
 
-static void format_unsigned_value(unsigned long long value, unsigned int base, char *buffer, size_t buffer_size) {
-    const char *digits = "0123456789abcdef";
-    char scratch[64];
-    size_t length = 0;
-    size_t i;
-
-    if (buffer_size == 0U) {
-        return;
-    }
-
-    if (value == 0ULL) {
-        if (buffer_size > 1U) {
-            buffer[0] = '0';
-            buffer[1] = '\0';
-        } else {
-            buffer[0] = '\0';
-        }
-        return;
-    }
-
-    while (value != 0ULL && length + 1U < sizeof(scratch)) {
-        scratch[length++] = digits[value % base];
-        value /= base;
-    }
-
-    for (i = 0; i < length && i + 1U < buffer_size; ++i) {
-        buffer[i] = scratch[length - 1U - i];
-    }
-    buffer[i] = '\0';
-}
-
 static size_t strings_unit_size(StringsEncoding encoding) {
     if (encoding == STRINGS_ENCODING_16LE || encoding == STRINGS_ENCODING_16BE) {
         return 2U;
@@ -154,7 +123,7 @@ static int flush_sequence(char *buffer,
             }
         }
         if (options->show_offset) {
-            format_unsigned_value(start_offset, options->offset_base, offset_buffer, sizeof(offset_buffer));
+            tool_format_unsigned_base(start_offset, options->offset_base, 0, offset_buffer, sizeof(offset_buffer));
             if (rt_write_cstr(1, offset_buffer) != 0 || rt_write_char(1, ' ') != 0) {
                 return -1;
             }

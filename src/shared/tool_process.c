@@ -20,6 +20,21 @@ static int tool_strings_equal_ignore_case(const char *left, const char *right) {
     return left[i] == '\0' && right[i] == '\0';
 }
 
+int tool_is_shell_builtin_name(const char *name) {
+    return rt_strcmp(name, "cd") == 0 ||
+           rt_strcmp(name, "exit") == 0 ||
+           rt_strcmp(name, "jobs") == 0 ||
+           rt_strcmp(name, "history") == 0 ||
+           rt_strcmp(name, "fg") == 0 ||
+           rt_strcmp(name, "bg") == 0 ||
+           rt_strcmp(name, "export") == 0 ||
+           rt_strcmp(name, "unset") == 0 ||
+           rt_strcmp(name, "command") == 0 ||
+           rt_strcmp(name, "alias") == 0 ||
+           rt_strcmp(name, "set") == 0 ||
+           rt_strcmp(name, "shift") == 0;
+}
+
 int tool_resolve_user_id(const char *text, unsigned int *uid_out) {
     unsigned long long value = 0ULL;
     PlatformIdentity identity;

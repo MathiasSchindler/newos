@@ -29,11 +29,6 @@ static int path_is_protected(const char *path) {
     return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0 || tool_path_is_root(path);
 }
 
-static int ignore_failure_for_existing_directory(const char *path) {
-    int is_directory = 0;
-    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
-}
-
 static void path_parent(char *path) {
     size_t len;
 
@@ -64,7 +59,7 @@ static int remove_one_directory(const char *path, int remove_parents, int verbos
 
     for (;;) {
         if (platform_remove_directory(current) != 0) {
-            if (ignore_fail_on_non_empty && ignore_failure_for_existing_directory(current)) {
+            if (ignore_fail_on_non_empty && tool_path_is_directory(current)) {
                 return 0;
             }
             return -1;

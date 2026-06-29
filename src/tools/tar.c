@@ -18,8 +18,6 @@ typedef enum {
     TAR_COMPRESS_XZ = 3
 } TarCompression;
 
-static int tar_path_is_directory(const char *path);
-
 typedef struct {
     char name[100];
     char mode[8];
@@ -695,7 +693,7 @@ static int ensure_parent_dirs(char *path) {
     for (i = 1; path[i] != '\0'; ++i) {
         if (path[i] == '/') {
             path[i] = '\0';
-            if (!tar_path_is_directory(path)) {
+            if (!tool_path_is_directory(path)) {
                 (void)platform_make_directory(path, 0755U);
             }
             path[i] = '/';
@@ -703,11 +701,6 @@ static int ensure_parent_dirs(char *path) {
     }
 
     return 0;
-}
-
-static int tar_path_is_directory(const char *path) {
-    int is_directory = 0;
-    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
 }
 
 static int tar_path_exists(const char *path) {
@@ -973,7 +966,7 @@ static int extract_archive(int archive_fd,
                 return -1;
             }
             ensure_parent_dirs(output_path);
-            if (!tar_path_is_directory(output_path)) {
+            if (!tool_path_is_directory(output_path)) {
                 (void)platform_make_directory(output_path, 0755U);
             }
             continue;

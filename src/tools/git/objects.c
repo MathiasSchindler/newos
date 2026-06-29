@@ -966,15 +966,6 @@ static int git_tree_buffer_append_entry(GitBuffer *tree, unsigned int mode, cons
     return 0;
 }
 
-static size_t git_tree_path_segment_length(const char *text) {
-    size_t length = 0U;
-
-    while (text[length] != '\0' && text[length] != '/') {
-        length += 1U;
-    }
-    return length;
-}
-
 static int git_tree_range_has_committable_entry(const GitIndex *index, size_t start, size_t end) {
     size_t position;
 
@@ -994,7 +985,7 @@ static int git_write_tree_recursive(const GitRepo *repo, const GitIndex *index, 
     rt_memset(&tree, 0, sizeof(tree));
     while (position < end) {
         const char *local = index->entries[position].path + prefix_length;
-        size_t segment_length = git_tree_path_segment_length(local);
+        size_t segment_length = tool_path_component_length(local);
 
         if (segment_length == 0U) {
             goto done;

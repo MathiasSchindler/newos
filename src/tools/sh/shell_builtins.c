@@ -2,6 +2,7 @@
 
 #include "shell_shared.h"
 #include "runtime.h"
+#include "tool_util.h"
 
 #define SH_BUILTIN_COUNT 12U
 
@@ -272,18 +273,7 @@ static int builtin_shift_command(const ShCommand *cmd) {
 }
 
 int sh_is_shell_builtin_name(const char *name) {
-    return rt_strcmp(name, "cd") == 0 ||
-           rt_strcmp(name, "exit") == 0 ||
-           rt_strcmp(name, "jobs") == 0 ||
-           rt_strcmp(name, "history") == 0 ||
-           rt_strcmp(name, "fg") == 0 ||
-           rt_strcmp(name, "bg") == 0 ||
-           rt_strcmp(name, "export") == 0 ||
-           rt_strcmp(name, "unset") == 0 ||
-           rt_strcmp(name, "command") == 0 ||
-           rt_strcmp(name, "alias") == 0 ||
-           rt_strcmp(name, "set") == 0 ||
-           rt_strcmp(name, "shift") == 0;
+    return tool_is_shell_builtin_name(name);
 }
 
 int sh_try_run_builtin(const ShPipeline *pipeline, int *status_out) {

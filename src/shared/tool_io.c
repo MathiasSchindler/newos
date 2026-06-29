@@ -800,6 +800,38 @@ int tool_write_repeated_char(int fd, char ch, size_t count) {
     return 0;
 }
 
+void tool_format_unsigned_base(unsigned long long value, unsigned int base, int uppercase, char *buffer, size_t buffer_size) {
+    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
+    char scratch[64];
+    size_t length = 0U;
+    size_t index;
+
+    if (buffer_size == 0U) {
+        return;
+    }
+    if (base < 2U || base > 16U) {
+        buffer[0] = '\0';
+        return;
+    }
+    if (value == 0ULL) {
+        if (buffer_size > 1U) {
+            buffer[0] = '0';
+            buffer[1] = '\0';
+        } else {
+            buffer[0] = '\0';
+        }
+        return;
+    }
+    while (value != 0ULL && length + 1U < sizeof(scratch)) {
+        scratch[length++] = digits[value % base];
+        value /= base;
+    }
+    for (index = 0U; index < length && index + 1U < buffer_size; ++index) {
+        buffer[index] = scratch[length - 1U - index];
+    }
+    buffer[index] = '\0';
+}
+
 void tool_write_percent_2(int fd, unsigned long long value, unsigned long long total) {
     unsigned long long scaled;
 
@@ -819,6 +851,13 @@ void tool_write_labeled_text_line(int fd, const char *label, const char *value) 
     rt_write_cstr(fd, label);
     rt_write_cstr(fd, ": ");
     rt_write_line(fd, value);
+}
+
+void tool_write_labeled_uint_line(int fd, const char *label, unsigned long long value) {
+    rt_write_cstr(fd, label);
+    rt_write_cstr(fd, ": ");
+    rt_write_uint(fd, value);
+    rt_write_char(fd, '\n');
 }
 
 unsigned int tool_worker_count_from_env(const char *env_name, unsigned int default_max_workers) {

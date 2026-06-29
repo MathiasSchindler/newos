@@ -49,13 +49,6 @@ static void write_bool_word(unsigned long long value) {
     rt_write_cstr(1, value ? "yes" : "no");
 }
 
-static void write_metric(const char *label, unsigned long long value) {
-    rt_write_cstr(1, label);
-    rt_write_cstr(1, ": ");
-    rt_write_uint(1, value);
-    rt_write_char(1, '\n');
-}
-
 static void write_date_field(const char *label, const char *value) {
     char formatted[PDF_TEXT_CAPACITY];
 
@@ -103,7 +96,7 @@ static void write_summary(const char *path, size_t size, const PdfInfo *info) {
     } else {
         rt_write_line(1, "unknown");
     }
-    write_metric("bytes", (unsigned long long)size);
+    tool_write_labeled_uint_line(1, "bytes", (unsigned long long)size);
     tool_write_labeled_text_line(1, "title", info->document_info.title);
     tool_write_labeled_text_line(1, "author", info->document_info.author);
     tool_write_labeled_text_line(1, "subject", info->document_info.subject);
@@ -112,11 +105,11 @@ static void write_summary(const char *path, size_t size, const PdfInfo *info) {
     tool_write_labeled_text_line(1, "producer", info->document_info.producer);
     write_date_field("creation_date", info->document_info.creation_date);
     write_date_field("modification_date", info->document_info.modification_date);
-    write_metric("objects", info->object_count);
-    write_metric("streams", info->stream_count);
-    write_metric("pages", info->page_count);
-    write_metric("fonts", info->font_count);
-    write_metric("images", info->image_count);
+    tool_write_labeled_uint_line(1, "objects", info->object_count);
+    tool_write_labeled_uint_line(1, "streams", info->stream_count);
+    tool_write_labeled_uint_line(1, "pages", info->page_count);
+    tool_write_labeled_uint_line(1, "fonts", info->font_count);
+    tool_write_labeled_uint_line(1, "images", info->image_count);
     rt_write_cstr(1, "encrypted: ");
     write_bool_word(info->encrypted);
     rt_write_char(1, '\n');
@@ -153,23 +146,23 @@ static void write_plain(const char *path, size_t size, const PdfInfo *info) {
 }
 
 static void write_details(const PdfInfo *info) {
-    write_metric("catalogs", info->catalog_count);
-    write_metric("info_dictionaries", info->info_dictionary_count);
-    write_metric("page_trees", info->pages_tree_count);
-    write_metric("xref_tables", info->xref_table_count);
-    write_metric("xref_streams", info->xref_stream_count);
-    write_metric("trailers", info->trailer_count);
-    write_metric("object_streams", info->object_stream_count);
-    write_metric("filtered_streams", info->filtered_stream_count);
-    write_metric("form_xobjects", info->form_xobject_count);
-    write_metric("annotations", info->annotation_count);
-    write_metric("metadata_objects", info->metadata_count);
-    write_metric("embedded_font_programs", info->embedded_font_program_count);
-    write_metric("text_objects", info->text_object_count);
-    write_metric("text_show_ops", info->text_show_count);
-    write_metric("path_ops", info->path_operator_count);
-    write_metric("xobject_paint_ops", info->xobject_paint_count);
-    write_metric("inline_images", info->inline_image_count);
+    tool_write_labeled_uint_line(1, "catalogs", info->catalog_count);
+    tool_write_labeled_uint_line(1, "info_dictionaries", info->info_dictionary_count);
+    tool_write_labeled_uint_line(1, "page_trees", info->pages_tree_count);
+    tool_write_labeled_uint_line(1, "xref_tables", info->xref_table_count);
+    tool_write_labeled_uint_line(1, "xref_streams", info->xref_stream_count);
+    tool_write_labeled_uint_line(1, "trailers", info->trailer_count);
+    tool_write_labeled_uint_line(1, "object_streams", info->object_stream_count);
+    tool_write_labeled_uint_line(1, "filtered_streams", info->filtered_stream_count);
+    tool_write_labeled_uint_line(1, "form_xobjects", info->form_xobject_count);
+    tool_write_labeled_uint_line(1, "annotations", info->annotation_count);
+    tool_write_labeled_uint_line(1, "metadata_objects", info->metadata_count);
+    tool_write_labeled_uint_line(1, "embedded_font_programs", info->embedded_font_program_count);
+    tool_write_labeled_uint_line(1, "text_objects", info->text_object_count);
+    tool_write_labeled_uint_line(1, "text_show_ops", info->text_show_count);
+    tool_write_labeled_uint_line(1, "path_ops", info->path_operator_count);
+    tool_write_labeled_uint_line(1, "xobject_paint_ops", info->xobject_paint_count);
+    tool_write_labeled_uint_line(1, "inline_images", info->inline_image_count);
     write_name_counts("font_names", info->font_names, info->font_names_len);
 }
 

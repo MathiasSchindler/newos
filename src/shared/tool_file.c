@@ -24,6 +24,11 @@ void tool_close_input(int fd, int should_close) {
     }
 }
 
+int tool_path_is_directory(const char *path) {
+    int is_directory = 0;
+    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
+}
+
 int tool_should_replace_path(const char *source_path, const char *target_path, int source_is_directory, int no_clobber, int update_only, int interactive, const char *prompt_prefix) {
     PlatformDirEntry source_info;
     PlatformDirEntry target_info;

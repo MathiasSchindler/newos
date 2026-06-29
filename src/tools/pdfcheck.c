@@ -173,13 +173,6 @@ static void write_error_line(const char *message) {
     rt_write_line(1, message);
 }
 
-static void write_count_line(const char *label, unsigned long long value) {
-    rt_write_cstr(1, label);
-    rt_write_cstr(1, ": ");
-    rt_write_uint(1, value);
-    rt_write_char(1, '\n');
-}
-
 typedef struct {
     char text[160];
 } CheckMessage;
@@ -530,9 +523,9 @@ static int check_path(const char *path) {
         write_error_line("missing %%EOF marker");
         status = 1;
     }
-    write_count_line("objects", document.info.object_count);
-    write_count_line("streams", document.info.stream_count);
-    write_count_line("pages", document.info.page_count);
+    tool_write_labeled_uint_line(1, "objects", document.info.object_count);
+    tool_write_labeled_uint_line(1, "streams", document.info.stream_count);
+    tool_write_labeled_uint_line(1, "pages", document.info.page_count);
     have_root = find_key_ref(data, size, "/Root", &root_number, &root_generation);
     have_info = find_key_ref(data, size, "/Info", &info_number, &info_generation);
     if (have_root) {
@@ -548,8 +541,8 @@ static int check_path(const char *path) {
     } else {
         write_notice("no document-info reference");
     }
-    if (document.info.xref_stream_count != 0ULL) write_count_line("notice: xref_streams", document.info.xref_stream_count);
-    if (document.info.object_stream_count != 0ULL) write_count_line("notice: object_streams", document.info.object_stream_count);
+    if (document.info.xref_stream_count != 0ULL) tool_write_labeled_uint_line(1, "notice: xref_streams", document.info.xref_stream_count);
+    if (document.info.object_stream_count != 0ULL) tool_write_labeled_uint_line(1, "notice: object_streams", document.info.object_stream_count);
     if (document.info.encrypted != 0ULL) {
         write_error_line("encrypted PDFs are unsupported");
         status = 1;

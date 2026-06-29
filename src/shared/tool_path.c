@@ -38,6 +38,15 @@ int tool_path_has_separator(const char *path) {
     return 0;
 }
 
+size_t tool_path_component_length(const char *path) {
+    size_t length = 0U;
+
+    while (path[length] != '\0' && path[length] != '/') {
+        length += 1U;
+    }
+    return length;
+}
+
 int tool_path_is_dash(const char *path) {
     return path != 0 && path[0] == '-' && path[1] == '\0';
 }

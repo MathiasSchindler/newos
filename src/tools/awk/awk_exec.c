@@ -454,37 +454,6 @@ static int write_expression(const AwkExpression *expression, const AwkRecord *re
     }
 }
 
-static void format_unsigned_value(unsigned long long value, unsigned int base, int uppercase, char *buffer, size_t buffer_size) {
-    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
-    char scratch[64];
-    size_t length = 0;
-    size_t i;
-
-    if (buffer_size == 0) {
-        return;
-    }
-
-    if (value == 0ULL) {
-        if (buffer_size > 1U) {
-            buffer[0] = '0';
-            buffer[1] = '\0';
-        } else {
-            buffer[0] = '\0';
-        }
-        return;
-    }
-
-    while (value != 0ULL && length + 1U < sizeof(scratch)) {
-        scratch[length++] = digits[value % base];
-        value /= base;
-    }
-
-    for (i = 0; i < length && i + 1U < buffer_size; ++i) {
-        buffer[i] = scratch[length - 1U - i];
-    }
-    buffer[i] = '\0';
-}
-
 static int write_repeated_char(AwkState *state, char ch, int count) {
     char buffer[64];
     size_t i;
@@ -539,7 +508,7 @@ static int write_formatted_number(AwkState *state,
     int total_length;
 
     (void)signed_value;
-    format_unsigned_value(unsigned_value, base, uppercase, digits, sizeof(digits));
+    tool_format_unsigned_base(unsigned_value, base, uppercase, digits, sizeof(digits));
     if (precision == 0 && unsigned_value == 0ULL) {
         digits[0] = '\0';
     }

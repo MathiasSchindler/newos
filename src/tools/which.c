@@ -23,21 +23,6 @@ static int path_exists_as_file(const char *path) {
            platform_path_access(path, PLATFORM_ACCESS_EXECUTE) == 0;
 }
 
-static int is_shell_builtin(const char *name) {
-    return rt_strcmp(name, "cd") == 0 ||
-           rt_strcmp(name, "exit") == 0 ||
-           rt_strcmp(name, "jobs") == 0 ||
-           rt_strcmp(name, "history") == 0 ||
-           rt_strcmp(name, "fg") == 0 ||
-           rt_strcmp(name, "bg") == 0 ||
-           rt_strcmp(name, "export") == 0 ||
-           rt_strcmp(name, "unset") == 0 ||
-           rt_strcmp(name, "command") == 0 ||
-           rt_strcmp(name, "alias") == 0 ||
-           rt_strcmp(name, "set") == 0 ||
-           rt_strcmp(name, "shift") == 0;
-}
-
 static int is_exported_shell_function(const char *name) {
     size_t index = 0;
     size_t name_len = rt_strlen(name);
@@ -96,7 +81,7 @@ static int resolve_shell_name(const char *name) {
     if (is_exported_shell_function(name)) {
         return write_shell_descriptor(name, "shell function");
     }
-    if (is_shell_builtin(name)) {
+    if (tool_is_shell_builtin_name(name)) {
         return write_shell_descriptor(name, "shell built-in");
     }
     return -1;
@@ -147,7 +132,7 @@ static int resolve_command(const SearchContext *ctx, const char *name, char *buf
         return 1;
     }
 
-    if (is_shell_builtin(name)) {
+    if (tool_is_shell_builtin_name(name)) {
         rt_copy_string(buffer, buffer_size, "shell built-in");
         return 1;
     }
@@ -184,7 +169,7 @@ static int print_all_matches(const SearchContext *ctx, const char *name) {
         }
     }
 
-    if (is_shell_builtin(name)) {
+    if (tool_is_shell_builtin_name(name)) {
         if (write_shell_descriptor(name, "shell built-in") == 0) {
             found = 1;
         }

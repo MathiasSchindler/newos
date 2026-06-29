@@ -8,6 +8,7 @@
 
 int tool_open_input(const char *path, int *fd_out, int *should_close_out);
 void tool_close_input(int fd, int should_close);
+int tool_path_is_directory(const char *path);
 int tool_read_all_input(const char *path, unsigned char **data_out, size_t *size_out);
 int tool_read_all_input_report(const char *path, unsigned char **data_out, size_t *size_out, const char *tool_name);
 int tool_should_replace_path(const char *source_path, const char *target_path, int source_is_directory, int no_clobber, int update_only, int interactive, const char *prompt_prefix);
@@ -19,6 +20,7 @@ int tool_write_record_text(int fd, const char *text, int zero_terminated);
 int tool_write_file_all(const char *path, const unsigned char *data, size_t size);
 int tool_write_file_all_report(const char *path, const unsigned char *data, size_t size, const char *tool_name);
 int tool_validate_absolute_program_path(const char *tool_name, const char *path);
+int tool_is_shell_builtin_name(const char *name);
 void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state);
 int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);
 int tool_hex_value(char ch);
@@ -271,8 +273,10 @@ void tool_write_hex_value(int fd, unsigned long long value);
 int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size);
 void tool_write_padding(int fd, size_t count);
 int tool_write_repeated_char(int fd, char ch, size_t count);
+void tool_format_unsigned_base(unsigned long long value, unsigned int base, int uppercase, char *buffer, size_t buffer_size);
 void tool_write_percent_2(int fd, unsigned long long value, unsigned long long total);
 void tool_write_labeled_text_line(int fd, const char *label, const char *value);
+void tool_write_labeled_uint_line(int fd, const char *label, unsigned long long value);
 unsigned int tool_worker_count_from_env(const char *env_name, unsigned int default_max_workers);
 unsigned int tool_pager_page_lines(unsigned int default_lines);
 int tool_stream_from_line(int input_fd, int output_fd, unsigned long long start_line);
@@ -294,6 +298,7 @@ int tool_apply_symbolic_mode(const char *text, unsigned int current_mode, unsign
 int tool_literal_prefix_matches(const char *pattern, const char *text, int ignore_case, size_t *consumed_out);
 const char *tool_base_name(const char *path);
 int tool_path_has_separator(const char *path);
+size_t tool_path_component_length(const char *path);
 int tool_path_is_dash(const char *path);
 void tool_path_dirname(const char *path, char *buffer, size_t buffer_size);
 void tool_path_copy_trimmed(char *buffer, size_t buffer_size, const char *path);
