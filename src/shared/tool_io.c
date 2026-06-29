@@ -29,6 +29,7 @@ static int tool_write_style_code(int fd, int style) {
     if (selected == TOOL_STYLE_BOLD_BLUE) return rt_write_cstr(fd, "1;34") == 0 ? 1 : -1;
     if (selected == TOOL_STYLE_BOLD_MAGENTA) return rt_write_cstr(fd, "1;35") == 0 ? 1 : -1;
     if (selected == TOOL_STYLE_BOLD_CYAN) return rt_write_cstr(fd, "1;36") == 0 ? 1 : -1;
+    if (selected == TOOL_STYLE_BOLD_WHITE) return rt_write_cstr(fd, "1;97") == 0 ? 1 : -1;
     return 0;
 }
 

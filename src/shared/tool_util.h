@@ -144,7 +144,8 @@ typedef enum {
     TOOL_STYLE_BOLD_YELLOW,
     TOOL_STYLE_BOLD_BLUE,
     TOOL_STYLE_BOLD_MAGENTA,
-    TOOL_STYLE_BOLD_CYAN
+    TOOL_STYLE_BOLD_CYAN,
+    TOOL_STYLE_BOLD_WHITE
 } ToolTextStyle;
 
 int tool_parse_color_mode(const char *text, int *mode_out);

@@ -279,19 +279,40 @@ static void solve_emit_pair(const char *key, const char *value) {
 static char g_solve_line[8192];
 static size_t g_solve_line_len = 0U;
 
+static int solve_line_has_prefix(const char *line, const char *prefix) {
+    return rt_strncmp(line, prefix, rt_strlen(prefix)) == 0;
+}
+
+static int solve_line_style(const char *line) {
+    if (line[0] == '\0') return TOOL_STYLE_PLAIN;
+    if (solve_line_has_prefix(line, "overview") || solve_line_has_prefix(line, "function:") || solve_line_has_prefix(line, "working function:") || solve_line_has_prefix(line, "domain:") || solve_line_has_prefix(line, "symmetry:")) return TOOL_STYLE_BOLD_CYAN;
+    if (solve_line_has_prefix(line, "x = ") || solve_line_has_prefix(line, "solution = ") || solve_line_has_prefix(line, "zeros:") || solve_line_has_prefix(line, "maximum") || solve_line_has_prefix(line, "minimum") || solve_line_has_prefix(line, "saddle") || solve_line_has_prefix(line, "inflection") || solve_line_has_prefix(line, "area = ") || solve_line_has_prefix(line, "integral = ") || solve_line_has_prefix(line, "value = ") || solve_line_has_prefix(line, "tangent") || solve_line_has_prefix(line, "normal") || solve_line_has_prefix(line, "volume") || solve_line_has_prefix(line, "mean")) return TOOL_STYLE_BOLD_WHITE;
+    if (solve_line_has_prefix(line, "warning") || solve_line_has_prefix(line, "status = approximate") || solve_line_has_prefix(line, "status = approximate-values") || solve_line_has_prefix(line, "rational area hint")) return TOOL_STYLE_BOLD_YELLOW;
+    if (solve_line_has_prefix(line, "no ") || solve_line_has_prefix(line, "suspected") || solve_line_has_prefix(line, "improper") || solve_line_has_prefix(line, "classification = divergent")) return TOOL_STYLE_BOLD_RED;
+    if (solve_line_has_prefix(line, "method = ") || solve_line_has_prefix(line, "increasing") || solve_line_has_prefix(line, "decreasing") || solve_line_has_prefix(line, "left-curved") || solve_line_has_prefix(line, "right-curved") || solve_line_has_prefix(line, "limit ") || solve_line_has_prefix(line, "horizontal asymptote")) return TOOL_STYLE_CYAN;
+    return TOOL_STYLE_PLAIN;
+}
+
 static void solve_sp_flush(void) {
     g_solve_line[g_solve_line_len] = '\0';
-    if (tool_json_begin_event(1, "solve", "stdout", "solve_output") == 0) {
-        rt_write_cstr(1, ",\"data\":{\"text\":");
-        tool_json_write_string(1, g_solve_line);
-        rt_write_char(1, '}');
-        tool_json_end_event(1);
+    if (tool_json_is_enabled()) {
+        if (tool_json_begin_event(1, "solve", "stdout", "solve_output") == 0) {
+            rt_write_cstr(1, ",\"data\":{\"text\":");
+            tool_json_write_string(1, g_solve_line);
+            rt_write_char(1, '}');
+            tool_json_end_event(1);
+        }
+    } else if (tool_should_use_color_fd(1, tool_get_global_color_mode())) {
+        tool_write_styled(1, tool_get_global_color_mode(), solve_line_style(g_solve_line), g_solve_line);
+        rt_write_char(1, '\n');
+    } else {
+        rt_write_line(1, g_solve_line);
     }
     g_solve_line_len = 0U;
 }
 
 static int solve_sp_char(int fd, char ch) {
-    if (fd != 1 || !tool_json_is_enabled()) return rt_write_char(fd, ch);
+    if (fd != 1 || (!tool_json_is_enabled() && !tool_should_use_color_fd(1, tool_get_global_color_mode()))) return rt_write_char(fd, ch);
     if (ch == '\n') {
         solve_sp_flush();
         return 0;
@@ -303,7 +324,7 @@ static int solve_sp_char(int fd, char ch) {
 }
 
 static int solve_sp_cstr(int fd, const char *text) {
-    if (fd != 1 || !tool_json_is_enabled()) return rt_write_cstr(fd, text);
+    if (fd != 1 || (!tool_json_is_enabled() && !tool_should_use_color_fd(1, tool_get_global_color_mode()))) return rt_write_cstr(fd, text);
     while (*text != '\0') {
         solve_sp_char(1, *text);
         text += 1;
@@ -312,7 +333,7 @@ static int solve_sp_cstr(int fd, const char *text) {
 }
 
 static int solve_sp_line(int fd, const char *text) {
-    if (fd != 1 || !tool_json_is_enabled()) return rt_write_line(fd, text);
+    if (fd != 1 || (!tool_json_is_enabled() && !tool_should_use_color_fd(1, tool_get_global_color_mode()))) return rt_write_line(fd, text);
     solve_sp_cstr(1, text);
     solve_sp_flush();
     return 0;
@@ -321,7 +342,7 @@ static int solve_sp_line(int fd, const char *text) {
 static int solve_sp_uint(int fd, unsigned long long value) {
     char digits[24];
     size_t n = 0U;
-    if (fd != 1 || !tool_json_is_enabled()) return rt_write_uint(fd, value);
+    if (fd != 1 || (!tool_json_is_enabled() && !tool_should_use_color_fd(1, tool_get_global_color_mode()))) return rt_write_uint(fd, value);
     if (value == 0ULL) {
         solve_sp_char(1, '0');
         return 0;
@@ -950,6 +971,7 @@ int main(int argc, char **argv) {
     char expression[SOLVE_EXPR_CAPACITY];
     int opt_result;
 
+    tool_set_global_color_mode(TOOL_COLOR_AUTO);
     solve_options_init(&options);
     tool_opt_init(&opt, argc, argv, tool_base_name(argv[0]), "[options] 'EXPRESSION = EXPRESSION'");
     while ((opt_result = tool_opt_next(&opt)) == TOOL_OPT_FLAG) {
@@ -1216,6 +1238,11 @@ int main(int argc, char **argv) {
     }
     if (equation.relation == SOLVE_RELATION_LT || equation.relation == SOLVE_RELATION_LE || equation.relation == SOLVE_RELATION_GT || equation.relation == SOLVE_RELATION_GE) {
         return solve_run_inequality_mode(&equation, &options);
+    }
+    if (!options.quiet && !options.all && !options.report_y && options.default_scan && !options.have_bracket && rt_strcmp(options.method, "auto") == 0 && !equation.has_equation) {
+        if (tool_json_is_enabled()) solve_sp_line(1, "overview");
+        else tool_write_styled(1, tool_get_global_color_mode(), TOOL_STYLE_BOLD_CYAN, "overview\n");
+        return solve_run_discuss_mode(&equation, &options);
     }
 
     return solve_run_solver_equation(&equation, &options);

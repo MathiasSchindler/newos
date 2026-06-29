@@ -25,9 +25,11 @@ solve [OPTIONS] --fit-exp-asymptote A --points 'T1:Y1,T2:Y2'
 
 ## DESCRIPTION
 
-`solve` finds real solutions for common high-school "solve for x" problems. It is not a general symbolic algebra system, but `auto` has a bounded polynomial front end. Exact polynomial claims are tried first with rational coefficient arithmetic for supported rational-literal expressions through degree 8; the older floating-point polynomial recognizer still handles supported polynomial expressions through degree 16 as a fallback. Outside those subsets, `solve` treats an equation as a numeric function and searches for values of one variable that make the equation true.
+`solve` finds real solutions for common high-school "solve for x" problems and, for a bare single expression, prints a compact curve overview by default. It is not a general symbolic algebra system, but `auto` has a bounded polynomial front end. Exact polynomial claims are tried first with rational coefficient arithmetic for supported rational-literal expressions through degree 8; the older floating-point polynomial recognizer still handles supported polynomial expressions through degree 16 as a fallback. Outside those subsets, `solve` treats an equation as a numeric function and searches for values of one variable that make the equation true.
 
 For an input such as `x^2 - 2 = 0`, `solve` evaluates the left side minus the right side and looks for roots of that zero function. Intersections are the same problem: `x^2 = 2*x + 3` is solved as `x^2 - (2*x + 3) = 0`. With `--report-y`, `solve` also reports the corresponding y-value for the left side of the equation.
+
+For a bare expression such as `x^3 - 3*x`, the default is an overview report: domain, symmetry, zeros, extrema, inflection points, monotonicity, curvature, and end behavior when available. To ask only for roots of a zero function, write the equation explicitly, for example `x^3 - 3*x = 0`, or supply an explicit solving option such as `--scan` or `--quiet`.
 
 The tool is aimed at practical student workflows: checking algebra homework, exploring where graphs cross the x-axis, finding intersections between two curves, doing Abitur-style curve discussion, and seeing an approximate path toward the answer.
 
@@ -36,7 +38,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 ## CURRENT CAPABILITIES
 
 - one real variable, defaulting to `x`
-- equation input as `left = right`, or zero-function input as a single expression where solutions satisfy `expression = 0`
+- equation input as `left = right`, or zero-function solving with an explicit solving option; a bare single expression defaults to overview mode
 - inequality input as `left < right`, `left <= right`, `left > right`, or `left >= right`, reported as interval notation
 - intersection solving through the same equation form, with `--report-y` for y-value output
 - arithmetic operators `+`, `-`, `*`, `/`, `%`, and `^`
@@ -70,7 +72,8 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
 - multiple-root reporting when scanning finds more than one candidate interval
 - likely touching-root reporting for repeated roots that do not change sign, including adaptive refinement of near-zero sampled non-polynomial candidates
-- didactic output that shows the chosen method, interval checks, iterations, approximations, and residual error
+- default overview output for bare single expressions, plus didactic output that shows the chosen method, interval checks, iterations, approximations, and residual error
+- ANSI styling for interactive stdout: important answer lines are emphasized, warnings are yellow, and problems are red; redirected output and JSON stay plain
 - JSON Lines output for scripted use
 
 ## OPTIONS
@@ -112,7 +115,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--json` writes machine-readable result and diagnostic events
 - `--help` shows usage
 
-`--scan` and `--lo`/`--hi` are mutually exclusive. `--scan` asks the tool to discover candidate intervals; `--lo` and `--hi` provide one explicit bracket. If neither form is supplied, `solve` behaves as if `--scan -100:100:400` had been supplied.
+`--scan` and `--lo`/`--hi` are mutually exclusive. `--scan` asks the tool to discover candidate intervals; `--lo` and `--hi` provide one explicit bracket. If neither form is supplied for equation or inequality solving, `solve` behaves as if `--scan -100:100:400` had been supplied. For a bare single expression without a solving option, the default is overview mode instead of root-only solving.
 
 ## METHODS
 
@@ -120,7 +123,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 
 `auto` first tries to represent the transformed zero function as a polynomial with exact rational coefficients. This exact front end accepts the polynomial operators `+`, `-`, `*`, `/` by a nonzero constant, and integer powers, with integer and finite-decimal rational literals. If exact rational parsing, expansion, factoring, or bounded arithmetic fails, `auto` falls back to the existing floating-point polynomial recognizer and then to numeric scanning plus bisection.
 
-Linear equations are solved by moving the constant term and dividing by the coefficient. Quadratics and factored higher-degree polynomials report every real root found by the symbolic path, even without `--all`. If the equation is outside the supported polynomial subsets, `auto` means "scan if needed, then use bisection on bracketed intervals." When a scan finds multiple roots and `--all` is not used, `solve` reports the root closest to zero. If an explicit bracket is supplied, `auto` is equivalent to `bisection`.
+Linear equations are solved by moving the constant term and dividing by the coefficient. Quadratics and factored higher-degree polynomials report every real root found by the symbolic path, even without `--all`. If the equation is outside the supported polynomial subsets, `auto` means "scan if needed, then use bisection on bracketed intervals." When a scan finds multiple roots and `--all` is not used, `solve` reports the root closest to zero. If an explicit bracket is supplied, `auto` is equivalent to `bisection`. Bare single-expression input without a solving option is routed to the same curve-discussion machinery as `--discuss`, because an overview is usually more useful than one arbitrary zero.
 
 Quadratics are solved directly. When the exact rational discriminant is negative, `solve` reports that there are no real solutions. When the discriminant is a perfect square, roots are reported exactly as integers or fractions and `--explain` shows a factored form. When the discriminant is positive but not a rational square, roots are reported as decimal approximations with `status = approximate`. Higher-degree rational polynomials are factored only when exact rational roots are proven; any remaining quadratic factor is solved with the same exact discriminant check. Rational-literal polynomial equations that reduce to 0 are reported as exact identities, including decimal forms such as `(x + 0.1)^2 = x^2 + 0.2*x + 0.01`.
 
@@ -189,7 +192,7 @@ For `--limit`, explanation output prints the target point, final left and right 
 
 ## OUTPUT
 
-Normal text output is compact and stable. A single-root result includes at least:
+Normal text output is compact and stable. Interactive stdout uses ANSI styling when the terminal and environment allow it: answer-bearing lines are bold bright white, warnings are yellow, and problem lines are red. Redirected output, `NO_COLOR`, and JSON output remain unstyled. A single-root result includes at least:
 
 ```
 x = 1.4142135623
@@ -311,6 +314,14 @@ Show cubic rational-root factoring:
 
 ```
 solve --explain --all 'x^3 - 6*x^2 + 11*x - 6 = 0'
+```
+
+Print the default overview for a function:
+
+```
+solve 'x^3 - 3*x'
+solve --explain 'x^3 - 3*x'
+solve --json 'x^3 - 3*x'
 ```
 
 Show higher-degree repeated-root factoring:

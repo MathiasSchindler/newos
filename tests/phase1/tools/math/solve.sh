@@ -329,6 +329,13 @@ fi
 assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^maximum: (-1, 2)$' "solve did not classify the exact local maximum of x^3 - 3*x"
 assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^minimum: (1, -2)$' "solve did not classify the exact local minimum of x^3 - 3*x"
 assert_file_contains "$WORK_DIR/discuss-cubic-shift.out" '^inflection: (0, 0)$' "solve did not report the exact inflection point of x^3 - 3*x"
+"${TEST_BIN_DIR}/solve" 'x^3 - 3*x' > "$WORK_DIR/overview-default.out"
+assert_file_contains "$WORK_DIR/overview-default.out" '^overview$' "solve bare expression should default to overview mode"
+assert_file_contains "$WORK_DIR/overview-default.out" '^zeros: -1\.7320508076, 0, 1\.7320508076$' "solve default overview should include zeros"
+assert_file_contains "$WORK_DIR/overview-default.out" '^maximum: (-1, 2)$' "solve default overview should include extrema"
+"${TEST_BIN_DIR}/solve" --explain 'x^3 - 3*x' > "$WORK_DIR/overview-explain-default.out"
+assert_file_contains "$WORK_DIR/overview-explain-default.out" '^overview$' "solve --explain bare expression should default to overview mode"
+assert_file_contains "$WORK_DIR/overview-explain-default.out" '^explain: curve discussion$' "solve --explain default overview should explain curve discussion"
 "${TEST_BIN_DIR}/solve" --discuss 'x*exp(x)' > "$WORK_DIR/discuss-xexp.out"
 assert_file_contains "$WORK_DIR/discuss-xexp.out" '^domain: all real x$' "solve exp-polynomial discussion should report the full domain"
 assert_file_contains "$WORK_DIR/discuss-xexp.out" '^structure: exp[(]linear[)]\*polynomial$' "solve exp-polynomial discussion should label the recognized structure"
@@ -509,6 +516,10 @@ assert_file_contains "$WORK_DIR/json-eval.out" '"key":"value","value":"9\.000000
 "${TEST_BIN_DIR}/solve" --json --discuss 'x^3-3*x' > "$WORK_DIR/json-discuss.out"
 assert_file_contains "$WORK_DIR/json-discuss.out" '"event":"solve_output"' "solve --json --discuss did not emit solve_output events"
 assert_file_contains "$WORK_DIR/json-discuss.out" '"text":"maximum: (-1, 2)"' "solve --json --discuss point text mismatch"
+"${TEST_BIN_DIR}/solve" --json 'x^3-3*x' > "$WORK_DIR/json-overview-default.out"
+assert_file_contains "$WORK_DIR/json-overview-default.out" '"event":"solve_output"' "solve --json bare expression should emit solve_output events"
+assert_file_contains "$WORK_DIR/json-overview-default.out" '"text":"overview"' "solve --json bare expression should emit the overview marker"
+assert_file_contains "$WORK_DIR/json-overview-default.out" '"text":"maximum: (-1, 2)"' "solve --json default overview point text mismatch"
 
 no_root_status=0
 "${TEST_BIN_DIR}/solve" --lo 1 --hi 2 'x^2 + 1 = 0' > "$WORK_DIR/no_root.out" 2> "$WORK_DIR/no_root.err" || no_root_status=$?
