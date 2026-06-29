@@ -128,6 +128,12 @@ typedef struct {
 } GitdObjectCache;
 
 typedef struct {
+    GitPack pack;
+    unsigned char *raw_data;
+    size_t raw_size;
+} GitdPackFileCache;
+
+typedef struct {
     char **items;
     size_t count;
     size_t capacity;

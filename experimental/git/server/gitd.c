@@ -162,6 +162,69 @@ static int gitd_read_commit_info_cached(const GitRepo *repo, const unsigned char
     return result;
 }
 
+static void gitd_pack_file_cache_destroy(GitdPackFileCache *cache) {
+    if (cache == 0) return;
+    git_pack_destroy(&cache->pack);
+    rt_free(cache->raw_data);
+    rt_memset(cache, 0, sizeof(*cache));
+}
+
+static int gitd_load_pack_file_cache(const GitRepo *repo, GitdPackFileCache *cache) {
+    char pack_dir[GIT_PATH_CAPACITY];
+    char pack_path[GIT_PATH_CAPACITY];
+    PlatformDirEntry entries[128];
+    size_t count = 0U;
+    int is_directory = 0;
+    size_t index;
+
+    rt_memset(cache, 0, sizeof(*cache));
+    if (git_join(pack_dir, sizeof(pack_dir), repo->git_dir, "objects/pack") != 0 ||
+        platform_collect_entries(pack_dir, 0, entries, sizeof(entries) / sizeof(entries[0]), &count, &is_directory) != 0 || !is_directory) {
+        return -1;
+    }
+    for (index = 0U; index < count; ++index) {
+        unsigned char *pack_data = 0;
+        size_t pack_size = 0U;
+
+        if (entries[index].is_dir || !git_pack_name_is_pack(entries[index].name) || git_join(pack_path, sizeof(pack_path), pack_dir, entries[index].name) != 0) continue;
+        if (git_read_file(pack_path, &pack_data, &pack_size) == 0) {
+            if (git_parse_pack(pack_data, pack_size, &cache->pack) == 0 && git_resolve_pack_deltas(&cache->pack) == 0) {
+                cache->raw_data = pack_data;
+                cache->raw_size = pack_size;
+                return 0;
+            }
+            git_pack_destroy(&cache->pack);
+            rt_free(pack_data);
+        }
+    }
+    return -1;
+}
+
+static int gitd_pack_cache_contains_all_requested(const GitdPackFileCache *cache, const GitOidList *objects) {
+    size_t index;
+
+    if (cache == 0 || cache->raw_data == 0 || objects == 0 || cache->pack.count != objects->count) return 0;
+    for (index = 0U; index < cache->pack.count; ++index) {
+        if (!cache->pack.objects[index].resolved || !git_oid_list_contains(objects, cache->pack.objects[index].oid)) return 0;
+    }
+    return 1;
+}
+
+static int gitd_try_reuse_complete_pack(const GitdPackFileCache *cache, const GitdUploadRequest *upload, const GitOidList *objects, GitBuffer *pack_out) {
+    unsigned char *copy;
+
+    if (upload == 0 || upload->haves.count != 0U || upload->filter_blob_none || upload->deepen != 0U || upload->shallow_oids.count != 0U) return -1;
+    if (!gitd_pack_cache_contains_all_requested(cache, objects)) return -1;
+    copy = (unsigned char *)rt_malloc(cache->raw_size == 0U ? 1U : cache->raw_size);
+    if (copy == 0) return -1;
+    memcpy(copy, cache->raw_data, cache->raw_size);
+    rt_memset(pack_out, 0, sizeof(*pack_out));
+    pack_out->data = copy;
+    pack_out->size = cache->raw_size;
+    pack_out->capacity = cache->raw_size;
+    return 0;
+}
+
 #include "gitd/tls_config.c"
 
 #include "gitd/refs.c"
@@ -1023,7 +1086,7 @@ static int gitd_append_v1_negotiation_response(GitRepo *repo, const GitPack *pac
 }
 
 static int gitd_handle_upload_pack_command(GitdTransport *transport, const GitdOptions *options, GitRepo *repo, GitdUploadRequest *upload, int v2) {
-    GitPack pack_cache;
+    GitdPackFileCache pack_cache;
     GitOidList objects;
     GitOidList visited;
     GitOidList excluded;
@@ -1059,26 +1122,27 @@ static int gitd_handle_upload_pack_command(GitdTransport *transport, const GitdO
     rt_memset(&object_cache, 0, sizeof(object_cache));
     rt_memset(&pack, 0, sizeof(pack));
     rt_memset(&response, 0, sizeof(response));
-    have_pack = git_load_pack_cache(repo, &pack_cache) == 0;
+    have_pack = gitd_load_pack_file_cache(repo, &pack_cache) == 0;
     if (upload->command == GITD_UPLOAD_COMMAND_OBJECT_INFO) {
-        result = gitd_append_v2_object_info_response(repo, have_pack ? &pack_cache : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
+        result = gitd_append_v2_object_info_response(repo, have_pack ? &pack_cache.pack : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
         goto done;
     }
     if (!upload->done && !v2) {
-        result = gitd_append_v1_negotiation_response(repo, have_pack ? &pack_cache : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
+        result = gitd_append_v1_negotiation_response(repo, have_pack ? &pack_cache.pack : 0, &object_cache, upload, &response) == 0 ? gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size) : -1;
         goto done;
     }
-    if (gitd_collect_excluded_haves(repo, have_pack ? &pack_cache : 0, &object_cache, &upload->haves, &excluded) != 0) goto done;
-    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache : 0, &object_cache, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0 || objects.count > options->max_objects || upload->shallow_oids.count > options->max_shallows) goto done;
-    if (gitd_build_pack(repo, have_pack ? &pack_cache : 0, &object_cache, &objects, &pack) != 0 || pack.size > options->max_pack_bytes) goto done;
+    if (gitd_collect_excluded_haves(repo, have_pack ? &pack_cache.pack : 0, &object_cache, &upload->haves, &excluded) != 0) goto done;
+    if (gitd_collect_wanted_objects(repo, have_pack ? &pack_cache.pack : 0, &object_cache, upload, excluded.count > 0U ? &excluded : 0, &objects, &visited) != 0 || objects.count > options->max_objects || upload->shallow_oids.count > options->max_shallows) goto done;
+    if ((have_pack ? gitd_try_reuse_complete_pack(&pack_cache, upload, &objects, &pack) : -1) != 0 && gitd_build_pack(repo, have_pack ? &pack_cache.pack : 0, &object_cache, &objects, &pack) != 0) goto done;
+    if (pack.size > options->max_pack_bytes) goto done;
     if (v2) {
-        if (gitd_append_v2_fetch_response(repo, have_pack ? &pack_cache : 0, &object_cache, &response, upload, &pack) != 0) goto done;
+        if (gitd_append_v2_fetch_response(repo, have_pack ? &pack_cache.pack : 0, &object_cache, &response, upload, &pack) != 0) goto done;
     } else if (gitd_append_sideband_pack(&response, &pack, upload->sideband) != 0) {
         goto done;
     }
     result = gitd_send_body(transport, 200, "application/x-git-upload-pack-result", response.data, response.size);
 done:
-    if (have_pack) git_pack_destroy(&pack_cache);
+    if (have_pack) gitd_pack_file_cache_destroy(&pack_cache);
     git_oid_list_destroy(&objects);
     git_oid_list_destroy(&visited);
     git_oid_list_destroy(&excluded);
