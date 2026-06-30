@@ -225,17 +225,17 @@
     X("src/platform/linux/time.c") \
     X("src/arch/x86_64/linux/syscall_stubs.S")
 
-/* ── SSH client private implementation ───────────────────────────────────── */
+/* ── shared SSH client/transport implementation ──────────────────────────── */
 
 #define FOREACH_SSH_CLIENT_SOURCE(X) \
-    X("src/tools/ssh/ssh_core.c") \
-    X("src/tools/ssh/ssh_known_hosts.c") \
-    X("src/tools/ssh/ssh_client_io.c") \
-    X("src/tools/ssh/ssh_client_identity.c") \
-    X("src/tools/ssh/ssh_client_kex.c") \
-    X("src/tools/ssh/ssh_client_auth.c") \
-    X("src/tools/ssh/ssh_client_channel.c") \
-    X("src/tools/ssh/ssh_client.c")
+    X("src/shared/ssh/ssh_core.c") \
+    X("src/shared/ssh/ssh_known_hosts.c") \
+    X("src/shared/ssh/ssh_client_io.c") \
+    X("src/shared/ssh/ssh_client_identity.c") \
+    X("src/shared/ssh/ssh_client_kex.c") \
+    X("src/shared/ssh/ssh_client_auth.c") \
+    X("src/shared/ssh/ssh_client_channel.c") \
+    X("src/shared/ssh/ssh_client.c")
 
 /* ── SSH server private implementation ───────────────────────────────────── */
 

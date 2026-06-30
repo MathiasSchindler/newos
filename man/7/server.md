@@ -40,7 +40,7 @@ The repository already contains the following relevant building blocks:
 
 - hosted POSIX networking and process support in `src/platform/posix/`
 - freestanding Linux networking and process support in `src/platform/linux/`
-- a working SSH client under `src/tools/ssh/`
+- shared SSH transport/client support under `src/shared/ssh/`
 - a minimal SSH daemon under `src/tools/sshd/` with password-authenticated exec sessions
 - a small hosted static HTTP daemon under `src/tools/httpd/`
 - a small config-driven service supervisor under `src/tools/service/`
@@ -86,7 +86,8 @@ However, this does **not** mean that every daemon should invent its own architec
 The current repository already provides the core layers needed for server work:
 
 - `src/tools/` for user-facing commands and daemon entry points
-- `src/tools/ssh/` as an example of a larger tool with private internal modules
+- `src/shared/ssh/` as the reusable SSH transport/client implementation used by
+  the `ssh`, `sshd`, and `git` tools
 - `src/shared/runtime/` for memory, string, parse, and I/O support
 - `src/shared/tool_io.c`, `tool_cli.c`, `tool_fs.c`, and `tool_path.c` for cross-tool helper logic
 - `src/shared/crypto/` for reusable cryptographic primitives
@@ -382,14 +383,14 @@ This is a good place to push back against feature creep: small scope is a featur
 
 ### Recommended placement
 
-The repository already contains an SSH client organized as:
+The repository already contains shared SSH client/transport code organized as:
 
 - `src/tools/ssh.c`
-- `src/tools/ssh/ssh_core.c`
-- `src/tools/ssh/ssh_client_io.c`
-- `src/tools/ssh/ssh_client_kex.c`
-- `src/tools/ssh/ssh_client_auth.c`
-- `src/tools/ssh/ssh_client_channel.c`
+- `src/shared/ssh/ssh_core.c`
+- `src/shared/ssh/ssh_client_io.c`
+- `src/shared/ssh/ssh_client_kex.c`
+- `src/shared/ssh/ssh_client_auth.c`
+- `src/shared/ssh/ssh_client_channel.c`
 
 The current SSH server follows the same ownership rule as a separate daemon, but is still compact:
 

@@ -45,6 +45,121 @@ static int git_remote_url_with_path(const GitUrl *base, const char *path, GitUrl
     return 0;
 }
 
+typedef struct {
+    GitBuffer *response;
+    GitHttpBodyCallback callback;
+    void *callback_user_data;
+} GitSshOutput;
+
+static int git_ssh_output_callback(const unsigned char *data, size_t size, int extended, void *user_data) {
+    GitSshOutput *output = (GitSshOutput *)user_data;
+
+    if (extended) {
+        if (size != 0U) {
+            (void)rt_write_cstr(2, "remote: ");
+            (void)rt_write_all(2, data, size);
+            if (data[size - 1U] != '\n') {
+                (void)rt_write_char(2, '\n');
+            }
+        }
+        return 0;
+    }
+    if (output == 0) {
+        return -1;
+    }
+    if (output->callback != 0) {
+        return output->callback(data, size, output->callback_user_data);
+    }
+    return output->response != 0 ? git_buffer_append(output->response, data, size) : -1;
+}
+
+static int git_shell_quote_append(GitBuffer *out, const char *text) {
+    size_t i;
+
+    if (out == 0 || text == 0 ||
+        tool_byte_buffer_append_char(out, '\'') != 0) {
+        return -1;
+    }
+    for (i = 0U; text[i] != '\0'; ++i) {
+        if (text[i] == '\'') {
+            if (tool_byte_buffer_append_cstr(out, "'\\''") != 0) {
+                return -1;
+            }
+        } else if (tool_byte_buffer_append_char(out, text[i]) != 0) {
+            return -1;
+        }
+    }
+    return tool_byte_buffer_append_char(out, '\'');
+}
+
+static int git_ssh_build_command(const GitUrl *url, const char *service, char *buffer, size_t buffer_size) {
+    GitBuffer command;
+    int result = -1;
+
+    rt_memset(&command, 0, sizeof(command));
+    if (url == 0 || service == 0 || url->scheme != GIT_SCHEME_SSH || url->path[0] == '\0') {
+        return -1;
+    }
+    if (tool_byte_buffer_append_cstr(&command, service) != 0 ||
+        tool_byte_buffer_append_char(&command, ' ') != 0 ||
+        git_shell_quote_append(&command, url->path) != 0 ||
+        tool_byte_buffer_append_char(&command, '\0') != 0 ||
+        command.size > buffer_size) {
+        goto done;
+    }
+    memcpy(buffer, command.data, command.size);
+    result = 0;
+done:
+    git_buffer_destroy(&command);
+    return result;
+}
+
+static int git_ssh_exec_url(const GitUrl *url, const char *service, const unsigned char *request, size_t request_size, GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data) {
+    SshClientExecConfig config;
+    GitSshOutput output;
+    char command[1400];
+    char default_user[SSH_USER_CAPACITY];
+    const char *user = url != 0 && url->user[0] != '\0' ? url->user : 0;
+    int exit_status = 255;
+
+    if (url == 0 || url->scheme != GIT_SCHEME_SSH || git_ssh_build_command(url, service, command, sizeof(command)) != 0) {
+        return -1;
+    }
+    if (user == 0) {
+        const char *env_user = platform_getenv("USER");
+        if (env_user == 0 || env_user[0] == '\0' || rt_strlen(env_user) >= sizeof(default_user) ||
+            !ssh_destination_user_is_safe(env_user)) {
+            tool_write_error("git", "ssh remote needs a user: ", url->host);
+            return -1;
+        }
+        rt_copy_string(default_user, sizeof(default_user), env_user);
+        user = default_user;
+    }
+
+    rt_memset(&config, 0, sizeof(config));
+    rt_memset(&output, 0, sizeof(output));
+    output.response = response;
+    output.callback = callback;
+    output.callback_user_data = callback_user_data;
+
+    config.client.host = url->host;
+    config.client.user = user;
+    config.client.port = url->port == 0U ? SSH_DEFAULT_PORT : url->port;
+    config.client.password = platform_getenv("NEWOS_GIT_SSH_PASSWORD");
+    config.client.identity_path = platform_getenv("NEWOS_GIT_SSH_IDENTITY");
+    config.client.verbose = platform_getenv("NEWOS_GIT_SSH_VERBOSE") != 0;
+    config.command = command;
+    config.input = request;
+    config.input_size = request_size;
+    config.output_callback = git_ssh_output_callback;
+    config.output_user_data = &output;
+
+    if (ssh_client_exec(&config, &exit_status) != 0 || exit_status != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static int git_parse_advertised_refs(const GitBuffer *body, GitRemoteRefs *refs) {
     size_t pos = 0U;
     int saw_service = 0;
@@ -299,6 +414,9 @@ static int git_discover_remote_refs_v2(const char *remote_url, GitUrl *base_url,
     rt_memset(&body, 0, sizeof(body));
     rt_memset(&request, 0, sizeof(request));
     rt_memset(refs, 0, sizeof(*refs));
+    if (git_url_is_ssh(remote_url)) {
+        return -1;
+    }
     if (git_parse_url(remote_url, base_url) != 0 || git_url_service_path(base_url, "/info/refs?service=git-upload-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &info_url) != 0) goto done;
     if (git_http_request_ex(&info_url, "GET", "application/x-git-upload-pack-advertisement", 0, "version=2", 0, 0U, &body) != 0 || git_parse_v2_capabilities(&body, refs) != 0) goto done;
     git_buffer_destroy(&body);
@@ -331,6 +449,18 @@ static int git_discover_remote_refs(const char *remote_url, GitUrl *base_url, Gi
     char path[1024];
     int result;
 
+    if (git_url_is_ssh(remote_url)) {
+        static const unsigned char flush_request[] = { '0', '0', '0', '0' };
+        rt_memset(&body, 0, sizeof(body));
+        if (git_parse_url(remote_url, base_url) != 0 ||
+            git_ssh_exec_url(base_url, "git-upload-pack", flush_request, sizeof(flush_request), &body, 0, 0) != 0) {
+            return -1;
+        }
+        result = git_parse_advertised_refs(&body, refs);
+        if (result == 0) refs->protocol_version = 1;
+        git_buffer_destroy(&body);
+        return result;
+    }
     if (git_discover_remote_refs_v2(remote_url, base_url, refs) == 0) {
         return 0;
     }
@@ -352,6 +482,17 @@ static int git_discover_receive_refs(const char *remote_url, GitUrl *base_url, G
     char path[1024];
     int result;
 
+    if (git_url_is_ssh(remote_url)) {
+        static const unsigned char flush_request[] = { '0', '0', '0', '0' };
+        rt_memset(&body, 0, sizeof(body));
+        if (git_parse_url(remote_url, base_url) != 0 ||
+            git_ssh_exec_url(base_url, "git-receive-pack", flush_request, sizeof(flush_request), &body, 0, 0) != 0) {
+            return -1;
+        }
+        result = git_parse_advertised_refs(&body, refs);
+        git_buffer_destroy(&body);
+        return result;
+    }
     if (git_parse_url(remote_url, base_url) != 0 || git_url_service_path(base_url, "/info/refs?service=git-receive-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &info_url) != 0) {
         return -1;
     }
@@ -549,12 +690,19 @@ static int git_fetch_pack_v1(const GitRepo *repo, const GitUrl *base_url, const 
     if (want_length >= sizeof(want_line) || git_append_pkt_line(&request, want_line) != 0 || tool_byte_buffer_append_cstr(&request, "0000") != 0 || git_append_pkt_line(&request, "done\n") != 0) {
         goto done;
     }
-    if (git_url_service_path(base_url, "/git-upload-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &upload_url) != 0) {
-        goto done;
-    }
     git_progress_line("Downloading pack...");
-    if (git_http_request_stream(&upload_url, "POST", "application/x-git-upload-pack-result", "application/x-git-upload-pack-request", request.data, request.size, 0, git_upload_pack_stream_feed, &stream) != 0 || git_upload_pack_stream_finish(&stream) != 0) {
-        goto done;
+    if (base_url->scheme == GIT_SCHEME_SSH) {
+        if (git_ssh_exec_url(base_url, "git-upload-pack", request.data, request.size, 0, git_upload_pack_stream_feed, &stream) != 0 ||
+            git_upload_pack_stream_finish(&stream) != 0) {
+            goto done;
+        }
+    } else {
+        if (git_url_service_path(base_url, "/git-upload-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(base_url, path, &upload_url) != 0) {
+            goto done;
+        }
+        if (git_http_request_stream(&upload_url, "POST", "application/x-git-upload-pack-result", "application/x-git-upload-pack-request", request.data, request.size, 0, git_upload_pack_stream_feed, &stream) != 0 || git_upload_pack_stream_finish(&stream) != 0) {
+            goto done;
+        }
     }
     git_upload_pack_close_remote_progress(&stream);
     git_progress_pack_bytes("Received pack: ", stream.pack_data.size);
@@ -592,6 +740,7 @@ static int git_fetch_pack_v2(const GitRepo *repo, const GitUrl *base_url, const 
     rt_memset(&request, 0, sizeof(request));
     rt_memset(&stream, 0, sizeof(stream));
     rt_memset(&pack, 0, sizeof(pack));
+    if (base_url->scheme == GIT_SCHEME_SSH) return -1;
     git_format_oid_hex(want_oid, oid_hex);
     if (git_append_pkt_line(&request, "command=fetch\n") != 0 ||
         git_append_pkt_line(&request, "agent=newos-git\n") != 0 ||
@@ -949,12 +1098,20 @@ static int git_receive_pack_push(GitRepo *repo, const char *remote_url, const ch
     if (git_receive_pack_append_command(&request, have_old ? old_oid : zero_oid, new_oid, dst_ref) != 0 || tool_byte_buffer_append_cstr(&request, "0000") != 0 || git_buffer_append(&request, pack_data.data, pack_data.size) != 0) {
         goto done;
     }
-    if (git_url_service_path(&base_url, "/git-receive-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(&base_url, path, &receive_url) != 0) {
-        goto done;
-    }
     git_progress_pack_bytes("Sending pack: ", pack_data.size);
-    if (git_http_request_stream(&receive_url, "POST", "application/x-git-receive-pack-result", "application/x-git-receive-pack-request", request.data, request.size, 0, git_upload_pack_stream_feed, &response) != 0 || response.pending.size != 0U || git_receive_pack_check_status(&response, dst_ref) != 0) {
-        goto done;
+    if (base_url.scheme == GIT_SCHEME_SSH) {
+        if (git_ssh_exec_url(&base_url, "git-receive-pack", request.data, request.size, 0, git_upload_pack_stream_feed, &response) != 0 ||
+            response.pending.size != 0U ||
+            git_receive_pack_check_status(&response, dst_ref) != 0) {
+            goto done;
+        }
+    } else {
+        if (git_url_service_path(&base_url, "/git-receive-pack", path, sizeof(path)) != 0 || git_remote_url_with_path(&base_url, path, &receive_url) != 0) {
+            goto done;
+        }
+        if (git_http_request_stream(&receive_url, "POST", "application/x-git-receive-pack-result", "application/x-git-receive-pack-request", request.data, request.size, 0, git_upload_pack_stream_feed, &response) != 0 || response.pending.size != 0U || git_receive_pack_check_status(&response, dst_ref) != 0) {
+            goto done;
+        }
     }
     result = 0;
 done:
@@ -1131,4 +1288,3 @@ done:
     git_remote_refs_destroy(&refs);
     return result;
 }
-

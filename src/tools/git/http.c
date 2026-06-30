@@ -60,6 +60,116 @@ static int git_parse_http_url(const char *text, unsigned int default_port, int s
     return 0;
 }
 
+static int git_copy_url_slice(char *dst, size_t dst_size, const char *src, size_t length) {
+    if (dst == 0 || src == 0 || dst_size == 0U || length == 0U || length >= dst_size) {
+        return -1;
+    }
+    memcpy(dst, src, length);
+    dst[length] = '\0';
+    return 0;
+}
+
+static int git_parse_ssh_scheme_url(const char *text, GitUrl *url_out) {
+    const char *cursor = text;
+    const char *at = 0;
+    const char *host_start;
+    const char *host_end;
+    const char *path_start;
+    unsigned long long parsed_port = SSH_DEFAULT_PORT;
+
+    rt_memset(url_out, 0, sizeof(*url_out));
+    url_out->scheme = GIT_SCHEME_SSH;
+    url_out->port = SSH_DEFAULT_PORT;
+
+    while (*cursor != '\0' && *cursor != '/') {
+        if (*cursor == '@') {
+            at = cursor;
+        }
+        cursor += 1;
+    }
+    if (at != 0) {
+        if (git_copy_url_slice(url_out->user, sizeof(url_out->user), text, (size_t)(at - text)) != 0 ||
+            !ssh_destination_user_is_safe(url_out->user)) {
+            return -1;
+        }
+        host_start = at + 1;
+    } else {
+        host_start = text;
+    }
+    host_end = host_start;
+    while (*host_end != '\0' && *host_end != ':' && *host_end != '/') {
+        host_end += 1;
+    }
+    if (git_copy_url_slice(url_out->host, sizeof(url_out->host), host_start, (size_t)(host_end - host_start)) != 0 ||
+        !ssh_destination_host_is_safe(url_out->host)) {
+        return -1;
+    }
+    if (*host_end == ':') {
+        int saw_digit = 0;
+        const char *port_text = host_end + 1;
+        parsed_port = 0ULL;
+        while (*port_text >= '0' && *port_text <= '9') {
+            saw_digit = 1;
+            parsed_port = parsed_port * 10ULL + (unsigned long long)(*port_text - '0');
+            port_text += 1;
+        }
+        if (!saw_digit || parsed_port == 0ULL || parsed_port > 65535ULL || *port_text != '/') {
+            return -1;
+        }
+        host_end = port_text;
+    }
+    url_out->port = (unsigned int)parsed_port;
+    path_start = *host_end == '/' ? host_end : "/";
+    if (rt_strlen(path_start) >= sizeof(url_out->path)) {
+        return -1;
+    }
+    rt_copy_string(url_out->path, sizeof(url_out->path), path_start);
+    return url_out->path[0] == '\0' ? -1 : 0;
+}
+
+static int git_parse_scp_like_url(const char *text, GitUrl *url_out) {
+    const char *colon = text;
+    const char *slash = text;
+    const char *at = 0;
+    const char *host_start;
+
+    while (*slash != '\0' && *slash != '/') {
+        slash += 1;
+    }
+    while (*colon != '\0' && *colon != ':') {
+        if (*colon == '@') {
+            at = colon;
+        }
+        colon += 1;
+    }
+    if (*colon != ':' || colon == text || colon[1] == '\0' || slash < colon) {
+        return -1;
+    }
+    if (colon[1] == '/' && colon[2] == '/') {
+        return -1;
+    }
+
+    rt_memset(url_out, 0, sizeof(*url_out));
+    url_out->scheme = GIT_SCHEME_SSH;
+    url_out->port = SSH_DEFAULT_PORT;
+    if (at != 0 && at < colon) {
+        if (git_copy_url_slice(url_out->user, sizeof(url_out->user), text, (size_t)(at - text)) != 0 ||
+            !ssh_destination_user_is_safe(url_out->user)) {
+            return -1;
+        }
+        host_start = at + 1;
+    } else {
+        host_start = text;
+    }
+    if (git_copy_url_slice(url_out->host, sizeof(url_out->host), host_start, (size_t)(colon - host_start)) != 0 ||
+        !ssh_destination_host_is_safe(url_out->host) ||
+        rt_strlen(colon + 1) >= sizeof(url_out->path)) {
+        return -1;
+    }
+    rt_copy_string(url_out->path, sizeof(url_out->path), colon + 1);
+    return 0;
+}
+
 static int git_parse_url(const char *text, GitUrl *url_out) {
     if (tool_starts_with(text, "http://")) {
         return git_parse_http_url(text + 7, 80U, GIT_SCHEME_HTTP, url_out);
@@ -67,11 +177,26 @@ static int git_parse_url(const char *text, GitUrl *url_out) {
     if (tool_starts_with(text, "https://")) {
         return git_parse_http_url(text + 8, 443U, GIT_SCHEME_HTTPS, url_out);
     }
+    if (tool_starts_with(text, "ssh://")) {
+        return git_parse_ssh_scheme_url(text + 6, url_out);
+    }
+    if (git_parse_scp_like_url(text, url_out) == 0) {
+        return 0;
+    }
     return -1;
 }
 
 static int git_url_is_http(const char *text) {
     return tool_starts_with(text, "http://") || tool_starts_with(text, "https://");
+}
+
+static int git_url_is_ssh(const char *text) {
+    GitUrl parsed;
+    return tool_starts_with(text, "ssh://") || git_parse_scp_like_url(text, &parsed) == 0;
+}
+
+static int git_url_is_remote(const char *text) {
+    return git_url_is_http(text) || git_url_is_ssh(text);
 }
 
 static int git_http_status_code(const unsigned char *headers, size_t header_size) {
@@ -614,4 +739,3 @@ static int git_pkt_length(const unsigned char *data, size_t size, size_t *length
     *length_out = (size_t)((a << 12) | (b << 8) | (c << 4) | d);
     return 0;
 }
-

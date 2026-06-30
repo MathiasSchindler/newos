@@ -73,7 +73,7 @@ static int git_source_arg_to_path(const char *arg, char *buffer, size_t buffer_s
     if (rt_strncmp(arg, "file://", 7U) == 0) {
         path = arg + 7U;
     } else if (rt_strncmp(arg, "http://", 7U) == 0 || rt_strncmp(arg, "https://", 8U) == 0 ||
-               rt_strncmp(arg, "git://", 6U) == 0 || rt_strncmp(arg, "ssh://", 6U) == 0) {
+               rt_strncmp(arg, "git://", 6U) == 0 || git_url_is_ssh(arg)) {
         tool_write_error("git", "clone transport is not implemented: ", arg);
         return -1;
     }
@@ -91,6 +91,8 @@ static int git_default_clone_destination(const char *source, char *buffer, size_
     size_t end = rt_strlen(source);
     size_t start;
     size_t length;
+    const char *scp_colon = 0;
+    size_t i;
 
     while (end > 0U && source[end - 1U] == '/') {
         end -= 1U;
@@ -98,6 +100,21 @@ static int git_default_clone_destination(const char *source, char *buffer, size_
     start = end;
     while (start > 0U && source[start - 1U] != '/') {
         start -= 1U;
+    }
+    if (git_url_is_ssh(source)) {
+        for (i = 0U; i < end && source[i] != '/'; ++i) {
+            if (source[i] == ':') {
+                scp_colon = source + i;
+            }
+        }
+        if (scp_colon != 0 && (size_t)(scp_colon - source + 1) < end) {
+            start = (size_t)(scp_colon - source + 1);
+            for (i = start; i < end; ++i) {
+                if (source[i] == '/') {
+                    start = i + 1U;
+                }
+            }
+        }
     }
     length = end - start;
     if (length > 4U && source[start + length - 4U] == '.' && source[start + length - 3U] == 'g' &&
@@ -380,7 +397,7 @@ static int git_cmd_clone(int argc, char **argv, int argi) {
         tool_write_error("git", "destination already exists: ", destination_arg);
         return 1;
     }
-    if (git_url_is_http(argv[argi])) {
+    if (git_url_is_remote(argv[argi])) {
         return git_cmd_clone_remote(argv[argi], destination_arg, destination, &fetch_options);
     }
     if (git_source_arg_to_path(argv[argi], source_path, sizeof(source_path)) != 0) {
@@ -901,7 +918,7 @@ static int git_cmd_fetch(GitRepo *repo, int argc, char **argv, int argi) {
             return 1;
         }
     }
-    if (argi < argc && git_url_is_http(argv[argi])) {
+    if (argi < argc && git_url_is_remote(argv[argi])) {
         if (git_copy(remote_url, sizeof(remote_url), argv[argi]) != 0) {
             return 1;
         }
@@ -1028,11 +1045,11 @@ static int git_cmd_pull(GitRepo *repo, int argc, char **argv, int argi) {
             return 1;
         }
     }
-    if (argi < argc && git_url_is_http(argv[argi])) {
+    if (argi < argc && git_url_is_remote(argv[argi])) {
         if (git_copy(remote_url, sizeof(remote_url), argv[argi]) != 0) return 1;
         argi += 1;
     } else if (git_read_origin_url(repo, remote_url, sizeof(remote_url)) != 0) {
-        tool_write_error("git", "pull needs an HTTP(S) URL or remote origin", 0);
+        tool_write_error("git", "pull needs a network URL or remote origin", 0);
         return 1;
     }
     if (argi < argc) {
@@ -1091,7 +1108,7 @@ static int git_push_resolve_remote_arg(GitRepo *repo, const char *arg, char *rem
     if (arg == 0) {
         return git_read_origin_url(repo, remote_url, remote_url_size);
     }
-    if (git_url_is_http(arg) || rt_strncmp(arg, "ssh://", 6U) == 0 || rt_strncmp(arg, "git://", 6U) == 0 || rt_strncmp(arg, "file://", 7U) == 0 || git_is_absolute_path(arg) || tool_path_has_separator(arg)) {
+    if (git_url_is_remote(arg) || rt_strncmp(arg, "git://", 6U) == 0 || rt_strncmp(arg, "file://", 7U) == 0 || git_is_absolute_path(arg) || tool_path_has_separator(arg)) {
         return git_copy(remote_url, remote_url_size, arg);
     }
     if (rt_strlen(arg) + 12U >= sizeof(key)) {
@@ -1168,7 +1185,7 @@ static int git_cmd_push(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot resolve push refspec", 0);
         return 1;
     }
-    if (git_url_is_http(remote_url)) {
+    if (git_url_is_remote(remote_url)) {
         GitUrl base_url;
         GitRemoteRefs refs;
         GitRemoteRef *remote_ref;
@@ -1209,7 +1226,7 @@ static int git_cmd_push(GitRepo *repo, int argc, char **argv, int argi) {
         rt_write_line(1, dst_ref);
         return 0;
     }
-    if (rt_strncmp(remote_url, "ssh://", 6U) == 0 || rt_strncmp(remote_url, "git://", 6U) == 0) {
+    if (rt_strncmp(remote_url, "git://", 6U) == 0) {
         tool_write_error("git", "network push transport is not implemented: ", remote_url);
         return 1;
     }
@@ -3337,4 +3354,3 @@ static int git_cmd_hash_object(int argc, char **argv, int argi) {
     }
     return exit_code;
 }
-

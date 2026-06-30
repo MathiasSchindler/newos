@@ -33,6 +33,8 @@ This first milestone implements SSH-2.0 transport using
 `chacha20-poly1305@openssh.com`, password authentication, one session channel,
 and bounded `exec` requests. It does not implement a generic PTY API, so
 `pty-req` and interactive `shell` requests are rejected with channel failure.
+Exec sessions forward channel stdin to the child process and stdout back to the
+client, which is enough for simple Git upload-pack and receive-pack testing.
 
 This tool is experimental and does not provide privilege separation, sandboxing,
 account lookup, public-key authentication, or rekeying.
@@ -53,4 +55,3 @@ account lookup, public-key authentication, or rekeying.
 ## JSON Output
 
 JSON mode limitation: full structured output for this tool is not implemented yet. Until a tool-specific event schema is added, callers should treat normal stdout as the documented text or binary output and use `--json` only where the implementation accepts it for shared usage and diagnostic events. See `json-output` for the common envelope and compatibility rules.
-

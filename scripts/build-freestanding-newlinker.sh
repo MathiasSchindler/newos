@@ -140,6 +140,8 @@ mapfile -t PGP_SOURCES < <(grep -oE '"src/shared/(pgp|crypto/(aes128|aes128_gcm|
 mapfile -t CRYPTO_SOURCES < <(grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t TLS_SOURCES < <(grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t USB_SOURCES < <(grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t SSH_TRANSPORT_SOURCES < <(grep -oE '"src/shared/ssh/ssh_(core|client_io)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+mapfile -t SSH_CLIENT_SOURCES < <(grep -oE '"src/shared/ssh/ssh_(core|known_hosts|client[^"]*)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 REUSE_SOURCES=("${SHARED_SOURCES[@]}" "${PLATFORM_SOURCES[@]}" src/arch/x86_64/linux/syscall_stubs.S)
 SSH_CRYPTO_SOURCES=("${CRYPTO_SOURCES[@]}" src/shared/crypto/curve25519.c src/shared/crypto/ed25519.c src/shared/crypto/chacha20_poly1305.c src/shared/crypto/ssh_kdf.c)
 HASH_SOURCES=(src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c)
@@ -608,7 +610,8 @@ for tool in $TOOLS; do
       ;;
     git)
       for src in "${TLS_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
-      for src in "${CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      for src in "${SSH_CLIENT_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
+      for src in "${SSH_CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       append_unique_source tool_sources "$TLS_PLATFORM_SOURCE"
       ;;
     pgpkey|pgpmsg)
@@ -641,13 +644,12 @@ for tool in $TOOLS; do
       append_unique_source tool_sources "$USB_PLATFORM_SOURCE"
       ;;
     ssh)
-      append_dir_sources tool_sources src/tools/ssh
+      for src in "${SSH_CLIENT_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       for src in "${SSH_CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     sshd)
       append_dir_sources tool_sources src/tools/sshd
-      append_unique_source tool_sources src/tools/ssh/ssh_core.c
-      append_unique_source tool_sources src/tools/ssh/ssh_client_io.c
+      for src in "${SSH_TRANSPORT_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       for src in "${SSH_CRYPTO_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       ;;
     *)

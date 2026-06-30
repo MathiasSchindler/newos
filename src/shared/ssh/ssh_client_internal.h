@@ -5,7 +5,7 @@
  * ssh_client_internal.h - private declarations shared across the ssh_client
  * implementation modules.
  *
- * Nothing outside of src/tools/ssh should include this header.
+ * Nothing outside of src/shared/ssh should include this header.
  */
 
 #include "platform.h"

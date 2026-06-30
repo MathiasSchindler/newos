@@ -1,6 +1,6 @@
 #include "sshd.h"
 
-#include "../ssh/ssh_transport.h"
+#include "ssh/ssh_transport.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -411,61 +411,127 @@ static int sshd_copy_command(const SshStringView *view, char *buffer, size_t buf
     return 0;
 }
 
-static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned int remote_channel, const char *command) {
-    int pipe_fds[2];
-    int stdin_fd = -1;
+static int sshd_parse_channel_data_payload(const unsigned char *payload, size_t len, unsigned int expected_channel, SshStringView *data_out) {
+    SshCursor cursor;
+    unsigned int recipient = 0U;
+
+    if (payload == 0 || data_out == 0 || len < 1U || payload[0] != SSH_MSG_CHANNEL_DATA) {
+        return -1;
+    }
+    ssh_cursor_init(&cursor, payload + 1U, len - 1U);
+    if (ssh_cursor_take_u32(&cursor, &recipient) != 0 ||
+        recipient != expected_channel ||
+        ssh_cursor_take_string(&cursor, data_out) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int sshd_parse_channel_eof_payload(const unsigned char *payload, size_t len, unsigned int expected_channel) {
+    SshCursor cursor;
+    unsigned int recipient = 0U;
+
+    if (payload == 0 || len < 1U || payload[0] != SSH_MSG_CHANNEL_EOF) {
+        return -1;
+    }
+    ssh_cursor_init(&cursor, payload + 1U, len - 1U);
+    return ssh_cursor_take_u32(&cursor, &recipient) == 0 && recipient == expected_channel ? 0 : -1;
+}
+
+static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned int local_channel, unsigned int remote_channel, const char *command) {
+    int stdout_pipe[2];
+    int stdin_pipe[2];
     int pid = -1;
     int exit_status = 255;
     int finished = 0;
-    int pipe_open = 1;
+    int stdout_open = 1;
+    int stdin_open = 1;
     unsigned int idle_ticks = 0U;
     char *argv_exec[4];
 
-    if (platform_create_pipe(pipe_fds) != 0) {
+    if (platform_create_pipe(stdout_pipe) != 0) {
         return -1;
     }
-    stdin_fd = platform_open_read("/dev/null");
+    if (platform_create_pipe(stdin_pipe) != 0) {
+        platform_close(stdout_pipe[0]);
+        platform_close(stdout_pipe[1]);
+        return -1;
+    }
     argv_exec[0] = (char *)config->shell_path;
     argv_exec[1] = (char *)"-c";
     argv_exec[2] = (char *)command;
     argv_exec[3] = 0;
-    if (platform_spawn_process(argv_exec, stdin_fd, pipe_fds[1], 0, 0, 0, &pid) != 0) {
-        if (stdin_fd >= 0) {
-            platform_close(stdin_fd);
-        }
-        platform_close(pipe_fds[0]);
-        platform_close(pipe_fds[1]);
+    if (platform_spawn_process(argv_exec, stdin_pipe[0], stdout_pipe[1], 0, 0, 0, &pid) != 0) {
+        platform_close(stdin_pipe[0]);
+        platform_close(stdin_pipe[1]);
+        platform_close(stdout_pipe[0]);
+        platform_close(stdout_pipe[1]);
         return -1;
     }
-    if (stdin_fd >= 0) {
-        platform_close(stdin_fd);
-    }
-    platform_close(pipe_fds[1]);
+    platform_close(stdin_pipe[0]);
+    platform_close(stdout_pipe[1]);
 
-    while ((pipe_open || !finished) && idle_ticks < 6000U) {
-        if (pipe_open) {
-            size_t ready = 0U;
-            int poll_status = platform_poll_fds(&pipe_fds[0], 1U, &ready, 50);
-            if (poll_status > 0) {
-                unsigned char chunk[1024];
-                long n = platform_read(pipe_fds[0], chunk, sizeof(chunk));
-                (void)ready;
-                idle_ticks = 0U;
-                if (n < 0) {
-                    platform_close(pipe_fds[0]);
-                    pipe_open = 0;
-                } else if (n == 0) {
-                    platform_close(pipe_fds[0]);
-                    pipe_open = 0;
-                } else if (sshd_send_channel_data(t, remote_channel, chunk, (size_t)n) != 0) {
-                    platform_close(pipe_fds[0]);
-                    return -1;
+    while ((stdout_open || stdin_open || !finished) && idle_ticks < 6000U) {
+        int fds[2];
+        size_t fd_count = 0U;
+        size_t ready = 0U;
+        int poll_status;
+
+        if (stdout_open) {
+            fds[fd_count++] = stdout_pipe[0];
+        }
+        if (stdin_open) {
+            fds[fd_count++] = t->fd;
+        }
+        if (fd_count != 0U) {
+            poll_status = platform_poll_fds(fds, fd_count, &ready, 50);
+        } else {
+            poll_status = 0;
+        }
+        if (poll_status > 0 && stdout_open && ready == 0U) {
+            unsigned char chunk[1024];
+            long n = platform_read(stdout_pipe[0], chunk, sizeof(chunk));
+            idle_ticks = 0U;
+            if (n < 0) {
+                platform_close(stdout_pipe[0]);
+                stdout_open = 0;
+            } else if (n == 0) {
+                platform_close(stdout_pipe[0]);
+                stdout_open = 0;
+            } else if (sshd_send_channel_data(t, remote_channel, chunk, (size_t)n) != 0) {
+                platform_close(stdout_pipe[0]);
+                if (stdin_open) platform_close(stdin_pipe[1]);
+                return -1;
+            }
+        } else if (poll_status > 0 && stdin_open) {
+            unsigned char payload[SSH_PACKET_BUFFER_CAPACITY];
+            size_t len = 0U;
+            SshStringView data;
+
+            if (sshd_read_encrypted(t, payload, sizeof(payload), &len) != 0 || len < 1U) {
+                platform_close(stdin_pipe[1]);
+                stdin_open = 0;
+            } else if (sshd_parse_channel_data_payload(payload, len, local_channel, &data) == 0) {
+                if (data.length != 0U && rt_write_all(stdin_pipe[1], data.data, data.length) != 0) {
+                    platform_close(stdin_pipe[1]);
+                    stdin_open = 0;
                 }
-            } else if (poll_status == 0) {
-                idle_ticks += 1U;
-            } else {
-                platform_close(pipe_fds[0]);
-                pipe_open = 0;
+                idle_ticks = 0U;
+            } else if (sshd_parse_channel_eof_payload(payload, len, local_channel) == 0 || payload[0] == SSH_MSG_CHANNEL_CLOSE) {
+                platform_close(stdin_pipe[1]);
+                stdin_open = 0;
+                idle_ticks = 0U;
+            }
+        } else if (poll_status == 0) {
+            idle_ticks += 1U;
+        } else if (poll_status < 0) {
+            if (stdout_open) {
+                platform_close(stdout_pipe[0]);
+                stdout_open = 0;
+            }
+            if (stdin_open) {
+                platform_close(stdin_pipe[1]);
+                stdin_open = 0;
             }
         }
         if (!finished) {
@@ -474,9 +540,19 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
                 exit_status = 255;
             }
         }
+        if (finished && stdin_open) {
+            platform_close(stdin_pipe[1]);
+            stdin_open = 0;
+        }
+        if (!stdout_open && finished) {
+            break;
+        }
     }
-    if (pipe_open) {
-        platform_close(pipe_fds[0]);
+    if (stdout_open) {
+        platform_close(stdout_pipe[0]);
+    }
+    if (stdin_open) {
+        platform_close(stdin_pipe[1]);
     }
     if (!finished) {
         (void)platform_wait_process_timeout(pid, 0ULL, 0ULL, 15, 0, &exit_status);
@@ -577,7 +653,7 @@ static int sshd_handle_channel(SshdTransport *t, const SshdConfig *config) {
             if (want_reply && sshd_send_channel_success(t, ch.remote_id) != 0) {
                 return -1;
             }
-            return sshd_run_exec(t, config, ch.remote_id, command);
+            return sshd_run_exec(t, config, ch.local_id, ch.remote_id, command);
         }
         if (want_reply) {
             if (sshd_send_channel_failure(t, ch.remote_id) != 0) {

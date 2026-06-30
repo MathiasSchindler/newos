@@ -18,6 +18,10 @@ transport and crypto code. It keeps the current implementation intentionally
 narrow: connect, verify the host key, authenticate, request a PTY, and hand
 stdin/stdout through to a single shell session.
 
+The reusable SSH transport/client code also backs non-interactive exec users
+such as `git` over SSH; the `ssh` command itself remains the interactive
+frontend.
+
 On first contact, the tool prints the remote host-key fingerprint and asks for
 confirmation. Accepted keys are stored in `$HOME/.ssh/known_hosts`.
 

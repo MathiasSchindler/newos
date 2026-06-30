@@ -830,6 +830,35 @@ static int ssh_parse_channel_status_reply(
     return payload[0] == SSH_MSG_CHANNEL_SUCCESS ? 1 : 0;
 }
 
+static int ssh_parse_channel_exit_status(
+    const unsigned char *payload,
+    size_t payload_len,
+    unsigned int expected_local_channel,
+    int *exit_status_out
+) {
+    SshCursor cursor;
+    SshStringView request;
+    unsigned int recipient = 0U;
+    unsigned char want_reply = 0U;
+    unsigned int status = 0U;
+
+    if (payload == 0 || exit_status_out == 0 || payload_len < 1U || payload[0] != SSH_MSG_CHANNEL_REQUEST) {
+        return -1;
+    }
+    ssh_cursor_init(&cursor, payload + 1U, payload_len - 1U);
+    if (ssh_cursor_take_u32(&cursor, &recipient) != 0 ||
+        ssh_cursor_take_string(&cursor, &request) != 0 ||
+        ssh_cursor_take_u8(&cursor, &want_reply) != 0 ||
+        recipient != expected_local_channel ||
+        !ssh_view_equals_text(&request, "exit-status") ||
+        want_reply != 0U ||
+        ssh_cursor_take_u32(&cursor, &status) != 0) {
+        return -1;
+    }
+    *exit_status_out = status > 255U ? 255 : (int)status;
+    return 0;
+}
+
 static int ssh_parse_channel_window_adjust(
     const unsigned char *payload,
     size_t payload_len,
@@ -1089,6 +1118,24 @@ static int ssh_send_channel_request_shell(int fd, const unsigned char key[64], u
         ssh_builder_put_u32(&builder, remote_channel) != 0 ||
         ssh_builder_put_cstring(&builder, "shell") != 0 ||
         ssh_builder_put_u8(&builder, 1U) != 0) {
+        return -1;
+    }
+    return ssh_send_encrypted_packet(fd, key, seqnr, payload, builder.length);
+}
+
+static int ssh_send_channel_request_exec(int fd, const unsigned char key[64], unsigned int seqnr, unsigned int remote_channel, const char *command) {
+    unsigned char payload[2048];
+    SshBuilder builder;
+
+    if (command == 0 || rt_strlen(command) + 64U > sizeof(payload)) {
+        return -1;
+    }
+    ssh_builder_init(&builder, payload, sizeof(payload));
+    if (ssh_builder_put_u8(&builder, SSH_MSG_CHANNEL_REQUEST) != 0 ||
+        ssh_builder_put_u32(&builder, remote_channel) != 0 ||
+        ssh_builder_put_cstring(&builder, "exec") != 0 ||
+        ssh_builder_put_u8(&builder, 1U) != 0 ||
+        ssh_builder_put_cstring(&builder, command) != 0) {
         return -1;
     }
     return ssh_send_encrypted_packet(fd, key, seqnr, payload, builder.length);
@@ -1715,7 +1762,229 @@ static int ssh_start_interactive_shell(
     return 0;
 }
 
-int ssh_client_connect_and_run(const SshClientConfig *config) {
+static int ssh_start_exec_command(
+    int sock,
+    const SshTransportKeys *keys,
+    unsigned int *client_seq_io,
+    unsigned int *server_seq_io,
+    const SshClientExecConfig *config,
+    int *exit_status_out
+) {
+    unsigned char payload[SSH_PACKET_BUFFER_CAPACITY];
+    size_t payload_len = 0U;
+    SshChannelState channel;
+    size_t input_offset = 0U;
+    int remote_closed = 0;
+    int saw_exit_status = 0;
+    int exit_status = 255;
+
+    if (config == 0 || config->command == 0 || exit_status_out == 0) {
+        return -1;
+    }
+
+    rt_memset(&channel, 0, sizeof(channel));
+    channel.local_id = 0U;
+    channel.local_window = 1024U * 1024U;
+    channel.max_packet = 32768U;
+
+    if (ssh_send_channel_open_session(sock, keys->key_c_to_s, *client_seq_io,
+                                      channel.local_id, channel.local_window, channel.max_packet) != 0) {
+        return -1;
+    }
+    *client_seq_io += 1U;
+
+    for (;;) {
+        unsigned int bytes_to_add = 0U;
+        int want_reply = 0;
+
+        if (ssh_read_encrypted_packet(sock, keys->key_s_to_c, *server_seq_io, payload, sizeof(payload), &payload_len) != 0 ||
+            payload_len == 0U) {
+            return -1;
+        }
+        *server_seq_io += 1U;
+
+        if (payload[0] == SSH_MSG_EXT_INFO) {
+            continue;
+        }
+        if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
+            if (ssh_parse_global_request(payload, payload_len, &want_reply) != 0) {
+                return -1;
+            }
+            if (want_reply) {
+                if (ssh_send_request_failure(sock, keys->key_c_to_s, *client_seq_io) != 0) {
+                    return -1;
+                }
+                *client_seq_io += 1U;
+            }
+            continue;
+        }
+        if (payload[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
+            if (ssh_parse_channel_window_adjust(payload, payload_len, channel.local_id, &bytes_to_add) != 0) {
+                return -1;
+            }
+            channel.remote_window += bytes_to_add;
+            continue;
+        }
+        if (payload[0] == SSH_MSG_CHANNEL_OPEN_CONFIRMATION &&
+            ssh_parse_channel_open_confirmation(payload, payload_len, channel.local_id, &channel) == 0) {
+            break;
+        }
+        return -1;
+    }
+
+    if (ssh_send_channel_request_exec(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id, config->command) != 0) {
+        if (config->client.verbose) rt_write_cstr(1, "ssh: failed to send exec request\n");
+        return -1;
+    }
+    *client_seq_io += 1U;
+
+    for (;;) {
+        int want_reply = 0;
+        int status_reply;
+
+        if (ssh_read_encrypted_packet(sock, keys->key_s_to_c, *server_seq_io, payload, sizeof(payload), &payload_len) != 0 ||
+            payload_len == 0U) {
+            if (config->client.verbose) rt_write_cstr(1, "ssh: failed while waiting for exec status\n");
+            return -1;
+        }
+        *server_seq_io += 1U;
+
+        if (payload[0] == SSH_MSG_EXT_INFO) {
+            continue;
+        }
+        if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
+            if (ssh_parse_global_request(payload, payload_len, &want_reply) != 0) {
+                return -1;
+            }
+            if (want_reply) {
+                if (ssh_send_request_failure(sock, keys->key_c_to_s, *client_seq_io) != 0) {
+                    return -1;
+                }
+                *client_seq_io += 1U;
+            }
+            continue;
+        }
+        status_reply = ssh_parse_channel_status_reply(payload, payload_len, channel.local_id);
+        if (status_reply > 0) {
+            break;
+        }
+        if (status_reply == 0) {
+            rt_write_cstr(2, "ssh: exec request rejected\n");
+            return -1;
+        }
+        return -1;
+    }
+
+    while (input_offset < config->input_size) {
+        size_t chunk = config->input_size - input_offset;
+
+        if (channel.remote_window == 0U) {
+            unsigned int bytes_to_add = 0U;
+            if (ssh_read_encrypted_packet(sock, keys->key_s_to_c, *server_seq_io, payload, sizeof(payload), &payload_len) != 0 ||
+                payload_len == 0U ||
+                payload[0] != SSH_MSG_CHANNEL_WINDOW_ADJUST ||
+                ssh_parse_channel_window_adjust(payload, payload_len, channel.local_id, &bytes_to_add) != 0) {
+                return -1;
+            }
+            *server_seq_io += 1U;
+            channel.remote_window += bytes_to_add;
+            continue;
+        }
+        if (chunk > 512U) chunk = 512U;
+        if (chunk > channel.max_packet) chunk = channel.max_packet;
+        if (chunk > channel.remote_window) chunk = channel.remote_window;
+        if (chunk == 0U ||
+            ssh_send_channel_data(sock, keys->key_c_to_s, *client_seq_io, &channel,
+                                  config->input + input_offset, chunk) != 0) {
+            return -1;
+        }
+        *client_seq_io += 1U;
+        input_offset += chunk;
+    }
+    if (!channel.eof_sent) {
+        if (ssh_send_channel_eof(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id) == 0) {
+            *client_seq_io += 1U;
+        }
+        channel.eof_sent = 1;
+    }
+
+    while (!remote_closed) {
+        unsigned int bytes_to_add = 0U;
+        SshStringView data;
+        int want_reply = 0;
+
+        if (ssh_read_encrypted_packet(sock, keys->key_s_to_c, *server_seq_io, payload, sizeof(payload), &payload_len) != 0 ||
+            payload_len == 0U) {
+            if (config->client.verbose) rt_write_cstr(1, "ssh: failed while reading exec output\n");
+            return -1;
+        }
+        *server_seq_io += 1U;
+
+        if (payload[0] == SSH_MSG_EXT_INFO) {
+            continue;
+        }
+        if (payload[0] == SSH_MSG_GLOBAL_REQUEST) {
+            if (ssh_parse_global_request(payload, payload_len, &want_reply) != 0) {
+                return -1;
+            }
+            if (want_reply) {
+                if (ssh_send_request_failure(sock, keys->key_c_to_s, *client_seq_io) != 0) {
+                    return -1;
+                }
+                *client_seq_io += 1U;
+            }
+            continue;
+        }
+        if (payload[0] == SSH_MSG_CHANNEL_WINDOW_ADJUST) {
+            if (ssh_parse_channel_window_adjust(payload, payload_len, channel.local_id, &bytes_to_add) != 0) {
+                return -1;
+            }
+            channel.remote_window += bytes_to_add;
+            continue;
+        }
+        if (ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 0) == 0 ||
+            ssh_parse_channel_data(payload, payload_len, channel.local_id, &data, 1) == 0) {
+            int extended = payload[0] == SSH_MSG_CHANNEL_EXTENDED_DATA ? 1 : 0;
+            if (data.length != 0U && config->output_callback != 0 &&
+                config->output_callback(data.data, data.length, extended, config->output_user_data) != 0) {
+                if (config->client.verbose) rt_write_cstr(1, "ssh: exec output callback failed\n");
+                return -1;
+            }
+            if (ssh_send_channel_window_adjust(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id, (unsigned int)data.length) == 0) {
+                *client_seq_io += 1U;
+            }
+            continue;
+        }
+        if (ssh_parse_channel_exit_status(payload, payload_len, channel.local_id, &exit_status) == 0) {
+            saw_exit_status = 1;
+            continue;
+        }
+        if (payload[0] == SSH_MSG_CHANNEL_EOF &&
+            ssh_parse_channel_close_or_eof(payload, payload_len, SSH_MSG_CHANNEL_EOF, channel.local_id) == 0) {
+            continue;
+        }
+        if (payload[0] == SSH_MSG_CHANNEL_CLOSE &&
+            ssh_parse_channel_close_or_eof(payload, payload_len, SSH_MSG_CHANNEL_CLOSE, channel.local_id) == 0) {
+            if (!channel.close_sent) {
+                if (ssh_send_channel_close(sock, keys->key_c_to_s, *client_seq_io, channel.remote_id) == 0) {
+                    *client_seq_io += 1U;
+                }
+                channel.close_sent = 1;
+            }
+            remote_closed = 1;
+            continue;
+        }
+    }
+
+    if (!saw_exit_status) {
+        rt_write_cstr(2, "ssh: exec command closed without exit status\n");
+        return -1;
+    }
+    *exit_status_out = exit_status;
+    return 0;
+}
+
+static int ssh_client_open_transport(const SshClientConfig *config, int *sock_out, SshTransportKeys *keys_out, unsigned int *client_seq_out, unsigned int *server_seq_out) {
     int sock = -1;
     char server_banner[SSH_BANNER_CAPACITY];
     unsigned char client_cookie[SSH_KEX_COOKIE_SIZE];
@@ -1750,11 +2019,13 @@ int ssh_client_connect_and_run(const SshClientConfig *config) {
         return -1;
     }
 
-    rt_write_cstr(1, "connected to ");
-    rt_write_cstr(1, config->host);
-    rt_write_cstr(1, ":");
-    rt_write_uint(1, config->port);
-    rt_write_char(1, '\n');
+    if (config->verbose) {
+        rt_write_cstr(1, "connected to ");
+        rt_write_cstr(1, config->host);
+        rt_write_cstr(1, ":");
+        rt_write_uint(1, config->port);
+        rt_write_char(1, '\n');
+    }
 
     if (rt_write_all(sock, SSH_CLIENT_BANNER_WIRE, sizeof(SSH_CLIENT_BANNER_WIRE) - 1U) != 0 ||
         ssh_read_banner(sock, server_banner, sizeof(server_banner)) != 0) {
@@ -1871,18 +2142,71 @@ int ssh_client_connect_and_run(const SshClientConfig *config) {
         rt_write_cstr(1, "ssh: authentication succeeded\n");
     }
 
-    if (ssh_start_interactive_shell(sock, &keys, &client_seq, &server_seq, config->verbose) != 0) {
-        tool_write_error("ssh", "session failed for ", config->host);
-        platform_close(sock);
-        crypto_secure_bzero(&identity, sizeof(identity));
-        return -1;
-    }
-
-    platform_close(sock);
+    *sock_out = sock;
+    *keys_out = keys;
+    *client_seq_out = client_seq;
+    *server_seq_out = server_seq;
     crypto_secure_bzero(client_private, sizeof(client_private));
     crypto_secure_bzero(shared_secret, sizeof(shared_secret));
     crypto_secure_bzero(exchange_hash, sizeof(exchange_hash));
-    crypto_secure_bzero(&keys, sizeof(keys));
     crypto_secure_bzero(&identity, sizeof(identity));
     return 0;
+}
+
+int ssh_client_connect_and_run(const SshClientConfig *config) {
+    int sock = -1;
+    SshTransportKeys keys;
+    unsigned int client_seq = 0U;
+    unsigned int server_seq = 0U;
+    int result = -1;
+
+    rt_memset(&keys, 0, sizeof(keys));
+    if (ssh_client_open_transport(config, &sock, &keys, &client_seq, &server_seq) != 0) {
+        return -1;
+    }
+    if (ssh_start_interactive_shell(sock, &keys, &client_seq, &server_seq, config->verbose) != 0) {
+        tool_write_error("ssh", "session failed for ", config->host);
+        goto done;
+    }
+    result = 0;
+done:
+    if (sock >= 0) {
+        platform_close(sock);
+    }
+    crypto_secure_bzero(&keys, sizeof(keys));
+    return result;
+}
+
+int ssh_client_exec(const SshClientExecConfig *config, int *exit_status_out) {
+    int sock = -1;
+    SshTransportKeys keys;
+    unsigned int client_seq = 0U;
+    unsigned int server_seq = 0U;
+    int command_status = 255;
+    int result = -1;
+
+    if (config == 0 || config->command == 0 || exit_status_out == 0) {
+        return -1;
+    }
+    rt_memset(&keys, 0, sizeof(keys));
+    if (ssh_client_open_transport(&config->client, &sock, &keys, &client_seq, &server_seq) != 0) {
+        return -1;
+    }
+    if (ssh_start_exec_command(sock, &keys, &client_seq, &server_seq, config, &command_status) != 0) {
+        tool_write_error("ssh", "exec failed for ", config->client.host);
+        goto done;
+    }
+    if (config->client.verbose) {
+        rt_write_cstr(1, "ssh: remote exit status ");
+        rt_write_uint(1, (unsigned int)command_status);
+        rt_write_char(1, '\n');
+    }
+    *exit_status_out = command_status;
+    result = 0;
+done:
+    if (sock >= 0) {
+        platform_close(sock);
+    }
+    crypto_secure_bzero(&keys, sizeof(keys));
+    return result;
 }

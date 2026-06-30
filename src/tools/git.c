@@ -3,6 +3,8 @@
 #include "crypto/sha1.h"
 #include "platform.h"
 #include "runtime.h"
+#include "ssh/ssh_client.h"
+#include "ssh/ssh_core.h"
 #include "tool_util.h"
 
 #define GIT_PATH_CAPACITY 2048U
@@ -19,6 +21,7 @@
 #define GIT_MODE_EXEC_BITS 0111U
 #define GIT_SCHEME_HTTP 1
 #define GIT_SCHEME_HTTPS 2
+#define GIT_SCHEME_SSH 3
 #define GIT_PACKET_FLUSH 0
 #define GIT_PACKET_DELIM 1
 #define GIT_PACKET_RESPONSE_END 2
@@ -167,6 +170,7 @@ typedef struct {
 typedef struct {
     int scheme;
     unsigned int port;
+    char user[SSH_USER_CAPACITY];
     char host[256];
     char path[1024];
 } GitUrl;

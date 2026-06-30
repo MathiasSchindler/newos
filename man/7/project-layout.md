@@ -18,9 +18,11 @@ implementation files they live in a same-named subdirectory owned by that tool.
 
 - `src/tools/` — command entry points and tool-specific logic; each tool keeps
   one public entry file here, and larger tools may also own a private
-  subdirectory such as `src/tools/awk/` or `src/tools/ssh/`
+  subdirectory such as `src/tools/awk/`
 - `src/shared/` — reusable runtime helpers and cross-tool utilities; this is
   the home for genuinely shared code, not one-off private helper files
+- `src/shared/ssh/` — reusable SSH transport/client support shared by `ssh`,
+  `sshd`, and Git-over-SSH remote operations
 - `src/compiler/` — the `ncc` frontend, IR, backends, and object writers
 - `src/platform/posix/` — hosted development and test implementation
 - `src/platform/linux/` — freestanding raw-syscall implementation

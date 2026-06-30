@@ -56,8 +56,8 @@ git fetch [--depth N] [--filter=blob:none] [URL] [REF]
 
 `git` is a small, freestanding-first Git client. It focuses on repository state
 that editors, build scripts, and coding agents need for safe workspace
-awareness, with first-pass clone, fetch, and checkout support for local,
-`file://`, and HTTP(S) workflows.
+awareness, with first-pass clone, fetch, push, and checkout support for local,
+`file://`, HTTP(S), and SSH workflows.
 
 The tool discovers `.git` by walking up from the current directory, supports
 normal `.git` directories and gitfiles, reads `HEAD`, loose refs, packed refs,
@@ -94,7 +94,7 @@ be combined with `--no-pager`.
     `rev-list --count A..B`
 - fast-forward a branch with `merge --ff-only REV` or `merge REV`; non-fast-
     forward content merges are rejected instead of guessed
-- `pull` from the existing HTTP(S) upload-pack fetch path and then fast-forward
+- `pull` from the existing HTTP(S) or SSH upload-pack fetch path and then fast-forward
     the current branch to the fetched commit
 - push to local repositories or `file://` repository paths by copying objects
     and advancing the selected remote ref, rejecting non-fast-forward pushes
@@ -102,6 +102,8 @@ be combined with `--no-pager`.
 - push to ordinary HTTP(S) smart receive-pack repositories by sending a simple
     non-delta pack and honoring receive-pack report-status responses, rejecting
     non-fast-forward pushes locally unless `--force` is supplied
+- push to SSH remotes by executing `git-receive-pack` over the shared native
+    SSH client code and reusing the same receive-pack request/status handling
 - list, create, and delete lightweight loose or packed tags with `tag`; short
     tag names resolve as revisions, and `describe [REV]` reports exact or
     nearest reachable lightweight tags
@@ -169,7 +171,10 @@ be combined with `--no-pager`.
     under `.git/objects/pack`, creating `origin`, and checking out the selected
     branch; `clone --depth N` records shallow boundaries when the server returns
     them; remote sideband and local pack byte progress are streamed to stderr
-- fetch from `origin` or an explicit HTTP(S) URL with Git upload-pack and update
+- clone an SSH repository with `ssh://[user@]host[:port]/path` or scp-like
+    `user@host:path` syntax by running remote `git-upload-pack` over SSH,
+    storing `origin`, and checking out the selected branch
+- fetch from `origin` or an explicit HTTP(S) or SSH URL with Git upload-pack and update
     `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack;
     `fetch --depth N` and `fetch --filter=blob:none` use protocol v2 servers
 - send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
@@ -177,6 +182,10 @@ be combined with `--no-pager`.
     when those are absent, `GIT_CREDENTIAL_HELPER=/path/to/helper` can execute a
     bounded `credential get` helper and use returned `username`/`password` as a
     Basic authorization header
+- SSH fetch, clone, pull, and push use `$HOME/.ssh/known_hosts` trust-on-first-use
+    host-key pinning through the shared SSH code. Set `NEWOS_GIT_SSH_IDENTITY`
+    to an unencrypted Ed25519 private key path, or `NEWOS_GIT_SSH_PASSWORD` for
+    non-interactive password authentication in tests and automation.
 - checkout a local branch, remote-tracking branch, full object ID, or `HEAD`
     from loose objects or stored pack files
 - materialize regular files and symlink blobs during object-based checkout
@@ -185,10 +194,9 @@ be combined with `--no-pager`.
 
 ## LIMITATIONS
 
-- no SSH transport, git:// transport, promisor-object lazy checkout, pack bitmap
-    writing, or pack reuse during network negotiation; protocol v2 clone/fetch,
-    shallow fetches, and `filter blob:none` fetches are first-pass HTTP(S)
-    features
+- no git:// transport, promisor-object lazy checkout, pack bitmap writing, or
+    pack reuse during network negotiation; protocol v2 clone/fetch, shallow
+    fetches, and `filter blob:none` fetches are first-pass HTTP(S) features
 - HTTP(S) push currently writes a simple non-delta pack for the needed local
     object closure; it does not implement pack reuse, thin packs, delete
     refspecs, push certificates, signed pushes, or native Git's full push option
@@ -319,6 +327,7 @@ git stash drop
 git hash-object src/tools/git.c
 git clone ../project-copy project-copy
 git clone https://github.com/MathiasSchindler/pbf-parser.git pbf-parser
+git clone ssh://git@example.com/project.git project
 git fetch
 git checkout main
 git checkout -b topic HEAD

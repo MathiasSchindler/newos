@@ -896,6 +896,40 @@ assert_file_contains "$http_push_capture" '^command_has_ref=1$' "git HTTP push c
 assert_file_contains "$http_push_capture" '^found_head=1$' "git HTTP push pack did not include the pushed commit"
 assert_file_contains "$http_push_capture" '^object_count=[1-9][0-9]*$' "git HTTP push pack did not include objects"
 
+if [ -x "${TEST_BIN_DIR}/sshd" ] && command -v git >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    ssh_git_home="$WORK_DIR/git-ssh-home"
+    ssh_git_remote="$WORK_DIR/git-ssh-remote.git"
+    ssh_git_clone="$WORK_DIR/git-ssh-clone"
+    mkdir -p "$ssh_git_home"
+    git init --quiet --bare "$ssh_git_remote"
+    printf '%s\n' '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' > "$WORK_DIR/git-ssh-host.seed"
+    chmod 600 "$WORK_DIR/git-ssh-host.seed"
+    ssh_git_status=1
+    ssh_git_attempt=1
+    while [ "$ssh_git_attempt" -le 2 ]; do
+        ssh_git_port=$((32000 + (($$ + ssh_git_attempt * 251) % 20000)))
+        timeout 45 "${TEST_BIN_DIR}/sshd" -l 127.0.0.1 -p "$ssh_git_port" -u demo -P secret -k "$WORK_DIR/git-ssh-host.seed" -s /bin/sh > "$WORK_DIR/git-ssh-server.out" 2>&1 &
+        ssh_git_pid=$!
+        sleep 1
+        ssh_git_url="ssh://demo@127.0.0.1:$ssh_git_port$ssh_git_remote"
+        ssh_git_status=0
+        printf 'y\n' | HOME="$ssh_git_home" USER=demo NEWOS_GIT_SSH_PASSWORD=secret "${TEST_BIN_DIR}/git" -C "$ff_repo" push "$ssh_git_url" main > "$WORK_DIR/git-ssh-push.out" 2> "$WORK_DIR/git-ssh-push.err" || ssh_git_status=$?
+        if [ "$ssh_git_status" -eq 0 ]; then
+            HOME="$ssh_git_home" USER=demo NEWOS_GIT_SSH_PASSWORD=secret "${TEST_BIN_DIR}/git" clone "$ssh_git_url" "$ssh_git_clone" > "$WORK_DIR/git-ssh-clone.out" 2> "$WORK_DIR/git-ssh-clone.err" || ssh_git_status=$?
+        fi
+        kill "$ssh_git_pid" 2>/dev/null || true
+        wait "$ssh_git_pid" 2>/dev/null || true
+        [ "$ssh_git_status" -ne 0 ] || break
+        ssh_git_attempt=$((ssh_git_attempt + 1))
+    done
+    assert_exit_code "$ssh_git_status" 0 "git push/clone over SSH should succeed"
+    assert_file_contains "$WORK_DIR/git-ssh-push.out" '^Pushed main to refs/heads/main$' "git SSH push did not report success"
+    assert_file_contains "$WORK_DIR/git-ssh-clone.out" '^Cloned remote repository to ' "git SSH clone did not report success"
+    assert_files_equal "$ff_repo/f.txt" "$ssh_git_clone/f.txt" "git SSH clone did not fetch and check out the pushed file"
+else
+    note "skipping git SSH transport smoke; git, timeout, and built sshd are required"
+fi
+
 cp_repo="$WORK_DIR/cp-repo"
 "${TEST_BIN_DIR}/git" init "$cp_repo" > "$WORK_DIR/cp-init.out"
 printf 'one\n' > "$cp_repo/x.txt"
