@@ -52,6 +52,8 @@ typedef struct {
     unsigned long long mtime_seconds;
     unsigned int mtime_nanos;
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    PlatformDirEntry worktree_info;
+    int has_worktree_info;
 } GitIndexEntry;
 
 typedef struct {

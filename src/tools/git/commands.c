@@ -129,13 +129,14 @@ static int git_default_clone_destination(const char *source, char *buffer, size_
     return 0;
 }
 
-static int git_copy_tracked_files(const GitRepo *source_repo, const GitIndex *index, const char *destination) {
+static int git_copy_tracked_files(const GitRepo *source_repo, GitIndex *index, const char *destination) {
     size_t i;
 
     for (i = 0U; i < index->count; ++i) {
         char source_path[GIT_PATH_CAPACITY];
         char dest_path[GIT_PATH_CAPACITY];
         PlatformDirEntry info;
+        PlatformDirEntry dest_info;
 
         if (tool_path_is_unsafe_relative(index->entries[i].path)) {
             tool_write_error("git", "refusing unsafe checkout path: ", index->entries[i].path);
@@ -158,6 +159,143 @@ static int git_copy_tracked_files(const GitRepo *source_repo, const GitIndex *in
             return -1;
         }
         (void)platform_change_mode(dest_path, git_worktree_mode_from_regular_index(index->entries[i].mode));
+        if (platform_get_path_info(dest_path, &dest_info) == 0) {
+            index->entries[i].mtime_seconds = (unsigned long long)dest_info.mtime;
+            index->entries[i].mtime_nanos = dest_info.mtime_nanos;
+            index->entries[i].size = dest_info.size;
+            index->entries[i].has_worktree_info = 0;
+        }
+    }
+    return 0;
+}
+
+static int git_copy_local_objects_hardlink(const char *source_path, const char *dest_path) {
+    PlatformDirEntry source_info;
+
+    if (platform_get_path_info(source_path, &source_info) != 0) {
+        return -1;
+    }
+    if (!source_info.is_dir) {
+        if (platform_create_hard_link(source_path, dest_path) == 0) {
+            return 0;
+        }
+        return tool_copy_path(source_path, dest_path, 0, 1, 1);
+    }
+
+    {
+        enum { GIT_LOCAL_COPY_ENTRY_CAPACITY = 1024 };
+        PlatformDirEntry entries[GIT_LOCAL_COPY_ENTRY_CAPACITY];
+        size_t count = 0U;
+        size_t i;
+        int is_directory = 0;
+        int result = -1;
+
+        if (platform_path_is_directory(dest_path, &is_directory) != 0) {
+            if (platform_make_directory(dest_path, source_info.mode & 07777U) != 0) {
+                return -1;
+            }
+        } else if (!is_directory) {
+            return -1;
+        }
+        if (platform_collect_entries(source_path, 1, entries, GIT_LOCAL_COPY_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
+            return -1;
+        }
+        for (i = 0U; i < count; ++i) {
+            char child_source[GIT_PATH_CAPACITY];
+            char child_dest[GIT_PATH_CAPACITY];
+
+            if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
+                continue;
+            }
+            if (git_join(child_source, sizeof(child_source), source_path, entries[i].name) != 0 ||
+                git_join(child_dest, sizeof(child_dest), dest_path, entries[i].name) != 0 ||
+                git_copy_local_objects_hardlink(child_source, child_dest) != 0) {
+                goto done;
+            }
+        }
+        result = 0;
+done:
+        platform_free_entries(entries, count);
+        if (result == 0) {
+            (void)platform_change_mode(dest_path, source_info.mode & 07777U);
+        }
+        return result;
+    }
+}
+
+static int git_copy_git_dir_without_objects(const char *source_path, const char *dest_path, int skip_objects) {
+    PlatformDirEntry source_info;
+
+    if (platform_get_path_info(source_path, &source_info) != 0 || !source_info.is_dir) {
+        return -1;
+    }
+
+    {
+        enum { GIT_LOCAL_COPY_ENTRY_CAPACITY = 1024 };
+        PlatformDirEntry entries[GIT_LOCAL_COPY_ENTRY_CAPACITY];
+        size_t count = 0U;
+        size_t i;
+        int is_directory = 0;
+        int result = -1;
+
+        if (platform_path_is_directory(dest_path, &is_directory) != 0) {
+            if (platform_make_directory(dest_path, source_info.mode & 07777U) != 0) {
+                return -1;
+            }
+        } else if (!is_directory) {
+            return -1;
+        }
+        if (platform_collect_entries(source_path, 1, entries, GIT_LOCAL_COPY_ENTRY_CAPACITY, &count, &is_directory) != 0 || !is_directory) {
+            return -1;
+        }
+        for (i = 0U; i < count; ++i) {
+            char child_source[GIT_PATH_CAPACITY];
+            char child_dest[GIT_PATH_CAPACITY];
+
+            if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0 ||
+                (skip_objects && rt_strcmp(entries[i].name, "objects") == 0)) {
+                continue;
+            }
+            if (git_join(child_source, sizeof(child_source), source_path, entries[i].name) != 0 ||
+                git_join(child_dest, sizeof(child_dest), dest_path, entries[i].name) != 0) {
+                goto done;
+            }
+            if (entries[i].is_dir) {
+                if (git_copy_git_dir_without_objects(child_source, child_dest, 0) != 0) {
+                    goto done;
+                }
+            } else if (tool_copy_path(child_source, child_dest, 0, 1, 1) != 0) {
+                goto done;
+            }
+        }
+        result = 0;
+done:
+        platform_free_entries(entries, count);
+        if (result == 0) {
+            (void)platform_change_mode(dest_path, source_info.mode & 07777U);
+        }
+        return result;
+    }
+}
+
+static int git_copy_local_git_dir(const GitRepo *source_repo, const GitRepo *dest_repo) {
+    char source_objects[GIT_PATH_CAPACITY];
+    char dest_objects[GIT_PATH_CAPACITY];
+    PlatformDirEntry source_info;
+
+    if (git_copy_git_dir_without_objects(source_repo->git_dir, dest_repo->git_dir, 1) != 0 ||
+        git_join(source_objects, sizeof(source_objects), source_repo->git_dir, "objects") != 0 ||
+        git_join(dest_objects, sizeof(dest_objects), dest_repo->git_dir, "objects") != 0) {
+        return -1;
+    }
+    if (platform_get_path_info(source_objects, &source_info) != 0) {
+        return platform_make_directory(dest_objects, 0755U);
+    }
+    if (!source_info.is_dir) {
+        return -1;
+    }
+    if (git_copy_local_objects_hardlink(source_objects, dest_objects) != 0) {
+        return -1;
     }
     return 0;
 }
@@ -325,12 +463,12 @@ done:
 
 static int git_cmd_clone(int argc, char **argv, int argi) {
     GitRepo source_repo;
+    GitRepo dest_repo;
     GitIndex index;
     GitFetchOptions fetch_options;
     char source_path[GIT_PATH_CAPACITY];
     char destination_arg[GIT_PATH_CAPACITY];
     char destination[GIT_PATH_CAPACITY];
-    char dest_git[GIT_PATH_CAPACITY];
     PlatformDirEntry existing;
     int result = 1;
 
@@ -421,9 +559,12 @@ static int git_cmd_clone(int argc, char **argv, int argi) {
         git_index_destroy(&index);
         return 1;
     }
-    if (git_join(dest_git, sizeof(dest_git), destination, ".git") != 0 ||
-        tool_copy_path(source_repo.git_dir, dest_git, 1, 1, 1) != 0 ||
-        git_copy_tracked_files(&source_repo, &index, destination) != 0) {
+    rt_memset(&dest_repo, 0, sizeof(dest_repo));
+    if (git_copy(dest_repo.work_tree, sizeof(dest_repo.work_tree), destination) != 0 ||
+        git_join(dest_repo.git_dir, sizeof(dest_repo.git_dir), destination, ".git") != 0 ||
+        git_copy_local_git_dir(&source_repo, &dest_repo) != 0 ||
+        git_copy_tracked_files(&source_repo, &index, destination) != 0 ||
+        git_write_index_file(&dest_repo, &index) != 0) {
         tool_write_error("git", "clone failed", destination_arg);
         git_index_destroy(&index);
         return 1;
@@ -1398,8 +1539,10 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
     GitIndex head_index;
     GitIgnoreList ignores;
     GitPack pack;
+    GitUntrackedWalk untracked;
     int have_pack = 0;
     int have_head_index = 0;
+    int have_untracked = 0;
     int short_output = 0;
     int porcelain_format = 0;
     int nul_terminate = 0;
@@ -1451,8 +1594,12 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot read ignore files", 0);
         return 1;
     }
+    if (git_untracked_walk_collect(repo, &index, &ignores, 0, 0, &untracked) != 0) {
+        goto done;
+    }
+    have_untracked = 1;
     if ((have_head_index ? git_status_tracked_with_head(repo, &head_index, &index, short_output, color_mode, nul_terminate, &saw_change) : git_status_tracked(repo, &index, short_output, color_mode, nul_terminate, &saw_change)) != 0 ||
-        git_status_untracked(repo, &index, &ignores, short_output, color_mode, nul_terminate, &saw_change) != 0) {
+        git_status_emit_untracked_walk(&untracked, short_output, color_mode, nul_terminate, &saw_change) != 0) {
         goto done;
     }
     if (!short_output && !saw_change) {
@@ -1460,6 +1607,7 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
     }
     result = 0;
 done:
+    if (have_untracked) git_untracked_walk_destroy(&untracked);
     git_ignore_destroy(&ignores);
     if (have_head_index) git_index_destroy(&head_index);
     if (have_pack) git_pack_destroy(&pack);

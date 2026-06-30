@@ -201,59 +201,14 @@ static int git_ignore_load_file(GitIgnoreList *ignores, const char *path) {
     return git_ignore_load_file_base(ignores, path, "");
 }
 
-typedef struct {
-    const GitRepo *repo;
-    GitIgnoreList *ignores;
-} GitIgnoreLoadWalk;
-
-static int git_ignore_load_walk_callback(const char *path, const PlatformDirEntry *entry, int depth, ToolWalkControl *control, void *user_data) {
-    GitIgnoreLoadWalk *walk = (GitIgnoreLoadWalk *)user_data;
-    char relative[GIT_PATH_CAPACITY];
-    char base[GIT_PATH_CAPACITY];
-
-    (void)depth;
-    if (git_relative_path(walk->repo, path, relative, sizeof(relative)) != 0 || relative[0] == '\0') {
-        return 0;
-    }
-    if (rt_strcmp(relative, ".git") == 0 || rt_strncmp(relative, ".git/", 5U) == 0) {
-        control->prune = 1;
-        return 0;
-    }
-    if (entry->is_dir || rt_strcmp(relative, ".gitignore") == 0 || rt_strcmp(git_path_basename(relative), ".gitignore") != 0) {
-        return 0;
-    }
-    if (git_copy(base, sizeof(base), relative) != 0 || git_path_parent(base) != 0) {
-        return -1;
-    }
-    if (base[0] != '\0' && base[rt_strlen(base) - 1U] != '/') {
-        size_t length = rt_strlen(base);
-        if (length + 1U >= sizeof(base)) {
-            return -1;
-        }
-        base[length] = '/';
-        base[length + 1U] = '\0';
-    }
-    return git_ignore_load_file_base(walk->ignores, path, base);
-}
-
 static int git_ignore_load(const GitRepo *repo, GitIgnoreList *ignores) {
     char path[GIT_PATH_CAPACITY];
-    GitIgnoreLoadWalk walk;
-    ToolWalkOptions options;
 
     rt_memset(ignores, 0, sizeof(*ignores));
     if (git_join(path, sizeof(path), repo->work_tree, ".gitignore") == 0 && git_ignore_load_file(ignores, path) != 0) {
         return -1;
     }
     if (git_join(path, sizeof(path), repo->git_dir, "info/exclude") == 0 && git_ignore_load_file(ignores, path) != 0) {
-        git_ignore_destroy(ignores);
-        return -1;
-    }
-    walk.repo = repo;
-    walk.ignores = ignores;
-    options.min_depth = 1;
-    options.max_depth = -1;
-    if (tool_walk_path(repo->work_tree, &options, git_ignore_load_walk_callback, &walk) != 0) {
         git_ignore_destroy(ignores);
         return -1;
     }
@@ -478,4 +433,3 @@ static int git_index_is_sorted(const GitIndex *index);
 static int git_write_index_file(const GitRepo *repo, GitIndex *index);
 static int git_parse_pack(const unsigned char *data, size_t size, GitPack *pack);
 static int git_resolve_pack_deltas(GitPack *pack);
-

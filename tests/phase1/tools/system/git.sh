@@ -53,6 +53,10 @@ printf 'ignored\n' > "$repo/skip.tmp"
 printf 'ignored\n' > "$repo/excluded.log"
 mkdir -p "$repo/ignored-dir"
 printf 'ignored\n' > "$repo/ignored-dir/file.txt"
+mkdir -p "$repo/nested-ignore"
+printf '*.log\n' > "$repo/nested-ignore/.gitignore"
+printf 'ignored\n' > "$repo/nested-ignore/ignored.log"
+printf 'visible\n' > "$repo/nested-ignore/visible.txt"
 
 tracked_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object tracked.txt | tr -d '\r\n')
 modified_oid=$(cd "$repo" && "${TEST_BIN_DIR}/git" hash-object modified.txt | tr -d '\r\n')
@@ -160,7 +164,9 @@ fi
 cd "$repo" && "${TEST_BIN_DIR}/git" ls-files --others --exclude-standard > "$WORK_DIR/ls-files-others.out"
 assert_file_contains "$WORK_DIR/ls-files-others.out" '^untracked.txt$' "git ls-files --others missed an untracked file"
 assert_file_contains "$WORK_DIR/ls-files-others.out" '^untracked-dir/nested.txt$' "git ls-files --others missed an untracked nested file"
-if grep -q 'skip.tmp\|excluded.log\|ignored-dir' "$WORK_DIR/ls-files-others.out"; then
+assert_file_contains "$WORK_DIR/ls-files-others.out" '^nested-ignore/.gitignore$' "git ls-files --others missed a nested .gitignore file"
+assert_file_contains "$WORK_DIR/ls-files-others.out" '^nested-ignore/visible.txt$' "git ls-files --others missed a file beside a nested .gitignore"
+if grep -q 'skip.tmp\|excluded.log\|ignored-dir\|nested-ignore/ignored.log' "$WORK_DIR/ls-files-others.out"; then
     fail "git ls-files --others --exclude-standard reported ignored files"
 fi
 
@@ -176,10 +182,12 @@ assert_file_contains "$WORK_DIR/status.out" '^ M modified.txt$' "git status did 
 assert_file_contains "$WORK_DIR/status.out" '^ M script.sh$' "git status did not report an executable-bit change"
 assert_file_contains "$WORK_DIR/status.out" '^?? untracked.txt$' "git status did not report an untracked file"
 assert_file_contains "$WORK_DIR/status.out" '^?? untracked-dir/nested.txt$' "git status did not report a nested untracked file"
+assert_file_contains "$WORK_DIR/status.out" '^?? nested-ignore/.gitignore$' "git status did not report a nested .gitignore file"
+assert_file_contains "$WORK_DIR/status.out" '^?? nested-ignore/visible.txt$' "git status missed a file beside a nested .gitignore"
 if grep -q '^.. tracked\.txt$' "$WORK_DIR/status.out"; then
     fail "git status reported an unchanged tracked file"
 fi
-if grep -q 'skip.tmp\|excluded.log\|ignored-dir' "$WORK_DIR/status.out"; then
+if grep -q 'skip.tmp\|excluded.log\|ignored-dir\|nested-ignore/ignored.log' "$WORK_DIR/status.out"; then
     fail "git status reported ignored files"
 fi
 
@@ -1189,6 +1197,7 @@ PY
     make_index_entry 100644 5 "$clean_root_oid" root.txt
     make_index_entry 100755 10 "$clean_run_oid" run.sh
 } > "$clean/.git/index"
+cp "$clean/.git/index" "$WORK_DIR/clean-index-before-clone"
 
 cd "$WORK_DIR" && "${TEST_BIN_DIR}/git" clone "$clean" "$clone" > "$WORK_DIR/clone.out"
 assert_file_contains "$WORK_DIR/clone.out" 'Cloned local repository' "git clone did not report a local clone"
@@ -1204,6 +1213,11 @@ clone_branch=$(cd "$clone" && "${TEST_BIN_DIR}/git" branch --show-current | tr -
 assert_text_equals "$clone_branch" 'main' "git clone did not copy repository metadata"
 cd "$clone" && "${TEST_BIN_DIR}/git" status --short > "$WORK_DIR/clone-status.out"
 assert_text_equals "$(cat "$WORK_DIR/clone-status.out")" '' "git clone destination should be clean"
+printf 'clone-local-change\n' > "$clone/root.txt"
+cd "$clone" && "${TEST_BIN_DIR}/git" add root.txt
+if ! cmp -s "$clean/.git/index" "$WORK_DIR/clean-index-before-clone"; then
+    fail "git clone shared mutable index state with the source"
+fi
 
 checkout_repo="$WORK_DIR/checkout-repo"
 mkdir -p "$checkout_repo/.git/refs/heads" "$checkout_repo/.git/objects"

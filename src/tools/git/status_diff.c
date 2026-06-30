@@ -426,7 +426,9 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
     if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
         return 1;
     }
-    if (platform_get_path_info(full_path, &info) != 0) {
+    if (entry->has_worktree_info) {
+        info = entry->worktree_info;
+    } else if (platform_get_path_info(full_path, &info) != 0) {
         return -1;
     }
     if (info.is_dir) {
@@ -497,8 +499,8 @@ typedef int (*GitUntrackedPathCallback)(const char *path, void *user_data);
 
 typedef struct {
     const GitRepo *repo;
-    const GitIndex *index;
-    const GitIgnoreList *ignores;
+    GitIndex *index;
+    GitIgnoreList *ignores;
     char **pathspecs;
     int pathspec_count;
     char **paths;
@@ -547,60 +549,126 @@ static int git_compare_path_strings(const void *left, const void *right) {
     return rt_strcmp(*left_path, *right_path);
 }
 
-static int git_untracked_walk_callback(const char *path, const PlatformDirEntry *entry, int depth, ToolWalkControl *control, void *user_data) {
-    GitUntrackedWalk *walk = (GitUntrackedWalk *)user_data;
-    char relative[GIT_PATH_CAPACITY];
-    GitIndexEntry *indexed;
+static int git_untracked_load_nested_ignore(GitUntrackedWalk *walk, const char *dir_path, const char *relative_dir) {
+    char ignore_path[GIT_PATH_CAPACITY];
+    char base[GIT_PATH_CAPACITY];
+    size_t length;
 
-    (void)depth;
-    if (git_relative_path(walk->repo, path, relative, sizeof(relative)) != 0 || relative[0] == '\0') {
+    if (walk->ignores == 0 || relative_dir == 0 || relative_dir[0] == '\0') {
         return 0;
     }
-    if (rt_strcmp(relative, ".git") == 0 || rt_strncmp(relative, ".git/", 5U) == 0) {
-        control->prune = 1;
-        return 0;
+    if (git_join(ignore_path, sizeof(ignore_path), dir_path, ".gitignore") != 0 ||
+        git_copy(base, sizeof(base), relative_dir) != 0) {
+        return -1;
     }
-    if (walk->ignores != 0 && git_ignore_matches(walk->ignores, relative, entry->is_dir)) {
-        if (entry->is_dir) {
-            control->prune = 1;
+    length = rt_strlen(base);
+    if (length != 0U && base[length - 1U] != '/') {
+        if (length + 1U >= sizeof(base)) {
+            return -1;
         }
-        return 0;
+        base[length] = '/';
+        base[length + 1U] = '\0';
     }
-    indexed = git_index_find(walk->index, relative);
-    if (indexed != 0) {
-        if (entry->is_dir) {
-            control->prune = 0;
-        }
-        return 0;
-    }
-    if (entry->is_dir) {
-        return 0;
-    }
-    if (!git_pathspec_matches(relative, walk->pathspecs, walk->pathspec_count)) {
-        return 0;
-    }
-    return git_untracked_walk_push(walk, relative);
+    return git_ignore_load_file_base(walk->ignores, ignore_path, base);
 }
 
-static int git_for_each_untracked_path(const GitRepo *repo, const GitIndex *index, const GitIgnoreList *ignores, char **pathspecs, int pathspec_count, GitUntrackedPathCallback callback, void *callback_data) {
+static int git_untracked_walk_dir(GitUntrackedWalk *walk, const char *dir_path, const char *relative_dir) {
+    enum { GIT_UNTRACKED_ENTRY_CAPACITY = 1024 };
+    PlatformDirEntry entries[GIT_UNTRACKED_ENTRY_CAPACITY];
+    size_t count = 0U;
+    size_t i;
+    int is_directory = 0;
+    int result = -1;
+
+    if (git_untracked_load_nested_ignore(walk, dir_path, relative_dir) != 0 ||
+        platform_collect_entries(dir_path, 1, entries, GIT_UNTRACKED_ENTRY_CAPACITY, &count, &is_directory) != 0 ||
+        !is_directory) {
+        return -1;
+    }
+
+    for (i = 0U; i < count; ++i) {
+        char child_path[GIT_PATH_CAPACITY];
+        char relative[GIT_PATH_CAPACITY];
+        GitIndexEntry *indexed;
+
+        if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
+            continue;
+        }
+        if (git_join(child_path, sizeof(child_path), dir_path, entries[i].name) != 0) {
+            goto done;
+        }
+        if (relative_dir != 0 && relative_dir[0] != '\0') {
+            if (git_copy(relative, sizeof(relative), relative_dir) != 0 ||
+                rt_strlen(relative) + 1U + rt_strlen(entries[i].name) >= sizeof(relative)) {
+                goto done;
+            }
+            if (relative[rt_strlen(relative) - 1U] != '/') {
+                rt_copy_string(relative + rt_strlen(relative), sizeof(relative) - rt_strlen(relative), "/");
+            }
+            rt_copy_string(relative + rt_strlen(relative), sizeof(relative) - rt_strlen(relative), entries[i].name);
+        } else if (git_copy(relative, sizeof(relative), entries[i].name) != 0) {
+            goto done;
+        }
+        if (rt_strcmp(relative, ".git") == 0 || rt_strncmp(relative, ".git/", 5U) == 0) {
+            continue;
+        }
+        if (walk->ignores != 0 && git_ignore_matches(walk->ignores, relative, entries[i].is_dir)) {
+            continue;
+        }
+        indexed = git_index_find(walk->index, relative);
+        if (indexed != 0) {
+            indexed->worktree_info = entries[i];
+            indexed->has_worktree_info = 1;
+            if (!entries[i].is_dir) {
+                continue;
+            }
+        }
+        if (entries[i].is_dir) {
+            if (git_untracked_walk_dir(walk, child_path, relative) != 0) {
+                goto done;
+            }
+            continue;
+        }
+        if (!git_pathspec_matches(relative, walk->pathspecs, walk->pathspec_count)) {
+            continue;
+        }
+        if (git_untracked_walk_push(walk, relative) != 0) {
+            goto done;
+        }
+    }
+    result = 0;
+done:
+    platform_free_entries(entries, count);
+    return result;
+}
+
+static int git_untracked_walk_collect(const GitRepo *repo, GitIndex *index, GitIgnoreList *ignores, char **pathspecs, int pathspec_count, GitUntrackedWalk *walk) {
+    if (walk == 0) {
+        return -1;
+    }
+    rt_memset(walk, 0, sizeof(*walk));
+    walk->repo = repo;
+    walk->index = index;
+    walk->ignores = ignores;
+    walk->pathspecs = pathspecs;
+    walk->pathspec_count = pathspec_count;
+    if (git_untracked_walk_dir(walk, repo->work_tree, "") != 0) {
+        git_untracked_walk_destroy(walk);
+        return -1;
+    }
+    if (walk->count > 1U) {
+        rt_sort(walk->paths, walk->count, sizeof(walk->paths[0]), git_compare_path_strings);
+    }
+    return 0;
+}
+
+static int git_for_each_untracked_path(const GitRepo *repo, GitIndex *index, GitIgnoreList *ignores, char **pathspecs, int pathspec_count, GitUntrackedPathCallback callback, void *callback_data) {
     GitUntrackedWalk walk;
-    ToolWalkOptions options;
     size_t i;
     int result = -1;
 
-    rt_memset(&walk, 0, sizeof(walk));
-    walk.repo = repo;
-    walk.index = index;
-    walk.ignores = ignores;
-    walk.pathspecs = pathspecs;
-    walk.pathspec_count = pathspec_count;
-    options.min_depth = 0;
-    options.max_depth = -1;
-    if (tool_walk_path(repo->work_tree, &options, git_untracked_walk_callback, &walk) != 0) {
-        goto done;
-    }
-    if (walk.count > 1U) {
-        rt_sort(walk.paths, walk.count, sizeof(walk.paths[0]), git_compare_path_strings);
+    if (git_untracked_walk_collect(repo, index, ignores, pathspecs, pathspec_count, &walk) != 0) {
+        return -1;
     }
     for (i = 0U; i < walk.count; ++i) {
         if (callback(walk.paths[i], callback_data) != 0) {
@@ -613,29 +681,16 @@ done:
     return result;
 }
 
-static int git_status_untracked_emit(const char *path, void *user_data) {
-    GitStatusWalk *walk = (GitStatusWalk *)user_data;
+static int git_status_emit_untracked_walk(const GitUntrackedWalk *untracked, int short_output, int color_mode, int nul_terminate, int *saw_change) {
+    size_t i;
 
-    if (git_write_status_line("??", path, walk->porcelain, walk->color_mode, walk->nul_terminate) != 0) {
+    if (untracked == 0) {
         return -1;
     }
-    walk->saw_change = 1;
-    return 0;
-}
-
-static int git_status_untracked(const GitRepo *repo, const GitIndex *index, const GitIgnoreList *ignores, int short_output, int color_mode, int nul_terminate, int *saw_change) {
-    GitStatusWalk walk;
-    int result;
-
-    walk.porcelain = short_output;
-    walk.nul_terminate = nul_terminate;
-    walk.color_mode = color_mode;
-    walk.saw_change = 0;
-    result = git_for_each_untracked_path(repo, index, ignores, 0, 0, git_status_untracked_emit, &walk);
-    if (result != 0) {
-        return -1;
-    }
-    if (walk.saw_change) {
+    for (i = 0U; i < untracked->count; ++i) {
+        if (git_write_status_line("??", untracked->paths[i], short_output, color_mode, nul_terminate) != 0) {
+            return -1;
+        }
         *saw_change = 1;
     }
     return 0;
@@ -1475,4 +1530,3 @@ static int git_render_diff_stat(const GitDiffStatList *stats, int color_mode) {
     }
     return rt_write_char(1, '\n');
 }
-

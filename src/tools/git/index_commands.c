@@ -143,7 +143,7 @@ done:
 typedef struct {
     const GitRepo *repo;
     GitIndex *index;
-    const GitIgnoreList *ignores;
+    GitIgnoreList *ignores;
     size_t added;
 } GitAddContext;
 
@@ -669,4 +669,3 @@ done:
     git_index_destroy(&index);
     return result;
 }
-
