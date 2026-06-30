@@ -123,17 +123,6 @@
 #define ELF_DT_VERNEEDNUM 0x6fffffffLL
 
 typedef struct {
-    unsigned int name;
-    unsigned int type;
-    unsigned long long flags;
-    unsigned long long addr;
-    unsigned long long offset;
-    unsigned long long size;
-    unsigned int link;
-    unsigned long long entsize;
-} ElfSectionInfo;
-
-typedef struct {
     unsigned char ident[16];
     unsigned short type;
     unsigned short machine;
@@ -161,6 +150,7 @@ typedef struct {
     unsigned long long align;
 } ElfProgramInfo;
 
+typedef ObjectElfSectionInfo ElfSectionInfo;
 typedef ObjectMachHeaderInfo MachHeaderInfo;
 typedef ObjectMachSectionInfo MachSectionInfo;
 
@@ -1198,34 +1188,6 @@ static int inspect_macho_code_signature(int fd, const MachHeaderInfo *header, Ma
         rt_copy_string(signature->message, sizeof(signature->message), "CodeDirectory SHA-256 hash mismatch");
     } else {
         rt_copy_string(signature->message, sizeof(signature->message), "CodeDirectory hashes were not verified");
-    }
-    return 0;
-}
-
-static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *sections) {
-    unsigned char raw[64];
-    unsigned short i;
-
-    if (header->shnum == 0U) {
-        return 0;
-    }
-    if (header->shnum > READELF_MAX_SECTIONS || header->shentsize < 64U) {
-        return -1;
-    }
-
-    for (i = 0U; i < header->shnum; ++i) {
-        unsigned long long offset = header->shoff + ((unsigned long long)i * (unsigned long long)header->shentsize);
-        if (read_region(fd, offset, raw, 64U) != 0) {
-            return -1;
-        }
-        sections[i].name = tool_read_u32_le(raw + 0);
-        sections[i].type = tool_read_u32_le(raw + 4);
-        sections[i].flags = tool_read_u64_le(raw + 8);
-        sections[i].addr = tool_read_u64_le(raw + 16);
-        sections[i].offset = tool_read_u64_le(raw + 24);
-        sections[i].size = tool_read_u64_le(raw + 32);
-        sections[i].link = tool_read_u32_le(raw + 40);
-        sections[i].entsize = tool_read_u64_le(raw + 56);
     }
     return 0;
 }
@@ -3221,7 +3183,7 @@ static int load_compare_summary(const char *path, BinaryCompareSummary *summary)
         return -1;
     }
     if (parse_elf_header(fd, &elf_header) == 0 && load_program_headers(fd, &elf_header, programs) == 0 &&
-        load_sections(fd, &elf_header, elf_sections) == 0 &&
+        object_elf_load_sections(fd, readelf_object_base, readelf_object_size, elf_header.shoff, elf_header.shnum, elf_header.shentsize, elf_sections, READELF_MAX_SECTIONS) == 0 &&
         object_elf_load_name_table(fd,
                                    readelf_object_base,
                                    readelf_object_size,
@@ -3479,7 +3441,7 @@ int main(int argc, char **argv) {
 
         set_object_window(0ULL, 0ULL);
 
-        if (parse_elf_header(fd, &header) != 0 || load_program_headers(fd, &header, programs) != 0 || load_sections(fd, &header, sections) != 0 ||
+        if (parse_elf_header(fd, &header) != 0 || load_program_headers(fd, &header, programs) != 0 || object_elf_load_sections(fd, readelf_object_base, readelf_object_size, header.shoff, header.shnum, header.shentsize, sections, READELF_MAX_SECTIONS) != 0 ||
             object_elf_load_name_table(fd,
                                        readelf_object_base,
                                        readelf_object_size,

@@ -192,6 +192,36 @@ int object_macho_load_symtab(int fd,
     return object_macho_load_layout(fd, base, object_size, header, 0, 0U, max_commands, 0, symtab);
 }
 
+int object_elf_load_sections(int fd,
+                             unsigned long long base,
+                             unsigned long long object_size,
+                             unsigned long long section_header_offset,
+                             unsigned int section_count,
+                             unsigned int section_entry_size,
+                             ObjectElfSectionInfo *sections,
+                             unsigned int max_sections) {
+    unsigned int index;
+
+    if (section_count == 0U) return 0;
+    if (sections == 0 || section_count > max_sections || section_entry_size < 64U) return -1;
+
+    for (index = 0U; index < section_count; ++index) {
+        unsigned char raw[64];
+        unsigned long long offset = section_header_offset + ((unsigned long long)index * (unsigned long long)section_entry_size);
+
+        if (object_read_region(fd, base, object_size, offset, raw, sizeof(raw)) != 0) return -1;
+        sections[index].name = tool_read_u32_le(raw + 0);
+        sections[index].type = tool_read_u32_le(raw + 4);
+        sections[index].flags = tool_read_u64_le(raw + 8);
+        sections[index].addr = tool_read_u64_le(raw + 16);
+        sections[index].offset = tool_read_u64_le(raw + 24);
+        sections[index].size = tool_read_u64_le(raw + 32);
+        sections[index].link = tool_read_u32_le(raw + 40);
+        sections[index].entsize = tool_read_u64_le(raw + 56);
+    }
+    return 0;
+}
+
 int object_elf_load_name_table(int fd,
                                unsigned long long base,
                                unsigned long long object_size,

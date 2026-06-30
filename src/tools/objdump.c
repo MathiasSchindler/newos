@@ -29,17 +29,6 @@
 #define MACHO_S_THREAD_LOCAL_ZEROFILL 18U
 
 typedef struct {
-    unsigned int name;
-    unsigned int type;
-    unsigned long long flags;
-    unsigned long long addr;
-    unsigned long long offset;
-    unsigned long long size;
-    unsigned int link;
-    unsigned long long entsize;
-} ElfSectionInfo;
-
-typedef struct {
     unsigned short type;
     unsigned short machine;
     unsigned long long entry;
@@ -51,6 +40,7 @@ typedef struct {
     unsigned short shentsize;
 } ElfHeaderInfo;
 
+typedef ObjectElfSectionInfo ElfSectionInfo;
 typedef ObjectMachHeaderInfo MachHeaderInfo;
 typedef ObjectMachSectionInfo MachSectionInfo;
 typedef ObjectMachSymtabInfo MachSymtabInfo;
@@ -292,37 +282,6 @@ static int load_pe_sections(int fd, const PeHeaderInfo *header, PeSectionInfo *s
         sections[i].raw_size = tool_read_u32_le(raw + 16);
         sections[i].raw_offset = tool_read_u32_le(raw + 20);
         sections[i].characteristics = tool_read_u32_le(raw + 36);
-    }
-    return 0;
-}
-
-static int load_sections(int fd, const ElfHeaderInfo *header, ElfSectionInfo *sections) {
-    unsigned short i;
-    unsigned char raw[64];
-
-    if (header->shnum > OBJDUMP_MAX_SECTIONS) {
-        return -1;
-    }
-    if (header->shnum == 0) {
-        return 0;
-    }
-    if (header->shentsize < 64U) {
-        return -1;
-    }
-
-    for (i = 0U; i < header->shnum; ++i) {
-        unsigned long long offset = header->shoff + ((unsigned long long)i * (unsigned long long)header->shentsize);
-        if (read_region(fd, offset, raw, sizeof(raw)) != 0) {
-            return -1;
-        }
-        sections[i].name = tool_read_u32_le(raw + 0);
-        sections[i].type = tool_read_u32_le(raw + 4);
-        sections[i].flags = tool_read_u64_le(raw + 8);
-        sections[i].addr = tool_read_u64_le(raw + 16);
-        sections[i].offset = tool_read_u64_le(raw + 24);
-        sections[i].size = tool_read_u64_le(raw + 32);
-        sections[i].link = tool_read_u32_le(raw + 40);
-        sections[i].entsize = tool_read_u64_le(raw + 56);
     }
     return 0;
 }
@@ -885,7 +844,7 @@ int main(int argc, char **argv) {
         }
         objdump_object_base = 0ULL;
 
-        if (parse_elf_header(fd, &header) != 0 || load_sections(fd, &header, sections) != 0 ||
+        if (parse_elf_header(fd, &header) != 0 || object_elf_load_sections(fd, objdump_object_base, 0ULL, header.shoff, header.shnum, header.shentsize, sections, OBJDUMP_MAX_SECTIONS) != 0 ||
             object_elf_load_name_table(fd,
                                        objdump_object_base,
                                        0ULL,
