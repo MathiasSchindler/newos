@@ -373,7 +373,7 @@ static int git_http_process_plain_body(GitBuffer *response, GitHttpBodyCallback 
     return 0;
 }
 
-static int git_http_process_chunked_body(GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data, GitBuffer *pending, const unsigned char *data, size_t size, int *done) {
+static int git_http_process_chunked_body(GitBuffer *response, GitHttpBodyCallback callback, void *callback_user_data, GitBuffer *pending, const unsigned char *data, size_t size, int *done, size_t *body_seen) {
     size_t consumed = 0U;
 
     if (*done) {
@@ -408,6 +408,7 @@ static int git_http_process_chunked_body(GitBuffer *response, GitHttpBodyCallbac
         if (git_http_emit_body(response, callback, callback_user_data, pending->data + consumed, chunk_size) != 0) {
             return -1;
         }
+        *body_seen += chunk_size;
         consumed += chunk_size;
         if (pending->data[consumed] == '\r') {
             consumed += 1U;
@@ -433,6 +434,41 @@ static int git_http_header_value_safe(const char *text) {
         }
     }
     return 1;
+}
+
+static int git_http_trace_enabled(void) {
+    const char *value = platform_getenv("NEWOS_GIT_HTTP_TRACE");
+
+    return value != 0 && value[0] != '\0' && !(value[0] == '0' && value[1] == '\0');
+}
+
+static void git_http_trace_unsigned(const char *label, unsigned long long value) {
+    char text[32];
+
+    rt_unsigned_to_string(value, text, sizeof(text));
+    rt_write_cstr(2, label);
+    rt_write_cstr(2, text);
+}
+
+static void git_http_trace_result(const char *method, const char *path, int status_code, unsigned long long start_ns, unsigned long long connect_ns, unsigned long long write_ns, unsigned long long header_ns, unsigned long long done_ns, size_t body_seen) {
+    unsigned long long total_ms = (done_ns - start_ns) / 1000000ULL;
+    unsigned long long connect_ms = (connect_ns - start_ns) / 1000000ULL;
+    unsigned long long write_ms = (write_ns - connect_ns) / 1000000ULL;
+    unsigned long long header_ms = header_ns >= write_ns ? (header_ns - write_ns) / 1000000ULL : 0ULL;
+    unsigned long long body_ms = done_ns >= header_ns ? (done_ns - header_ns) / 1000000ULL : 0ULL;
+
+    rt_write_cstr(2, "git-http: ");
+    rt_write_cstr(2, method);
+    rt_write_char(2, ' ');
+    rt_write_cstr(2, path);
+    git_http_trace_unsigned(" status=", (unsigned long long)(status_code < 0 ? 0 : status_code));
+    git_http_trace_unsigned(" connect_ms=", connect_ms);
+    git_http_trace_unsigned(" write_ms=", write_ms);
+    git_http_trace_unsigned(" header_ms=", header_ms);
+    git_http_trace_unsigned(" body_ms=", body_ms);
+    git_http_trace_unsigned(" total_ms=", total_ms);
+    git_http_trace_unsigned(" body_bytes=", (unsigned long long)body_seen);
+    rt_write_char(2, '\n');
 }
 
 static int git_http_base64_append(GitBuffer *out, const unsigned char *data, size_t size) {
@@ -589,15 +625,22 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
     const char *bearer_token = platform_getenv("GIT_HTTPS_TOKEN");
     char helper_authorization[512];
     int result = -1;
+    int trace_enabled = git_http_trace_enabled();
+    unsigned long long trace_start_ns = 0ULL;
+    unsigned long long trace_connect_ns = 0ULL;
+    unsigned long long trace_write_ns = 0ULL;
+    unsigned long long trace_header_ns = 0ULL;
 
     rt_memset(&header, 0, sizeof(header));
     rt_memset(&chunk_pending, 0, sizeof(chunk_pending));
     if (response != 0) {
         rt_memset(response, 0, sizeof(*response));
     }
+    if (trace_enabled) trace_start_ns = platform_get_monotonic_time_ns();
     if (tool_http_connection_connect(&connection, url->host, url->port, url->scheme == GIT_SCHEME_HTTPS) != 0) {
         return -1;
     }
+    if (trace_enabled) trace_connect_ns = platform_get_monotonic_time_ns();
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, method);
     request_length = tool_buffer_append_char(request, sizeof(request), request_length, ' ');
     request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url->path[0] != '\0' ? url->path : "/");
@@ -645,6 +688,7 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
     if (request_length >= sizeof(request) || tool_http_connection_write_all(&connection, request, request_length) != 0 || (body_size > 0U && tool_http_connection_write_all(&connection, body, body_size) != 0)) {
         goto done;
     }
+    if (trace_enabled) trace_write_ns = platform_get_monotonic_time_ns();
     while ((bytes_read = tool_http_connection_read(&connection, read_buffer, sizeof(read_buffer))) > 0) {
         if (!saw_headers) {
             size_t header_offset = 0U;
@@ -659,8 +703,9 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
                 goto done;
             }
             saw_headers = 1;
+            if (trace_enabled) trace_header_ns = platform_get_monotonic_time_ns();
             if (chunked) {
-                if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, header.data + header_offset, header.size - header_offset, &chunk_done) != 0) {
+                if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, header.data + header_offset, header.size - header_offset, &chunk_done, &body_seen) != 0) {
                     goto done;
                 }
             } else if (git_http_process_plain_body(response, callback, callback_user_data, header.data + header_offset, header.size - header_offset, has_content_length, content_length, &body_seen) != 0) {
@@ -668,7 +713,7 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
             }
             header.size = 0U;
         } else if (chunked) {
-            if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, (const unsigned char *)read_buffer, (size_t)bytes_read, &chunk_done) != 0) {
+            if (git_http_process_chunked_body(response, callback, callback_user_data, &chunk_pending, (const unsigned char *)read_buffer, (size_t)bytes_read, &chunk_done, &body_seen) != 0) {
                 goto done;
             }
         } else if (git_http_process_plain_body(response, callback, callback_user_data, (const unsigned char *)read_buffer, (size_t)bytes_read, has_content_length, content_length, &body_seen) != 0) {
@@ -683,6 +728,12 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
     }
     result = 0;
 done:
+    if (trace_enabled && trace_connect_ns != 0ULL) {
+        unsigned long long trace_done_ns = platform_get_monotonic_time_ns();
+        if (trace_write_ns == 0ULL) trace_write_ns = trace_connect_ns;
+        if (trace_header_ns == 0ULL) trace_header_ns = trace_write_ns;
+        git_http_trace_result(method, url->path[0] != '\0' ? url->path : "/", status_code, trace_start_ns, trace_connect_ns, trace_write_ns, trace_header_ns, trace_done_ns, body_seen);
+    }
     tool_http_connection_close(&connection);
     git_buffer_destroy(&header);
     git_buffer_destroy(&chunk_pending);

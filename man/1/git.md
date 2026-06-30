@@ -167,7 +167,7 @@ be combined with `--no-pager`.
 - clone a clean local worktree or `file://` worktree by copying `.git` metadata
     and tracked files, preserving regular-file executable bits
 - clone an ordinary `http://` or `https://` smart-HTTP repository by fetching a
-    pack with protocol v2 when available or protocol v1 otherwise, storing it
+    pack with smart HTTP, storing it
     under `.git/objects/pack`, creating `origin`, and checking out the selected
     branch; `clone --depth N` records shallow boundaries when the server returns
     them; remote sideband and local pack byte progress are streamed to stderr
@@ -176,12 +176,16 @@ be combined with `--no-pager`.
     storing `origin`, and checking out the selected branch
 - fetch from `origin` or an explicit HTTP(S) or SSH URL with Git upload-pack and update
     `FETCH_HEAD` plus `refs/remotes/origin/*`, storing the received pack;
-    `fetch --depth N` and `fetch --filter=blob:none` use protocol v2 servers
+    no-op fetches skip pack download when the advertised target commit is
+    already present locally; `fetch --filter=blob:none` uses protocol v2 servers
 - send an HTTPS `Authorization` header from `GIT_HTTP_AUTHORIZATION`, or a
     `Bearer` token from `GIT_HTTPS_TOKEN`, for HTTP(S) fetch, pull, and push requests;
     when those are absent, `GIT_CREDENTIAL_HELPER=/path/to/helper` can execute a
     bounded `credential get` helper and use returned `username`/`password` as a
     Basic authorization header
+- set `NEWOS_GIT_HTTP_TRACE=1` to write coarse HTTP phase timings for Git
+    smart-HTTP requests to stderr, including connect, request write, response
+    header, response body, total time, status, and response bytes
 - SSH fetch, clone, pull, and push use `$HOME/.ssh/known_hosts` trust-on-first-use
     host-key pinning through the shared SSH code. Set `NEWOS_GIT_SSH_IDENTITY`
     to an unencrypted Ed25519 private key path, or `NEWOS_GIT_SSH_PASSWORD` for
@@ -195,8 +199,9 @@ be combined with `--no-pager`.
 ## LIMITATIONS
 
 - no git:// transport, promisor-object lazy checkout, pack bitmap writing, or
-    pack reuse during network negotiation; protocol v2 clone/fetch, shallow
-    fetches, and `filter blob:none` fetches are first-pass HTTP(S) features
+    pack reuse during network negotiation; ordinary HTTP(S) fetches prefer the
+    protocol v1 advertisement path to avoid an extra round trip, while
+    `filter blob:none` fetches require protocol v2
 - HTTP(S) push currently writes a simple non-delta pack for the needed local
     object closure; it does not implement pack reuse, thin packs, delete
     refspecs, push certificates, signed pushes, or native Git's full push option

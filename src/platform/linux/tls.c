@@ -79,16 +79,38 @@ static unsigned char *linux_tls_read_file(const char *path, size_t *length_out) 
 }
 
 static unsigned char *linux_tls_load_trust_pem(size_t *length_out) {
+    static unsigned char *cached_pem;
+    static size_t cached_length;
     unsigned char *buffer;
 
+    if (cached_pem != 0) {
+        *length_out = cached_length;
+        return cached_pem;
+    }
     buffer = linux_tls_read_file("/etc/ssl/certs/ca-certificates.crt", length_out);
-    if (buffer != 0) return buffer;
+    if (buffer != 0) {
+        cached_pem = buffer;
+        cached_length = *length_out;
+        return cached_pem;
+    }
     buffer = linux_tls_read_file("/etc/ssl/cert.pem", length_out);
-    if (buffer != 0) return buffer;
+    if (buffer != 0) {
+        cached_pem = buffer;
+        cached_length = *length_out;
+        return cached_pem;
+    }
     buffer = linux_tls_read_file("/etc/pki/tls/certs/ca-bundle.crt", length_out);
-    if (buffer != 0) return buffer;
+    if (buffer != 0) {
+        cached_pem = buffer;
+        cached_length = *length_out;
+        return cached_pem;
+    }
     buffer = linux_tls_read_file("/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem", length_out);
-    if (buffer != 0) return buffer;
+    if (buffer != 0) {
+        cached_pem = buffer;
+        cached_length = *length_out;
+        return cached_pem;
+    }
     return 0;
 }
 
@@ -109,7 +131,6 @@ static int linux_tls_verify_peer_certs(const CryptoX509DerCert *certs, size_t ce
     }
     status[0] = '\0';
     result = crypto_x509_verify_chain(certs, cert_count, host, platform_get_epoch_time(), trust_pem, trust_pem_len, status, sizeof(status));
-    rt_free(trust_pem);
     linux_tls_set_peer_status(result == 0 ? "trusted" : status);
     return result;
 }

@@ -17,6 +17,7 @@ The benchmarks currently cover:
   and the `diff --quiet` dirty-worktree fast path
 - Git large-fixture hot paths via `git_large_benchmark.py`, which generates a
   deterministic local repository under `tests/tmp/benchmarks/git-large`
+- Opt-in remote Git HTTPS benchmarks via `git_remote_benchmark.py`
 
 ## Usage
 
@@ -38,10 +39,36 @@ Set `NEWOS_GIT=/path/to/git` to benchmark a non-default in-tree Git binary, or
 adjust fixture size with `--files`, `--dirs`, `--commits`, `--dirty-files`, and
 `--untracked-files`.
 
+For opt-in remote HTTPS checks against external servers:
+
+```sh
+NEWOS_GIT="$(pwd)/build/host-linux-x86_64/git" \
+  python3 tests/benchmarks/git_remote_benchmark.py \
+  --repo https://github.com/octocat/Hello-World.git \
+  --scenarios clone-shallow,clone-filtered,fetch-noop-shallow
+```
+
+Remote benchmarks alternate in-tree and canonical Git runs, write CSV results to
+`tests/tmp/benchmarks/git-remote/results.csv`, and record basic compatibility
+metadata such as checked-out HEAD, clean status, and tracked file count. Clone
+scenarios also emit post-clone local timings for `rev-parse HEAD`,
+`status --short`, and `ls-files` so transport time can be separated from local
+metadata costs.
+
+Set `NEWOS_GIT_HTTP_TRACE=1` on an individual in-tree Git run to print coarse
+smart-HTTP request timings to stderr. The trace reports connect/TLS, request
+write, response-header wait, response-body read, total elapsed time, status, and
+body bytes for each Git HTTP request; this is useful when comparing remote
+benchmark ratios because the local post-clone rows are often near noise-floor
+timings while HTTPS round trips dominate.
+
 ## Notes
 
 - benchmark scratch data is created under tests/tmp/benchmarks
 - results are comparative and best used for trend tracking
+- remote Git benchmarks are opt-in because external server load, routing,
+  caching, TLS setup, and rate limits add noise; use medians and repeated
+  alternating runs rather than single timings
 - for Git hot-path investigation, pair elapsed benchmarks with `strace -c` for
 	syscall shape and `PROFILE=1`/`NEWOS_PROFILE` plus `profiler` for CPU hot paths
 - some newos tools intentionally implement a smaller feature set than the system tools, so the numbers are useful as engineering guidance rather than exact product-style rankings
