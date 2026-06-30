@@ -181,14 +181,13 @@ assert_file_contains "$WORK_DIR/status.out" '^ D deleted.txt$' "git status did n
 assert_file_contains "$WORK_DIR/status.out" '^ M modified.txt$' "git status did not report a modified tracked file"
 assert_file_contains "$WORK_DIR/status.out" '^ M script.sh$' "git status did not report an executable-bit change"
 assert_file_contains "$WORK_DIR/status.out" '^?? untracked.txt$' "git status did not report an untracked file"
-assert_file_contains "$WORK_DIR/status.out" '^?? untracked-dir/nested.txt$' "git status did not report a nested untracked file"
-assert_file_contains "$WORK_DIR/status.out" '^?? nested-ignore/.gitignore$' "git status did not report a nested .gitignore file"
-assert_file_contains "$WORK_DIR/status.out" '^?? nested-ignore/visible.txt$' "git status missed a file beside a nested .gitignore"
+assert_file_contains "$WORK_DIR/status.out" '^?? untracked-dir/$' "git status did not collapse an untracked directory"
+assert_file_contains "$WORK_DIR/status.out" '^?? nested-ignore/$' "git status did not collapse a directory with visible untracked files"
 if grep -q '^.. tracked\.txt$' "$WORK_DIR/status.out"; then
     fail "git status reported an unchanged tracked file"
 fi
-if grep -q 'skip.tmp\|excluded.log\|ignored-dir\|nested-ignore/ignored.log' "$WORK_DIR/status.out"; then
-    fail "git status reported ignored files"
+if grep -q 'skip.tmp\|excluded.log\|ignored-dir\|nested-ignore/ignored.log\|untracked-dir/nested.txt\|nested-ignore/visible.txt' "$WORK_DIR/status.out"; then
+    fail "git status reported ignored files or uncollapsed untracked directory contents"
 fi
 
 cd "$repo" && "${TEST_BIN_DIR}/git" status --porcelain=v1 -z > "$WORK_DIR/status-porcelain-z.out"
@@ -196,6 +195,7 @@ tr '\000' '\n' < "$WORK_DIR/status-porcelain-z.out" > "$WORK_DIR/status-porcelai
 assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^ D deleted.txt$' "git status --porcelain=v1 -z missed a deleted tracked file"
 assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^ M modified.txt$' "git status --porcelain=v1 -z missed a modified tracked file"
 assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^?? untracked.txt$' "git status --porcelain=v1 -z missed an untracked file"
+assert_file_contains "$WORK_DIR/status-porcelain-z.lines" '^?? untracked-dir/$' "git status --porcelain=v1 -z did not collapse an untracked directory"
 
 cd "$repo" && "${TEST_BIN_DIR}/git" diff --stat -- deleted.txt modified.txt tracked.txt > "$WORK_DIR/diff-stat.out"
 assert_file_contains "$WORK_DIR/diff-stat.out" '^ deleted\.txt  | 1 -$' "git diff --stat did not report a deleted line"

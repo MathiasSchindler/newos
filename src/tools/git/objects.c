@@ -189,6 +189,138 @@ static int git_pack_name_is_pack(const char *name) {
     return length == 50U && rt_strncmp(name, "pack-", 5U) == 0 && rt_strcmp(name + length - 5U, ".pack") == 0;
 }
 
+static int git_pack_path_to_idx_path(const char *pack_path, char *idx_path, size_t idx_path_size) {
+    size_t length = rt_strlen(pack_path);
+
+    if (length < 5U || rt_strcmp(pack_path + length - 5U, ".pack") != 0 || length >= idx_path_size) {
+        return -1;
+    }
+    rt_copy_string(idx_path, idx_path_size, pack_path);
+    idx_path[length - 4U] = 'i';
+    idx_path[length - 3U] = 'd';
+    idx_path[length - 2U] = 'x';
+    idx_path[length - 1U] = '\0';
+    return 0;
+}
+
+static int git_pack_index_find_offset(const unsigned char *idx, size_t idx_size, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], unsigned long long *offset_out) {
+    unsigned int count;
+    unsigned int lo;
+    unsigned int hi;
+    size_t oid_table;
+    size_t crc_table;
+    size_t offset_table;
+    size_t large_offset_table;
+
+    if (idx_size < 8U + 256U * 4U || tool_read_u32_be(idx) != 0xff744f63U || tool_read_u32_be(idx + 4U) != 2U) {
+        return -1;
+    }
+    count = tool_read_u32_be(idx + 8U + 255U * 4U);
+    oid_table = 8U + 256U * 4U;
+    crc_table = oid_table + (size_t)count * CRYPTO_SHA1_DIGEST_SIZE;
+    offset_table = crc_table + (size_t)count * 4U;
+    large_offset_table = offset_table + (size_t)count * 4U;
+    if (count == 0U || offset_table > idx_size || large_offset_table > idx_size) {
+        return -1;
+    }
+    lo = oid[0] == 0U ? 0U : tool_read_u32_be(idx + 8U + ((unsigned int)oid[0] - 1U) * 4U);
+    hi = tool_read_u32_be(idx + 8U + (unsigned int)oid[0] * 4U);
+    if (lo > hi || hi > count) {
+        return -1;
+    }
+    while (lo < hi) {
+        unsigned int mid = lo + (hi - lo) / 2U;
+        int cmp = memcmp(oid, idx + oid_table + (size_t)mid * CRYPTO_SHA1_DIGEST_SIZE, CRYPTO_SHA1_DIGEST_SIZE);
+
+        if (cmp == 0) {
+            unsigned int offset32 = tool_read_u32_be(idx + offset_table + (size_t)mid * 4U);
+
+            if ((offset32 & 0x80000000U) != 0U) {
+                unsigned int large_index = offset32 & 0x7fffffffU;
+
+                if (large_offset_table + (size_t)large_index * 8U + 8U > idx_size) {
+                    return -1;
+                }
+                *offset_out = tool_read_u64_be(idx + large_offset_table + (size_t)large_index * 8U);
+            } else {
+                *offset_out = offset32;
+            }
+            return 0;
+        }
+        if (cmp < 0) {
+            hi = mid;
+        } else {
+            lo = mid + 1U;
+        }
+    }
+    return -1;
+}
+
+static int git_read_pack_object_at_offset(const unsigned char *pack_data, size_t pack_size, unsigned long long offset, const unsigned char expected_oid[CRYPTO_SHA1_DIGEST_SIZE], int *type_out, unsigned char **data_out, size_t *size_out) {
+    size_t pos = (size_t)offset;
+    unsigned char byte;
+    unsigned int shift = 4U;
+    size_t object_size;
+    unsigned char *object_data;
+    size_t inflated_size = 0U;
+    size_t consumed = 0U;
+    unsigned char actual_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    if ((unsigned long long)pos != offset || pos >= pack_size) {
+        return -1;
+    }
+    byte = pack_data[pos++];
+    *type_out = (byte >> 4) & 7U;
+    object_size = (size_t)(byte & 0x0fU);
+    while ((byte & 0x80U) != 0U) {
+        if (pos >= pack_size || shift >= sizeof(size_t) * 8U) {
+            return -1;
+        }
+        byte = pack_data[pos++];
+        object_size |= ((size_t)(byte & 0x7fU)) << shift;
+        shift += 7U;
+    }
+    if (*type_out == GIT_OBJECT_OFS_DELTA || *type_out == GIT_OBJECT_REF_DELTA || *type_out < GIT_OBJECT_COMMIT || *type_out > GIT_OBJECT_TAG || object_size > GIT_MAX_OBJECT_SIZE) {
+        return -1;
+    }
+    object_data = (unsigned char *)rt_malloc(object_size == 0U ? 1U : object_size);
+    if (object_data == 0) {
+        return -1;
+    }
+    if (compression_zlib_inflate_consumed(pack_data + pos, pack_size - pos, object_data, object_size, &inflated_size, &consumed) != 0 ||
+        inflated_size != object_size ||
+        git_hash_object_data(*type_out, object_data, object_size, actual_oid, 0) != 0 ||
+        !git_oid_equal(actual_oid, expected_oid)) {
+        rt_free(object_data);
+        return -1;
+    }
+    *data_out = object_data;
+    *size_out = object_size;
+    return 0;
+}
+
+static int git_read_pack_file_object_direct(const char *pack_path, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], int *type_out, unsigned char **data_out, size_t *size_out) {
+    char idx_path[GIT_PATH_CAPACITY];
+    unsigned char *idx_data = 0;
+    unsigned char *pack_data = 0;
+    size_t idx_size = 0U;
+    size_t pack_size = 0U;
+    unsigned long long offset = 0ULL;
+    int result = -1;
+
+    if (git_pack_path_to_idx_path(pack_path, idx_path, sizeof(idx_path)) != 0 ||
+        git_read_file(idx_path, &idx_data, &idx_size) != 0 ||
+        git_pack_index_find_offset(idx_data, idx_size, oid, &offset) != 0 ||
+        git_read_file(pack_path, &pack_data, &pack_size) != 0) {
+        goto done;
+    }
+    result = git_read_pack_object_at_offset(pack_data, pack_size, offset, oid, type_out, data_out, size_out);
+done:
+    rt_free(idx_data);
+    rt_free(pack_data);
+    return result;
+}
+
 static int git_read_pack_file_object(const char *path, const unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE], int *type_out, unsigned char **data_out, size_t *size_out) {
     unsigned char *pack_data = 0;
     size_t pack_size = 0U;
@@ -221,7 +353,9 @@ static int git_read_packed_object(const GitRepo *repo, const unsigned char oid[C
     }
     for (i = 0U; i < count; ++i) {
         if (!entries[i].is_dir && git_pack_name_is_pack(entries[i].name)) {
-            if (git_join(pack_path, sizeof(pack_path), pack_dir, entries[i].name) == 0 && git_read_pack_file_object(pack_path, oid, type_out, data_out, size_out) == 0) {
+            if (git_join(pack_path, sizeof(pack_path), pack_dir, entries[i].name) == 0 &&
+                (git_read_pack_file_object_direct(pack_path, oid, type_out, data_out, size_out) == 0 ||
+                 git_read_pack_file_object(pack_path, oid, type_out, data_out, size_out) == 0)) {
                 return 0;
             }
         }
@@ -903,6 +1037,84 @@ static int git_read_tree_index_recursive(const GitRepo *repo, const unsigned cha
     return 0;
 }
 
+static int git_read_tree_index_metadata_recursive(const GitRepo *repo, const unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, const char *prefix, GitIndex *index) {
+    int type = 0;
+    unsigned char *tree = 0;
+    size_t tree_size = 0U;
+    size_t pos = 0U;
+
+    if (git_read_object(repo, tree_oid, pack_cache, &type, &tree, &tree_size) != 0 || type != GIT_OBJECT_TREE) {
+        rt_free(tree);
+        return -1;
+    }
+    while (pos < tree_size) {
+        unsigned int mode = 0U;
+        size_t name_start;
+        size_t name_length;
+        char relative[GIT_PATH_CAPACITY];
+        unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+        while (pos < tree_size && tree[pos] >= '0' && tree[pos] <= '7') {
+            mode = mode * 8U + (unsigned int)(tree[pos] - '0');
+            pos += 1U;
+        }
+        if (pos >= tree_size || tree[pos] != ' ') {
+            rt_free(tree);
+            return -1;
+        }
+        pos += 1U;
+        name_start = pos;
+        while (pos < tree_size && tree[pos] != '\0') {
+            pos += 1U;
+        }
+        if (pos >= tree_size || pos + 1U + CRYPTO_SHA1_DIGEST_SIZE > tree_size) {
+            rt_free(tree);
+            return -1;
+        }
+        name_length = pos - name_start;
+        pos += 1U;
+        memcpy(oid, tree + pos, CRYPTO_SHA1_DIGEST_SIZE);
+        pos += CRYPTO_SHA1_DIGEST_SIZE;
+        if (prefix[0] != '\0') {
+            if (rt_strlen(prefix) + 1U + name_length >= sizeof(relative)) {
+                rt_free(tree);
+                return -1;
+            }
+            rt_copy_string(relative, sizeof(relative), prefix);
+            relative[rt_strlen(relative) + 1U] = '\0';
+            relative[rt_strlen(relative)] = '/';
+            memcpy(relative + rt_strlen(prefix) + 1U, tree + name_start, name_length);
+            relative[rt_strlen(prefix) + 1U + name_length] = '\0';
+        } else {
+            if (name_length >= sizeof(relative)) {
+                rt_free(tree);
+                return -1;
+            }
+            memcpy(relative, tree + name_start, name_length);
+            relative[name_length] = '\0';
+        }
+        if (tool_path_is_unsafe_relative(relative)) {
+            rt_free(tree);
+            return -1;
+        }
+        if (mode == GIT_MODE_TREE || mode == 040000U) {
+            if (git_read_tree_index_metadata_recursive(repo, oid, pack_cache, relative, index) != 0) {
+                rt_free(tree);
+                return -1;
+            }
+        } else if ((mode & GIT_MODE_TYPE_MASK) == GIT_MODE_REGULAR_TYPE || mode == 0100644U || mode == 0100755U || mode == GIT_MODE_SYMLINK || mode == 0120000U) {
+            unsigned int index_mode = mode == GIT_MODE_SYMLINK || mode == 0120000U ? GIT_MODE_SYMLINK : ((mode & GIT_MODE_EXEC_BITS) != 0U ? GIT_MODE_REGULAR_EXECUTABLE : GIT_MODE_REGULAR_FILE);
+
+            if (git_tree_index_append_blob_entry(index, relative, index_mode, oid, 0U) != 0) {
+                rt_free(tree);
+                return -1;
+            }
+        }
+    }
+    rt_free(tree);
+    return 0;
+}
+
 static int git_load_commit_tree_index(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitIndex *index) {
     unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
 
@@ -911,6 +1123,23 @@ static int git_load_commit_tree_index(const GitRepo *repo, const unsigned char c
         return -1;
     }
     if (git_read_tree_index_recursive(repo, tree_oid, pack_cache, "", index) != 0) {
+        git_index_destroy(index);
+        return -1;
+    }
+    if (index->count > 1U && !git_index_is_sorted(index)) {
+        rt_sort(index->entries, index->count, sizeof(index->entries[0]), git_compare_entries_by_path);
+    }
+    return 0;
+}
+
+static int git_load_commit_tree_index_metadata(const GitRepo *repo, const unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE], const GitPack *pack_cache, GitIndex *index) {
+    unsigned char tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    rt_memset(index, 0, sizeof(*index));
+    if (git_commit_tree_oid(repo, commit_oid, pack_cache, tree_oid) != 0) {
+        return -1;
+    }
+    if (git_read_tree_index_metadata_recursive(repo, tree_oid, pack_cache, "", index) != 0) {
         git_index_destroy(index);
         return -1;
     }
@@ -940,6 +1169,16 @@ static int git_load_head_tree_index(const GitRepo *repo, const GitPack *pack_cac
         return -1;
     }
     return git_load_commit_tree_index(repo, commit_oid, pack_cache, index);
+}
+
+static int git_load_head_tree_index_metadata(const GitRepo *repo, const GitPack *pack_cache, GitIndex *index) {
+    unsigned char commit_oid[CRYPTO_SHA1_DIGEST_SIZE];
+
+    if (repo->head_oid[0] == '\0' || git_parse_oid_hex(repo->head_oid, commit_oid) != 0) {
+        rt_memset(index, 0, sizeof(*index));
+        return -1;
+    }
+    return git_load_commit_tree_index_metadata(repo, commit_oid, pack_cache, index);
 }
 
 static const char *git_tree_mode_text(unsigned int mode) {
@@ -1392,4 +1631,3 @@ static int git_checkout_commit_to_worktree(const GitRepo *repo, const unsigned c
     git_index_destroy(&checkout.entries);
     return result;
 }
-

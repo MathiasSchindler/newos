@@ -1559,12 +1559,14 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
     int have_pack = 0;
     int have_head_index = 0;
     int have_untracked = 0;
+    int head_matches_index = 0;
     int short_output = 0;
     int porcelain_format = 0;
     int nul_terminate = 0;
     int color_mode = TOOL_COLOR_AUTO;
     int saw_change = 0;
     int result = 1;
+    GitOutputBuffer out;
 
     while (argi < argc) {
         if (rt_strcmp(argv[argi], "--short") == 0 || rt_strcmp(argv[argi], "-s") == 0) {
@@ -1594,6 +1596,7 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
     if (porcelain_format) {
         color_mode = TOOL_COLOR_NEVER;
     }
+    git_output_init(&out, 1);
     if (git_load_index(repo, &index) != 0) {
         tool_write_error("git", "cannot read index", 0);
         return 1;
@@ -1601,8 +1604,10 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
     if (index.count > 1U && !git_index_is_sorted(&index)) {
         rt_sort(index.entries, index.count, sizeof(index.entries[0]), git_compare_entries_by_path);
     }
-    have_pack = git_load_pack_cache(repo, &pack) == 0;
-    have_head_index = git_load_head_tree_index(repo, have_pack ? &pack : 0, &head_index) == 0;
+    if (git_index_cache_tree_matches_head(repo, &index, 0, &head_matches_index) != 0 || !head_matches_index) {
+        have_pack = git_load_pack_cache(repo, &pack) == 0;
+        have_head_index = git_load_head_tree_index_metadata(repo, have_pack ? &pack : 0, &head_index) == 0;
+    }
     if (git_ignore_load(repo, &ignores) != 0) {
         if (have_head_index) git_index_destroy(&head_index);
         if (have_pack) git_pack_destroy(&pack);
@@ -1610,18 +1615,18 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot read ignore files", 0);
         return 1;
     }
-    if (git_untracked_walk_collect(repo, &index, &ignores, 0, 0, 1, &untracked) != 0) {
+    if (git_untracked_walk_collect(repo, &index, &ignores, 0, 0, 1, 1, &untracked) != 0) {
         goto done;
     }
     have_untracked = 1;
-    if ((have_head_index ? git_status_tracked_with_head(repo, &head_index, &index, short_output, color_mode, nul_terminate, &saw_change) : git_status_tracked(repo, &index, short_output, color_mode, nul_terminate, &saw_change)) != 0 ||
-        git_status_emit_untracked_walk(&untracked, short_output, color_mode, nul_terminate, &saw_change) != 0) {
+    if ((head_matches_index ? git_status_tracked_index_matches_head(&out, repo, &index, short_output, color_mode, nul_terminate, &saw_change) : have_head_index ? git_status_tracked_with_head(&out, repo, &head_index, &index, short_output, color_mode, nul_terminate, &saw_change) : git_status_tracked(&out, repo, &index, short_output, color_mode, nul_terminate, &saw_change)) != 0 ||
+        git_status_emit_untracked_walk(&out, &untracked, short_output, color_mode, nul_terminate, &saw_change) != 0) {
         goto done;
     }
     if (!short_output && !saw_change) {
-        rt_write_line(1, "nothing to commit, working tree clean");
+        git_output_line(&out, "nothing to commit, working tree clean");
     }
-    result = 0;
+    result = git_output_flush(&out) == 0 ? 0 : 1;
 done:
     if (have_untracked) git_untracked_walk_destroy(&untracked);
     git_ignore_destroy(&ignores);
@@ -1677,7 +1682,9 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     size_t i;
     int result = 1;
     int change_count = 0;
+    GitOutputBuffer out;
 
+    git_output_init(&out, 1);
     rt_memset(&pack, 0, sizeof(pack));
     rt_memset(&stats, 0, sizeof(stats));
     rt_memset(&old_tree_index, 0, sizeof(old_tree_index));
@@ -1768,27 +1775,31 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
     }
     if (compare_commits) {
         have_pack = git_load_pack_cache(repo, &pack) == 0;
-        if (git_load_commit_tree_index(repo, old_commit_oid, have_pack ? &pack : 0, &old_tree_index) != 0 ||
-            git_load_commit_tree_index(repo, new_commit_oid, have_pack ? &pack : 0, &new_tree_index) != 0) {
+        if (git_load_commit_tree_index_metadata(repo, old_commit_oid, have_pack ? &pack : 0, &old_tree_index) != 0 ||
+            git_load_commit_tree_index_metadata(repo, new_commit_oid, have_pack ? &pack : 0, &new_tree_index) != 0) {
             tool_write_error("git", "cannot read commit tree", 0);
             goto done;
         }
         have_old_tree_index = 1;
         have_new_tree_index = 1;
-        if (git_diff_index_pair(repo, &old_tree_index, &new_tree_index, have_pack ? &pack : 0, output_mode, color_mode, nul_terminate, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
+        if (git_diff_index_pair(&out, repo, &old_tree_index, &new_tree_index, have_pack ? &pack : 0, output_mode, color_mode, nul_terminate, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
             tool_write_error("git", "cannot diff commits", 0);
             goto done;
         }
     } else if (cached_mode) {
-        have_pack = git_load_pack_cache(repo, &pack) == 0;
-        have_head_index = git_load_head_tree_index(repo, have_pack ? &pack : 0, &head_index) == 0;
-        if (!have_head_index) {
-            tool_write_error("git", "cannot read HEAD tree", 0);
-            goto done;
-        }
-        if (git_diff_index_pair(repo, &head_index, &index, have_pack ? &pack : 0, output_mode, color_mode, nul_terminate, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
-            tool_write_error("git", "cannot diff staged changes", 0);
-            goto done;
+        int head_matches_index = 0;
+
+        if (git_index_cache_tree_matches_head(repo, &index, 0, &head_matches_index) != 0 || !head_matches_index) {
+            have_pack = git_load_pack_cache(repo, &pack) == 0;
+            have_head_index = git_load_head_tree_index_metadata(repo, have_pack ? &pack : 0, &head_index) == 0;
+            if (!have_head_index) {
+                tool_write_error("git", "cannot read HEAD tree", 0);
+                goto done;
+            }
+            if (git_diff_index_pair(&out, repo, &head_index, &index, have_pack ? &pack : 0, output_mode, color_mode, nul_terminate, argv + pathspec_start, pathspec_count, &stats, &change_count) != 0) {
+                tool_write_error("git", "cannot diff staged changes", 0);
+                goto done;
+            }
         }
     } else {
         for (i = 0U; i < index.count; ++i) {
@@ -1814,7 +1825,7 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
                     goto done;
                 }
             } else if (output_mode == GIT_DIFF_OUTPUT_NAME_ONLY || output_mode == GIT_DIFF_OUTPUT_NAME_STATUS) {
-                if (git_render_diff_path_mode(output_mode, modified < 0 ? 'D' : 'M', index.entries[i].path, nul_terminate) != 0) {
+                if (git_render_diff_path_mode(&out, output_mode, modified < 0 ? 'D' : 'M', index.entries[i].path, nul_terminate) != 0) {
                     goto done;
                 }
             } else if (output_mode == GIT_DIFF_OUTPUT_PATCH) {
@@ -1828,7 +1839,10 @@ static int git_cmd_diff(GitRepo *repo, int argc, char **argv, int argi) {
             }
         }
     }
-    if (output_mode == GIT_DIFF_OUTPUT_STAT && git_render_diff_stat(&stats, color_mode) != 0) {
+    if (output_mode == GIT_DIFF_OUTPUT_STAT && git_render_diff_stat(&out, &stats, color_mode) != 0) {
+        goto done;
+    }
+    if (git_output_flush(&out) != 0) {
         goto done;
     }
     result = exit_code_mode && change_count > 0 ? 1 : 0;
@@ -2430,7 +2444,7 @@ done:
     return result;
 }
 
-static int git_write_index_mode(unsigned int mode) {
+static int git_write_index_mode(GitOutputBuffer *out, unsigned int mode) {
     char digits[7];
     int pos;
 
@@ -2439,7 +2453,7 @@ static int git_write_index_mode(unsigned int mode) {
         mode >>= 3U;
     }
     digits[6] = '\0';
-    return rt_write_cstr(1, digits);
+    return git_output_cstr(out, digits);
 }
 
 #include "index_commands.c"
@@ -2888,8 +2902,10 @@ static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
         GitIndex old_index;
         GitIndex new_index;
         GitDiffStatList stats;
+        GitOutputBuffer diff_out;
 
         rt_memset(&stats, 0, sizeof(stats));
+        git_output_init(&diff_out, 1);
         if (git_load_commit_tree_index(repo, info.parent_oid, have_pack ? &pack : 0, &old_index) != 0) {
             git_diff_stat_list_destroy(&stats);
             git_commit_info_destroy(&info);
@@ -2902,10 +2918,11 @@ static int git_cmd_show(GitRepo *repo, int argc, char **argv, int argi) {
             goto done;
         }
         int change_count = 0;
-        if (git_diff_index_pair(repo, &old_index, &new_index, have_pack ? &pack : 0, stat_mode ? GIT_DIFF_OUTPUT_STAT : GIT_DIFF_OUTPUT_PATCH, TOOL_COLOR_AUTO, 0, 0, 0, &stats, &change_count) == 0) {
+        if (git_diff_index_pair(&diff_out, repo, &old_index, &new_index, have_pack ? &pack : 0, stat_mode ? GIT_DIFF_OUTPUT_STAT : GIT_DIFF_OUTPUT_PATCH, TOOL_COLOR_AUTO, 0, 0, 0, &stats, &change_count) == 0) {
             if (stat_mode) {
-                (void)git_render_diff_stat(&stats, TOOL_COLOR_AUTO);
+                (void)git_render_diff_stat(&diff_out, &stats, TOOL_COLOR_AUTO);
             }
+            (void)git_output_flush(&diff_out);
             result = 0;
         }
         git_diff_stat_list_destroy(&stats);

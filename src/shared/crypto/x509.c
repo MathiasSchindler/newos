@@ -66,6 +66,31 @@ typedef struct {
     size_t dns_name_count;
 } X509Parsed;
 
+typedef struct {
+    unsigned char *subject;
+    size_t subject_len;
+    unsigned char rsa_modulus[CRYPTO_RSA_MAX_MODULUS_SIZE];
+    size_t rsa_modulus_len;
+    unsigned char rsa_exponent[8];
+    size_t rsa_exponent_len;
+    unsigned char p256_public_key[CRYPTO_P256_UNCOMPRESSED_PUBLIC_KEY_SIZE];
+    unsigned char p384_public_key[CRYPTO_P384_UNCOMPRESSED_PUBLIC_KEY_SIZE];
+    int has_p256_public_key;
+    int has_p384_public_key;
+    long long not_before;
+    long long not_after;
+    int is_ca;
+} X509TrustAnchor;
+
+typedef struct {
+    const unsigned char *trust_pem;
+    size_t trust_pem_length;
+    X509TrustAnchor *anchors;
+    size_t anchor_count;
+} X509TrustAnchorCache;
+
+static X509TrustAnchorCache g_x509_trust_anchor_cache;
+
 static void x509_status(char *status, size_t status_size, const char *message) {
     if (status != 0 && status_size != 0U) {
         rt_copy_string(status, status_size, message != 0 ? message : "x509 error");
@@ -857,6 +882,195 @@ static int pem_decode_next_cert(const unsigned char *pem, size_t pem_len, size_t
     return -1;
 }
 
+static void x509_trust_anchor_destroy(X509TrustAnchor *anchor) {
+    if (anchor == 0) return;
+    rt_free(anchor->subject);
+    memset(anchor, 0, sizeof(*anchor));
+}
+
+static void x509_trust_anchor_cache_destroy(X509TrustAnchorCache *cache) {
+    size_t i;
+
+    if (cache == 0) return;
+    for (i = 0U; i < cache->anchor_count; ++i) {
+        x509_trust_anchor_destroy(&cache->anchors[i]);
+    }
+    rt_free(cache->anchors);
+    memset(cache, 0, sizeof(*cache));
+}
+
+static int x509_trust_anchor_from_parsed(X509TrustAnchor *anchor, const X509Parsed *parsed) {
+    if (anchor == 0 || parsed == 0 || parsed->subject == 0 || parsed->subject_len == 0U) {
+        return -1;
+    }
+    memset(anchor, 0, sizeof(*anchor));
+    anchor->subject = (unsigned char *)rt_malloc(parsed->subject_len);
+    if (anchor->subject == 0) {
+        return -1;
+    }
+    memcpy(anchor->subject, parsed->subject, parsed->subject_len);
+    anchor->subject_len = parsed->subject_len;
+    memcpy(anchor->rsa_modulus, parsed->rsa_modulus, sizeof(anchor->rsa_modulus));
+    anchor->rsa_modulus_len = parsed->rsa_modulus_len;
+    memcpy(anchor->rsa_exponent, parsed->rsa_exponent, sizeof(anchor->rsa_exponent));
+    anchor->rsa_exponent_len = parsed->rsa_exponent_len;
+    memcpy(anchor->p256_public_key, parsed->p256_public_key, sizeof(anchor->p256_public_key));
+    memcpy(anchor->p384_public_key, parsed->p384_public_key, sizeof(anchor->p384_public_key));
+    anchor->has_p256_public_key = parsed->has_p256_public_key;
+    anchor->has_p384_public_key = parsed->has_p384_public_key;
+    anchor->not_before = parsed->not_before;
+    anchor->not_after = parsed->not_after;
+    anchor->is_ca = parsed->is_ca;
+    return 0;
+}
+
+static void x509_trust_anchor_to_parsed(const X509TrustAnchor *anchor, X509Parsed *parsed) {
+    memset(parsed, 0, sizeof(*parsed));
+    parsed->subject = anchor->subject;
+    parsed->subject_len = anchor->subject_len;
+    memcpy(parsed->rsa_modulus, anchor->rsa_modulus, sizeof(parsed->rsa_modulus));
+    parsed->rsa_modulus_len = anchor->rsa_modulus_len;
+    memcpy(parsed->rsa_exponent, anchor->rsa_exponent, sizeof(parsed->rsa_exponent));
+    parsed->rsa_exponent_len = anchor->rsa_exponent_len;
+    memcpy(parsed->p256_public_key, anchor->p256_public_key, sizeof(parsed->p256_public_key));
+    memcpy(parsed->p384_public_key, anchor->p384_public_key, sizeof(parsed->p384_public_key));
+    parsed->has_p256_public_key = anchor->has_p256_public_key;
+    parsed->has_p384_public_key = anchor->has_p384_public_key;
+    parsed->not_before = anchor->not_before;
+    parsed->not_after = anchor->not_after;
+    parsed->is_ca = anchor->is_ca;
+}
+
+static int x509_trust_anchor_cache_append(X509TrustAnchorCache *cache, size_t *capacity, const X509Parsed *parsed) {
+    X509TrustAnchor anchor;
+
+    if (cache->anchor_count == *capacity) {
+        size_t next_capacity = *capacity == 0U ? 32U : *capacity * 2U;
+        X509TrustAnchor *resized = (X509TrustAnchor *)rt_realloc_array(cache->anchors, next_capacity, sizeof(cache->anchors[0]));
+        if (resized == 0) {
+            return -1;
+        }
+        cache->anchors = resized;
+        memset(cache->anchors + *capacity, 0, (next_capacity - *capacity) * sizeof(cache->anchors[0]));
+        *capacity = next_capacity;
+    }
+    if (x509_trust_anchor_from_parsed(&anchor, parsed) != 0) {
+        return -1;
+    }
+    cache->anchors[cache->anchor_count++] = anchor;
+    return 0;
+}
+
+static int x509_trust_anchor_cache_load(const unsigned char *trust_pem, size_t trust_pem_length, X509TrustAnchorCache **cache_out) {
+    X509TrustAnchorCache next_cache;
+    unsigned char anchor_der_storage[X509_MAX_DER_SIZE];
+    X509Parsed parsed;
+    size_t pem_pos = 0U;
+    size_t capacity = 0U;
+
+    if (g_x509_trust_anchor_cache.trust_pem == trust_pem &&
+        g_x509_trust_anchor_cache.trust_pem_length == trust_pem_length) {
+        *cache_out = &g_x509_trust_anchor_cache;
+        return 0;
+    }
+
+    memset(&next_cache, 0, sizeof(next_cache));
+    for (;;) {
+        size_t anchor_len = 0U;
+        size_t previous_pem_pos = pem_pos;
+        int result = pem_decode_next_cert(trust_pem, trust_pem_length, &pem_pos, anchor_der_storage, sizeof(anchor_der_storage), &anchor_len);
+        if (result == 1) break;
+        if (result != 0 && pem_pos == previous_pem_pos && pem_pos < trust_pem_length) {
+            pem_pos += 1U;
+        }
+        if (result != 0 || parse_certificate(&parsed, anchor_der_storage, anchor_len) != 0 || !parsed.is_ca) {
+            continue;
+        }
+        if (x509_trust_anchor_cache_append(&next_cache, &capacity, &parsed) != 0) {
+            x509_trust_anchor_cache_destroy(&next_cache);
+            return -1;
+        }
+    }
+    next_cache.trust_pem = trust_pem;
+    next_cache.trust_pem_length = trust_pem_length;
+    x509_trust_anchor_cache_destroy(&g_x509_trust_anchor_cache);
+    g_x509_trust_anchor_cache = next_cache;
+    *cache_out = &g_x509_trust_anchor_cache;
+    return 0;
+}
+
+static int x509_verify_chain_with_anchor_cache(
+    const X509Parsed *parsed,
+    size_t chain_count,
+    long long now_epoch_seconds,
+    const unsigned char *trust_pem,
+    size_t trust_pem_length,
+    char *status,
+    size_t status_size
+) {
+    X509TrustAnchorCache *cache = 0;
+    X509Parsed anchor;
+    size_t i;
+
+    if (x509_trust_anchor_cache_load(trust_pem, trust_pem_length, &cache) != 0) {
+        return -1;
+    }
+    for (i = 0U; i < cache->anchor_count; ++i) {
+        if (now_epoch_seconds < cache->anchors[i].not_before || now_epoch_seconds > cache->anchors[i].not_after) {
+            continue;
+        }
+        if (!bytes_equal(parsed[chain_count - 1U].issuer, parsed[chain_count - 1U].issuer_len, cache->anchors[i].subject, cache->anchors[i].subject_len)) {
+            continue;
+        }
+        x509_trust_anchor_to_parsed(&cache->anchors[i], &anchor);
+        if (verify_cert_signature(&parsed[chain_count - 1U], &anchor) == 0) {
+            x509_status(status, status_size, "trusted");
+            return 0;
+        }
+    }
+    x509_status(status, status_size, "no trusted root matched certificate chain");
+    return -1;
+}
+
+static int x509_verify_chain_by_scanning_pem(
+    const X509Parsed *parsed,
+    size_t chain_count,
+    long long now_epoch_seconds,
+    const unsigned char *trust_pem,
+    size_t trust_pem_length,
+    char *status,
+    size_t status_size
+) {
+    unsigned char anchor_der_storage[X509_MAX_DER_SIZE];
+    X509Parsed anchor_storage;
+    unsigned char *anchor_der = anchor_der_storage;
+    X509Parsed *anchor = &anchor_storage;
+    size_t pem_pos = 0U;
+
+    for (;;) {
+        size_t anchor_len = 0U;
+        size_t previous_pem_pos = pem_pos;
+        int result = pem_decode_next_cert(trust_pem, trust_pem_length, &pem_pos, anchor_der, X509_MAX_DER_SIZE, &anchor_len);
+        if (result == 1) break;
+        if (result != 0 && pem_pos == previous_pem_pos && pem_pos < trust_pem_length) {
+            pem_pos += 1U;
+        }
+        if (result != 0 || parse_certificate(anchor, anchor_der, anchor_len) != 0) {
+            continue;
+        }
+        if (now_epoch_seconds < anchor->not_before || now_epoch_seconds > anchor->not_after) {
+            continue;
+        }
+        if (bytes_equal(parsed[chain_count - 1U].issuer, parsed[chain_count - 1U].issuer_len, anchor->subject, anchor->subject_len) && anchor->is_ca &&
+            verify_cert_signature(&parsed[chain_count - 1U], anchor) == 0) {
+            x509_status(status, status_size, "trusted");
+            return 0;
+        }
+    }
+    x509_status(status, status_size, "no trusted root matched certificate chain");
+    return -1;
+}
+
 int crypto_x509_verify_chain(
     const CryptoX509DerCert *chain,
     size_t chain_count,
@@ -868,13 +1082,8 @@ int crypto_x509_verify_chain(
     size_t status_size
 ) {
     X509Parsed parsed_storage[X509_MAX_CERTS];
-    unsigned char anchor_der_storage[X509_MAX_DER_SIZE];
-    X509Parsed anchor_storage;
     X509Parsed *parsed = parsed_storage;
-    unsigned char *anchor_der = anchor_der_storage;
-    X509Parsed *anchor = &anchor_storage;
     size_t i;
-    size_t pem_pos = 0U;
     int verify_result = -1;
 
     if (chain == 0 || chain_count == 0U || chain_count > X509_MAX_CERTS || trust_pem == 0 || trust_pem_length == 0U) {
@@ -902,28 +1111,14 @@ int crypto_x509_verify_chain(
             goto cleanup;
         }
     }
-    for (;;) {
-        size_t anchor_len = 0U;
-        size_t previous_pem_pos = pem_pos;
-        int result = pem_decode_next_cert(trust_pem, trust_pem_length, &pem_pos, anchor_der, X509_MAX_DER_SIZE, &anchor_len);
-        if (result == 1) break;
-        if (result != 0 && pem_pos == previous_pem_pos && pem_pos < trust_pem_length) {
-            pem_pos += 1U;
-        }
-        if (result != 0 || parse_certificate(anchor, anchor_der, anchor_len) != 0) {
-            continue;
-        }
-        if (now_epoch_seconds < anchor->not_before || now_epoch_seconds > anchor->not_after) {
-            continue;
-        }
-        if (bytes_equal(parsed[chain_count - 1U].issuer, parsed[chain_count - 1U].issuer_len, anchor->subject, anchor->subject_len) && anchor->is_ca &&
-            verify_cert_signature(&parsed[chain_count - 1U], anchor) == 0) {
-            x509_status(status, status_size, "trusted");
-            verify_result = 0;
-            goto cleanup;
-        }
+    if (x509_verify_chain_with_anchor_cache(parsed, chain_count, now_epoch_seconds, trust_pem, trust_pem_length, status, status_size) == 0) {
+        verify_result = 0;
+        goto cleanup;
     }
-    x509_status(status, status_size, "no trusted root matched certificate chain");
+    if (g_x509_trust_anchor_cache.trust_pem != trust_pem || g_x509_trust_anchor_cache.trust_pem_length != trust_pem_length) {
+        verify_result = x509_verify_chain_by_scanning_pem(parsed, chain_count, now_epoch_seconds, trust_pem, trust_pem_length, status, status_size);
+        goto cleanup;
+    }
 cleanup:
     return verify_result;
 }

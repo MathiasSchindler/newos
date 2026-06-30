@@ -62,6 +62,17 @@ body bytes for each Git HTTP request; this is useful when comparing remote
 benchmark ratios because the local post-clone rows are often near noise-floor
 timings while HTTPS round trips dominate.
 
+The local Git hot-path benchmark is also useful for tracking individual
+metadata-path changes. The in-tree Git keeps the default cached `ls-files`
+listing on a streaming index parser and buffered writer, uses metadata-only
+commit tree loading for status and name/stat commit comparisons, skips HEAD
+tree expansion when the index cache-tree root already matches HEAD, collapses
+default status output for wholly untracked directories, avoids full untracked
+subtree collection when no ignore patterns are active, and reuses cached
+worktree stat data when a later diff/stat step needs the same path. Single
+packed-object reads use the pack index for direct non-delta object lookup before
+falling back to full pack parsing.
+
 ## Notes
 
 - benchmark scratch data is created under tests/tmp/benchmarks
@@ -71,4 +82,7 @@ timings while HTTPS round trips dominate.
   alternating runs rather than single timings
 - for Git hot-path investigation, pair elapsed benchmarks with `strace -c` for
 	syscall shape and `PROFILE=1`/`NEWOS_PROFILE` plus `profiler` for CPU hot paths
+- `status` and worktree `diff --name-status` remain heavily shaped by per-entry
+  worktree metadata checks; compare syscall counts as well as elapsed time when
+  evaluating changes in this area
 - some newos tools intentionally implement a smaller feature set than the system tools, so the numbers are useful as engineering guidance rather than exact product-style rankings

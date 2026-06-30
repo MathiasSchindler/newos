@@ -35,6 +35,7 @@
 #define GIT_PACK_PROGRESS_STEP (8U * 1024U * 1024U)
 #define GIT_INDEX_FLAG_EXTENDED 0x4000U
 #define GIT_INDEX_EXTENDED_INTENT_TO_ADD 0x2000U
+#define GIT_INDEX_EXTENSION_TREE 0x54524545U
 
 typedef struct {
     char work_tree[GIT_PATH_CAPACITY];
@@ -60,6 +61,8 @@ typedef struct {
     GitIndexEntry *entries;
     size_t count;
     size_t capacity;
+    unsigned char cache_tree_oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int has_cache_tree;
 } GitIndex;
 
 typedef struct {
@@ -132,6 +135,12 @@ typedef struct {
 } GitStatusWalk;
 
 typedef ToolByteBuffer GitBuffer;
+
+typedef struct {
+    int fd;
+    size_t size;
+    char data[16384];
+} GitOutputBuffer;
 
 typedef int (*GitHttpBodyCallback)(const unsigned char *data, size_t size, void *user_data);
 
@@ -378,6 +387,67 @@ static int git_copy(char *buffer, size_t buffer_size, const char *text) {
 
 static int git_buffer_append(GitBuffer *buffer, const void *data, size_t size) {
     return tool_byte_buffer_append(buffer, data, size);
+}
+
+static void git_output_init(GitOutputBuffer *out, int fd) {
+    out->fd = fd;
+    out->size = 0U;
+}
+
+static int git_output_flush(GitOutputBuffer *out) {
+    if (out == 0 || out->size == 0U) {
+        return 0;
+    }
+    if (rt_write_all(out->fd, out->data, out->size) != 0) {
+        return -1;
+    }
+    out->size = 0U;
+    return 0;
+}
+
+static int git_output_write(GitOutputBuffer *out, const void *data, size_t size) {
+    const char *bytes = (const char *)data;
+
+    if (out == 0) {
+        return rt_write_all(1, data, size);
+    }
+    while (size > 0U) {
+        size_t available = sizeof(out->data) - out->size;
+        size_t chunk;
+
+        if (available == 0U && git_output_flush(out) != 0) {
+            return -1;
+        }
+        available = sizeof(out->data) - out->size;
+        chunk = size < available ? size : available;
+        memcpy(out->data + out->size, bytes, chunk);
+        out->size += chunk;
+        bytes += chunk;
+        size -= chunk;
+    }
+    return 0;
+}
+
+static int git_output_cstr(GitOutputBuffer *out, const char *text) {
+    return git_output_write(out, text, rt_strlen(text));
+}
+
+static int git_output_char(GitOutputBuffer *out, char ch) {
+    return git_output_write(out, &ch, 1U);
+}
+
+static int git_output_line(GitOutputBuffer *out, const char *text) {
+    return git_output_cstr(out, text) != 0 || git_output_char(out, '\n') != 0 ? -1 : 0;
+}
+
+static int git_output_repeated_char(GitOutputBuffer *out, char ch, size_t count) {
+    while (count > 0U) {
+        if (git_output_char(out, ch) != 0) {
+            return -1;
+        }
+        count -= 1U;
+    }
+    return 0;
 }
 
 static void git_buffer_discard_prefix(GitBuffer *buffer, size_t count) {

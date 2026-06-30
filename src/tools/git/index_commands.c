@@ -1,4 +1,4 @@
-static int git_ls_files_write_record(const GitIndexEntry *entry, const char *path, int stage_mode, int nul_terminate) {
+static int git_ls_files_write_record(GitOutputBuffer *out, const GitIndexEntry *entry, const char *path, int stage_mode, int nul_terminate) {
     if (stage_mode) {
         char hex[GIT_OBJECT_HEX_SIZE + 1U];
 
@@ -6,22 +6,94 @@ static int git_ls_files_write_record(const GitIndexEntry *entry, const char *pat
             return -1;
         }
         git_format_oid_hex(entry->oid, hex);
-        if (git_write_index_mode(entry->mode) != 0 || rt_write_char(1, ' ') != 0 || rt_write_cstr(1, hex) != 0 || rt_write_cstr(1, " 0\t") != 0 || rt_write_cstr(1, path) != 0 || git_write_record_terminator(nul_terminate) != 0) {
+        if (git_write_index_mode(out, entry->mode) != 0 || git_output_char(out, ' ') != 0 || git_output_cstr(out, hex) != 0 || git_output_cstr(out, " 0\t") != 0 || git_output_cstr(out, path) != 0 || git_write_record_terminator(out, nul_terminate) != 0) {
             return -1;
         }
         return 0;
     }
-    return rt_write_cstr(1, path) != 0 || git_write_record_terminator(nul_terminate) != 0 ? -1 : 0;
+    return git_output_cstr(out, path) != 0 || git_write_record_terminator(out, nul_terminate) != 0 ? -1 : 0;
 }
 
 typedef struct {
+    GitOutputBuffer *out;
     int nul_terminate;
 } GitLsFilesUntrackedContext;
 
 static int git_ls_files_write_path(const char *path, void *user_data) {
     GitLsFilesUntrackedContext *context = (GitLsFilesUntrackedContext *)user_data;
 
-    return git_ls_files_write_record(0, path, 0, context->nul_terminate);
+    return git_ls_files_write_record(context->out, 0, path, 0, context->nul_terminate);
+}
+
+static int git_ls_files_cached_fast(const GitRepo *repo, GitOutputBuffer *out, int nul_terminate) {
+    char path[GIT_PATH_CAPACITY];
+    unsigned char *data = 0;
+    size_t size = 0U;
+    size_t pos = 12U;
+    unsigned int version;
+    unsigned int count;
+    unsigned int i;
+    int result = -1;
+
+    if (git_join(path, sizeof(path), repo->git_dir, "index") != 0) {
+        return -1;
+    }
+    if (git_read_file(path, &data, &size) != 0) {
+        return git_output_flush(out);
+    }
+    if (size < 12U || tool_read_u32_be(data) != GIT_INDEX_SIGNATURE) {
+        goto done;
+    }
+    version = tool_read_u32_be(data + 4U);
+    count = tool_read_u32_be(data + 8U);
+    if (version < 2U || version > 4U) {
+        goto done;
+    }
+    for (i = 0U; i < count; ++i) {
+        unsigned int flags;
+        size_t entry_start = pos;
+        size_t path_start;
+        size_t path_length;
+        size_t header_length;
+        size_t entry_length;
+
+        if (pos + 62U > size) {
+            goto done;
+        }
+        flags = tool_read_u16_be(data + pos + 60U);
+        path_start = pos + 62U;
+        if ((flags & GIT_INDEX_FLAG_EXTENDED) != 0U) {
+            if (version < 3U || path_start + 2U > size) {
+                goto done;
+            }
+            path_start += 2U;
+        }
+        path_length = flags & 0x0FFFU;
+        if (path_length == 0x0FFFU) {
+            path_length = 0U;
+            while (path_start + path_length < size && data[path_start + path_length] != 0) {
+                path_length += 1U;
+            }
+        }
+        if (path_start + path_length > size ||
+            git_output_write(out, data + path_start, path_length) != 0 ||
+            git_write_record_terminator(out, nul_terminate) != 0) {
+            goto done;
+        }
+        header_length = path_start - entry_start;
+        entry_length = header_length + path_length + 1U;
+        if (version < 4U) {
+            entry_length = (entry_length + 7U) & ~(size_t)7U;
+        }
+        if (entry_start + entry_length > size) {
+            goto done;
+        }
+        pos = entry_start + entry_length;
+    }
+    result = git_output_flush(out);
+done:
+    rt_free(data);
+    return result;
 }
 
 static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
@@ -38,6 +110,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
     int pathspec_start;
     int pathspec_count;
     int result = 1;
+    GitOutputBuffer out;
     size_t i;
 
     while (argi < argc) {
@@ -73,8 +146,12 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
     if (!saw_selector) {
         show_cached = 1;
     }
+    git_output_init(&out, 1);
     pathspec_start = argi;
     pathspec_count = argc - argi;
+    if (show_cached && !show_others && !show_modified && !show_deleted && !show_stage && pathspec_count == 0) {
+        return git_ls_files_cached_fast(repo, &out, nul_terminate) == 0 ? 0 : 1;
+    }
     if (git_load_index(repo, &index) != 0) {
         tool_write_error("git", "cannot read index", 0);
         return 1;
@@ -84,7 +161,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
     }
     if (show_cached) {
         for (i = 0U; i < index.count; ++i) {
-            if (git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count) && git_ls_files_write_record(&index.entries[i], index.entries[i].path, show_stage, nul_terminate) != 0) {
+            if (git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count) && git_ls_files_write_record(&out, &index.entries[i], index.entries[i].path, show_stage, nul_terminate) != 0) {
                 goto done;
             }
         }
@@ -98,7 +175,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
             }
             modified = git_entry_is_modified(repo, &index.entries[i]);
             if ((show_modified && modified > 0) || (show_deleted && modified < 0)) {
-                if (git_ls_files_write_record(&index.entries[i], index.entries[i].path, show_stage, nul_terminate) != 0) {
+                if (git_ls_files_write_record(&out, &index.entries[i], index.entries[i].path, show_stage, nul_terminate) != 0) {
                     goto done;
                 }
             }
@@ -106,7 +183,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
     }
     if (show_stage && !show_cached && !show_modified && !show_deleted) {
         for (i = 0U; i < index.count; ++i) {
-            if (git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count) && git_ls_files_write_record(&index.entries[i], index.entries[i].path, 1, nul_terminate) != 0) {
+            if (git_pathspec_matches(index.entries[i].path, argv + pathspec_start, pathspec_count) && git_ls_files_write_record(&out, &index.entries[i], index.entries[i].path, 1, nul_terminate) != 0) {
                 goto done;
             }
         }
@@ -123,6 +200,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
             }
             ignore_ptr = &ignores;
         }
+        untracked_context.out = &out;
         untracked_context.nul_terminate = nul_terminate;
         if (git_for_each_untracked_path(repo, &index, ignore_ptr, argv + pathspec_start, pathspec_count, git_ls_files_write_path, &untracked_context) != 0) {
             if (exclude_standard) {
@@ -134,7 +212,7 @@ static int git_cmd_ls_files(GitRepo *repo, int argc, char **argv, int argi) {
             git_ignore_destroy(&ignores);
         }
     }
-    result = 0;
+    result = git_output_flush(&out) == 0 ? 0 : 1;
 done:
     git_index_destroy(&index);
     return result;

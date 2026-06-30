@@ -113,7 +113,8 @@ be combined with `--no-pager`.
 - report a concise local status for modified, deleted, and untracked files,
     including staged-vs-unstaged short status columns when `HEAD` can be read,
     with optional color for human-readable status output and porcelain v1 `-z`
-    output for tools
+    output for tools; wholly untracked directories are reported as directory
+    entries in the default status style
 - mark untracked files as intent-to-add with `add -N`, so they are no longer
     reported as untracked and appear in `diff --stat` as additions
 - stage regular files, symlinks, directory contents, and tracked deletions with
@@ -259,6 +260,9 @@ be combined with `--no-pager`.
 - untracked files are intentionally not included in `diff --stat`; use
     `ls-files --others --exclude-standard` to list them or `add -N` to include
     them as intent-to-add paths
+- `status` currently exposes only the default untracked-directory summary; use
+    `ls-files --others --exclude-standard` when every untracked file path is
+    needed
 - index support is focused on ordinary v2/v3 entries; v4 support is partial
 - status falls back to working-tree-versus-index output when `HEAD` points to
     objects the tool cannot read

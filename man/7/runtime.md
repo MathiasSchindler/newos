@@ -39,7 +39,10 @@ hosted and freestanding builds.
   ChaCha20-Poly1305, AES-GCM, X.509, and protocol-specific crypto helpers;
   RSA-compatible modular exponentiation uses Montgomery arithmetic for odd
   moduli and falls back to the generic reducer otherwise
-- `tls/` — compact TLS 1.2/1.3 client-side machinery used through the platform TLS interface
+- `tls/` — compact TLS 1.2/1.3 client-side machinery used through the platform
+  TLS interface; X.509 verification caches the loaded trust bundle and parsed
+  trust anchors within a process so tools with multiple HTTPS/TLS connections
+  avoid repeated CA file reads, PEM decoding, and root-certificate parsing
 - `image/` — metadata probing and structural validation for common image containers and C2PA-related tooling
 - `xml.*`, `xml_stream.*`, and `xml_dtd.*` — reusable XML parsing, streaming, safety, and DTD support for the XML tool family
 - `bignum.*` — fixed-capacity arbitrary-precision arithmetic used by math-oriented tools
