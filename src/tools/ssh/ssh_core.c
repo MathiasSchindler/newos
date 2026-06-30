@@ -1,4 +1,5 @@
 #include "ssh_core.h"
+#include "crypto/crypto_util.h"
 #include "crypto/sha256.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -87,6 +88,42 @@ void ssh_sha256_update_mpint_bytes(CryptoSha256Context *ctx, const unsigned char
         ssh_sha256_update_u32(ctx, (unsigned int)used);
     }
     crypto_sha256_update(ctx, bytes + start, used);
+}
+
+int ssh_compute_curve25519_exchange_hash(
+    const char *client_banner,
+    const char *server_banner,
+    const unsigned char *client_kex_payload,
+    size_t client_kex_len,
+    const unsigned char *server_kex_payload,
+    size_t server_kex_len,
+    const unsigned char *host_key_blob,
+    size_t host_key_blob_len,
+    const unsigned char client_public_key[32],
+    const unsigned char server_public_key[32],
+    const unsigned char shared_secret[32],
+    unsigned char out_hash[32]
+) {
+    CryptoSha256Context ctx;
+
+    if (client_banner == 0 || server_banner == 0 || client_kex_payload == 0 || server_kex_payload == 0 ||
+        (host_key_blob_len != 0U && host_key_blob == 0) || client_public_key == 0 ||
+        server_public_key == 0 || shared_secret == 0 || out_hash == 0) {
+        return -1;
+    }
+
+    crypto_sha256_init(&ctx);
+    ssh_sha256_update_cstring(&ctx, client_banner);
+    ssh_sha256_update_cstring(&ctx, server_banner);
+    ssh_sha256_update_string(&ctx, client_kex_payload, client_kex_len);
+    ssh_sha256_update_string(&ctx, server_kex_payload, server_kex_len);
+    ssh_sha256_update_string(&ctx, host_key_blob, host_key_blob_len);
+    ssh_sha256_update_string(&ctx, client_public_key, 32U);
+    ssh_sha256_update_string(&ctx, server_public_key, 32U);
+    ssh_sha256_update_mpint_bytes(&ctx, shared_secret, 32U);
+    crypto_sha256_final(&ctx, out_hash);
+    crypto_secure_bzero(&ctx, sizeof(ctx));
+    return 0;
 }
 
 static int ssh_is_restricted_text_char(unsigned char ch) {

@@ -106,6 +106,20 @@ void ssh_sha256_update_u32(CryptoSha256Context *ctx, unsigned int value);
 void ssh_sha256_update_string(CryptoSha256Context *ctx, const unsigned char *data, size_t length);
 void ssh_sha256_update_cstring(CryptoSha256Context *ctx, const char *text);
 void ssh_sha256_update_mpint_bytes(CryptoSha256Context *ctx, const unsigned char *bytes, size_t length);
+int ssh_compute_curve25519_exchange_hash(
+    const char *client_banner,
+    const char *server_banner,
+    const unsigned char *client_kex_payload,
+    size_t client_kex_len,
+    const unsigned char *server_kex_payload,
+    size_t server_kex_len,
+    const unsigned char *host_key_blob,
+    size_t host_key_blob_len,
+    const unsigned char client_public_key[32],
+    const unsigned char server_public_key[32],
+    const unsigned char shared_secret[32],
+    unsigned char out_hash[32]
+);
 
 void ssh_builder_init(SshBuilder *builder, unsigned char *buffer, size_t capacity);
 int ssh_builder_put_u8(SshBuilder *builder, unsigned char value);

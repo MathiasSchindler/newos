@@ -38,24 +38,24 @@ static int sshd_compute_hash(
     const unsigned char shared_secret[32],
     unsigned char out[32]
 ) {
-    CryptoSha256Context ctx;
-
     if (client_banner == 0 || client_kex == 0 || server_kex == 0 || host_key_blob == 0 ||
         client_public == 0 || server_public == 0 || shared_secret == 0 || out == 0) {
         return -1;
     }
-    crypto_sha256_init(&ctx);
-    ssh_sha256_update_cstring(&ctx, client_banner);
-    ssh_sha256_update_cstring(&ctx, SSH_SERVER_BANNER_TEXT);
-    ssh_sha256_update_string(&ctx, client_kex, client_kex_len);
-    ssh_sha256_update_string(&ctx, server_kex, server_kex_len);
-    ssh_sha256_update_string(&ctx, host_key_blob, host_key_blob_len);
-    ssh_sha256_update_string(&ctx, client_public, 32U);
-    ssh_sha256_update_string(&ctx, server_public, 32U);
-    ssh_sha256_update_mpint_bytes(&ctx, shared_secret, 32U);
-    crypto_sha256_final(&ctx, out);
-    crypto_secure_bzero(&ctx, sizeof(ctx));
-    return 0;
+    return ssh_compute_curve25519_exchange_hash(
+        client_banner,
+        SSH_SERVER_BANNER_TEXT,
+        client_kex,
+        client_kex_len,
+        server_kex,
+        server_kex_len,
+        host_key_blob,
+        host_key_blob_len,
+        client_public,
+        server_public,
+        shared_secret,
+        out
+    );
 }
 
 static int sshd_build_host_key_blob(const unsigned char public_key[32], unsigned char *buffer, size_t cap, size_t *len_out) {

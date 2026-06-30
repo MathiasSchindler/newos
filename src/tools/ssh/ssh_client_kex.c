@@ -2,14 +2,6 @@
 
 #include "ssh_client_internal.h"
 
-static void ssh_sha256_update_view(CryptoSha256Context *ctx, const SshStringView *view) {
-    if (view == 0) {
-        ssh_sha256_update_u32(ctx, 0U);
-        return;
-    }
-    ssh_sha256_update_string(ctx, view->data, view->length);
-}
-
 int ssh_compute_curve25519_session_hash(
     const char *server_banner,
     const unsigned char *client_kex_payload,
@@ -21,25 +13,27 @@ int ssh_compute_curve25519_session_hash(
     const unsigned char shared_secret[32],
     unsigned char out_hash[32]
 ) {
-    CryptoSha256Context ctx;
-
     if (server_banner == 0 || client_kex_payload == 0 || server_kex_payload == 0 ||
         reply == 0 || client_public_key == 0 || shared_secret == 0 || out_hash == 0) {
         return -1;
     }
-
-    crypto_sha256_init(&ctx);
-    ssh_sha256_update_cstring(&ctx, SSH_CLIENT_BANNER_TEXT);
-    ssh_sha256_update_cstring(&ctx, server_banner);
-    ssh_sha256_update_string(&ctx, client_kex_payload, client_kex_len);
-    ssh_sha256_update_string(&ctx, server_kex_payload, server_kex_len);
-    ssh_sha256_update_view(&ctx, &reply->host_key_blob);
-    ssh_sha256_update_string(&ctx, client_public_key, 32U);
-    ssh_sha256_update_view(&ctx, &reply->server_public_key);
-    ssh_sha256_update_mpint_bytes(&ctx, shared_secret, 32U);
-    crypto_sha256_final(&ctx, out_hash);
-    crypto_secure_bzero(&ctx, sizeof(ctx));
-    return 0;
+    if (reply->server_public_key.length != 32U) {
+        return -1;
+    }
+    return ssh_compute_curve25519_exchange_hash(
+        SSH_CLIENT_BANNER_TEXT,
+        server_banner,
+        client_kex_payload,
+        client_kex_len,
+        server_kex_payload,
+        server_kex_len,
+        reply->host_key_blob.data,
+        reply->host_key_blob.length,
+        client_public_key,
+        reply->server_public_key.data,
+        shared_secret,
+        out_hash
+    );
 }
 
 int ssh_parse_ecdh_reply(const unsigned char *payload, size_t payload_len, SshEcdhReply *reply) {
