@@ -674,6 +674,9 @@ static int git_http_request_stream_ex(const GitUrl *url, const char *method, con
         } else if (git_http_process_plain_body(response, callback, callback_user_data, (const unsigned char *)read_buffer, (size_t)bytes_read, has_content_length, content_length, &body_seen) != 0) {
             goto done;
         }
+        if ((chunked && chunk_done) || (has_content_length && body_seen >= content_length)) {
+            break;
+        }
     }
     if (bytes_read < 0 || !saw_headers || (chunked && !chunk_done) || (has_content_length && body_seen < content_length)) {
         goto done;

@@ -264,12 +264,18 @@ static int git_parse_v2_capabilities(const GitBuffer *body, GitRemoteRefs *refs)
 
         if (git_pkt_length(body->data + pos, body->size - pos, &packet_length) != 0) return -1;
         pos += 4U;
-        if (packet_length == GIT_PACKET_FLUSH) break;
+        if (packet_length == GIT_PACKET_FLUSH) {
+            if (saw_version) break;
+            continue;
+        }
         if (packet_length < 4U || pos + packet_length - 4U > body->size) return -1;
         payload = body->data + pos;
         payload_length = packet_length - 4U;
         pos += payload_length;
         while (payload_length > 0U && (payload[payload_length - 1U] == '\n' || payload[payload_length - 1U] == '\r')) payload_length -= 1U;
+        if (!saw_version && payload_length >= 10U && memcmp(payload, "# service=", 10U) == 0) {
+            continue;
+        }
         if (!saw_version) {
             if (payload_length != 9U || memcmp(payload, "version 2", 9U) != 0) return -1;
             saw_version = 1;
@@ -569,7 +575,7 @@ static int git_upload_pack_stream_payload(GitUploadPackStream *stream, const uns
     if (payload_length == 4U && memcmp(payload, "NAK\n", 4U) == 0) {
         return 0;
     }
-    if (payload_length >= 49U && memcmp(payload, "shallow ", 8U) == 0) {
+    if (payload_length >= 48U && memcmp(payload, "shallow ", 8U) == 0) {
         size_t line_length = payload_length;
 
         while (line_length > 0U && (payload[line_length - 1U] == '\n' || payload[line_length - 1U] == '\r')) line_length -= 1U;
