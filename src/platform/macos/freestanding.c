@@ -1423,6 +1423,10 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     return fill_entry_mode(path, path, entry_out, 0);
 }
 
+int platform_get_path_info_quick(const char *path, PlatformDirEntry *entry_out) {
+    return platform_get_path_info(path, entry_out);
+}
+
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
     return fill_entry_mode(path, path, entry_out, 1);
 }
@@ -1535,6 +1539,60 @@ int platform_collect_entries(
         count += 1U;
     }
 
+    closedir(directory);
+    *count_out = count;
+    *path_is_directory = 1;
+    return 0;
+}
+
+int platform_collect_light_entries(
+    const char *path,
+    int include_hidden,
+    PlatformLightDirEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int *path_is_directory
+) {
+    PlatformDirEntry current;
+    size_t count = 0;
+    DIR *directory;
+    struct dirent *entry;
+
+    if (path == 0 || entries_out == 0 || count_out == 0 || path_is_directory == 0) {
+        return -1;
+    }
+
+    *count_out = 0;
+    *path_is_directory = 0;
+    if (platform_get_path_info(path, &current) != 0 || !current.is_dir) {
+        return -1;
+    }
+    directory = opendir(path);
+    if (directory == 0) {
+        return -1;
+    }
+    while ((entry = readdir(directory)) != 0) {
+        PlatformLightDirEntry *out;
+
+        if (!include_hidden && entry->d_name[0] == '.') {
+            continue;
+        }
+        if (count >= entry_capacity) {
+            closedir(directory);
+            return -1;
+        }
+        out = &entries_out[count];
+        memset(out, 0, sizeof(*out));
+        rt_copy_string(out->name, sizeof(out->name), entry->d_name);
+        out->is_hidden = entry->d_name[0] == '.' ? 1 : 0;
+#ifdef DT_DIR
+        if (entry->d_type != DT_UNKNOWN) {
+            out->has_type = 1;
+            out->is_dir = entry->d_type == DT_DIR ? 1 : 0;
+        }
+#endif
+        count += 1U;
+    }
     closedir(directory);
     *count_out = count;
     *path_is_directory = 1;

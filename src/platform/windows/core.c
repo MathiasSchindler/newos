@@ -1300,6 +1300,10 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     return 0;
 }
 
+int platform_get_path_info_quick(const char *path, PlatformDirEntry *entry_out) {
+    return platform_get_path_info(path, entry_out);
+}
+
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
     return platform_get_path_info(path, entry_out);
 }
@@ -1349,6 +1353,23 @@ int platform_collect_entries(
     const char *path,
     int include_hidden,
     PlatformDirEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int *path_is_directory
+) {
+    (void)path;
+    (void)include_hidden;
+    (void)entries_out;
+    (void)entry_capacity;
+    if (count_out != 0) *count_out = 0;
+    if (path_is_directory != 0) *path_is_directory = 0;
+    return -1;
+}
+
+int platform_collect_light_entries(
+    const char *path,
+    int include_hidden,
+    PlatformLightDirEntry *entries_out,
     size_t entry_capacity,
     size_t *count_out,
     int *path_is_directory

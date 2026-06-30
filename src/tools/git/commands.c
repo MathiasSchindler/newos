@@ -130,13 +130,17 @@ static int git_default_clone_destination(const char *source, char *buffer, size_
 }
 
 static int git_copy_tracked_files(const GitRepo *source_repo, GitIndex *index, const char *destination) {
+    char last_parent[GIT_PATH_CAPACITY];
     size_t i;
 
+    last_parent[0] = '\0';
     for (i = 0U; i < index->count; ++i) {
         char source_path[GIT_PATH_CAPACITY];
         char dest_path[GIT_PATH_CAPACITY];
+        char parent[GIT_PATH_CAPACITY];
         PlatformDirEntry info;
         PlatformDirEntry dest_info;
+        unsigned int checkout_mode;
 
         if (tool_path_is_unsafe_relative(index->entries[i].path)) {
             tool_write_error("git", "refusing unsafe checkout path: ", index->entries[i].path);
@@ -154,12 +158,24 @@ static int git_copy_tracked_files(const GitRepo *source_repo, GitIndex *index, c
             tool_write_error("git", "unsupported checkout mode: ", index->entries[i].path);
             return -1;
         }
-        if (git_ensure_parent_directory(dest_path) != 0 || tool_copy_file(source_path, dest_path) != 0) {
+        if (git_copy(parent, sizeof(parent), dest_path) != 0 || git_path_parent(parent) != 0) {
+            return -1;
+        }
+        if (rt_strcmp(parent, last_parent) != 0) {
+            if (git_make_directory_chain(parent) != 0 || git_copy(last_parent, sizeof(last_parent), parent) != 0) {
+                tool_write_error("git", "cannot create checkout directory: ", parent);
+                return -1;
+            }
+        }
+        if (tool_copy_file(source_path, dest_path) != 0) {
             tool_write_error("git", "cannot check out file: ", index->entries[i].path);
             return -1;
         }
-        (void)platform_change_mode(dest_path, git_worktree_mode_from_regular_index(index->entries[i].mode));
-        if (platform_get_path_info(dest_path, &dest_info) == 0) {
+        checkout_mode = git_worktree_mode_from_regular_index(index->entries[i].mode);
+        if (checkout_mode != 0644U) {
+            (void)platform_change_mode(dest_path, checkout_mode);
+        }
+        if (platform_get_path_info_quick(dest_path, &dest_info) == 0) {
             index->entries[i].mtime_seconds = (unsigned long long)dest_info.mtime;
             index->entries[i].mtime_nanos = dest_info.mtime_nanos;
             index->entries[i].size = dest_info.size;
@@ -1594,7 +1610,7 @@ static int git_cmd_status(GitRepo *repo, int argc, char **argv, int argi) {
         tool_write_error("git", "cannot read ignore files", 0);
         return 1;
     }
-    if (git_untracked_walk_collect(repo, &index, &ignores, 0, 0, &untracked) != 0) {
+    if (git_untracked_walk_collect(repo, &index, &ignores, 0, 0, 1, &untracked) != 0) {
         goto done;
     }
     have_untracked = 1;

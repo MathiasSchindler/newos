@@ -119,6 +119,32 @@ static void fill_entry_from_stat(const char *display_name, const struct stat *st
     copy_identity_names(st->st_uid, st->st_gid, entry);
 }
 
+static void fill_entry_from_stat_quick(const char *display_name, const struct stat *st, PlatformDirEntry *entry) {
+    memset(entry, 0, sizeof(*entry));
+    posix_copy_string(entry->name, sizeof(entry->name), display_name != NULL ? display_name : "");
+    entry->device = (unsigned long long)st->st_dev;
+    entry->mode = (unsigned int)st->st_mode;
+    entry->uid = (unsigned int)st->st_uid;
+    entry->gid = (unsigned int)st->st_gid;
+    entry->size = (unsigned long long)st->st_size;
+    entry->inode = (unsigned long long)st->st_ino;
+    entry->nlink = (unsigned long)st->st_nlink;
+    entry->atime = (long long)st->st_atime;
+    entry->mtime = (long long)st->st_mtime;
+    entry->ctime = (long long)st->st_ctime;
+#if defined(__APPLE__)
+    entry->atime_nanos = (unsigned int)st->st_atimespec.tv_nsec;
+    entry->mtime_nanos = (unsigned int)st->st_mtimespec.tv_nsec;
+    entry->ctime_nanos = (unsigned int)st->st_ctimespec.tv_nsec;
+#elif defined(__linux__)
+    entry->atime_nanos = (unsigned int)st->st_atim.tv_nsec;
+    entry->mtime_nanos = (unsigned int)st->st_mtim.tv_nsec;
+    entry->ctime_nanos = (unsigned int)st->st_ctim.tv_nsec;
+#endif
+    entry->is_dir = S_ISDIR(st->st_mode) ? 1 : 0;
+    entry->is_hidden = (display_name != NULL && display_name[0] == '.') ? 1 : 0;
+}
+
 static int fill_entry_mode(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
     struct stat st;
 
@@ -127,6 +153,17 @@ static int fill_entry_mode(const char *display_name, const char *full_path, Plat
     }
 
     fill_entry_from_stat(display_name, &st, entry);
+    return 0;
+}
+
+static int fill_entry_mode_quick(const char *display_name, const char *full_path, PlatformDirEntry *entry, int follow_symlinks) {
+    struct stat st;
+
+    if ((follow_symlinks ? stat(full_path, &st) : lstat(full_path, &st)) != 0) {
+        return -1;
+    }
+
+    fill_entry_from_stat_quick(display_name, &st, entry);
     return 0;
 }
 
@@ -782,6 +819,67 @@ int platform_collect_entries(
     return 0;
 }
 
+int platform_collect_light_entries(
+    const char *path,
+    int include_hidden,
+    PlatformLightDirEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int *path_is_directory
+) {
+    struct stat st;
+    size_t count = 0;
+    DIR *dir;
+    struct dirent *de;
+
+    if (path == NULL || entries_out == NULL || count_out == NULL || path_is_directory == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    *count_out = 0;
+    *path_is_directory = 0;
+    if (lstat(path, &st) != 0) {
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        errno = ENOTDIR;
+        return -1;
+    }
+
+    dir = opendir(path);
+    if (dir == NULL) {
+        return -1;
+    }
+    while ((de = readdir(dir)) != NULL) {
+        PlatformLightDirEntry *entry;
+
+        if (!include_hidden && de->d_name[0] == '.') {
+            continue;
+        }
+        if (count >= entry_capacity) {
+            closedir(dir);
+            errno = ENOSPC;
+            return -1;
+        }
+        entry = &entries_out[count];
+        memset(entry, 0, sizeof(*entry));
+        posix_copy_string(entry->name, sizeof(entry->name), de->d_name);
+        entry->is_hidden = de->d_name[0] == '.' ? 1 : 0;
+#ifdef DT_DIR
+        if (de->d_type != DT_UNKNOWN) {
+            entry->has_type = 1;
+            entry->is_dir = de->d_type == DT_DIR ? 1 : 0;
+        }
+#endif
+        count += 1;
+    }
+    closedir(dir);
+    *count_out = count;
+    *path_is_directory = 1;
+    return 0;
+}
+
 void platform_free_entries(PlatformDirEntry *entries, size_t count) {
     (void)entries;
     (void)count;
@@ -852,6 +950,15 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     }
 
     return fill_entry(path, path, entry_out);
+}
+
+int platform_get_path_info_quick(const char *path, PlatformDirEntry *entry_out) {
+    if (path == NULL || entry_out == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    return fill_entry_mode_quick(path, path, entry_out, 0);
 }
 
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {

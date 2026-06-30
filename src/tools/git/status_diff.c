@@ -422,14 +422,18 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
     char full_path[GIT_PATH_CAPACITY];
     PlatformDirEntry info;
     unsigned char oid[CRYPTO_SHA1_DIGEST_SIZE];
+    int have_full_path = 0;
 
-    if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
-        return 1;
-    }
     if (entry->has_worktree_info) {
         info = entry->worktree_info;
-    } else if (platform_get_path_info(full_path, &info) != 0) {
-        return -1;
+    } else {
+        if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
+            return 1;
+        }
+        have_full_path = 1;
+        if (platform_get_path_info_quick(full_path, &info) != 0) {
+            return -1;
+        }
     }
     if (info.is_dir) {
         return 1;
@@ -438,6 +442,9 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
         char link_target[GIT_PATH_CAPACITY];
         size_t link_size;
 
+        if (!have_full_path && git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
+            return 1;
+        }
         if (platform_read_symlink(full_path, link_target, sizeof(link_target)) != 0) {
             return 1;
         }
@@ -460,6 +467,9 @@ static int git_entry_is_modified(const GitRepo *repo, const GitIndexEntry *entry
         info.mtime == (long long)entry->mtime_seconds &&
         info.mtime_nanos == entry->mtime_nanos) {
         return 0;
+    }
+    if (!have_full_path && git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0) {
+        return 1;
     }
     if (git_blob_hash_path(full_path, info.size, oid) != 0) {
         return 1;
@@ -506,6 +516,7 @@ typedef struct {
     char **paths;
     size_t count;
     size_t capacity;
+    int cache_worktree_info;
 } GitUntrackedWalk;
 
 static void git_untracked_walk_destroy(GitUntrackedWalk *walk) {
@@ -574,14 +585,14 @@ static int git_untracked_load_nested_ignore(GitUntrackedWalk *walk, const char *
 
 static int git_untracked_walk_dir(GitUntrackedWalk *walk, const char *dir_path, const char *relative_dir) {
     enum { GIT_UNTRACKED_ENTRY_CAPACITY = 1024 };
-    PlatformDirEntry entries[GIT_UNTRACKED_ENTRY_CAPACITY];
+    PlatformLightDirEntry entries[GIT_UNTRACKED_ENTRY_CAPACITY];
     size_t count = 0U;
     size_t i;
     int is_directory = 0;
     int result = -1;
 
     if (git_untracked_load_nested_ignore(walk, dir_path, relative_dir) != 0 ||
-        platform_collect_entries(dir_path, 1, entries, GIT_UNTRACKED_ENTRY_CAPACITY, &count, &is_directory) != 0 ||
+        platform_collect_light_entries(dir_path, 1, entries, GIT_UNTRACKED_ENTRY_CAPACITY, &count, &is_directory) != 0 ||
         !is_directory) {
         return -1;
     }
@@ -590,12 +601,12 @@ static int git_untracked_walk_dir(GitUntrackedWalk *walk, const char *dir_path, 
         char child_path[GIT_PATH_CAPACITY];
         char relative[GIT_PATH_CAPACITY];
         GitIndexEntry *indexed;
+        PlatformDirEntry info;
+        int entry_is_dir = entries[i].is_dir;
+        int have_info = 0;
 
         if (rt_strcmp(entries[i].name, ".") == 0 || rt_strcmp(entries[i].name, "..") == 0) {
             continue;
-        }
-        if (git_join(child_path, sizeof(child_path), dir_path, entries[i].name) != 0) {
-            goto done;
         }
         if (relative_dir != 0 && relative_dir[0] != '\0') {
             if (git_copy(relative, sizeof(relative), relative_dir) != 0 ||
@@ -612,18 +623,43 @@ static int git_untracked_walk_dir(GitUntrackedWalk *walk, const char *dir_path, 
         if (rt_strcmp(relative, ".git") == 0 || rt_strncmp(relative, ".git/", 5U) == 0) {
             continue;
         }
-        if (walk->ignores != 0 && git_ignore_matches(walk->ignores, relative, entries[i].is_dir)) {
+        if (!entries[i].has_type) {
+            if (git_join(child_path, sizeof(child_path), dir_path, entries[i].name) != 0 ||
+                platform_get_path_info_quick(child_path, &info) != 0) {
+                goto done;
+            }
+            have_info = 1;
+            entry_is_dir = info.is_dir;
+        }
+        if (walk->ignores != 0 && git_ignore_matches(walk->ignores, relative, entry_is_dir)) {
             continue;
         }
         indexed = git_index_find(walk->index, relative);
         if (indexed != 0) {
-            indexed->worktree_info = entries[i];
-            indexed->has_worktree_info = 1;
-            if (!entries[i].is_dir) {
+            if (!walk->cache_worktree_info) {
+                if (!entry_is_dir) {
+                    continue;
+                }
+            } else if (!have_info) {
+                if (git_join(child_path, sizeof(child_path), dir_path, entries[i].name) != 0 ||
+                    platform_get_path_info_quick(child_path, &info) != 0) {
+                    goto done;
+                }
+                have_info = 1;
+                entry_is_dir = info.is_dir;
+            }
+            if (walk->cache_worktree_info) {
+                indexed->worktree_info = info;
+                indexed->has_worktree_info = 1;
+            }
+            if (!entry_is_dir) {
                 continue;
             }
         }
-        if (entries[i].is_dir) {
+        if (entry_is_dir) {
+            if (git_join(child_path, sizeof(child_path), dir_path, entries[i].name) != 0) {
+                goto done;
+            }
             if (git_untracked_walk_dir(walk, child_path, relative) != 0) {
                 goto done;
             }
@@ -638,11 +674,10 @@ static int git_untracked_walk_dir(GitUntrackedWalk *walk, const char *dir_path, 
     }
     result = 0;
 done:
-    platform_free_entries(entries, count);
     return result;
 }
 
-static int git_untracked_walk_collect(const GitRepo *repo, GitIndex *index, GitIgnoreList *ignores, char **pathspecs, int pathspec_count, GitUntrackedWalk *walk) {
+static int git_untracked_walk_collect(const GitRepo *repo, GitIndex *index, GitIgnoreList *ignores, char **pathspecs, int pathspec_count, int cache_worktree_info, GitUntrackedWalk *walk) {
     if (walk == 0) {
         return -1;
     }
@@ -652,6 +687,7 @@ static int git_untracked_walk_collect(const GitRepo *repo, GitIndex *index, GitI
     walk->ignores = ignores;
     walk->pathspecs = pathspecs;
     walk->pathspec_count = pathspec_count;
+    walk->cache_worktree_info = cache_worktree_info;
     if (git_untracked_walk_dir(walk, repo->work_tree, "") != 0) {
         git_untracked_walk_destroy(walk);
         return -1;
@@ -667,7 +703,7 @@ static int git_for_each_untracked_path(const GitRepo *repo, GitIndex *index, Git
     size_t i;
     int result = -1;
 
-    if (git_untracked_walk_collect(repo, index, ignores, pathspecs, pathspec_count, &walk) != 0) {
+    if (git_untracked_walk_collect(repo, index, ignores, pathspecs, pathspec_count, 0, &walk) != 0) {
         return -1;
     }
     for (i = 0U; i < walk.count; ++i) {
@@ -835,24 +871,70 @@ static int git_diff_lcs_count(const GitDiffLine *old_lines, size_t old_count, co
     return 0;
 }
 
+static size_t git_diff_count_lines_in_data(const unsigned char *data, size_t size) {
+    size_t count = 0U;
+    size_t pos = 0U;
+
+    while (pos < size) {
+        count += 1U;
+        while (pos < size && data[pos] != '\n') {
+            pos += 1U;
+        }
+        if (pos < size) {
+            pos += 1U;
+        }
+    }
+    return count;
+}
+
 static int git_diff_count_line_changes(const unsigned char *old_data, size_t old_size, const unsigned char *new_data, size_t new_size, size_t *insertions_out, size_t *deletions_out) {
     GitDiffLine *old_lines = 0;
     GitDiffLine *new_lines = 0;
     size_t old_count = 0U;
     size_t new_count = 0U;
+    size_t prefix = 0U;
+    size_t suffix = 0U;
+    size_t old_mid_count;
+    size_t new_mid_count;
     size_t common = 0U;
     int result = -1;
 
     *insertions_out = 0U;
     *deletions_out = 0U;
+    if (old_size == 0U) {
+        *insertions_out = git_diff_count_lines_in_data(new_data, new_size);
+        return 0;
+    }
+    if (new_size == 0U) {
+        *deletions_out = git_diff_count_lines_in_data(old_data, old_size);
+        return 0;
+    }
     if (git_split_diff_lines(old_data, old_size, &old_lines, &old_count) != 0 || git_split_diff_lines(new_data, new_size, &new_lines, &new_count) != 0) {
         goto done;
     }
-    if (git_diff_lcs_count(old_lines, old_count, new_lines, new_count, &common) != 0) {
+    while (prefix < old_count && prefix < new_count && git_diff_lines_equal(&old_lines[prefix], &new_lines[prefix])) {
+        prefix += 1U;
+    }
+    while (suffix < old_count - prefix && suffix < new_count - prefix && git_diff_lines_equal(&old_lines[old_count - suffix - 1U], &new_lines[new_count - suffix - 1U])) {
+        suffix += 1U;
+    }
+    old_mid_count = old_count - prefix - suffix;
+    new_mid_count = new_count - prefix - suffix;
+    if (old_mid_count == 0U) {
+        *insertions_out = new_mid_count;
+        result = 0;
         goto done;
     }
-    *insertions_out = new_count >= common ? new_count - common : 0U;
-    *deletions_out = old_count >= common ? old_count - common : 0U;
+    if (new_mid_count == 0U) {
+        *deletions_out = old_mid_count;
+        result = 0;
+        goto done;
+    }
+    if (git_diff_lcs_count(old_lines + prefix, old_mid_count, new_lines + prefix, new_mid_count, &common) != 0) {
+        goto done;
+    }
+    *insertions_out = new_mid_count >= common ? new_mid_count - common : 0U;
+    *deletions_out = old_mid_count >= common ? old_mid_count - common : 0U;
     result = 0;
 done:
     rt_free(old_lines);
@@ -866,7 +948,7 @@ static int git_read_worktree_blob(const GitRepo *repo, const GitIndexEntry *entr
 
     *data_out = 0;
     *size_out = 0U;
-    if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0 || platform_get_path_info(full_path, &info) != 0 || info.is_dir) {
+    if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) != 0 || platform_get_path_info_quick(full_path, &info) != 0 || info.is_dir) {
         return -1;
     }
     if (entry->mode == GIT_MODE_SYMLINK) {
@@ -1137,7 +1219,7 @@ static int git_render_worktree_diff_patch_entry(const GitRepo *repo, const GitIn
         PlatformDirEntry info;
 
         if (git_join(full_path, sizeof(full_path), repo->work_tree, entry->path) == 0 &&
-            platform_get_path_info(full_path, &info) == 0 && !info.is_dir) {
+            platform_get_path_info_quick(full_path, &info) == 0 && !info.is_dir) {
             new_mode = (info.mode & GIT_MODE_TYPE_MASK) == GIT_MODE_SYMLINK ? GIT_MODE_SYMLINK : git_regular_index_mode_from_worktree(info.mode);
         }
     }

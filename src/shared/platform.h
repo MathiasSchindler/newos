@@ -101,6 +101,13 @@ typedef struct {
 } PlatformDirEntry;
 
 typedef struct {
+    char name[PLATFORM_NAME_CAPACITY];
+    int is_dir;
+    int has_type;
+    int is_hidden;
+} PlatformLightDirEntry;
+
+typedef struct {
     int pid;
     int ppid;
     unsigned int uid;
@@ -642,11 +649,20 @@ int platform_collect_entries(
     size_t *count_out,
     int *path_is_directory
 );
+int platform_collect_light_entries(
+    const char *path,
+    int include_hidden,
+    PlatformLightDirEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int *path_is_directory
+);
 int platform_path_is_directory(const char *path, int *is_directory_out);
 
 int platform_stream_file_to_stdout(const char *path);
 int platform_get_current_directory(char *buffer, size_t buffer_size);
 int platform_get_path_info(const char *path, PlatformDirEntry *entry_out);
+int platform_get_path_info_quick(const char *path, PlatformDirEntry *entry_out);
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out);
 int platform_read_symlink(const char *path, char *buffer, size_t buffer_size);
 int platform_get_filesystem_info(const char *path, PlatformFilesystemInfo *info_out);

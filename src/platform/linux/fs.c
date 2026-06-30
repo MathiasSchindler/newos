@@ -37,6 +37,8 @@ struct linux_statfs {
 
 #define LINUX_MNT_FORCE  0x00000001
 #define LINUX_MNT_DETACH 0x00000002
+#define LINUX_DT_UNKNOWN 0U
+#define LINUX_DT_DIR     4U
 
 static void fill_entry_from_stat(const char *display_name, const struct linux_stat *st, PlatformDirEntry *entry) {
     copy_string(entry->name, sizeof(entry->name), display_name != 0 ? display_name : "");
@@ -619,6 +621,82 @@ int platform_collect_entries(
     return 0;
 }
 
+int platform_collect_light_entries(
+    const char *path,
+    int include_hidden,
+    PlatformLightDirEntry *entries_out,
+    size_t entry_capacity,
+    size_t *count_out,
+    int *path_is_directory
+) {
+    struct linux_stat st;
+    size_t count = 0;
+    long stat_result;
+    long fd;
+    char buffer[4096];
+
+    if (path == 0 || entries_out == 0 || count_out == 0 || path_is_directory == 0) {
+        return -1;
+    }
+
+    *count_out = 0;
+    *path_is_directory = 0;
+    stat_result = linux_syscall4(
+        LINUX_SYS_NEWFSTATAT,
+        LINUX_AT_FDCWD,
+        (long)path,
+        (long)&st,
+        LINUX_AT_SYMLINK_NOFOLLOW
+    );
+    if (stat_result < 0 || (st.st_mode & LINUX_S_IFMT) != LINUX_S_IFDIR) {
+        return -1;
+    }
+
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY | LINUX_O_DIRECTORY, 0);
+    if (fd < 0) {
+        return -1;
+    }
+    for (;;) {
+        long bytes = linux_syscall3(LINUX_SYS_GETDENTS64, fd, (long)buffer, sizeof(buffer));
+        unsigned long offset = 0;
+
+        if (bytes == 0) {
+            break;
+        }
+        if (bytes < 0) {
+            linux_syscall1(LINUX_SYS_CLOSE, fd);
+            return -1;
+        }
+        while (offset < (unsigned long)bytes) {
+            struct linux_dirent64 *dirent = (struct linux_dirent64 *)(buffer + offset);
+            const char *name = dirent->d_name;
+
+            if (include_hidden || name[0] != '.') {
+                PlatformLightDirEntry *entry;
+
+                if (count >= entry_capacity) {
+                    linux_syscall1(LINUX_SYS_CLOSE, fd);
+                    return -1;
+                }
+                entry = &entries_out[count];
+                rt_memset(entry, 0, sizeof(*entry));
+                copy_string(entry->name, sizeof(entry->name), name);
+                entry->is_hidden = name[0] == '.' ? 1 : 0;
+                if (dirent->d_type != LINUX_DT_UNKNOWN) {
+                    entry->has_type = 1;
+                    entry->is_dir = dirent->d_type == LINUX_DT_DIR ? 1 : 0;
+                }
+                count += 1;
+            }
+            offset += dirent->d_reclen;
+        }
+    }
+    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    *count_out = count;
+    *path_is_directory = 1;
+    return 0;
+}
+
 int platform_stream_file_to_stdout(const char *path) {
     long fd;
     int should_close;
@@ -680,6 +758,10 @@ int platform_get_path_info(const char *path, PlatformDirEntry *entry_out) {
     }
 
     return fill_entry(path, path, entry_out);
+}
+
+int platform_get_path_info_quick(const char *path, PlatformDirEntry *entry_out) {
+    return platform_get_path_info(path, entry_out);
 }
 
 int platform_get_path_info_follow(const char *path, PlatformDirEntry *entry_out) {
