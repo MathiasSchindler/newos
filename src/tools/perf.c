@@ -184,80 +184,6 @@ static void print_open_failure(long err) {
     rt_write_line(2, "perf: for broader kernel/hardware access, try: sudo sysctl kernel.perf_event_paranoid=0");
 }
 
-static int parse_unsigned_auto(const char *text, unsigned long long *value_out) {
-    unsigned long long value = 0ULL;
-    size_t i = 0U;
-    int is_hex = 0;
-    int saw_digit = 0;
-
-    if (text == 0 || text[0] == '\0') return -1;
-    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
-        is_hex = 1;
-        i = 2U;
-    }
-    for (; text[i] != '\0'; ++i) {
-        int digit;
-
-        if (is_hex) {
-            digit = tool_hex_value(text[i]);
-            if (digit < 0) return -1;
-            value = (value << 4U) | (unsigned long long)digit;
-        } else {
-            if (text[i] < '0' || text[i] > '9') return -1;
-            value = value * 10ULL + (unsigned long long)(text[i] - '0');
-        }
-        saw_digit = 1;
-    }
-    if (!saw_digit) return -1;
-    *value_out = value;
-    return 0;
-}
-
-static int parse_address_token(const char *text, unsigned long long *value_out) {
-    size_t i;
-    int has_hex_letter = 0;
-
-    if (text == 0 || text[0] == '\0') return -1;
-    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) return parse_unsigned_auto(text, value_out);
-    for (i = 0U; text[i] != '\0'; ++i) {
-        int digit = tool_hex_value(text[i]);
-
-        if (digit < 0) return -1;
-        if ((text[i] >= 'a' && text[i] <= 'f') || (text[i] >= 'A' && text[i] <= 'F')) has_hex_letter = 1;
-    }
-    if (!has_hex_letter && rt_strlen(text) < 9U) return parse_unsigned_auto(text, value_out);
-    *value_out = 0ULL;
-    for (i = 0U; text[i] != '\0'; ++i) {
-        int digit = tool_hex_value(text[i]);
-        if (digit < 0) return -1;
-        *value_out = (*value_out << 4U) | (unsigned long long)digit;
-    }
-    return 0;
-}
-
-static int next_token(const char **cursor_io, char *token, size_t token_size) {
-    const char *cursor = *cursor_io;
-    size_t length = 0U;
-
-    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) cursor++;
-    if (*cursor == '\0' || *cursor == '#') {
-        *cursor_io = cursor;
-        return 0;
-    }
-    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
-        if (length + 1U < token_size) token[length++] = *cursor;
-        cursor++;
-    }
-    token[length] = '\0';
-    *cursor_io = cursor;
-    return length == 0U ? 0 : 1;
-}
-
-static const char *display_symbol_name(const char *name) {
-    if (name != 0 && name[0] == '_' && name[1] != '\0') return name + 1;
-    return name;
-}
-
 static void add_symbol(unsigned long long address, const char *name, int function_symbol) {
     size_t i;
 
@@ -287,26 +213,15 @@ static int parse_linker_map_symbol_line(const char *line) {
     char name[PERF_NAME_CAPACITY];
     unsigned long long address;
 
-    if (!next_token(&cursor, keyword, sizeof(keyword)) || rt_strcmp(keyword, "symbol") != 0) return 0;
-    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
-        !next_token(&cursor, size_token, sizeof(size_token)) ||
-        !next_token(&cursor, section, sizeof(section)) ||
-        !next_token(&cursor, name, sizeof(name))) return 0;
+    if (!tool_next_token(&cursor, keyword, sizeof(keyword)) || rt_strcmp(keyword, "symbol") != 0) return 0;
+    if (!tool_next_token(&cursor, address_token, sizeof(address_token)) ||
+        !tool_next_token(&cursor, size_token, sizeof(size_token)) ||
+        !tool_next_token(&cursor, section, sizeof(section)) ||
+        !tool_next_token(&cursor, name, sizeof(name))) return 0;
     (void)size_token;
-    if (rt_strcmp(section, "__TEXT,__text") != 0 || parse_address_token(address_token, &address) != 0) return 0;
-    add_symbol(address, display_symbol_name(name), 1);
+    if (rt_strcmp(section, "__TEXT,__text") != 0 || tool_parse_address_token(address_token, &address) != 0) return 0;
+    add_symbol(address, tool_display_symbol_name(name), 1);
     return 1;
-}
-
-static const char *linux_newlinker_text_symbol_name(const char *section) {
-    const char *name;
-
-    if (!tool_starts_with(section, ".text.")) return 0;
-    name = section + 6;
-    if (tool_starts_with(name, "startup.")) name += 8;
-    else if (tool_starts_with(name, "unlikely.")) name += 9;
-    else if (tool_starts_with(name, "hot.")) name += 4;
-    return name[0] == '\0' ? 0 : name;
 }
 
 static int parse_linux_newlinker_map_line(const char *line) {
@@ -318,14 +233,14 @@ static int parse_linux_newlinker_map_line(const char *line) {
     unsigned long long size;
     const char *name;
 
-    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
-        parse_address_token(address_token, &address) != 0 ||
-        !next_token(&cursor, size_token, sizeof(size_token)) ||
-        parse_unsigned_auto(size_token, &size) != 0 ||
-        !next_token(&cursor, section, sizeof(section)) ||
+    if (!tool_next_token(&cursor, address_token, sizeof(address_token)) ||
+        tool_parse_address_token(address_token, &address) != 0 ||
+        !tool_next_token(&cursor, size_token, sizeof(size_token)) ||
+        tool_parse_unsigned_auto(size_token, &size) != 0 ||
+        !tool_next_token(&cursor, section, sizeof(section)) ||
         section[0] != '.') return 0;
     (void)size;
-    name = linux_newlinker_text_symbol_name(section);
+    name = tool_newlinker_text_symbol_name(section);
     if (name != 0) add_symbol(address, name, 1);
     return 1;
 }
@@ -350,10 +265,10 @@ static int read_symbols(const char *path) {
         unsigned long long address;
 
         if (parse_linker_map_symbol_line(line) || parse_linux_newlinker_map_line(line)) continue;
-        if (!next_token(&cursor, first, sizeof(first))) continue;
-        if (parse_address_token(first, &address) != 0) continue;
-        if (!next_token(&cursor, second, sizeof(second))) continue;
-        if (rt_strlen(second) == 1U && next_token(&cursor, third, sizeof(third))) {
+        if (!tool_next_token(&cursor, first, sizeof(first))) continue;
+        if (tool_parse_address_token(first, &address) != 0) continue;
+        if (!tool_next_token(&cursor, second, sizeof(second))) continue;
+        if (rt_strlen(second) == 1U && tool_next_token(&cursor, third, sizeof(third))) {
             if (tool_symbol_type_is_function(second)) add_symbol(address, third, 1);
         } else {
             add_symbol(address, second, 1);
@@ -449,23 +364,6 @@ static int compare_print_rows(const void *left_ptr, const void *right_ptr) {
     return 0;
 }
 
-static void write_hex_address(unsigned long long value) {
-    char digits[32];
-    size_t count = 0U;
-
-    rt_write_cstr(1, "0x");
-    if (value == 0ULL) {
-        rt_write_char(1, '0');
-        return;
-    }
-    while (value != 0ULL && count < sizeof(digits)) {
-        unsigned int nibble = (unsigned int)(value & 0xfULL);
-        digits[count++] = (char)(nibble < 10U ? ('0' + nibble) : ('a' + (nibble - 10U)));
-        value >>= 4U;
-    }
-    while (count > 0U) rt_write_char(1, digits[--count]);
-}
-
 static void print_results(unsigned int count, int csv, unsigned long long elapsed_ns, int exit_status) {
     size_t i;
     size_t limit;
@@ -498,7 +396,7 @@ static void print_results(unsigned int count, int csv, unsigned long long elapse
             rt_write_char(1, ',');
             tool_write_percent_2(1, row->samples, perf_total_samples);
             rt_write_char(1, ',');
-            write_hex_address(row->address);
+            tool_write_hex_value(1, row->address);
             rt_write_char(1, ',');
             rt_write_line(1, symbol != 0 ? symbol : "");
         } else {
@@ -508,7 +406,7 @@ static void print_results(unsigned int count, int csv, unsigned long long elapse
             rt_write_char(1, ' ');
             tool_write_percent_2(1, row->samples, perf_total_samples);
             rt_write_char(1, ' ');
-            write_hex_address(row->address);
+            tool_write_hex_value(1, row->address);
             rt_write_char(1, ' ');
             rt_write_line(1, symbol != 0 ? symbol : "?");
         }
@@ -724,40 +622,40 @@ int main(int argc, char **argv) {
             map_path = arg + 10;
             argi += 1;
         } else if (rt_strcmp(arg, "-F") == 0 || rt_strcmp(arg, "--freq") == 0) {
-            if (argi + 1 >= argc || parse_unsigned_auto(argv[argi + 1], &freq) != 0 || freq == 0ULL) {
+            if (argi + 1 >= argc || tool_parse_unsigned_auto(argv[argi + 1], &freq) != 0 || freq == 0ULL) {
                 tool_write_error("perf", "invalid frequency", 0);
                 return 1;
             }
             argi += 2;
         } else if (tool_starts_with(arg, "--freq=")) {
-            if (parse_unsigned_auto(arg + 7, &freq) != 0 || freq == 0ULL) {
+            if (tool_parse_unsigned_auto(arg + 7, &freq) != 0 || freq == 0ULL) {
                 tool_write_error("perf", "invalid frequency", 0);
                 return 1;
             }
             argi += 1;
         } else if (rt_strcmp(arg, "-n") == 0 || rt_strcmp(arg, "--count") == 0) {
-            if (argi + 1 >= argc || parse_unsigned_auto(argv[argi + 1], &parsed) != 0 || parsed == 0ULL || parsed > 1000000ULL) {
+            if (argi + 1 >= argc || tool_parse_unsigned_auto(argv[argi + 1], &parsed) != 0 || parsed == 0ULL || parsed > 1000000ULL) {
                 tool_write_error("perf", "invalid row count", 0);
                 return 1;
             }
             count = (unsigned int)parsed;
             argi += 2;
         } else if (tool_starts_with(arg, "--count=")) {
-            if (parse_unsigned_auto(arg + 8, &parsed) != 0 || parsed == 0ULL || parsed > 1000000ULL) {
+            if (tool_parse_unsigned_auto(arg + 8, &parsed) != 0 || parsed == 0ULL || parsed > 1000000ULL) {
                 tool_write_error("perf", "invalid row count", 0);
                 return 1;
             }
             count = (unsigned int)parsed;
             argi += 1;
         } else if (rt_strcmp(arg, "--ring-pages") == 0) {
-            if (argi + 1 >= argc || parse_unsigned_auto(argv[argi + 1], &parsed) != 0 || parsed == 0ULL || parsed > 4096ULL) {
+            if (argi + 1 >= argc || tool_parse_unsigned_auto(argv[argi + 1], &parsed) != 0 || parsed == 0ULL || parsed > 4096ULL) {
                 tool_write_error("perf", "invalid ring page count", 0);
                 return 1;
             }
             ring_pages = (unsigned int)parsed;
             argi += 2;
         } else if (tool_starts_with(arg, "--ring-pages=")) {
-            if (parse_unsigned_auto(arg + 13, &parsed) != 0 || parsed == 0ULL || parsed > 4096ULL) {
+            if (tool_parse_unsigned_auto(arg + 13, &parsed) != 0 || parsed == 0ULL || parsed > 4096ULL) {
                 tool_write_error("perf", "invalid ring page count", 0);
                 return 1;
             }

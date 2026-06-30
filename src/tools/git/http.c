@@ -94,15 +94,7 @@ static int git_http_status_code(const unsigned char *headers, size_t header_size
 }
 
 static int git_header_name_equals(const unsigned char *line, size_t name_length, const char *name) {
-    size_t i = 0U;
-
-    while (i < name_length && name[i] != '\0') {
-        if (tool_ascii_tolower((char)line[i]) != tool_ascii_tolower(name[i])) {
-            return 0;
-        }
-        i += 1U;
-    }
-    return i == name_length && name[i] == '\0';
+    return tool_name_equals_ignore_case_ascii_n((const char *)line, name_length, name);
 }
 
 static int git_header_value_contains(const unsigned char *value, size_t value_length, const char *needle) {

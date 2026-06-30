@@ -23,6 +23,12 @@ const char *tool_base_name(const char *path) {
     return last;
 }
 
+int tool_path_base_is_dot_or_dotdot(const char *path) {
+    const char *base = tool_base_name(path);
+
+    return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0;
+}
+
 int tool_path_has_separator(const char *path) {
     size_t i = 0U;
 

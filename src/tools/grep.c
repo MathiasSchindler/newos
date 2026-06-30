@@ -120,100 +120,20 @@ static int write_match_highlighted_line(const char *pattern, const GrepOptions *
 }
 
 
-static size_t next_codepoint_start(const char *text, size_t index) {
-    size_t length = rt_strlen(text);
-    unsigned int codepoint = 0;
-    size_t next = index;
-
-    if (index >= length) {
-        return index;
-    }
-    if (rt_utf8_decode(text, length, &next, &codepoint) != 0) {
-        return index + 1U;
-    }
-    return next;
-}
-
-
-
-static int find_fixed_match(const char *pattern,
-                            const char *text,
-                            int ignore_case,
-                            size_t search_start,
-                            size_t *start_out,
-                            size_t *end_out) {
-    size_t pos = search_start;
-    size_t pattern_len = rt_strlen(pattern);
-
-    if (pattern_len == 0U) {
-        *start_out = search_start;
-        *end_out = search_start;
-        return 1;
-    }
-
-    while (1) {
-        size_t consumed = 0U;
-
-        if (tool_literal_prefix_matches(pattern, text + pos, ignore_case, &consumed)) {
-            *start_out = pos;
-            *end_out = pos + consumed;
-            return 1;
-        }
-
-        if (text[pos] == '\0') {
-            break;
-        }
-        pos = ((unsigned char)text[pos]) < 0x80U ? pos + 1U : pos + next_codepoint_start(text + pos, 0U);
-    }
-
-    return 0;
-}
-
-static int find_regex_match(const char *pattern,
-                            const char *text,
-                            int ignore_case,
-                            size_t search_start,
-                            size_t *start_out,
-                            size_t *end_out) {
-    return tool_regex_search(pattern, text, ignore_case, search_start, start_out, end_out);
-}
-
 static int find_next_match(const GrepOptions *options,
                            const char *pattern,
                            const char *text,
                            size_t search_start,
                            size_t *start_out,
                            size_t *end_out) {
-    size_t candidate_start = 0;
-    size_t candidate_end = 0;
-    size_t next_start = search_start;
-
-    while (1) {
-        int found;
-
-        if (options->fixed_strings) {
-            found = find_fixed_match(pattern, text, options->ignore_case, next_start, &candidate_start, &candidate_end);
-        } else {
-            found = find_regex_match(pattern, text, options->ignore_case, next_start, &candidate_start, &candidate_end);
-        }
-
-        if (!found) {
-            return 0;
-        }
-
-        if (!options->whole_word || tool_text_match_has_word_boundaries(text, candidate_start, candidate_end)) {
-            *start_out = candidate_start;
-            *end_out = candidate_end;
-            return 1;
-        }
-
-        if (text[candidate_start] == '\0') {
-            break;
-        }
-        next_start = candidate_start + 1;
-    }
-
-    return 0;
+    return tool_text_find_next_match(pattern,
+                                     text,
+                                     options->ignore_case,
+                                     options->fixed_strings,
+                                     options->whole_word,
+                                     search_start,
+                                     start_out,
+                                     end_out);
 }
 
 static int print_prefix(const char *label,

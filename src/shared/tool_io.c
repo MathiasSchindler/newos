@@ -336,6 +336,19 @@ int tool_write_file_all_report(const char *path, const unsigned char *data, size
     return -1;
 }
 
+int tool_store_fixed_record_text(char *records, size_t record_size, size_t max_records, size_t *count_io, const char *text, size_t text_length) {
+    char *slot;
+    size_t copy_length = text_length;
+
+    if (records == 0 || record_size == 0U || count_io == 0 || *count_io >= max_records) return -1;
+    if (copy_length >= record_size) copy_length = record_size - 1U;
+    slot = records + (*count_io * record_size);
+    if (copy_length != 0U) memcpy(slot, text, copy_length);
+    slot[copy_length] = '\0';
+    *count_io += 1U;
+    return 0;
+}
+
 int tool_validate_absolute_program_path(const char *tool_name, const char *path) {
     if (path == 0 || path[0] != '/') {
         tool_write_error(tool_name, "refusing non-absolute program path: ", path != 0 ? path : "(null)");
@@ -1021,6 +1034,30 @@ int tool_symbol_type_is_function(const char *type) {
            rt_strcmp(type, "W") == 0 || rt_strcmp(type, "w") == 0;
 }
 
+const char *tool_display_symbol_name(const char *name) {
+    if (name != 0 && name[0] == '_' && name[1] != '\0') {
+        return name + 1;
+    }
+    return name;
+}
+
+const char *tool_newlinker_text_symbol_name(const char *section) {
+    const char *name;
+
+    if (!tool_starts_with(section, ".text.")) {
+        return 0;
+    }
+    name = section + 6;
+    if (tool_starts_with(name, "startup.")) {
+        name += 8;
+    } else if (tool_starts_with(name, "unlikely.")) {
+        name += 9;
+    } else if (tool_starts_with(name, "hot.")) {
+        name += 4;
+    }
+    return name[0] == '\0' ? 0 : name;
+}
+
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what) {
     if (text == 0 || rt_parse_uint(text, value_out) != 0) {
         tool_write_error(tool_name, "invalid ", what);
@@ -1097,6 +1134,77 @@ int tool_parse_size_value(const char *text, unsigned long long *value_out) {
         return -1;
     }
     *value_out = value * multiplier;
+    return 0;
+}
+
+int tool_parse_unsigned_auto(const char *text, unsigned long long *value_out) {
+    unsigned long long value = 0ULL;
+    size_t index = 0U;
+    int is_hex = 0;
+    int saw_digit = 0;
+
+    if (text == 0 || text[0] == '\0' || value_out == 0) {
+        return -1;
+    }
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        is_hex = 1;
+        index = 2U;
+    }
+    for (; text[index] != '\0'; ++index) {
+        int digit;
+
+        if (is_hex) {
+            digit = tool_hex_value(text[index]);
+            if (digit < 0) {
+                return -1;
+            }
+            value = (value << 4U) | (unsigned long long)digit;
+        } else {
+            if (text[index] < '0' || text[index] > '9') {
+                return -1;
+            }
+            value = (value * 10ULL) + (unsigned long long)(text[index] - '0');
+        }
+        saw_digit = 1;
+    }
+    if (!saw_digit) {
+        return -1;
+    }
+    *value_out = value;
+    return 0;
+}
+
+int tool_parse_address_token(const char *text, unsigned long long *value_out) {
+    size_t index;
+    int has_hex_letter = 0;
+
+    if (text == 0 || text[0] == '\0' || value_out == 0) {
+        return -1;
+    }
+    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        return tool_parse_unsigned_auto(text, value_out);
+    }
+    for (index = 0U; text[index] != '\0'; ++index) {
+        int digit = tool_hex_value(text[index]);
+
+        if (digit < 0) {
+            return -1;
+        }
+        if ((text[index] >= 'a' && text[index] <= 'f') || (text[index] >= 'A' && text[index] <= 'F')) {
+            has_hex_letter = 1;
+        }
+    }
+    if (!has_hex_letter && rt_strlen(text) < 9U) {
+        return tool_parse_unsigned_auto(text, value_out);
+    }
+    *value_out = 0ULL;
+    for (index = 0U; text[index] != '\0'; ++index) {
+        int digit = tool_hex_value(text[index]);
+        if (digit < 0) {
+            return -1;
+        }
+        *value_out = (*value_out << 4U) | (unsigned long long)digit;
+    }
     return 0;
 }
 
@@ -1450,6 +1558,33 @@ int tool_ascii_is_token_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
 }
 
+int tool_next_token(const char **cursor_io, char *token, size_t token_size) {
+    const char *cursor;
+    size_t length = 0U;
+
+    if (cursor_io == 0 || *cursor_io == 0 || token == 0 || token_size == 0U) {
+        return 0;
+    }
+    cursor = *cursor_io;
+    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
+        cursor++;
+    }
+    if (*cursor == '\0' || *cursor == '#') {
+        *cursor_io = cursor;
+        token[0] = '\0';
+        return 0;
+    }
+    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
+        if (length + 1U < token_size) {
+            token[length++] = *cursor;
+        }
+        cursor++;
+    }
+    token[length] = '\0';
+    *cursor_io = cursor;
+    return length == 0U ? 0 : 1;
+}
+
 int tool_ascii_is_identifier_start(char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
 }
@@ -1471,6 +1606,16 @@ int tool_str_equal_ignore_case_ascii(const char *left, const char *right) {
         index += 1U;
     }
     return left[index] == '\0' && right[index] == '\0';
+}
+
+int tool_name_equals_ignore_case_ascii_n(const char *text, size_t text_length, const char *name) {
+    size_t index = 0U;
+
+    while (index < text_length && name[index] != '\0') {
+        if (tool_ascii_tolower(text[index]) != tool_ascii_tolower(name[index])) return 0;
+        index += 1U;
+    }
+    return index == text_length && name[index] == '\0';
 }
 
 int tool_utf8_is_continuation_byte(unsigned char byte) {
@@ -1526,6 +1671,62 @@ int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t e
     }
 
     return 1;
+}
+
+int tool_text_find_next_match(const char *pattern,
+                              const char *text,
+                              int ignore_case,
+                              int fixed_string,
+                              int whole_word,
+                              size_t search_start,
+                              size_t *start_out,
+                              size_t *end_out) {
+    size_t candidate_start = 0U;
+    size_t candidate_end = 0U;
+    size_t next_start = search_start;
+
+    while (1) {
+        int found;
+
+        if (fixed_string) {
+            size_t pos = next_start;
+            size_t pattern_len = rt_strlen(pattern);
+
+            found = 0;
+            if (pattern_len == 0U) {
+                candidate_start = next_start;
+                candidate_end = next_start;
+                found = 1;
+            } else {
+                while (1) {
+                    size_t consumed = 0U;
+
+                    if (tool_literal_prefix_matches(pattern, text + pos, ignore_case, &consumed)) {
+                        candidate_start = pos;
+                        candidate_end = pos + consumed;
+                        found = 1;
+                        break;
+                    }
+                    if (text[pos] == '\0') break;
+                    pos += 1U;
+                    while (tool_utf8_is_continuation_byte((unsigned char)text[pos])) pos += 1U;
+                }
+            }
+        } else {
+            found = tool_regex_search(pattern, text, ignore_case, next_start, &candidate_start, &candidate_end);
+        }
+
+        if (!found) return 0;
+        if (!whole_word || tool_text_match_has_word_boundaries(text, candidate_start, candidate_end)) {
+            *start_out = candidate_start;
+            *end_out = candidate_end;
+            return 1;
+        }
+        if (text[candidate_start] == '\0') break;
+        next_start = candidate_start + 1U;
+    }
+
+    return 0;
 }
 
 size_t tool_text_display_width_n(const char *text, size_t length) {

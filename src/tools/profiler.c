@@ -91,99 +91,6 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  symbol 0x0000000100001000 64 __TEXT,__text _function_name path.o\n");
 }
 
-static int parse_unsigned_auto(const char *text, unsigned long long *value_out) {
-    unsigned long long value = 0ULL;
-    size_t i = 0U;
-    int is_hex = 0;
-    int saw_digit = 0;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
-        is_hex = 1;
-        i = 2U;
-    }
-    for (; text[i] != '\0'; ++i) {
-        int digit;
-
-        if (is_hex) {
-            digit = tool_hex_value(text[i]);
-            if (digit < 0) {
-                return -1;
-            }
-            value = (value << 4U) | (unsigned long long)digit;
-        } else {
-            if (text[i] < '0' || text[i] > '9') {
-                return -1;
-            }
-            value = (value * 10ULL) + (unsigned long long)(text[i] - '0');
-        }
-        saw_digit = 1;
-    }
-    if (!saw_digit) {
-        return -1;
-    }
-    *value_out = value;
-    return 0;
-}
-
-static int parse_address_token(const char *text, unsigned long long *value_out) {
-    size_t i;
-    int has_hex_letter = 0;
-
-    if (text == 0 || text[0] == '\0') {
-        return -1;
-    }
-    if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
-        return parse_unsigned_auto(text, value_out);
-    }
-    for (i = 0U; text[i] != '\0'; ++i) {
-        int digit = tool_hex_value(text[i]);
-
-        if (digit < 0) {
-            return -1;
-        }
-        if ((text[i] >= 'a' && text[i] <= 'f') || (text[i] >= 'A' && text[i] <= 'F')) {
-            has_hex_letter = 1;
-        }
-    }
-    if (!has_hex_letter && rt_strlen(text) < 9U) {
-        return parse_unsigned_auto(text, value_out);
-    }
-    *value_out = 0ULL;
-    for (i = 0U; text[i] != '\0'; ++i) {
-        int digit = tool_hex_value(text[i]);
-        if (digit < 0) {
-            return -1;
-        }
-        *value_out = (*value_out << 4U) | (unsigned long long)digit;
-    }
-    return 0;
-}
-
-static int next_token(const char **cursor_io, char *token, size_t token_size) {
-    const char *cursor = *cursor_io;
-    size_t length = 0U;
-
-    while (*cursor != '\0' && tool_ascii_is_token_space(*cursor)) {
-        cursor++;
-    }
-    if (*cursor == '\0' || *cursor == '#') {
-        *cursor_io = cursor;
-        return 0;
-    }
-    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
-        if (length + 1U < token_size) {
-            token[length++] = *cursor;
-        }
-        cursor++;
-    }
-    token[length] = '\0';
-    *cursor_io = cursor;
-    return length == 0U ? 0 : 1;
-}
-
 static int event_kind_from_token(const char *token, int *is_enter_out) {
     if (rt_strcmp(token, "enter") == 0 || rt_strcmp(token, "e") == 0 || rt_strcmp(token, "+") == 0) {
         *is_enter_out = 1;
@@ -265,13 +172,6 @@ static int find_or_add_function(unsigned long long address, size_t *index_out) {
     return 0;
 }
 
-static const char *display_symbol_name(const char *name) {
-    if (name != 0 && name[0] == '_' && name[1] != '\0') {
-        return name + 1;
-    }
-    return name;
-}
-
 static void add_symbol(unsigned long long address, const char *name, int function_symbol) {
     size_t i;
 
@@ -305,37 +205,20 @@ static int parse_linker_map_symbol_line(const char *line) {
     char name[PROFILER_NAME_CAPACITY];
     unsigned long long address;
 
-    if (!next_token(&cursor, keyword, sizeof(keyword)) || rt_strcmp(keyword, "symbol") != 0) {
+    if (!tool_next_token(&cursor, keyword, sizeof(keyword)) || rt_strcmp(keyword, "symbol") != 0) {
         return 0;
     }
-    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
-        !next_token(&cursor, size_token, sizeof(size_token)) ||
-        !next_token(&cursor, section, sizeof(section)) ||
-        !next_token(&cursor, name, sizeof(name))) {
+    if (!tool_next_token(&cursor, address_token, sizeof(address_token)) ||
+        !tool_next_token(&cursor, size_token, sizeof(size_token)) ||
+        !tool_next_token(&cursor, section, sizeof(section)) ||
+        !tool_next_token(&cursor, name, sizeof(name))) {
         return 0;
     }
-    if (rt_strcmp(section, "__TEXT,__text") != 0 || parse_address_token(address_token, &address) != 0) {
+    if (rt_strcmp(section, "__TEXT,__text") != 0 || tool_parse_address_token(address_token, &address) != 0) {
         return 0;
     }
-    add_symbol(address, display_symbol_name(name), 1);
+    add_symbol(address, tool_display_symbol_name(name), 1);
     return 1;
-}
-
-static const char *linux_newlinker_text_symbol_name(const char *section) {
-    const char *name;
-
-    if (!tool_starts_with(section, ".text.")) {
-        return 0;
-    }
-    name = section + 6;
-    if (tool_starts_with(name, "startup.")) {
-        name += 8;
-    } else if (tool_starts_with(name, "unlikely.")) {
-        name += 9;
-    } else if (tool_starts_with(name, "hot.")) {
-        name += 4;
-    }
-    return name[0] == '\0' ? 0 : name;
 }
 
 static int parse_linux_newlinker_map_line(const char *line) {
@@ -347,16 +230,16 @@ static int parse_linux_newlinker_map_line(const char *line) {
     unsigned long long size;
     const char *name;
 
-    if (!next_token(&cursor, address_token, sizeof(address_token)) ||
-        parse_address_token(address_token, &address) != 0 ||
-        !next_token(&cursor, size_token, sizeof(size_token)) ||
-        parse_unsigned_auto(size_token, &size) != 0 ||
-        !next_token(&cursor, section, sizeof(section)) ||
+    if (!tool_next_token(&cursor, address_token, sizeof(address_token)) ||
+        tool_parse_address_token(address_token, &address) != 0 ||
+        !tool_next_token(&cursor, size_token, sizeof(size_token)) ||
+        tool_parse_unsigned_auto(size_token, &size) != 0 ||
+        !tool_next_token(&cursor, section, sizeof(section)) ||
         section[0] != '.') {
         return 0;
     }
     (void)size;
-    name = linux_newlinker_text_symbol_name(section);
+    name = tool_newlinker_text_symbol_name(section);
     if (name != 0) {
         add_symbol(address, name, 1);
     }
@@ -381,26 +264,6 @@ static const char *symbol_for_address(unsigned long long address) {
         return profiler_symbols[best_index].name;
     }
     return 0;
-}
-
-static void write_hex_address(unsigned long long value) {
-    char digits[32];
-    size_t count = 0U;
-
-    rt_write_cstr(1, "0x");
-    if (value == 0ULL) {
-        rt_write_char(1, '0');
-        return;
-    }
-    while (value != 0ULL && count < sizeof(digits)) {
-        unsigned int nibble = (unsigned int)(value & 0xfULL);
-        digits[count++] = (char)(nibble < 10U ? ('0' + nibble) : ('a' + (nibble - 10U)));
-        value >>= 4U;
-    }
-    while (count > 0U) {
-        count -= 1U;
-        rt_write_char(1, digits[count]);
-    }
 }
 
 static void write_padded_3(unsigned long long value) {
@@ -437,16 +300,16 @@ static int read_symbols(const char *path) {
         if (parse_linker_map_symbol_line(line) || parse_linux_newlinker_map_line(line)) {
             continue;
         }
-        if (!next_token(&cursor, first, sizeof(first))) {
+        if (!tool_next_token(&cursor, first, sizeof(first))) {
             continue;
         }
-        if (parse_address_token(first, &address) != 0) {
+        if (tool_parse_address_token(first, &address) != 0) {
             continue;
         }
-        if (!next_token(&cursor, second, sizeof(second))) {
+        if (!tool_next_token(&cursor, second, sizeof(second))) {
             continue;
         }
-        if (rt_strlen(second) == 1U && next_token(&cursor, third, sizeof(third))) {
+        if (rt_strlen(second) == 1U && tool_next_token(&cursor, third, sizeof(third))) {
             if (tool_symbol_type_is_function(second)) {
                 add_symbol(address, third, 1);
             }
@@ -825,14 +688,14 @@ static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileS
         return 0;
     }
 
-    if (!next_token(&cursor, kind, sizeof(kind))) {
+    if (!tool_next_token(&cursor, kind, sizeof(kind))) {
         return 0;
     }
     if (event_kind_from_token(kind, &is_enter) != 0 ||
-        !next_token(&cursor, time_token, sizeof(time_token)) ||
-        !next_token(&cursor, address_token, sizeof(address_token)) ||
-        parse_unsigned_auto(time_token, &timestamp_ns) != 0 ||
-        parse_address_token(address_token, &address) != 0) {
+        !tool_next_token(&cursor, time_token, sizeof(time_token)) ||
+        !tool_next_token(&cursor, address_token, sizeof(address_token)) ||
+        tool_parse_unsigned_auto(time_token, &timestamp_ns) != 0 ||
+        tool_parse_address_token(address_token, &address) != 0) {
         stats->malformed_lines += 1ULL;
         return 0;
     }
@@ -979,7 +842,7 @@ static void write_report_line(size_t rank, const ProfileFunction *function, unsi
         rt_write_char(1, ',');
         rt_write_uint(1, avg_total);
         rt_write_char(1, ',');
-        write_hex_address(function->address);
+        tool_write_hex_value(1, function->address);
         rt_write_char(1, ',');
         rt_write_line(1, symbol != 0 ? symbol : "");
         return;
@@ -1002,7 +865,7 @@ static void write_report_line(size_t rank, const ProfileFunction *function, unsi
     rt_write_char(1, '\t');
     write_ns_as_ms(avg_total);
     rt_write_char(1, '\t');
-    write_hex_address(function->address);
+    tool_write_hex_value(1, function->address);
     rt_write_char(1, '\t');
     rt_write_line(1, symbol != 0 ? symbol : "?");
 }

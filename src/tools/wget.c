@@ -93,15 +93,7 @@ static int parse_header_size_value(const char *text, size_t length, size_t *valu
 }
 
 static int header_name_equals(const char *line, size_t name_length, const char *name) {
-    size_t index = 0U;
-
-    while (index < name_length && name[index] != '\0') {
-        if (tool_ascii_tolower(line[index]) != tool_ascii_tolower(name[index])) {
-            return 0;
-        }
-        index += 1U;
-    }
-    return index == name_length && name[index] == '\0';
+    return tool_name_equals_ignore_case_ascii_n(line, name_length, name);
 }
 
 static int is_safe_header_field_value_char(unsigned char ch) {

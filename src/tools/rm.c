@@ -26,8 +26,7 @@ static void print_removed(const char *path, int is_directory) {
 }
 
 static int path_is_protected_name(const char *path) {
-    const char *base = tool_base_name(path);
-    return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0;
+    return tool_path_base_is_dot_or_dotdot(path);
 }
 
 static int parse_interactive_mode(const char *text, int *mode_out) {

@@ -398,74 +398,20 @@ static int load_directory_ignore_files(RgOptions *options, const char *dir_path,
     return 0;
 }
 
-static int find_fixed_match(const char *pattern,
-                            const char *text,
-                            int ignore_case,
-                            size_t search_start,
-                            size_t *start_out,
-                            size_t *end_out) {
-    size_t pos = search_start;
-    size_t pattern_len = rt_strlen(pattern);
-
-    if (pattern_len == 0U) {
-        *start_out = search_start;
-        *end_out = search_start;
-        return 1;
-    }
-
-    while (1) {
-        size_t consumed = 0U;
-
-        if (tool_literal_prefix_matches(pattern, text + pos, ignore_case, &consumed)) {
-            *start_out = pos;
-            *end_out = pos + consumed;
-            return 1;
-        }
-        if (text[pos] == '\0') {
-            break;
-        }
-        pos += 1U;
-        while ((text[pos] & 0xc0) == 0x80) {
-            pos += 1U;
-        }
-    }
-
-    return 0;
-}
-
-
 static int find_next_match_for_pattern(const RgOptions *options,
                                        const char *pattern,
                                        const char *text,
                                        size_t search_start,
                                        size_t *start_out,
                                        size_t *end_out) {
-    size_t candidate_start = 0U;
-    size_t candidate_end = 0U;
-    size_t next_start = search_start;
-
-    while (1) {
-        int found;
-
-        if (options->fixed_strings) {
-            found = find_fixed_match(pattern, text, options->ignore_case, next_start, &candidate_start, &candidate_end);
-        } else {
-            found = tool_regex_search(pattern, text, options->ignore_case, next_start, &candidate_start, &candidate_end);
-        }
-        if (!found) {
-            return 0;
-        }
-        if (!options->whole_word || tool_text_match_has_word_boundaries(text, candidate_start, candidate_end)) {
-            *start_out = candidate_start;
-            *end_out = candidate_end;
-            return 1;
-        }
-        if (text[candidate_start] == '\0') {
-            break;
-        }
-        next_start = candidate_start + 1U;
-    }
-    return 0;
+    return tool_text_find_next_match(pattern,
+                                     text,
+                                     options->ignore_case,
+                                     options->fixed_strings,
+                                     options->whole_word,
+                                     search_start,
+                                     start_out,
+                                     end_out);
 }
 
 static int find_next_match(const RgOptions *options,

@@ -29,20 +29,7 @@ typedef struct {
 static ToolOutputBuffer join_output;
 
 static int store_line(char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count, const char *line, size_t len) {
-    size_t copy_len = len;
-
-    if (*count >= JOIN_MAX_LINES) {
-        return -1;
-    }
-
-    if (copy_len >= JOIN_LINE_CAPACITY) {
-        copy_len = JOIN_LINE_CAPACITY - 1U;
-    }
-
-    memcpy(lines[*count], line, copy_len);
-    lines[*count][copy_len] = '\0';
-    *count += 1U;
-    return 0;
+    return tool_store_fixed_record_text((char *)lines, JOIN_LINE_CAPACITY, JOIN_MAX_LINES, count, line, len);
 }
 
 static int collect_lines_from_fd(int fd, char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count) {

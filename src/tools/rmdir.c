@@ -25,8 +25,7 @@ static void print_removed(const char *path) {
 }
 
 static int path_is_protected(const char *path) {
-    const char *base = tool_base_name(path);
-    return rt_strcmp(base, ".") == 0 || rt_strcmp(base, "..") == 0 || tool_path_is_root(path);
+    return tool_path_base_is_dot_or_dotdot(path) || tool_path_is_root(path);
 }
 
 static void path_parent(char *path) {

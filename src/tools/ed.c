@@ -82,20 +82,7 @@ static int ed_read_line(InputReader *reader, char *line, size_t line_size) {
 }
 
 static int ed_append_line(char lines[ED_MAX_LINES][ED_LINE_CAPACITY], size_t *count, const char *text) {
-    size_t len = rt_strlen(text);
-
-    if (*count >= ED_MAX_LINES) {
-        return -1;
-    }
-
-    if (len >= ED_LINE_CAPACITY) {
-        len = ED_LINE_CAPACITY - 1U;
-    }
-
-    memcpy(lines[*count], text, len);
-    lines[*count][len] = '\0';
-    *count += 1U;
-    return 0;
+    return tool_store_fixed_record_text((char *)lines, ED_LINE_CAPACITY, ED_MAX_LINES, count, text, rt_strlen(text));
 }
 
 static void ed_save_undo(UndoState *undo, const EditorBuffer *buffer) {
