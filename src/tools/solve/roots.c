@@ -44,7 +44,99 @@ static int solve_should_explain(const SolveOptions *options) {
     return options->explain && !tool_json_is_enabled() && !options->quiet;
 }
 
+static int solve_should_trace(const SolveOptions *options) {
+    return options->explain && options->explain_trace && !tool_json_is_enabled() && !options->quiet;
+}
+
+static int solve_should_explain_student(const SolveOptions *options) {
+    return options->explain && !options->explain_trace && !tool_json_is_enabled() && !options->quiet;
+}
+
+static const char *solve_relation_symbol(SolveRelation relation) {
+    switch (relation) {
+        case SOLVE_RELATION_EQ: return "=";
+        case SOLVE_RELATION_LT: return "<";
+        case SOLVE_RELATION_LE: return "<=";
+        case SOLVE_RELATION_GT: return ">";
+        case SOLVE_RELATION_GE: return ">=";
+        default: return "";
+    }
+}
+
+static const char *solve_relation_text(SolveRelation relation);
+
+static void solve_student_write_given(const SolveEquation *equation, const SolveOptions *options) {
+    solve_sp_cstr(1, "Given: ");
+    solve_sp_cstr(1, equation->left);
+    if (equation->has_equation) {
+        solve_sp_char(1, ' ');
+        solve_sp_cstr(1, solve_relation_symbol(equation->relation));
+        solve_sp_char(1, ' ');
+        solve_sp_cstr(1, equation->right);
+    }
+    solve_sp_char(1, '\n');
+    solve_sp_cstr(1, "Variable: ");
+    solve_sp_line(1, options->var_name);
+}
+
+static void solve_student_domain_notes(const SolveEquation *equation) {
+    int any = 0;
+    if (solve_text_contains(equation->left, "sqrt(") || solve_text_contains(equation->right, "sqrt(")) {
+        solve_sp_line(1, "Assumption: square-root arguments must be nonnegative.");
+        any = 1;
+    }
+    if (solve_text_contains(equation->left, "log(") || solve_text_contains(equation->left, "ln(") ||
+        solve_text_contains(equation->right, "log(") || solve_text_contains(equation->right, "ln(")) {
+        solve_sp_line(1, "Assumption: logarithm arguments must be positive.");
+        any = 1;
+    }
+    if (solve_contains_char(equation->left, '/') || solve_contains_char(equation->right, '/')) {
+        solve_sp_line(1, "Assumption: denominator values equal to 0 are excluded.");
+        any = 1;
+    }
+    if (!any) {
+        solve_sp_line(1, "Domain: no extra restrictions detected by the parser.");
+    }
+}
+
+static void solve_student_worked_header(const char *goal, const char *method_hint, const SolveEquation *equation, const SolveOptions *options) {
+    if (!solve_should_explain_student(options)) return;
+    solve_sp_line(1, "worked solution");
+    solve_student_write_given(equation, options);
+    solve_sp_cstr(1, "Goal: ");
+    solve_sp_line(1, goal);
+    if (equation->has_equation) {
+        solve_sp_cstr(1, "Rewrite: f(");
+        solve_sp_cstr(1, options->var_name);
+        solve_sp_cstr(1, ") = (");
+        solve_sp_cstr(1, equation->left);
+        solve_sp_cstr(1, ") - (");
+        solve_sp_cstr(1, equation->right);
+        solve_sp_cstr(1, "), then ");
+        if (equation->relation == SOLVE_RELATION_EQ) {
+            solve_sp_cstr(1, "solve f(");
+            solve_sp_cstr(1, options->var_name);
+            solve_sp_line(1, ") = 0.");
+        } else {
+            solve_sp_cstr(1, "find where f(");
+            solve_sp_cstr(1, options->var_name);
+            solve_sp_cstr(1, ") ");
+            solve_sp_line(1, solve_relation_text(equation->relation));
+        }
+    } else {
+        solve_sp_cstr(1, "Rewrite: treat the expression as f(");
+        solve_sp_cstr(1, options->var_name);
+        solve_sp_line(1, ").");
+    }
+    solve_student_domain_notes(equation);
+    solve_sp_cstr(1, "Method: ");
+    solve_sp_line(1, method_hint);
+}
+
 static void solve_explain_working_function(const char *mode, const SolveEquation *equation, const SolveOptions *options) {
+    if (solve_should_explain_student(options)) {
+        solve_student_worked_header(mode, "apply the named classroom rule, then simplify and verify the result.", equation, options);
+    }
     rt_write_cstr(1, "explain: ");
     rt_write_line(1, mode);
     rt_write_cstr(1, "working function: f(");

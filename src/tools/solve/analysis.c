@@ -1100,6 +1100,31 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
         lo_text[0] = '\0';
         hi_text[0] = '\0';
     }
+    if (solve_should_explain_student(options)) {
+        SolveEquation domain_equation;
+        rt_memset(&domain_equation, 0, sizeof(domain_equation));
+        rt_copy_string(domain_equation.left, sizeof(domain_equation.left), first_expr);
+        rt_copy_string(domain_equation.right, sizeof(domain_equation.right), second_expr);
+        solve_sp_line(1, "worked solution");
+        solve_sp_cstr(1, "Given: area between ");
+        solve_sp_cstr(1, first_expr);
+        solve_sp_cstr(1, " and ");
+        solve_sp_line(1, second_expr);
+        solve_sp_cstr(1, "Variable: ");
+        solve_sp_line(1, options->var_name);
+        solve_sp_line(1, options->have_area_quadrant ? "Goal: choose the enclosed lobe in the requested quadrant and compute its area." : "Goal: compute the area between the two curves.");
+        solve_sp_cstr(1, "Rewrite: h(");
+        solve_sp_cstr(1, options->var_name);
+        solve_sp_cstr(1, ") = (");
+        solve_sp_cstr(1, first_expr);
+        solve_sp_cstr(1, ") - (");
+        solve_sp_cstr(1, second_expr);
+        solve_sp_cstr(1, "), then integrate |h(");
+        solve_sp_cstr(1, options->var_name);
+        solve_sp_line(1, ")| over the selected interval.");
+        solve_student_domain_notes(&domain_equation);
+        solve_sp_line(1, "Method: split at intersections or sign changes, integrate each lobe as a positive area, then add the pieces.");
+    }
     if (solve_should_explain(options)) {
         solve_sp_line(1, "explain: area between curves");
         solve_sp_cstr(1, "upper/lower difference h(x) = (");
@@ -1278,6 +1303,25 @@ static int solve_run_volume_mean_mode(const SolveOptions *options, const char *e
     double lo_d;
     double hi_d;
     if (solve_split_integral_bounds(options->range_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) return 2;
+    if (solve_should_explain_student(options)) {
+        SolveEquation domain_equation;
+        rt_memset(&domain_equation, 0, sizeof(domain_equation));
+        rt_copy_string(domain_equation.left, sizeof(domain_equation.left), expr);
+        rt_copy_string(domain_equation.right, sizeof(domain_equation.right), "0");
+        solve_sp_line(1, "worked solution");
+        solve_sp_cstr(1, "Given: ");
+        solve_sp_line(1, expr);
+        solve_sp_cstr(1, "Variable: ");
+        solve_sp_line(1, options->var_name);
+        solve_sp_line(1, volume ? "Goal: compute the volume of rotation around the x-axis." : "Goal: compute the mean value on the interval.");
+        solve_sp_cstr(1, "Interval: [");
+        solve_sp_cstr(1, lo_text);
+        solve_sp_cstr(1, ", ");
+        solve_sp_cstr(1, hi_text);
+        solve_sp_line(1, "]");
+        solve_student_domain_notes(&domain_equation);
+        solve_sp_line(1, volume ? "Method: square the function, integrate, then multiply by pi." : "Method: integrate the function, then divide by the interval width.");
+    }
     if (solve_should_explain(options)) {
         solve_sp_line(1, volume ? "explain: volume of rotation" : "explain: mean value");
         solve_sp_cstr(1, "working function: f(x) = ");

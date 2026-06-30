@@ -72,7 +72,7 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - approximate identity reporting only when the exact rational front end cannot handle the expression and the floating-point fallback reduces the polynomial to 0 within tolerance
 - multiple-root reporting when scanning finds more than one candidate interval
 - likely touching-root reporting for repeated roots that do not change sign, including adaptive refinement of near-zero sampled non-polynomial candidates
-- default overview output for bare single expressions, plus didactic output that shows the chosen method, interval checks, iterations, approximations, and residual error
+- default overview output for bare single expressions, plus student-facing didactic output with method, assumptions, exactness, and verification; `--explain=trace` adds scan and iteration details
 - ANSI styling for interactive stdout: important answer lines are emphasized, warnings are yellow, and problems are red; redirected output and JSON stay plain
 - JSON Lines output for scripted use
 
@@ -88,7 +88,8 @@ If no interval is supplied, `solve` scans a default visible school-math range ra
 - `--tolerance VALUE` stops once the interval width or residual is small enough; the default is `1e-10`
 - `--max-iterations N` limits solver iterations; the default is 128
 - `--report-y` reports the y-value of the left side of an equation, useful for curve intersections
-- `--explain` prints a didactic trace or certificate for the selected solving, inequality, calculus, or analysis mode
+- `--explain` prints a student-facing worked solution for the selected solving, inequality, calculus, or analysis mode
+- `--explain=trace` prints the technical algorithm trace, including scan, bisection, and discontinuity diagnostics
 - `--quiet` prints only the final answer
 - `--param NAME` declares `NAME` as a symbolic parameter rather than the solving variable; `--param NAME=VALUE` additionally binds a numeric value for evaluation, differentiation, numeric bounds, and numeric integration paths
 - `--diff[=N]` prints the Nth derivative; exact rational-polynomial derivatives are preferred, then bounded symbolic differentiation is tried for common expression forms; with an equation input, it solves the Nth derivative set equal to 0
@@ -147,22 +148,23 @@ The analysis modes are additive front ends over the same evaluator, exact ration
 
 Repeated roots such as `x^2 - 6*x + 9 = 0` do not change sign. A scan therefore also looks for sampled points that are exact or near-zero, and for local minima or maxima where `abs(f(x))` becomes small. For near-zero sampled non-polynomial candidates, it adaptively refines the neighboring interval before reporting the candidate. These are reported as touching-root candidates, with their residual, instead of silently saying no root was found.
 
-Every reported root must pass a residual check. A sign change caused by a discontinuity, such as `1/(x-2) = 0`, may appear bracketed, but it is not a root if the final residual is not within tolerance. Such cases are rejected or reported as suspected discontinuities, and `--explain` prints that warning when the discontinuity is encountered.
+Every reported root must pass a residual check. A sign change caused by a discontinuity, such as `1/(x-2) = 0`, may appear bracketed, but it is not a root if the final residual is not within tolerance. Such cases are rejected or reported as suspected discontinuities, and `--explain=trace` prints that warning when the discontinuity is encountered.
 
 ## DIDACTIC OUTPUT
 
-With `--explain`, `solve` shows the path toward the answer rather than only the result. The trace is meant to be useful for learning, not just debugging implementation internals.
+With `--explain`, `solve` shows a classroom-style worked solution rather than only the result. It is aimed at students and teachers: output starts with `worked solution`, shows the given task, variable, goal, rewrite into a working function, basic domain assumptions such as square-root, logarithm, and denominator restrictions, the method choice, the final answer, an exactness or approximation statement, and a substitution check.
 
-For every supported mode, explanation output starts from the transformed working function, names the exact or numeric method being used, prints the decisive intermediate values, states the mathematical rule behind the classification, and marks the honesty boundary between exact proof and numeric sampling.
+Use `--explain=trace` for the developer or advanced-student view. Trace mode preserves the algorithmic details: transformed zero function, scan window, bisection midpoint iterations, suspected discontinuity warnings, and low-level method diagnostics. It intentionally does not print the student `worked solution` header.
 
-A bisection explanation should include:
+For every supported mode, explanation output names the exact or numeric method being used, prints the decisive intermediate values, states the mathematical rule behind the classification, and marks the honesty boundary between exact proof and numeric sampling.
+
+A student-facing bisection explanation includes the rewrite, method, final approximation, residual, exactness statement, and substitution check. A trace bisection explanation additionally includes:
 
 - the transformed zero function, for example `f(x) = (x^2 - 2) - 0`
 - the starting interval and endpoint values
 - why the interval brackets a root, or why it does not
 - each midpoint approximation, function value, and retained interval
 - the stopping condition that ended the search
-- the final root approximation and residual
 
 Bisection-derived roots are decimal approximations and are marked with `status = approximate`. If scanning lands exactly on a root before interval refinement is needed, the method is reported as `exact-sample` with zero iterations.
 
@@ -176,7 +178,7 @@ A polynomial identity explanation says whether the transformed polynomial reduce
 
 For intersections, `--explain` also shows that the two input expressions were converted into a single zero function, then reports both `x` and `y` for the intersection.
 
-For touching-root candidates, `--explain` says that no sign change was found, shows the near-zero local extremum or exact sampled zero that triggered the candidate, and reports the residual clearly.
+For touching-root candidates, `--explain` reports the result and residual in student language. `--explain=trace` adds the scan detail that identified the near-zero local extremum or exact sampled zero.
 
 For exact polynomial analysis modes, `--explain` prints the relevant derivative, antiderivative, sign rule, point evaluation, leading-term rule, or polynomial division step. For example, monotonicity explains that roots of `f'` split the real line and that the sign of `f'` decides increasing or decreasing intervals; curvature does the same with `f''`; tangent and normal output show `f(a)`, `f'(a)`, the slope rule, and the intercept construction. For recognized `exp(linear)*polynomial` monotonicity, curvature, and discussion, explanation output prints the exact polynomial derivative factor and states that the exponential factor is positive, so it cannot change the sign intervals.
 
@@ -298,10 +300,16 @@ Use trigonometric functions numerically:
 solve --lo 0 --hi 1 'cos(x) = x'
 ```
 
-Show the bisection path:
+Show a student-facing bisection solution:
 
 ```
 solve --explain --method bisection --lo 1 --hi 2 'x^2 - 2 = 0'
+```
+
+Show the technical bisection trace:
+
+```
+solve --explain=trace --method bisection --lo 1 --hi 2 'x^2 - 2 = 0'
 ```
 
 Show a factored quadratic path:

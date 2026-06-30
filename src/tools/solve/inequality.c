@@ -59,6 +59,10 @@ static void solve_print_intervals(const SolveOptions *options, const SolveInterv
     (void)options;
     if (count == 1 && !intervals[0].has_left && !intervals[0].has_right) {
         solve_sp_line(1, "solution = all real x");
+        if (solve_should_explain_student(options)) {
+            solve_sp_line(1, bounded ? "Exactness: approximate, because this conclusion comes from numeric sampling in the scan range." : "Exactness: exact, because one sign test proves the inequality on the whole real line.");
+            solve_sp_line(1, "Check: every sign interval satisfies the requested inequality.");
+        }
         return;
     }
     solve_sp_cstr(1, bounded ? "solution (within scan range) = " : "solution = ");
@@ -71,6 +75,10 @@ static void solve_print_intervals(const SolveOptions *options, const SolveInterv
         solve_sp_char(1, intervals[i].right_closed ? ']' : ')');
     }
     solve_sp_char(1, '\n');
+    if (solve_should_explain_student(options)) {
+        solve_sp_line(1, bounded ? "Exactness: approximate, because numeric scanning only proves the shown scan-range intervals." : "Exactness: exact, because exact boundary roots split the real line.");
+        solve_sp_line(1, "Check: a representative value from each interval has the requested sign; boundary brackets show whether equality is allowed.");
+    }
 }
 
 static int solve_add_interval(SolveInterval *intervals, int *count_io, const SolveInterval *interval) {

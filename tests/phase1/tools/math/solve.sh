@@ -193,9 +193,17 @@ if grep -q '(' "$WORK_DIR/near-rational.out"; then
 fi
 
 "${TEST_BIN_DIR}/solve" --explain --method bisection --lo 1 --hi 2 'x^2 - 2 = 0' > "$WORK_DIR/explain.out"
-assert_file_contains "$WORK_DIR/explain.out" '^function: f(x) = ' "solve --explain did not print the transformed function"
-assert_file_contains "$WORK_DIR/explain.out" '^step 1: ' "solve --explain did not print iteration steps"
+assert_file_contains "$WORK_DIR/explain.out" '^worked solution$' "solve --explain did not print the student worked-solution header"
+assert_file_contains "$WORK_DIR/explain.out" '^Rewrite: f(x) = (x\^2 - 2) - (0), then solve f(x) = 0\.$' "solve --explain did not print the classroom rewrite"
+assert_file_contains "$WORK_DIR/explain.out" '^Exactness: approximate, because a numeric method was needed\.$' "solve --explain did not distinguish approximate numeric solving"
+assert_file_contains "$WORK_DIR/explain.out" '^Check: substitute x = 1\.4142135624 into f(x); f(1\.4142135624) = ' "solve --explain did not print the substitution check"
 assert_file_contains "$WORK_DIR/explain.out" '^x = 1\.4142135624$' "solve --explain did not print the final result"
+"${TEST_BIN_DIR}/solve" --explain=trace --method bisection --lo 1 --hi 2 'x^2 - 2 = 0' > "$WORK_DIR/explain-trace.out"
+assert_file_contains "$WORK_DIR/explain-trace.out" '^function: f(x) = ' "solve --explain=trace did not print the transformed function"
+assert_file_contains "$WORK_DIR/explain-trace.out" '^step 1: ' "solve --explain=trace did not print iteration steps"
+if grep -q '^worked solution$' "$WORK_DIR/explain-trace.out"; then
+	fail "solve --explain=trace should not print the student worked-solution header"
+fi
 
 "${TEST_BIN_DIR}/solve" --explain 'x - 5 / 3 = 0' > "$WORK_DIR/linear-explain.out"
 assert_file_contains "$WORK_DIR/linear-explain.out" '^linear equation detected$' "solve --explain did not identify a linear equation"
@@ -527,9 +535,9 @@ assert_text_equals "$no_root_status" '1' "solve should return 1 when no solution
 assert_file_contains "$WORK_DIR/no_root.out" 'no solution found' "solve no-root output mismatch"
 
 discontinuity_status=0
-"${TEST_BIN_DIR}/solve" --explain --lo 1 --hi 3 '1/(x - 2) = 0' > "$WORK_DIR/discontinuity.out" 2> "$WORK_DIR/discontinuity.err" || discontinuity_status=$?
+"${TEST_BIN_DIR}/solve" --explain=trace --lo 1 --hi 3 '1/(x - 2) = 0' > "$WORK_DIR/discontinuity.out" 2> "$WORK_DIR/discontinuity.err" || discontinuity_status=$?
 assert_text_equals "$discontinuity_status" '3' "solve should return 3 for a suspected discontinuity"
-assert_file_contains "$WORK_DIR/discontinuity.out" 'suspected discontinuity' "solve --explain did not report the suspected discontinuity"
+assert_file_contains "$WORK_DIR/discontinuity.out" 'suspected discontinuity' "solve --explain=trace did not report the suspected discontinuity"
 
 unknown_status=0
 "${TEST_BIN_DIR}/solve" 'x + y = 3' > "$WORK_DIR/unknown.out" 2> "$WORK_DIR/unknown.err" || unknown_status=$?

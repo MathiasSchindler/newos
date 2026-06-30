@@ -53,7 +53,7 @@ static void solve_keep_preferred_scan_result(SolveResultSet *set) {
 }
 
 static void solve_explain_start(const SolveEquation *equation, const SolveOptions *options) {
-    if (!solve_should_explain(options)) {
+    if (!solve_should_trace(options)) {
         return;
     }
     rt_write_cstr(1, "function: f(");
@@ -68,7 +68,7 @@ static void solve_explain_start(const SolveEquation *equation, const SolveOption
 static void solve_explain_step(const SolveOptions *options, int iteration, double lo, double hi, double mid, double fmid) {
     char buffer[64];
 
-    if (!solve_should_explain(options)) {
+    if (!solve_should_trace(options)) {
         return;
     }
     rt_write_cstr(1, "step ");
@@ -162,7 +162,7 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
     const char *message = 0;
     double touch_tolerance = options->tolerance < 0.000001 ? 0.000001 : options->tolerance * 1000.0;
 
-    if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+    if (solve_should_trace(options)) {
         char buffer[64];
         rt_write_cstr(1, "scan: ");
         solve_format_double(lo, options->scale, buffer, sizeof(buffer));
@@ -190,13 +190,38 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
             curr_ok = 0;
             continue;
         }
+        if (prev_ok && i < options->scan_steps && solve_abs(next_value) <= options->tolerance && solve_abs(prev_value) > options->tolerance) {
+            double probe_x = next_x + step;
+            double probe_value;
+            if ((step > 0.0 && probe_x > hi) || (step < 0.0 && probe_x < hi)) probe_x = hi;
+            if (solve_eval_function(equation, options, probe_x, &probe_value, &message) == 0 &&
+                solve_abs(probe_value) > options->tolerance &&
+                ((prev_value < 0.0 && probe_value < 0.0) || (prev_value > 0.0 && probe_value > 0.0))) {
+                rt_memset(&result, 0, sizeof(result));
+                result.root = next_x;
+                result.residual = next_value;
+                result.lo = prev_x;
+                result.hi = probe_x;
+                result.iterations = 0;
+                result.status = SOLVE_STATUS_ROOT;
+                result.method = "adaptive-touching-scan";
+                result.approximate = next_value != 0.0;
+                if (solve_should_trace(options)) {
+                    rt_write_line(1, "adaptive scan: exact near-zero sample has same-sign neighbors, consistent with a touching root");
+                }
+                if (solve_eval_y(equation, options, next_x, &result.y) != 0) {
+                    result.y = 0.0;
+                }
+                (void)solve_add_result(set, &result, 1, options->tolerance);
+            }
+        }
         if (prev_ok && ((prev_value <= 0.0 && next_value >= 0.0) || (prev_value >= 0.0 && next_value <= 0.0))) {
             int rc = solve_bisect(equation, options, prev_x, next_x, &result);
             if (rc == 0) {
                 (void)solve_add_result(set, &result, 1, options->tolerance);
             } else if (rc == -2) {
                 set->suspected_discontinuity = 1;
-                if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+                if (solve_should_trace(options)) {
                     rt_write_line(1, "suspected discontinuity: sign change did not converge to a root with a valid residual");
                 }
             }
@@ -228,7 +253,7 @@ static int solve_scan(const SolveEquation *equation, const SolveOptions *options
             result.status = solve_abs(best_value) <= options->tolerance ? SOLVE_STATUS_ROOT : SOLVE_STATUS_CANDIDATE;
             result.method = best_value == 0.0 ? "exact-sample" : "adaptive-touching-scan";
             result.approximate = best_value != 0.0;
-            if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+            if (solve_should_trace(options)) {
                 rt_write_line(1, "adaptive scan: refined a near-zero local sample to check for a touching or flat root");
             }
             if (solve_eval_y(equation, options, best_x, &result.y) != 0) {
@@ -259,7 +284,7 @@ static int solve_explicit_bracket(const SolveEquation *equation, const SolveOpti
     }
     if (rc == -2) {
         set->suspected_discontinuity = 1;
-        if (options->explain && !tool_json_is_enabled() && !options->quiet) {
+        if (solve_should_trace(options)) {
             rt_write_line(1, "suspected discontinuity: interval sign change did not converge to a root with a valid residual");
         }
     }
@@ -364,6 +389,32 @@ static void solve_print_result(const SolveEquation *equation, const SolveOptions
     } else if (result->approximate) {
         rt_write_line(1, "status = approximate");
     }
+    if (solve_should_explain_student(options)) {
+        rt_write_cstr(1, "Exactness: ");
+        if (result->exact_value[0] != '\0') {
+            rt_write_line(1, "exact, because the algebraic polynomial path proved this root.");
+        } else if (result->approximate) {
+            rt_write_line(1, "approximate, because a numeric method was needed.");
+        } else {
+            rt_write_line(1, "exact sample, because direct substitution gives zero residual at the displayed value.");
+        }
+        rt_write_cstr(1, "Check: substitute ");
+        rt_write_cstr(1, options->var_name);
+        rt_write_cstr(1, " = ");
+        rt_write_cstr(1, root_display);
+        rt_write_cstr(1, " into f(");
+        rt_write_cstr(1, options->var_name);
+        rt_write_cstr(1, "); f(");
+        rt_write_cstr(1, root_display);
+        rt_write_cstr(1, ") = ");
+        solve_format_double(residual, result->approximate ? SOLVE_MAX_SCALE : options->scale, value, sizeof(value));
+        rt_write_line(1, value);
+        if (result->approximate) {
+            rt_write_cstr(1, "Acceptance: |f(");
+            rt_write_cstr(1, root_display);
+            rt_write_line(1, ")| is within the requested tolerance.");
+        }
+    }
 }
 
 static void solve_print_identity(const SolveOptions *options, int exact) {
@@ -387,6 +438,10 @@ static void solve_print_identity(const SolveOptions *options, int exact) {
     rt_write_cstr(1, options->var_name);
     rt_write_line(1, exact ? " = all real values" : " = all real values (within tolerance)");
     rt_write_line(1, exact ? "method = polynomial-identity" : "method = polynomial-identity-approx");
+    if (solve_should_explain_student(options)) {
+        rt_write_line(1, exact ? "Exactness: exact, because both sides expand to the same polynomial." : "Exactness: approximate, because the floating-point fallback matched within tolerance.");
+        rt_write_line(1, "Check: after rewriting left - right, every tested coefficient is zero.");
+    }
 }
 
 static void solve_write_summary_json(size_t count, int status) {
@@ -415,6 +470,9 @@ static int solve_finish_results(const SolveEquation *equation, const SolveOption
             solve_write_summary_json(0U, 1);
         } else if (!options->quiet) {
             rt_write_line(1, "no real solutions");
+            if (solve_should_explain_student(options)) {
+                rt_write_line(1, "Conclusion: the exact polynomial discriminant/sign analysis proves there is no real x that satisfies the equation.");
+            }
         }
         return 1;
     }
@@ -436,6 +494,9 @@ static int solve_finish_results(const SolveEquation *equation, const SolveOption
             } else {
                 rt_write_line(1, "no solution found in requested range");
             }
+            if (solve_should_explain_student(options)) {
+                rt_write_line(1, "Conclusion: no candidate in the searched interval satisfied the equation within tolerance.");
+            }
         }
         return results->suspected_discontinuity ? 3 : 1;
     }
@@ -446,6 +507,7 @@ static int solve_finish_results(const SolveEquation *equation, const SolveOption
 static int solve_run_solver_equation(const SolveEquation *equation, const SolveOptions *options) {
     SolveResultSet results;
 
+    solve_student_worked_header("find the real solution values", "try exact algebra first; if that is not possible, scan for sign changes and refine with bisection.", equation, options);
     solve_explain_start(equation, options);
     rt_memset(&results, 0, sizeof(results));
     if (!options->have_bracket && solve_try_rational_polynomial(equation, options, &results)) {

@@ -103,6 +103,7 @@ typedef struct {
     int all;
     int report_y;
     int explain;
+    int explain_trace;
     int quiet;
     int have_diff;
     int diff_order;
@@ -373,6 +374,21 @@ static int solve_contains_char(const char *text, char ch) {
             return 1;
         }
         text += 1;
+    }
+    return 0;
+}
+
+static int solve_text_contains(const char *text, const char *needle) {
+    size_t needle_len = rt_strlen(needle);
+    size_t index;
+
+    if (needle_len == 0U) {
+        return 1;
+    }
+    for (index = 0U; text[index] != '\0'; ++index) {
+        if (rt_strncmp(text + index, needle, needle_len) == 0) {
+            return 1;
+        }
     }
     return 0;
 }
@@ -889,6 +905,7 @@ static void solve_options_init(SolveOptions *options) {
     options->all = 0;
     options->report_y = 0;
     options->explain = 0;
+    options->explain_trace = 0;
     options->quiet = 0;
     options->have_diff = 0;
     options->diff_order = 1;
@@ -994,6 +1011,18 @@ int main(int argc, char **argv) {
             options.report_y = 1;
         } else if (rt_strcmp(opt.flag, "--explain") == 0) {
             options.explain = 1;
+            options.explain_trace = 0;
+        } else if (tool_starts_with(opt.flag, "--explain=")) {
+            const char *value = opt.flag + 10;
+            options.explain = 1;
+            if (rt_strcmp(value, "trace") == 0) {
+                options.explain_trace = 1;
+            } else if (rt_strcmp(value, "student") == 0 || rt_strcmp(value, "steps") == 0) {
+                options.explain_trace = 0;
+            } else {
+                tool_write_error("solve", "unsupported --explain mode", value);
+                return 2;
+            }
         } else if (rt_strcmp(opt.flag, "--quiet") == 0) {
             options.quiet = 1;
         } else if (rt_strcmp(opt.flag, "--param") == 0) {
