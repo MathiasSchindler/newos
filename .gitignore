@@ -35,6 +35,8 @@ experimental/eurlex/build/
 experimental/eurlex/data/
 !experimental/threading/
 experimental/threading/build/
+!experimental/latency/
+experimental/latency/build/
 services/httpd/log/
 sequel/
 gui/
