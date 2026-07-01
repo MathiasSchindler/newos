@@ -109,10 +109,11 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  enter TIME_NS THREAD_ID ADDRESS\n");
     rt_write_cstr(1, "  exit  TIME_NS THREAD_ID ADDRESS\n");
     rt_write_cstr(1, "Aliases: e/x and +/- are accepted for enter/exit.\n");
-    rt_write_cstr(1, "\nSymbol files may use either format:\n");
+    rt_write_cstr(1, "\nSymbol files may use any of these formats:\n");
     rt_write_cstr(1, "  0x401000 function_name\n");
     rt_write_cstr(1, "  0000000000401000 T function_name\n");
     rt_write_cstr(1, "  symbol 0x0000000100001000 64 __TEXT,__text _function_name path.o\n");
+    rt_write_cstr(1, "  0x0000000000401000 96 .text.function_name path.o why=live\n");
 }
 
 static int event_kind_from_token(const char *token, int *is_enter_out) {

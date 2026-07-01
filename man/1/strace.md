@@ -34,8 +34,8 @@ values are decoded in text output.
   backend reports one.
 - `-T`, `--time` - append elapsed syscall time in milliseconds when available.
 - `-c`, `--summary` - suppress per-call text and print a syscall summary with
-  call counts, error counts, byte totals for byte-returning syscalls, and total
-  time.
+  call counts, error counts, byte totals for byte-returning syscalls, average
+  returned bytes per call, total time, average time, and maximum observed time.
 - `-o FILE`, `--output FILE`, `--output=FILE` - write trace output to FILE
   instead of standard error. The traced command's stdout is unchanged.
 - `-e SYSCALL[,SYSCALL...]`, `--trace SYSCALL[,SYSCALL...]` - show only the
@@ -112,6 +112,21 @@ Backends that report process and timing metadata add `pid`, `duration_ns`, and
 ```
 
 Diagnostics and usage messages follow the shared `json-output` envelope.
+
+## SUMMARY OUTPUT
+
+With `-c`, text output uses space-separated columns:
+
+```text
+syscall calls errors bytes avg_bytes total_ms avg_ms max_ms
+read    42    0      8192  195       1.234    0.029  0.120
+```
+
+`bytes` and `avg_bytes` are accumulated from non-negative results for byte
+returning syscalls such as `read` and `write`. Timing columns use backend event
+durations where available. If `-T -c` is requested but the trace stream contains
+no non-zero durations, `strace` prints a note that syscall durations are
+unavailable in that stream.
 
 ## LIMITATIONS
 

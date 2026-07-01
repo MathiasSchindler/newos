@@ -7,7 +7,7 @@ profiler - summarize instrumentation profiler traces
 ## SYNOPSIS
 
 ```
-profiler [-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--csv] TRACE
+profiler [-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--csv] TRACE
 profiler --help-instrumentation
 ```
 
@@ -15,8 +15,10 @@ profiler --help-instrumentation
 
 `profiler` is the project-native post-processing tool for a small, useful-enough
 instrumentation profiler. It is intentionally narrower than `gprof`: it reads a
-function enter/exit trace, reconstructs a call stack, and reports call counts,
-self time, total time, average time, and the hottest functions.
+function enter/exit trace, reconstructs call stacks, and reports call counts,
+self time, total time, average time, and the hottest functions. Trace lines may
+include a thread id; when they do, `profiler` keeps a separate stack per thread
+so interleaved worker traces can be summarized without corrupting attribution.
 
 The intended compiler path is GCC first and Clang second. Build profiled
 programs with compiler instrumentation:
@@ -61,11 +63,28 @@ Runtime hooks emit trace lines in this format:
 ```
 enter TIME_NS ADDRESS
 exit  TIME_NS ADDRESS
+enter TIME_NS THREAD_ID ADDRESS
+exit  TIME_NS THREAD_ID ADDRESS
 ```
 
 Aliases `e`/`x` and `+`/`-` are also accepted. `TIME_NS` is a monotonic timestamp
-in nanoseconds. `ADDRESS` may be decimal, hexadecimal with `0x`, or a full-width
-hex address such as those emitted by `nm`.
+in nanoseconds. `THREAD_ID`, when present, is an unsigned numeric thread id.
+`ADDRESS` may be decimal, hexadecimal with `0x`, or a full-width hex address
+such as those emitted by `nm`. The two-field event form remains accepted for old
+single-thread traces and is treated as thread 0.
+
+The bundled Linux and macOS/aarch64 runtimes write the thread-id form. They also
+understand these environment variables:
+
+- `NEWOS_PROFILE=PATH` - write a trace to PATH. Values `0`, `off`, `false`, and
+  `no` disable tracing even for a profiled binary.
+- `NEWOS_PROFILE_MAX_EVENTS=N` - stop writing after N instrumentation events.
+  This is useful for very hot tools where a complete trace would be huge.
+- `NEWOS_PROFILE_SKIP_EVENTS=N` - skip the first N events before writing. Use
+  this to move a bounded trace window past startup or archive setup.
+- `NEWOS_PROFILE_WORKER_ONLY=1` - record only non-initial thread events. This is
+  useful when profiling `RtTaskPool` worker phases without spending the trace
+  budget on main-thread setup.
 
 ## OPTIONS
 
@@ -91,6 +110,13 @@ hex address such as those emitted by `nm`.
 - `--sort total` - sort by inclusive time.
 - `--sort calls` - sort by call count.
 - `--sort addr` - sort by function address.
+- `--min-self-ms N` - hide functions whose self time is below N milliseconds.
+- `--min-total-ms N` - hide functions whose inclusive time is below N
+  milliseconds.
+- `--max-events N` - stop reading after N trace events. The stderr diagnostics
+  report `trace_limited_at=N` when this limit is reached.
+- `--thread-summary`, `--threads` - write per-thread event counts, root time,
+  maximum stack depth, open frames, and unmatched exits to standard error.
 - `--csv` - write machine-readable CSV with nanosecond values.
 - `--help-instrumentation` - print the expected GCC/Clang instrumentation flags
   and trace format.
@@ -115,8 +141,19 @@ Definitions:
   total in the trace, normally `main` for a complete single-threaded trace.
 - `avg_self_ms` and `avg_total_ms` - per-call averages.
 
-Diagnostics about malformed lines, unmatched exits, stack overflows, or open
-frames are written to standard error.
+Diagnostics about event counts, function counts, thread counts, malformed lines,
+unmatched exits, stack overflows, open frames, hidden rows, and trace limits are
+written to standard error. Open frames are expected when a trace is intentionally
+bounded through `NEWOS_PROFILE_MAX_EVENTS` or `--max-events` and the limit cuts
+through live stacks; unmatched exits usually mean records were lost or mixed
+without thread ids.
+
+With `--thread-summary`, standard error includes:
+
+```text
+profiler: thread id events root_ms max_depth open_frames unmatched_exits
+profiler: thread 12345 31082 420.123 18 4 0
+```
 
 ## EXAMPLES
 
@@ -140,6 +177,15 @@ profiler --sort total -n 10 -m symbols.txt trace.nprof
 profiler --csv -m symbols.txt trace.nprof
 ```
 
+Threaded trace lines can be mixed safely when they include thread ids:
+
+```text
+enter 0 101 0x1000
+enter 5 202 0x2000
+exit  20 202 0x2000
+exit  30 101 0x1000
+```
+
 With GNU `nm` output:
 
 ```
@@ -157,7 +203,7 @@ matching `DIR/TOOL.map` file to `profiler -m`.
 ## CURRENT CAPABILITIES
 
 - parses line-oriented GCC/Clang instrumentation traces
-- reconstructs nested calls with a fixed-size stack
+- reconstructs nested calls with a fixed-size stack per traced thread
 - computes self time, total time, maximum inclusive call time, call count, and
   averages
 - resolves exact or nearest-lower function addresses through simple symbol files
@@ -166,6 +212,9 @@ matching `DIR/TOOL.map` file to `profiler -m`.
 - includes buffered Linux and macOS/aarch64 trace runtimes for `PROFILE=1`
   builds; the macOS runtime uses the arm64 virtual counter for timestamps so the
   instrumentation hot path does not issue timing syscalls
+- supports bounded trace generation and bounded trace reading for very large
+  profiles
+- can summarize per-thread event counts and stack health
 
 ## LIMITATIONS
 
@@ -177,8 +226,8 @@ matching `DIR/TOOL.map` file to `profiler -m`.
   every event, but still high overhead compared with no profiling
 - timings are best used comparatively inside one run, not as exact wall-clock
   runtime measurements
-- the trace model is single-threaded: interleaved events from multiple threads
-  would require per-thread stack tracking, which is not implemented yet
+- traces without thread ids are treated as one thread; interleaved multi-thread
+  traces need the newer four-field trace format for reliable attribution
 - instrumentation changes behavior because every instrumented function call runs
   enter/exit hooks; very small or hot functions can be distorted
 - profiling builds use `-fno-inline` by default so function-level costs stay
@@ -192,6 +241,9 @@ matching `DIR/TOOL.map` file to `profiler -m`.
   symbol source
 - recursive functions are supported through stack nesting, but address-only
   symbolization cannot distinguish inlined call sites
+- capped traces can end with open frames because the limit may cut through live
+  stacks; use `--thread-summary` to distinguish expected truncation from
+  unmatched exits
 - async signal profiling, statistical sampling, call graph arc percentages, and
   DWARF source-line attribution are outside the initial scope
 
