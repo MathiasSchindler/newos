@@ -56,6 +56,10 @@ assert_files_equal "$WORK_DIR/no_line_number.expected" "$WORK_DIR/no_line_number
 "${TEST_BIN_DIR}/ripgrep" -F 'platform_value' "$WORK_DIR/tree/src/main.c" > "$WORK_DIR/fixed.out"
 assert_file_contains "$WORK_DIR/fixed.out" '^2:    return platform_value;$' "ripgrep -F did not find the literal match"
 
+printf 'one\ntwo platform\n' | "${TEST_BIN_DIR}/rg" --no-line-number platform > "$WORK_DIR/stdin.out"
+printf 'two platform\n' > "$WORK_DIR/stdin.expected"
+assert_files_equal "$WORK_DIR/stdin.expected" "$WORK_DIR/stdin.out" "rg should search piped stdin when no path is supplied"
+
 printf 'cat\nscatter\ncat_\n' > "$WORK_DIR/tree/src/words.txt"
 "${TEST_BIN_DIR}/ripgrep" -Fw --no-line-number 'cat' "$WORK_DIR/tree/src/words.txt" > "$WORK_DIR/ascii_word.out"
 printf 'cat\n' > "$WORK_DIR/ascii_word.expected"

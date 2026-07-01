@@ -1364,6 +1364,20 @@ int main(int argc, char **argv) {
             }
             return 0;
         }
+        if (!platform_isatty(0)) {
+            if (rg_stream_file(0, "<stdin>", &options, 0, &matched) != 0) {
+                return 2;
+            }
+            if (matched) options.stats_files_with_matches += 1ULL;
+            options.stats_files_searched += 1ULL;
+            if (options.stats) {
+                rt_write_cstr(1, "files searched: "); rt_write_uint(1, options.stats_files_searched); rt_write_char(1, '\n');
+                rt_write_cstr(1, "files with matches: "); rt_write_uint(1, options.stats_files_with_matches); rt_write_char(1, '\n');
+                rt_write_cstr(1, "matching lines: "); rt_write_uint(1, options.stats_matched_lines); rt_write_char(1, '\n');
+                rt_write_cstr(1, "matches: "); rt_write_uint(1, options.stats_matches); rt_write_char(1, '\n');
+            }
+            return matched ? 0 : 1;
+        }
         if (rg_search_path(".", &options, 1, 0, &matched, &had_error) != 0 && had_error) {
             return 2;
         }
