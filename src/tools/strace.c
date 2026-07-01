@@ -37,11 +37,13 @@ typedef struct {
     unsigned long errors;
     unsigned long long result_total;
     unsigned long long duration_total_ns;
+    unsigned long long duration_max_ns;
 } StraceSummary;
 
 static StraceSummary summaries[STRACE_MAX_SUMMARY];
 static int summary_direct[STRACE_DIRECT_SYSCALL_LIMIT];
 static int summary_direct_initialized;
+static int summary_duration_seen;
 static size_t summary_count;
 
 static const char *syscall_name(long number) {
@@ -333,6 +335,7 @@ static void update_summary(const PlatformSyscallEvent *event, unsigned long long
             summaries[i].errors = 0UL;
             summaries[i].result_total = 0ULL;
             summaries[i].duration_total_ns = 0ULL;
+            summaries[i].duration_max_ns = 0ULL;
         }
     } else {
         for (i = 0U; i < summary_count; ++i) {
@@ -345,13 +348,16 @@ static void update_summary(const PlatformSyscallEvent *event, unsigned long long
             summaries[i].errors = 0UL;
             summaries[i].result_total = 0ULL;
             summaries[i].duration_total_ns = 0ULL;
+            summaries[i].duration_max_ns = 0ULL;
             summary_count += 1U;
         }
     }
     summaries[i].calls += 1UL;
     if (event->result < 0) summaries[i].errors += 1UL;
     if (event->result > 0 && is_byte_count_syscall_number(event->number)) summaries[i].result_total += (unsigned long long)event->result;
+    if (duration_ns != 0ULL) summary_duration_seen = 1;
     summaries[i].duration_total_ns += duration_ns;
+    if (duration_ns > summaries[i].duration_max_ns) summaries[i].duration_max_ns = duration_ns;
 }
 
 static int filter_includes(long number) {
@@ -611,8 +617,11 @@ static int write_summary(void) {
     size_t i;
 
     if (!summary_output) return 0;
-    if (rt_write_cstr(output_fd, "syscall calls errors bytes total_ms\n") != 0) return -1;
+    if (rt_write_cstr(output_fd, "syscall calls errors bytes avg_bytes total_ms avg_ms max_ms\n") != 0) return -1;
     for (i = 0U; i < summary_count; ++i) {
+        unsigned long long avg_bytes = summaries[i].calls == 0UL ? 0ULL : summaries[i].result_total / (unsigned long long)summaries[i].calls;
+        unsigned long long avg_duration = summaries[i].calls == 0UL ? 0ULL : summaries[i].duration_total_ns / (unsigned long long)summaries[i].calls;
+
         if (rt_write_cstr(output_fd, syscall_name(summaries[i].number)) != 0 ||
             rt_write_char(output_fd, ' ') != 0 ||
             rt_write_uint(output_fd, summaries[i].calls) != 0 ||
@@ -620,8 +629,18 @@ static int write_summary(void) {
             rt_write_uint(output_fd, summaries[i].errors) != 0 ||
             rt_write_char(output_fd, ' ') != 0 ||
             rt_write_uint(output_fd, summaries[i].result_total) != 0 ||
+            rt_write_char(output_fd, ' ') != 0 ||
+            rt_write_uint(output_fd, avg_bytes) != 0 ||
             rt_write_char(output_fd, ' ') != 0) return -1;
-        if (write_duration_ms(output_fd, summaries[i].duration_total_ns) != 0 || rt_write_char(output_fd, '\n') != 0) return -1;
+        if (write_duration_ms(output_fd, summaries[i].duration_total_ns) != 0 ||
+            rt_write_char(output_fd, ' ') != 0 ||
+            write_duration_ms(output_fd, avg_duration) != 0 ||
+            rt_write_char(output_fd, ' ') != 0 ||
+            write_duration_ms(output_fd, summaries[i].duration_max_ns) != 0 ||
+            rt_write_char(output_fd, '\n') != 0) return -1;
+    }
+    if (show_duration && summary_count != 0U && !summary_duration_seen) {
+        if (rt_write_cstr(output_fd, "note: syscall durations unavailable in this trace stream\n") != 0) return -1;
     }
     return 0;
 }

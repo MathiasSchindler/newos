@@ -41,6 +41,8 @@ typedef struct {
     unsigned long long stack_overflows;
     unsigned long long malformed_lines;
     unsigned long long open_frames;
+    unsigned long long event_limit;
+    int trace_limited;
 } ProfileStats;
 
 typedef struct {
@@ -65,9 +67,11 @@ static int profiler_function_hash_initialized;
 static size_t profiler_function_count;
 static size_t profiler_symbol_count;
 static ProfileSortKey profiler_sort_key = PROFILE_SORT_SELF;
+static unsigned long long profiler_min_self_ns;
+static unsigned long long profiler_min_total_ns;
 
 static void print_usage(void) {
-    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--csv] TRACE");
+    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--csv] TRACE");
 }
 
 static void print_instrumentation_help(void) {
@@ -78,6 +82,7 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "\nProject build shortcut:\n");
     rt_write_cstr(1, "  make freestanding PROFILE=1 LINKER_REPORTS=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/freestanding-linux-x86_64/tool ...\n");
+    rt_write_cstr(1, "  NEWOS_PROFILE_MAX_EVENTS=1000000 caps trace generation before running out of disk.\n");
     rt_write_cstr(1, "  build/freestanding-linux-x86_64/profiler -m build/freestanding-linux-x86_64/.maps/tool.map tool.nprof\n");
     rt_write_cstr(1, "  MACOS_NEWLINKER_MAP_DIR=build/profile-maps make freestanding PROFILE=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/newlinker-macos-aarch64/tool ...\n");
@@ -671,6 +676,14 @@ static int process_trace_record(const char *record, size_t length, size_t *stack
     return 0;
 }
 
+static int profile_event_limit_reached(ProfileStats *stats) {
+    if (stats->event_limit != 0ULL && stats->events >= stats->event_limit) {
+        stats->trace_limited = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats) {
     const char *cursor = line;
     char kind[32];
@@ -742,6 +755,7 @@ static int read_trace(const char *path, ProfileStats *stats) {
                         tool_close_input(fd, should_close);
                         return -1;
                     }
+                    if (profile_event_limit_reached(stats)) goto done;
                 } else {
                     if (partial_len + span_len >= sizeof(partial)) {
                         stats->malformed_lines += 1ULL;
@@ -758,6 +772,7 @@ static int read_trace(const char *path, ProfileStats *stats) {
                             tool_close_input(fd, should_close);
                             return -1;
                         }
+                        if (profile_event_limit_reached(stats)) goto done;
                         partial_len = 0U;
                     }
                 }
@@ -776,11 +791,12 @@ static int read_trace(const char *path, ProfileStats *stats) {
             }
         }
     }
+done:
     if (partial_len > 0U) {
         if (partial[partial_len - 1U] == '\r') {
             partial_len -= 1U;
         }
-        if (process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
+        if (!stats->trace_limited && process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
             tool_close_input(fd, should_close);
             return -1;
         }
@@ -872,16 +888,22 @@ static void write_report_line(size_t rank, const ProfileFunction *function, unsi
 
 static void write_report(unsigned long long limit, int csv, const ProfileStats *stats) {
     size_t i;
-    size_t count = profiler_function_count;
+    size_t count = 0U;
+    size_t matched_count;
+    size_t hidden_by_filter;
     unsigned long long program_total_ns = 0ULL;
 
     for (i = 0U; i < profiler_function_count; ++i) {
-        profiler_rows[i].function_index = i;
+        if (profiler_min_self_ns != 0ULL && profiler_functions[i].self_ns < profiler_min_self_ns) continue;
+        if (profiler_min_total_ns != 0ULL && profiler_functions[i].total_ns < profiler_min_total_ns) continue;
+        profiler_rows[count++].function_index = i;
         if (profiler_functions[i].total_ns > program_total_ns) {
             program_total_ns = profiler_functions[i].total_ns;
         }
     }
-    rt_sort(profiler_rows, profiler_function_count, sizeof(profiler_rows[0]), compare_rows);
+    matched_count = count;
+    hidden_by_filter = profiler_function_count - matched_count;
+    rt_sort(profiler_rows, count, sizeof(profiler_rows[0]), compare_rows);
     if (limit != 0ULL && limit < (unsigned long long)count) {
         count = (size_t)limit;
     }
@@ -898,6 +920,16 @@ static void write_report(unsigned long long limit, int csv, const ProfileStats *
         rt_write_uint(2, stats->events);
         rt_write_cstr(2, " functions=");
         rt_write_uint(2, (unsigned long long)profiler_function_count);
+        rt_write_cstr(2, " matched=");
+        rt_write_uint(2, (unsigned long long)matched_count);
+        if (hidden_by_filter != 0U) {
+            rt_write_cstr(2, " hidden_by_filter=");
+            rt_write_uint(2, (unsigned long long)hidden_by_filter);
+        }
+        if ((unsigned long long)count != matched_count) {
+            rt_write_cstr(2, " reported=");
+            rt_write_uint(2, (unsigned long long)count);
+        }
         if (stats->malformed_lines != 0ULL || stats->unmatched_exits != 0ULL || stats->stack_overflows != 0ULL || stats->open_frames != 0ULL) {
             rt_write_cstr(2, " malformed=");
             rt_write_uint(2, stats->malformed_lines);
@@ -908,8 +940,24 @@ static void write_report(unsigned long long limit, int csv, const ProfileStats *
             rt_write_cstr(2, " open_frames=");
             rt_write_uint(2, stats->open_frames);
         }
+        if (stats->trace_limited) {
+            rt_write_cstr(2, " trace_limited_at=");
+            rt_write_uint(2, stats->event_limit);
+        }
         rt_write_char(2, '\n');
+        if (stats->unmatched_exits != 0ULL || stats->open_frames != 0ULL) {
+            rt_write_cstr(2, "profiler: warning: unmatched/open frames can indicate truncated traces or interleaved multi-threaded call stacks; exact threaded attribution needs per-thread trace ids\n");
+        }
     }
+}
+
+static int parse_milliseconds_to_ns(const char *text, unsigned long long *ns_out, const char *what) {
+    unsigned long long milliseconds;
+
+    if (tool_parse_uint_arg(text, &milliseconds, "profiler", what) != 0) return -1;
+    if (milliseconds > 18446744073709ULL) milliseconds = 18446744073709ULL;
+    *ns_out = milliseconds * 1000000ULL;
+    return 0;
 }
 
 static int parse_sort_key(const char *text, ProfileSortKey *sort_key_out) {
@@ -964,6 +1012,33 @@ int main(int argc, char **argv) {
             argi += 1;
         } else if (tool_starts_with(arg, "--limit=")) {
             if (tool_parse_uint_arg(arg + 8, &limit, "profiler", "limit") != 0) {
+                return 1;
+            }
+        } else if (rt_strcmp(arg, "--max-events") == 0) {
+            if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &stats.event_limit, "profiler", "max events") != 0) {
+                return 1;
+            }
+            argi += 1;
+        } else if (tool_starts_with(arg, "--max-events=")) {
+            if (tool_parse_uint_arg(arg + 13, &stats.event_limit, "profiler", "max events") != 0) {
+                return 1;
+            }
+        } else if (rt_strcmp(arg, "--min-self-ms") == 0) {
+            if (argi + 1 >= argc || parse_milliseconds_to_ns(argv[argi + 1], &profiler_min_self_ns, "minimum self milliseconds") != 0) {
+                return 1;
+            }
+            argi += 1;
+        } else if (tool_starts_with(arg, "--min-self-ms=")) {
+            if (parse_milliseconds_to_ns(arg + 14, &profiler_min_self_ns, "minimum self milliseconds") != 0) {
+                return 1;
+            }
+        } else if (rt_strcmp(arg, "--min-total-ms") == 0) {
+            if (argi + 1 >= argc || parse_milliseconds_to_ns(argv[argi + 1], &profiler_min_total_ns, "minimum total milliseconds") != 0) {
+                return 1;
+            }
+            argi += 1;
+        } else if (tool_starts_with(arg, "--min-total-ms=")) {
+            if (parse_milliseconds_to_ns(arg + 15, &profiler_min_total_ns, "minimum total milliseconds") != 0) {
                 return 1;
             }
         } else if (rt_strcmp(arg, "--sort") == 0) {

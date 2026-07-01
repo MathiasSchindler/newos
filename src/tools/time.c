@@ -3,7 +3,7 @@
 #include "tool_util.h"
 
 static void print_usage(void) {
-    tool_write_usage("time", "COMMAND [ARG ...]");
+    tool_write_usage("time", "[-v] COMMAND [ARG ...]");
 }
 
 static void write_padded_six(unsigned long long value) {
@@ -32,8 +32,22 @@ static void write_elapsed_line(const char *label, unsigned long long nanoseconds
     rt_write_char(2, '\n');
 }
 
+static void write_usage_uint_line(const char *label, unsigned long long value) {
+    rt_write_cstr(2, label);
+    rt_write_char(2, ' ');
+    rt_write_uint(2, value);
+    rt_write_char(2, '\n');
+}
+
+static void write_cpu_line(unsigned long long cpu_ns, unsigned long long elapsed_ns) {
+    rt_write_cstr(2, "cpu ");
+    tool_write_percent_2(2, cpu_ns, elapsed_ns);
+    rt_write_cstr(2, "%\n");
+}
+
 int main(int argc, char **argv) {
     int argi = 1;
+    int verbose = 0;
     int pid;
     int status = 0;
     PlatformProcessUsage usage;
@@ -41,9 +55,17 @@ int main(int argc, char **argv) {
     unsigned long long end_time;
     unsigned long long elapsed = 0ULL;
 
-    if (argi < argc && rt_strcmp(argv[argi], "--help") == 0) {
-        print_usage();
-        return 0;
+    while (argi < argc) {
+        if (rt_strcmp(argv[argi], "--help") == 0 || rt_strcmp(argv[argi], "-h") == 0) {
+            print_usage();
+            return 0;
+        }
+        if (rt_strcmp(argv[argi], "-v") == 0 || rt_strcmp(argv[argi], "--verbose") == 0) {
+            verbose = 1;
+            argi += 1;
+            continue;
+        }
+        break;
     }
     if (argi < argc && rt_strcmp(argv[argi], "--") == 0) {
         argi += 1;
@@ -72,6 +94,14 @@ int main(int argc, char **argv) {
     write_elapsed_line("real", elapsed);
     write_elapsed_line("user", usage.user_time_ns);
     write_elapsed_line("sys", usage.system_time_ns);
+    if (verbose) {
+        write_cpu_line(usage.user_time_ns + usage.system_time_ns, elapsed);
+        write_usage_uint_line("minor_faults", usage.minor_faults);
+        write_usage_uint_line("major_faults", usage.major_faults);
+        write_usage_uint_line("voluntary_context_switches", usage.voluntary_context_switches);
+        write_usage_uint_line("involuntary_context_switches", usage.involuntary_context_switches);
+        write_usage_uint_line("migrations", usage.migrations);
+    }
 
     return status;
 }
