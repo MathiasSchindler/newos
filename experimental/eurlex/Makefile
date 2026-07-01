@@ -14,6 +14,7 @@ PROFILE_MAP := $(BUILD_DIR)/eurlex-delegated.map
 PROFILE_LINKER_FLAGS := $(if $(filter 1 yes true,$(PROFILE)),--map $(PROFILE_MAP))
 OBJ_DIR := $(BUILD_DIR)/.obj/$(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),macos-$(TARGET_ARCH),linux-$(TARGET_ARCH))$(PROFILE_OBJ_SUFFIX)
 COMMA := ,
+RG ?= $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(ROOT)/build/newlinker-macos-$(TARGET_ARCH)/rg,$(ROOT)/build/freestanding-linux-$(TARGET_ARCH)/rg)
 
 ifeq ($(LOCAL_MACOS_FREESTANDING),1)
 MACOS_FREESTANDING_CC ?= $(shell xcrun --find clang 2>/dev/null || echo $(CC))
@@ -43,9 +44,11 @@ TARGET_CC_TARGET_FLAG ?= $(shell mkdir -p "$(OBJ_DIR)" && printf 'int main(void)
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
 COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 $(PROFILE_CFLAGS) -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
 LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections -Wl,-s
-TARGET_PLATFORM_C_SOURCES := $(ROOT)/src/platform/linux/io.c $(ROOT)/src/platform/linux/time.c $(ROOT)/src/platform/linux/thread.c
+TARGET_PLATFORM_MANIFEST_SOURCES := $(shell cd $(ROOT) && grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
+TARGET_PLATFORM_SOURCES := $(addprefix $(ROOT)/,$(filter src/platform/linux/% src/arch/$(TARGET_ARCH)/linux/%,$(TARGET_PLATFORM_MANIFEST_SOURCES)))
+TARGET_PLATFORM_C_SOURCES := $(filter %.c,$(TARGET_PLATFORM_SOURCES))
 PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/linux/profiler_runtime.c)
-TARGET_PLATFORM_ASM_SOURCES := $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S)
+TARGET_PLATFORM_ASM_SOURCES := $(filter %.S,$(TARGET_PLATFORM_SOURCES))
 TARGET_CRT := $(TARGET_ARCH_DIR)/crt0.S
 endif
 
@@ -95,15 +98,15 @@ host: $(BUILD_DIR)/host/eurlex-delegated
 
 test: freestanding
 	$(BUILD_DIR)/eurlex-delegated -a data/LEG_MTD_20260628_01_00.zip 32019R1021 > $(BUILD_DIR)/test-celex.tsv
-	$(ROOT)/build/rg '32021R0115' $(BUILD_DIR)/test-celex.tsv
+	$(RG) '32021R0115' $(BUILD_DIR)/test-celex.tsv
 	$(BUILD_DIR)/eurlex-delegated -a data/LEG_MTD_20260628_01_00.zip '(EU) 2019/1021' > $(BUILD_DIR)/test-citation.tsv
-	$(ROOT)/build/rg '32021R0115' $(BUILD_DIR)/test-citation.tsv
+	$(RG) '32021R0115' $(BUILD_DIR)/test-citation.tsv
 
 test-host: host
 	$(BUILD_DIR)/host/eurlex-delegated -a data/LEG_MTD_20260628_01_00.zip 32019R1021 > $(BUILD_DIR)/host/test-celex.tsv
-	$(ROOT)/build/rg '32021R0115' $(BUILD_DIR)/host/test-celex.tsv
+	$(RG) '32021R0115' $(BUILD_DIR)/host/test-celex.tsv
 	$(BUILD_DIR)/host/eurlex-delegated -a data/LEG_MTD_20260628_01_00.zip '(EU) 2019/1021' > $(BUILD_DIR)/host/test-citation.tsv
-	$(ROOT)/build/rg '32021R0115' $(BUILD_DIR)/host/test-citation.tsv
+	$(RG) '32021R0115' $(BUILD_DIR)/host/test-citation.tsv
 
 $(BUILD_DIR) $(OBJ_DIR) $(BUILD_DIR)/host:
 	mkdir -p $@
