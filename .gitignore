@@ -30,6 +30,9 @@ experimental/md5files/examples/*
 !experimental/wikipedia/
 experimental/wikipedia/build/
 experimental/wikipedia/data/
+!experimental/eurlex/
+experimental/eurlex/build/
+experimental/eurlex/data/
 !experimental/threading/
 experimental/threading/build/
 services/httpd/log/
