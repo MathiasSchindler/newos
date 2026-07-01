@@ -131,10 +131,74 @@ BUSY_POLLS="0 25 50 100" COUNT=10000 ./bench-latency.sh --udp-host 192.0.2.10 -i
 The sweep script applies `--busy-poll-us` to the sender. Start the responder
 with the same value when you want a fully symmetric busy-poll comparison.
 
+Before tuning, capture the local host state:
+
+```sh
+./latency-env.sh -i eth0 > build/env-before.tsv
+```
+
+To print the low-latency host tuning commands without applying them:
+
+```sh
+./latency-tune.sh -i eth0 --cpu 2 --irq-cpu 2
+```
+
+To apply them, run as root or through sudo:
+
+```sh
+sudo ./latency-tune.sh -i eth0 --cpu 2 --irq-cpu 2 --apply
+```
+
+The tuning helper disables NIC interrupt coalescing where supported, disables
+EEE where supported, switches visible CPU governors to `performance`, and pins
+interface IRQs to the chosen CPU. Re-capture the environment after applying it:
+
+```sh
+./latency-env.sh -i eth0 > build/env-after.tsv
+```
+
+Pin a local benchmark process with:
+
+```sh
+./run-pinned.sh --cpu 2 -- ./bench-etherlat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff
+```
+
+For a ring-backed remote responder, restart the peer as:
+
+```sh
+./etherlat listen -i eth0 --packet-mode raw --qdisc-bypass --rx-ring --tx-ring --busy-poll-us 25
+```
+
+To compare AF_PACKET send paths without changing the long-lived responder:
+
+```sh
+PACKET_MODES="raw dgram" QDISC_BYPASSES="0 1" COUNT=10000 ./bench-etherlat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff > build/af-packet-send-paths.tsv
+PACKET_MODES="raw" QDISC_BYPASSES="0 1" TX_RINGS="0 1" COUNT=10000 ./bench-etherlat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff > build/af-packet-tx-ring.tsv
+PACKET_MODES="raw" QDISC_BYPASSES="1" TX_RINGS="0 1" RX_RINGS="0 1" COUNT=10000 ./bench-etherlat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff > build/af-packet-rings.tsv
+COUNT=10000 ./bench-xsklat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff > build/af-xdp-tx.tsv
+```
+
+`raw` uses `SOCK_RAW` packet sockets with a user-built Ethernet header. `dgram`
+uses `SOCK_DGRAM` packet sockets and lets the kernel build the Ethernet header
+from `sockaddr_ll`. `QDISC_BYPASSES=1` adds `PACKET_QDISC_BYPASS` to the packet
+socket. `TX_RINGS=1` uses a one-frame `PACKET_TX_RING` transmit ring instead
+of passing the packet buffer directly to `sendto`. `RX_RINGS=1` receives through
+a one-frame `PACKET_RX_RING` in the local pinger. The ring options are currently
+available for `raw` mode.
+
+`xsklat` is the first AF_XDP rung. It sends the existing `ELAT` Ethernet
+frames through an AF_XDP TX ring in copy/auto mode and receives replies through
+the existing AF_PACKET path, so the long-lived remote `etherlat listen` process
+does not need to change.
+
 Useful knobs:
 
 - `--size BYTES` chooses the Ethernet payload size, capped at 1500 bytes.
 - `--ethertype HEX` selects the experimental EtherType; the default is `0x88b5`.
+- `--packet-mode raw|dgram` selects AF_PACKET `SOCK_RAW` or `SOCK_DGRAM`; the default is `raw`.
+- `--qdisc-bypass` enables `PACKET_QDISC_BYPASS` on the packet socket.
+- `--tx-ring` sends through a `PACKET_TX_RING` transmit ring; currently raw mode only.
+- `--rx-ring` receives replies through a `PACKET_RX_RING`; currently raw ping mode only.
 - `--busy-poll-us USEC` enables `SO_BUSY_POLL`; a rejected setting is reported as an error.
 - `--interval-us USEC` spaces ping frames out for lower offered load.
 - `--timeout-ms MS` controls per-packet receive timeout.
@@ -144,10 +208,13 @@ The initial benchmark ladder is deliberately data-driven:
 
 1. UDP echo baseline, with and without `SO_BUSY_POLL`.
 2. `AF_PACKET` raw `sendto`/`recvfrom`, with fixed peer MACs.
-3. `AF_PACKET` plus `SO_BUSY_POLL`.
-4. `AF_PACKET` mmap rings with `PACKET_RX_RING` and `PACKET_TX_RING`.
-5. `AF_XDP` copy mode.
-6. `AF_XDP` zero-copy mode on hardware and drivers that support it.
+3. `AF_PACKET` `SOCK_RAW` versus `SOCK_DGRAM`, with and without `PACKET_QDISC_BYPASS`.
+4. `AF_PACKET` plus `SO_BUSY_POLL`.
+5. `AF_PACKET` mmap transmit with `PACKET_TX_RING`.
+6. `AF_PACKET` mmap receive with `PACKET_RX_RING`.
+7. Combined `PACKET_TX_RING` plus `PACKET_RX_RING` sweeps.
+8. `AF_XDP` copy mode.
+9. `AF_XDP` zero-copy mode on hardware and drivers that support it.
 
 Keep the comparisons on the same hardware and record the kernel/NIC setup:
 CPU governor, CPU affinity, IRQ affinity, NIC interrupt coalescing, link speed,

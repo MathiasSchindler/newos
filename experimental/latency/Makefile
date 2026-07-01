@@ -46,17 +46,23 @@ CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
 all: freestanding
 
-freestanding: $(BUILD_DIR)/etherlat $(BUILD_DIR)/udplat
+freestanding: $(BUILD_DIR)/etherlat $(BUILD_DIR)/udplat $(BUILD_DIR)/xsklat
 
 test: freestanding
 	$(BUILD_DIR)/etherlat --help >/dev/null
 	$(BUILD_DIR)/udplat --help >/dev/null
+	$(BUILD_DIR)/xsklat --help >/dev/null
 	sh -n bench-etherlat.sh
 	sh -n bench-latency.sh
+	sh -n bench-xsklat.sh
+	sh -n latency-env.sh
+	sh -n latency-tune.sh
+	sh -n run-pinned.sh
 
 grant-cap: freestanding
-	sudo setcap cap_net_raw+ep $(BUILD_DIR)/etherlat
+	sudo setcap cap_net_raw+ep $(BUILD_DIR)/etherlat cap_net_raw+ep $(BUILD_DIR)/xsklat
 	getcap $(BUILD_DIR)/etherlat
+	getcap $(BUILD_DIR)/xsklat
 
 test-loopback: test-udp-loopback test-etherlat-loopback test-etherlat-discover-loopback
 
@@ -110,11 +116,14 @@ test-etherlat-discover-loopback: freestanding
 		printf '%s\n' 'etherlat: $(BUILD_DIR)/etherlat lacks CAP_NET_RAW; run: make -C experimental/latency grant-cap' >&2; \
 		exit 1; \
 	fi
-	$(BUILD_DIR)/etherlat listen -i lo --count 1 --quiet >/tmp/newos-etherlat-discover-lo-listen.out 2>/tmp/newos-etherlat-discover-lo-listen.err & listener=$$!; \
+	$(BUILD_DIR)/etherlat listen -i lo --count 2 --quiet >/tmp/newos-etherlat-discover-lo-listen.out 2>/tmp/newos-etherlat-discover-lo-listen.err & listener=$$!; \
+	$(BUILD_DIR)/etherlat discover -i lo --timeout-ms 500 --quiet >/tmp/newos-etherlat-discover-lo-warmup.out 2>/tmp/newos-etherlat-discover-lo-warmup.err || true; \
 	$(BUILD_DIR)/etherlat discover -i lo --timeout-ms 500 --quiet > $(BUILD_DIR)/discover-loopback.txt; \
 	discover_status=$$?; \
+	kill $$listener 2>/dev/null || true; \
 	wait $$listener 2>/dev/null; \
 	listen_status=$$?; \
+	cat /tmp/newos-etherlat-discover-lo-warmup.err >&2; \
 	cat /tmp/newos-etherlat-discover-lo-listen.err >&2; \
 	if [ $$listen_status -ne 0 ] && [ $$listen_status -ne 143 ]; then exit $$listen_status; fi; \
 	test $$discover_status -eq 0; \
@@ -144,6 +153,9 @@ $(BUILD_DIR)/etherlat: $(OBJ_DIR)/etherlat.o $(FREESTANDING_OBJECTS) | $(BUILD_D
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
 $(BUILD_DIR)/udplat: $(OBJ_DIR)/udplat.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
+	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
+
+$(BUILD_DIR)/xsklat: $(OBJ_DIR)/xsklat.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
 $(OBJ_DIR)/%.o: %.c Makefile | $(OBJ_DIR)

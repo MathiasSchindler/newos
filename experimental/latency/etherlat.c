@@ -7,11 +7,25 @@
 #endif
 
 #define ETHERLAT_AF_PACKET 17
+#define ETHERLAT_SOCK_DGRAM 2
 #define ETHERLAT_SOCK_RAW 3
 #define ETHERLAT_SOL_SOCKET 1
+#define ETHERLAT_SOL_PACKET 263
 #define ETHERLAT_SO_BUSY_POLL 46
+#define ETHERLAT_PACKET_VERSION 10
+#define ETHERLAT_PACKET_RX_RING 5
+#define ETHERLAT_PACKET_TX_RING 13
+#define ETHERLAT_PACKET_QDISC_BYPASS 20
 #define ETHERLAT_SIOCGIFHWADDR 0x8927U
 #define ETHERLAT_SIOCGIFINDEX 0x8933U
+#define ETHERLAT_PAGE_SIZE 4096U
+#define ETHERLAT_TPACKET_ALIGNMENT 16U
+#define ETHERLAT_TPACKET_V1 0
+#define ETHERLAT_TP_STATUS_AVAILABLE 0UL
+#define ETHERLAT_TP_STATUS_KERNEL 0UL
+#define ETHERLAT_TP_STATUS_USER 1UL
+#define ETHERLAT_TP_STATUS_SEND_REQUEST 1UL
+#define ETHERLAT_TP_STATUS_WRONG_FORMAT 4UL
 #define ETHERLAT_ETH_ALEN 6U
 #define ETHERLAT_ETH_HEADER_SIZE 14U
 #define ETHERLAT_PROTOCOL_HEADER_SIZE 40U
@@ -27,6 +41,8 @@
 #define ETHERLAT_OP_DISCOVER 3U
 #define ETHERLAT_OP_INFO 4U
 #define ETHERLAT_POLLIN 0x0001
+#define ETHERLAT_PACKET_MODE_RAW 1U
+#define ETHERLAT_PACKET_MODE_DGRAM 2U
 
 typedef struct {
     unsigned short sa_family;
@@ -59,6 +75,34 @@ typedef struct {
 } EtherlatPollfd;
 
 typedef struct {
+    unsigned int tp_block_size;
+    unsigned int tp_block_nr;
+    unsigned int tp_frame_size;
+    unsigned int tp_frame_nr;
+} EtherlatTpacketReq;
+
+typedef struct {
+    unsigned long tp_status;
+    unsigned int tp_len;
+    unsigned int tp_snaplen;
+    unsigned short tp_mac;
+    unsigned short tp_net;
+    unsigned int tp_sec;
+    unsigned int tp_usec;
+} EtherlatTpacketHdr;
+
+typedef struct {
+    unsigned char *base;
+    unsigned int frame_size;
+    unsigned int frame_payload_offset;
+} EtherlatTxRing;
+
+typedef struct {
+    unsigned char *base;
+    unsigned int frame_size;
+} EtherlatRxRing;
+
+typedef struct {
     const char *mode;
     const char *ifname;
     unsigned char dst_mac[ETHERLAT_ETH_ALEN];
@@ -69,6 +113,10 @@ typedef struct {
     unsigned int timeout_ms;
     unsigned int interval_us;
     unsigned int busy_poll_us;
+    unsigned int packet_mode;
+    int qdisc_bypass;
+    int tx_ring;
+    int rx_ring;
     int samples_tsv;
     int quiet;
 } EtherlatOptions;
@@ -78,6 +126,11 @@ typedef struct {
     int ifindex;
     unsigned char mac[ETHERLAT_ETH_ALEN];
     unsigned int ethertype;
+    unsigned int packet_mode;
+    void *ring_map;
+    size_t ring_map_size;
+    EtherlatTxRing tx_ring;
+    EtherlatRxRing rx_ring;
 } EtherlatSocket;
 
 static unsigned long long latency_samples[ETHERLAT_MAX_SAMPLES];
@@ -128,9 +181,9 @@ static int text_starts_with(const char *text, const char *prefix) {
 
 static void write_usage(void) {
     rt_write_line(1, "usage: etherlat listen -i IFACE [--count N] [--ethertype HEX] [--busy-poll-us USEC]");
-    rt_write_line(1, "       etherlat discover -i IFACE [--timeout-ms MS] [--busy-poll-us USEC] [--quiet]");
+    rt_write_line(1, "       etherlat discover -i IFACE [--timeout-ms MS] [--packet-mode raw|dgram] [--quiet]");
     rt_write_line(1, "       etherlat ping -i IFACE --dst MAC [--count N] [--size BYTES] [--timeout-ms MS] [--samples]");
-    rt_write_line(1, "       etherlat ping -i IFACE --dst MAC [--interval-us USEC] [--busy-poll-us USEC] [--ethertype HEX]");
+    rt_write_line(1, "       etherlat ping -i IFACE --dst MAC [--packet-mode raw|dgram] [--qdisc-bypass] [--tx-ring] [--rx-ring]");
 }
 
 static void write_error(const char *message) {
@@ -201,6 +254,10 @@ static int parse_mac(const char *text, unsigned char mac[ETHERLAT_ETH_ALEN]) {
     return 0;
 }
 
+static unsigned int align_tpacket(unsigned int value) {
+    return (value + ETHERLAT_TPACKET_ALIGNMENT - 1U) & ~(ETHERLAT_TPACKET_ALIGNMENT - 1U);
+}
+
 static const char *next_arg_value(int argc, char **argv, int *index_io, const char *option) {
     int index = *index_io;
 
@@ -226,6 +283,7 @@ static int parse_options(int argc, char **argv, EtherlatOptions *options) {
     options->count = ETHERLAT_DEFAULT_COUNT;
     options->payload_size = ETHERLAT_MIN_PAYLOAD_SIZE;
     options->timeout_ms = ETHERLAT_DEFAULT_TIMEOUT_MS;
+    options->packet_mode = ETHERLAT_PACKET_MODE_RAW;
 
     if (argc < 2 || rt_strcmp(argv[1], "--help") == 0 || rt_strcmp(argv[1], "-h") == 0) {
         write_usage();
@@ -285,6 +343,22 @@ static int parse_options(int argc, char **argv, EtherlatOptions *options) {
             if (value == 0 || parse_uint_option(value, &options->busy_poll_us) != 0) return -1;
         } else if ((value = inline_option_value(arg, "--busy-poll-us=")) != 0) {
             if (parse_uint_option(value, &options->busy_poll_us) != 0) return -1;
+        } else if (rt_strcmp(arg, "--packet-mode") == 0) {
+            value = next_arg_value(argc, argv, &i, arg);
+            if (value == 0) return -1;
+            if (rt_strcmp(value, "raw") == 0) options->packet_mode = ETHERLAT_PACKET_MODE_RAW;
+            else if (rt_strcmp(value, "dgram") == 0) options->packet_mode = ETHERLAT_PACKET_MODE_DGRAM;
+            else return -1;
+        } else if ((value = inline_option_value(arg, "--packet-mode=")) != 0) {
+            if (rt_strcmp(value, "raw") == 0) options->packet_mode = ETHERLAT_PACKET_MODE_RAW;
+            else if (rt_strcmp(value, "dgram") == 0) options->packet_mode = ETHERLAT_PACKET_MODE_DGRAM;
+            else return -1;
+        } else if (rt_strcmp(arg, "--qdisc-bypass") == 0) {
+            options->qdisc_bypass = 1;
+        } else if (rt_strcmp(arg, "--tx-ring") == 0) {
+            options->tx_ring = 1;
+        } else if (rt_strcmp(arg, "--rx-ring") == 0) {
+            options->rx_ring = 1;
         } else if (rt_strcmp(arg, "--samples") == 0 || rt_strcmp(arg, "--tsv") == 0) {
             options->samples_tsv = 1;
         } else if (rt_strcmp(arg, "--quiet") == 0 || rt_strcmp(arg, "-q") == 0) {
@@ -303,6 +377,18 @@ static int parse_options(int argc, char **argv, EtherlatOptions *options) {
         write_error("ping requires --dst MAC");
         return -1;
     }
+    if (options->tx_ring && options->packet_mode != ETHERLAT_PACKET_MODE_RAW) {
+        write_error("--tx-ring currently requires --packet-mode raw");
+        return -1;
+    }
+    if (options->rx_ring && options->packet_mode != ETHERLAT_PACKET_MODE_RAW) {
+        write_error("--rx-ring currently requires --packet-mode raw");
+        return -1;
+    }
+    if (options->rx_ring && rt_strcmp(options->mode, "discover") == 0) {
+        write_error("--rx-ring currently applies to ping and listen modes only");
+        return -1;
+    }
     if (options->payload_size < ETHERLAT_PROTOCOL_HEADER_SIZE) options->payload_size = ETHERLAT_PROTOCOL_HEADER_SIZE;
     if (options->payload_size < ETHERLAT_MIN_PAYLOAD_SIZE) options->payload_size = ETHERLAT_MIN_PAYLOAD_SIZE;
     if (options->payload_size > ETHERLAT_MAX_PAYLOAD_SIZE) {
@@ -312,14 +398,79 @@ static int parse_options(int argc, char **argv, EtherlatOptions *options) {
     return 0;
 }
 
-static int etherlat_open_socket(EtherlatSocket *socket_out, const char *ifname, unsigned int ethertype, unsigned int busy_poll_us) {
+static int etherlat_setup_packet_rings(EtherlatSocket *socket_out, int tx_ring, int rx_ring) {
+    EtherlatTpacketReq rx_req;
+    EtherlatTpacketReq tx_req;
+    int version = ETHERLAT_TPACKET_V1;
+    size_t rx_map_size = 0U;
+    size_t tx_map_size = 0U;
+    size_t map_size;
+    long mapped;
+
+    if (!tx_ring && !rx_ring) return 0;
+    if (linux_syscall5(LINUX_SYS_SETSOCKOPT, socket_out->fd, ETHERLAT_SOL_PACKET, ETHERLAT_PACKET_VERSION, (long)&version, sizeof(version)) < 0) return -1;
+
+    if (rx_ring) {
+        memset(&rx_req, 0, sizeof(rx_req));
+        rx_req.tp_block_size = ETHERLAT_PAGE_SIZE;
+        rx_req.tp_block_nr = 1U;
+        rx_req.tp_frame_size = ETHERLAT_PAGE_SIZE;
+        rx_req.tp_frame_nr = 1U;
+        if (linux_syscall5(LINUX_SYS_SETSOCKOPT, socket_out->fd, ETHERLAT_SOL_PACKET, ETHERLAT_PACKET_RX_RING, (long)&rx_req, sizeof(rx_req)) < 0) return -1;
+        rx_map_size = rx_req.tp_block_size * rx_req.tp_block_nr;
+    }
+    if (tx_ring) {
+        memset(&tx_req, 0, sizeof(tx_req));
+        tx_req.tp_block_size = ETHERLAT_PAGE_SIZE;
+        tx_req.tp_block_nr = 1U;
+        tx_req.tp_frame_size = ETHERLAT_PAGE_SIZE;
+        tx_req.tp_frame_nr = 1U;
+        if (linux_syscall5(LINUX_SYS_SETSOCKOPT, socket_out->fd, ETHERLAT_SOL_PACKET, ETHERLAT_PACKET_TX_RING, (long)&tx_req, sizeof(tx_req)) < 0) return -1;
+        tx_map_size = tx_req.tp_block_size * tx_req.tp_block_nr;
+    }
+
+    map_size = rx_map_size + tx_map_size;
+    mapped = linux_syscall6(LINUX_SYS_MMAP, 0, map_size, LINUX_PROT_READ | LINUX_PROT_WRITE, LINUX_MAP_SHARED, socket_out->fd, 0);
+    if (mapped < 0) return -1;
+    socket_out->ring_map = (void *)mapped;
+    socket_out->ring_map_size = map_size;
+    if (rx_ring) {
+        socket_out->rx_ring.base = (unsigned char *)mapped;
+        socket_out->rx_ring.frame_size = rx_req.tp_frame_size;
+    }
+    if (tx_ring) {
+        socket_out->tx_ring.base = (unsigned char *)mapped + rx_map_size;
+        socket_out->tx_ring.frame_size = tx_req.tp_frame_size;
+        socket_out->tx_ring.frame_payload_offset = align_tpacket((unsigned int)sizeof(EtherlatTpacketHdr));
+    }
+    return 0;
+}
+
+static void etherlat_close_socket(EtherlatSocket *socket) {
+    if (socket->ring_map != 0) {
+        (void)linux_syscall2(LINUX_SYS_MUNMAP, (long)socket->ring_map, (long)socket->ring_map_size);
+        socket->ring_map = 0;
+        socket->ring_map_size = 0U;
+        socket->tx_ring.base = 0;
+        socket->rx_ring.base = 0;
+    }
+    if (socket->fd >= 0) linux_syscall1(LINUX_SYS_CLOSE, socket->fd);
+    socket->fd = -1;
+}
+
+static int etherlat_open_socket(EtherlatSocket *socket_out, const char *ifname, unsigned int ethertype, unsigned int busy_poll_us, unsigned int packet_mode, int qdisc_bypass, int tx_ring, int rx_ring) {
     EtherlatIfreq ifreq;
     EtherlatSockaddrLl bind_addr;
+    long socket_type = packet_mode == ETHERLAT_PACKET_MODE_DGRAM ? ETHERLAT_SOCK_DGRAM : ETHERLAT_SOCK_RAW;
     long fd;
 
-    fd = linux_syscall3(LINUX_SYS_SOCKET, ETHERLAT_AF_PACKET, ETHERLAT_SOCK_RAW | LINUX_SOCK_CLOEXEC, (long)etherlat_htons(ethertype));
-    if (fd == -LINUX_EINVAL) fd = linux_syscall3(LINUX_SYS_SOCKET, ETHERLAT_AF_PACKET, ETHERLAT_SOCK_RAW, (long)etherlat_htons(ethertype));
+    memset(socket_out, 0, sizeof(*socket_out));
+    socket_out->fd = -1;
+
+    fd = linux_syscall3(LINUX_SYS_SOCKET, ETHERLAT_AF_PACKET, socket_type | LINUX_SOCK_CLOEXEC, (long)etherlat_htons(ethertype));
+    if (fd == -LINUX_EINVAL) fd = linux_syscall3(LINUX_SYS_SOCKET, ETHERLAT_AF_PACKET, socket_type, (long)etherlat_htons(ethertype));
     if (fd < 0) return -1;
+    socket_out->fd = (int)fd;
 
     memset(&ifreq, 0, sizeof(ifreq));
     rt_copy_string(ifreq.ifr_name, sizeof(ifreq.ifr_name), ifname);
@@ -338,6 +489,13 @@ static int etherlat_open_socket(EtherlatSocket *socket_out, const char *ifname, 
             goto fail;
         }
     }
+    if (qdisc_bypass) {
+        int value = 1;
+        if (linux_syscall5(LINUX_SYS_SETSOCKOPT, fd, ETHERLAT_SOL_PACKET, ETHERLAT_PACKET_QDISC_BYPASS, (long)&value, sizeof(value)) < 0) {
+            write_error("cannot set PACKET_QDISC_BYPASS");
+            goto fail;
+        }
+    }
 
     memset(&bind_addr, 0, sizeof(bind_addr));
     bind_addr.sll_family = ETHERLAT_AF_PACKET;
@@ -347,10 +505,15 @@ static int etherlat_open_socket(EtherlatSocket *socket_out, const char *ifname, 
 
     socket_out->fd = (int)fd;
     socket_out->ethertype = ethertype;
+    socket_out->packet_mode = packet_mode;
+    if (etherlat_setup_packet_rings(socket_out, tx_ring, rx_ring) != 0) {
+        write_error("cannot set up packet mmap ring");
+        goto fail;
+    }
     return 0;
 
 fail:
-    linux_syscall1(LINUX_SYS_CLOSE, fd);
+    etherlat_close_socket(socket_out);
     return -1;
 }
 
@@ -398,6 +561,9 @@ static void build_frame(unsigned char *frame, const unsigned char dst[ETHERLAT_E
     build_payload(frame + ETHERLAT_ETH_HEADER_SIZE, op, seq, send_ns, peer_recv_ns, payload_size, nonce);
 }
 
+static int frame_is_for_us(const unsigned char *frame, const unsigned char mac[ETHERLAT_ETH_ALEN]);
+static int etherlat_poll(int fd, unsigned int timeout_ms);
+
 static long send_frame(EtherlatSocket *socket, const unsigned char dst[ETHERLAT_ETH_ALEN], unsigned char *frame, size_t frame_size) {
     EtherlatSockaddrLl address;
 
@@ -408,6 +574,91 @@ static long send_frame(EtherlatSocket *socket, const unsigned char dst[ETHERLAT_
     address.sll_halen = ETHERLAT_ETH_ALEN;
     memcpy(address.sll_addr, dst, ETHERLAT_ETH_ALEN);
     return linux_syscall6(LINUX_SYS_SENDTO, socket->fd, (long)frame, (long)frame_size, 0, (long)&address, sizeof(address));
+}
+
+static long send_frame_tx_ring(EtherlatSocket *socket, const unsigned char dst[ETHERLAT_ETH_ALEN], unsigned int ethertype, unsigned int op, unsigned long long seq, unsigned long long send_ns, unsigned long long peer_recv_ns, unsigned int payload_size, unsigned int nonce) {
+    EtherlatTpacketHdr *header = (EtherlatTpacketHdr *)socket->tx_ring.base;
+    unsigned char *frame = socket->tx_ring.base + socket->tx_ring.frame_payload_offset;
+    volatile unsigned long *status = &header->tp_status;
+    unsigned int frame_size = ETHERLAT_ETH_HEADER_SIZE + payload_size;
+    unsigned int spin;
+    long result;
+
+    if (socket->tx_ring.base == 0 || socket->tx_ring.frame_payload_offset + frame_size > socket->tx_ring.frame_size) return -1;
+    for (spin = 0U; spin < 1000000U; ++spin) {
+        if (*status == ETHERLAT_TP_STATUS_AVAILABLE) break;
+        if ((*status & ETHERLAT_TP_STATUS_WRONG_FORMAT) != 0UL) return -1;
+    }
+    if (*status != ETHERLAT_TP_STATUS_AVAILABLE) return -1;
+    build_frame(frame, dst, socket->mac, ethertype, op, seq, send_ns, peer_recv_ns, payload_size, nonce);
+    header->tp_len = frame_size;
+    header->tp_snaplen = frame_size;
+    header->tp_mac = (unsigned short)socket->tx_ring.frame_payload_offset;
+    header->tp_net = (unsigned short)(socket->tx_ring.frame_payload_offset + ETHERLAT_ETH_HEADER_SIZE);
+    *status = ETHERLAT_TP_STATUS_SEND_REQUEST;
+    result = send_frame(socket, dst, frame, 0U);
+    if ((*status & ETHERLAT_TP_STATUS_WRONG_FORMAT) != 0UL) return -1;
+    return result;
+}
+
+static long send_packet(EtherlatSocket *socket, const unsigned char dst[ETHERLAT_ETH_ALEN], unsigned char *buffer, unsigned int ethertype, unsigned int op, unsigned long long seq, unsigned long long send_ns, unsigned long long peer_recv_ns, unsigned int payload_size, unsigned int nonce) {
+    if (socket->tx_ring.base != 0) return send_frame_tx_ring(socket, dst, ethertype, op, seq, send_ns, peer_recv_ns, payload_size, nonce);
+    if (socket->packet_mode == ETHERLAT_PACKET_MODE_RAW) {
+        build_frame(buffer, dst, socket->mac, ethertype, op, seq, send_ns, peer_recv_ns, payload_size, nonce);
+        return send_frame(socket, dst, buffer, ETHERLAT_ETH_HEADER_SIZE + payload_size);
+    }
+    build_payload(buffer, op, seq, send_ns, peer_recv_ns, payload_size, nonce);
+    return send_frame(socket, dst, buffer, payload_size);
+}
+
+static long receive_frame_rx_ring(EtherlatSocket *socket, unsigned char *buffer, size_t buffer_size) {
+    EtherlatTpacketHdr *header = (EtherlatTpacketHdr *)socket->rx_ring.base;
+    volatile unsigned long *status = &header->tp_status;
+    unsigned int packet_offset;
+    unsigned int packet_size;
+
+    if (socket->rx_ring.base == 0 || (*status & ETHERLAT_TP_STATUS_USER) == 0UL) return 0;
+    packet_offset = header->tp_mac;
+    packet_size = header->tp_snaplen;
+    if (packet_offset > socket->rx_ring.frame_size || packet_size > buffer_size || packet_offset + packet_size > socket->rx_ring.frame_size) {
+        *status = ETHERLAT_TP_STATUS_KERNEL;
+        return -1;
+    }
+    memcpy(buffer, socket->rx_ring.base + packet_offset, packet_size);
+    *status = ETHERLAT_TP_STATUS_KERNEL;
+    return (long)packet_size;
+}
+
+static long receive_packet(EtherlatSocket *socket, unsigned char *buffer, size_t buffer_size, unsigned int timeout_ms) {
+    int poll_result = etherlat_poll(socket->fd, timeout_ms);
+
+    if (poll_result <= 0) return poll_result;
+    if (socket->rx_ring.base != 0) return receive_frame_rx_ring(socket, buffer, buffer_size);
+    return linux_syscall6(LINUX_SYS_RECVFROM, socket->fd, (long)buffer, buffer_size, 0, 0, 0);
+}
+
+static long receive_packet_blocking(EtherlatSocket *socket, unsigned char *buffer, size_t buffer_size, EtherlatSockaddrLl *peer, unsigned int *peer_len) {
+    if (socket->rx_ring.base == 0) return linux_syscall6(LINUX_SYS_RECVFROM, socket->fd, (long)buffer, buffer_size, 0, (long)peer, (long)peer_len);
+    while (1) {
+        int poll_result = etherlat_poll(socket->fd, 1000U);
+        if (poll_result < 0) return -1;
+        if (poll_result == 0) continue;
+        return receive_frame_rx_ring(socket, buffer, buffer_size);
+    }
+}
+
+static int received_payload(EtherlatSocket *socket, unsigned char *buffer, long bytes, unsigned char **payload_out, size_t *payload_len_out) {
+    if (socket->packet_mode == ETHERLAT_PACKET_MODE_RAW) {
+        if (bytes < (long)(ETHERLAT_ETH_HEADER_SIZE + ETHERLAT_PROTOCOL_HEADER_SIZE)) return -1;
+        if (load_u16_be(buffer + 12U) != socket->ethertype || !frame_is_for_us(buffer, socket->mac)) return -1;
+        *payload_out = buffer + ETHERLAT_ETH_HEADER_SIZE;
+        *payload_len_out = (size_t)bytes - ETHERLAT_ETH_HEADER_SIZE;
+        return 0;
+    }
+    if (bytes < (long)ETHERLAT_PROTOCOL_HEADER_SIZE) return -1;
+    *payload_out = buffer;
+    *payload_len_out = (size_t)bytes;
+    return 0;
 }
 
 static int etherlat_poll(int fd, unsigned int timeout_ms) {
@@ -517,7 +768,7 @@ static int run_ping(const EtherlatOptions *options) {
     unsigned int seq;
     unsigned int nonce;
 
-    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us) != 0) {
+    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us, options->packet_mode, options->qdisc_bypass, options->tx_ring, options->rx_ring) != 0) {
         write_error("cannot open AF_PACKET socket; root or CAP_NET_RAW is usually required");
         return 1;
     }
@@ -538,10 +789,9 @@ static int run_ping(const EtherlatOptions *options) {
         unsigned long long deadline = send_ns + (unsigned long long)options->timeout_ms * 1000000ULL;
         int got_reply = 0;
 
-        build_frame(frame, options->dst_mac, socket.mac, options->ethertype, ETHERLAT_OP_PING, seq, send_ns, 0ULL, options->payload_size, nonce);
-        if (send_frame(&socket, options->dst_mac, frame, ETHERLAT_ETH_HEADER_SIZE + options->payload_size) < 0) {
+        if (send_packet(&socket, options->dst_mac, frame, options->ethertype, ETHERLAT_OP_PING, seq, send_ns, 0ULL, options->payload_size, nonce) < 0) {
             write_error("sendto failed");
-            linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+            etherlat_close_socket(&socket);
             return 1;
         }
 
@@ -554,12 +804,14 @@ static int run_ping(const EtherlatOptions *options) {
             unsigned long long peer_recv_ns;
             unsigned int payload_size;
             unsigned int reply_nonce;
+            unsigned char *payload;
+            size_t payload_len;
 
-            if (timeout_ms == 0U || etherlat_poll(socket.fd, timeout_ms) <= 0) break;
-            bytes = linux_syscall6(LINUX_SYS_RECVFROM, socket.fd, (long)receive_buffer, sizeof(receive_buffer), 0, 0, 0);
-            if (bytes < (long)(ETHERLAT_ETH_HEADER_SIZE + ETHERLAT_PROTOCOL_HEADER_SIZE)) continue;
-            if (load_u16_be(receive_buffer + 12U) != options->ethertype || !frame_is_for_us(receive_buffer, socket.mac)) continue;
-            if (parse_payload(receive_buffer + ETHERLAT_ETH_HEADER_SIZE, (size_t)bytes - ETHERLAT_ETH_HEADER_SIZE, &op, &reply_seq, &original_send_ns, &peer_recv_ns, &payload_size, &reply_nonce) != 0) continue;
+            if (timeout_ms == 0U) break;
+            bytes = receive_packet(&socket, receive_buffer, sizeof(receive_buffer), timeout_ms);
+            if (bytes <= 0) break;
+            if (received_payload(&socket, receive_buffer, bytes, &payload, &payload_len) != 0) continue;
+            if (parse_payload(payload, payload_len, &op, &reply_seq, &original_send_ns, &peer_recv_ns, &payload_size, &reply_nonce) != 0) continue;
             (void)peer_recv_ns;
             if (op != ETHERLAT_OP_PONG || reply_seq != seq || reply_nonce != nonce || original_send_ns != send_ns) continue;
 
@@ -572,7 +824,7 @@ static int run_ping(const EtherlatOptions *options) {
     }
 
     write_summary(options->count, received, options->payload_size);
-    linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+    etherlat_close_socket(&socket);
     return received == options->count ? 0 : 1;
 }
 
@@ -585,7 +837,7 @@ static int run_discover(const EtherlatOptions *options) {
     unsigned long long send_ns;
     unsigned long long deadline;
 
-    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us) != 0) {
+    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us, options->packet_mode, options->qdisc_bypass, options->tx_ring, options->rx_ring) != 0) {
         write_error("cannot open AF_PACKET socket; root or CAP_NET_RAW is usually required");
         return 1;
     }
@@ -593,14 +845,15 @@ static int run_discover(const EtherlatOptions *options) {
     send_ns = platform_get_monotonic_time_ns();
     deadline = send_ns + (unsigned long long)options->timeout_ms * 1000000ULL;
     nonce = (unsigned int)(send_ns ^ ((unsigned long long)socket.ifindex << 16U));
-    build_frame(frame, broadcast, socket.mac, options->ethertype, ETHERLAT_OP_DISCOVER, 0ULL, send_ns, 0ULL, options->payload_size, nonce);
-    if (send_frame(&socket, broadcast, frame, ETHERLAT_ETH_HEADER_SIZE + options->payload_size) < 0) {
+    if (send_packet(&socket, broadcast, frame, options->ethertype, ETHERLAT_OP_DISCOVER, 0ULL, send_ns, 0ULL, options->payload_size, nonce) < 0) {
         write_error("sendto failed");
-        linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+        etherlat_close_socket(&socket);
         return 1;
     }
 
     while (1) {
+        EtherlatSockaddrLl peer;
+        unsigned int peer_len = sizeof(peer);
         unsigned int timeout_ms = remaining_timeout_ms(deadline);
         long bytes;
         unsigned int op;
@@ -609,25 +862,27 @@ static int run_discover(const EtherlatOptions *options) {
         unsigned long long peer_recv_ns;
         unsigned int payload_size;
         unsigned int reply_nonce;
+        unsigned char *payload;
+        size_t payload_len;
 
         if (timeout_ms == 0U || etherlat_poll(socket.fd, timeout_ms) <= 0) break;
-        bytes = linux_syscall6(LINUX_SYS_RECVFROM, socket.fd, (long)receive_buffer, sizeof(receive_buffer), 0, 0, 0);
-        if (bytes < (long)(ETHERLAT_ETH_HEADER_SIZE + ETHERLAT_PROTOCOL_HEADER_SIZE)) continue;
-        if (load_u16_be(receive_buffer + 12U) != options->ethertype || !frame_is_for_us(receive_buffer, socket.mac)) continue;
-        if (parse_payload(receive_buffer + ETHERLAT_ETH_HEADER_SIZE, (size_t)bytes - ETHERLAT_ETH_HEADER_SIZE, &op, &reply_seq, &original_send_ns, &peer_recv_ns, &payload_size, &reply_nonce) != 0) continue;
+    bytes = linux_syscall6(LINUX_SYS_RECVFROM, socket.fd, (long)receive_buffer, sizeof(receive_buffer), 0, (long)&peer, (long)&peer_len);
+        if (received_payload(&socket, receive_buffer, bytes, &payload, &payload_len) != 0) continue;
+        if (parse_payload(payload, payload_len, &op, &reply_seq, &original_send_ns, &peer_recv_ns, &payload_size, &reply_nonce) != 0) continue;
         (void)reply_seq;
         (void)peer_recv_ns;
         (void)payload_size;
         if (op != ETHERLAT_OP_INFO || reply_nonce != nonce || original_send_ns != send_ns) continue;
         if (!options->quiet) rt_write_cstr(1, "peer\tmac\t");
-        write_mac(receive_buffer + 6U);
+        if (socket.packet_mode == ETHERLAT_PACKET_MODE_RAW) write_mac(receive_buffer + 6U);
+        else write_mac(peer.sll_addr);
         rt_write_char(1, '\n');
-        linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+        etherlat_close_socket(&socket);
         return 0;
     }
 
     write_error("no etherlat responder discovered");
-    linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+    etherlat_close_socket(&socket);
     return 1;
 }
 
@@ -637,7 +892,7 @@ static int run_listen(const EtherlatOptions *options) {
     unsigned char reply[ETHERLAT_MAX_FRAME_SIZE];
     unsigned int replies = 0U;
 
-    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us) != 0) {
+    if (etherlat_open_socket(&socket, options->ifname, options->ethertype, options->busy_poll_us, options->packet_mode, options->qdisc_bypass, 0, 0) != 0) {
         write_error("cannot open AF_PACKET socket; root or CAP_NET_RAW is usually required");
         return 1;
     }
@@ -650,7 +905,9 @@ static int run_listen(const EtherlatOptions *options) {
     }
 
     while (options->count == 0U || replies < options->count) {
-        long bytes = linux_syscall6(LINUX_SYS_RECVFROM, socket.fd, (long)receive_buffer, sizeof(receive_buffer), 0, 0, 0);
+        EtherlatSockaddrLl peer;
+        unsigned int peer_len = sizeof(peer);
+        long bytes = receive_packet_blocking(&socket, receive_buffer, sizeof(receive_buffer), &peer, &peer_len);
         unsigned int op;
         unsigned long long seq;
         unsigned long long send_ns;
@@ -658,18 +915,20 @@ static int run_listen(const EtherlatOptions *options) {
         unsigned int payload_size;
         unsigned int nonce;
         unsigned long long now;
+        unsigned char *payload;
+        size_t payload_len;
+        const unsigned char *dst;
 
-        if (bytes < (long)(ETHERLAT_ETH_HEADER_SIZE + ETHERLAT_PROTOCOL_HEADER_SIZE)) continue;
-        if (load_u16_be(receive_buffer + 12U) != options->ethertype || !frame_is_for_us(receive_buffer, socket.mac)) continue;
-        if (parse_payload(receive_buffer + ETHERLAT_ETH_HEADER_SIZE, (size_t)bytes - ETHERLAT_ETH_HEADER_SIZE, &op, &seq, &send_ns, &peer_recv_ns, &payload_size, &nonce) != 0) continue;
+        if (received_payload(&socket, receive_buffer, bytes, &payload, &payload_len) != 0) continue;
+        if (parse_payload(payload, payload_len, &op, &seq, &send_ns, &peer_recv_ns, &payload_size, &nonce) != 0) continue;
         (void)peer_recv_ns;
         if ((op != ETHERLAT_OP_PING && op != ETHERLAT_OP_DISCOVER) || payload_size > ETHERLAT_MAX_PAYLOAD_SIZE) continue;
         now = platform_get_monotonic_time_ns();
-        build_frame(reply, receive_buffer + 6U, socket.mac, options->ethertype, op == ETHERLAT_OP_DISCOVER ? ETHERLAT_OP_INFO : ETHERLAT_OP_PONG, seq, send_ns, now, payload_size, nonce);
-        if (send_frame(&socket, receive_buffer + 6U, reply, ETHERLAT_ETH_HEADER_SIZE + payload_size) >= 0) replies += 1U;
+        dst = socket.packet_mode == ETHERLAT_PACKET_MODE_RAW ? receive_buffer + 6U : peer.sll_addr;
+        if (send_packet(&socket, dst, reply, options->ethertype, op == ETHERLAT_OP_DISCOVER ? ETHERLAT_OP_INFO : ETHERLAT_OP_PONG, seq, send_ns, now, payload_size, nonce) >= 0) replies += 1U;
     }
 
-    linux_syscall1(LINUX_SYS_CLOSE, socket.fd);
+    etherlat_close_socket(&socket);
     return 0;
 }
 

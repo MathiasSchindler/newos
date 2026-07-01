@@ -6,6 +6,10 @@ ETHERLAT=${ETHERLAT:-./build/etherlat}
 COUNT=${COUNT:-1000}
 SIZES=${SIZES:-46 64 128 256 512 1024 1400}
 BUSY_POLLS=${BUSY_POLLS:-0}
+PACKET_MODES=${PACKET_MODES:-raw}
+QDISC_BYPASSES=${QDISC_BYPASSES:-0}
+TX_RINGS=${TX_RINGS:-0}
+RX_RINGS=${RX_RINGS:-0}
 TIMEOUT_MS=${TIMEOUT_MS:-1000}
 INTERVAL_US=${INTERVAL_US:-0}
 UDP_PORT=${UDP_PORT:-17777}
@@ -13,7 +17,7 @@ ETHERTYPE=${ETHERTYPE:-0x88b5}
 
 usage() {
     printf '%s\n' "usage: $0 [--udp-host IPv4] [--iface IFACE [--dst MAC | --discover]]" >&2
-    printf '%s\n' "env: COUNT='$COUNT' SIZES='$SIZES' BUSY_POLLS='$BUSY_POLLS' TIMEOUT_MS='$TIMEOUT_MS' INTERVAL_US='$INTERVAL_US' UDP_PORT='$UDP_PORT'" >&2
+    printf '%s\n' "env: COUNT='$COUNT' SIZES='$SIZES' BUSY_POLLS='$BUSY_POLLS' PACKET_MODES='$PACKET_MODES' QDISC_BYPASSES='$QDISC_BYPASSES' TX_RINGS='$TX_RINGS' RX_RINGS='$RX_RINGS' TIMEOUT_MS='$TIMEOUT_MS' INTERVAL_US='$INTERVAL_US' UDP_PORT='$UDP_PORT'" >&2
 }
 
 UDP_HOST=
@@ -81,9 +85,17 @@ if [ -n "$UDP_HOST" ]; then
         for size in $SIZES; do
             printf '# case=udp size=%s busy_poll_us=%s\n' "$size" "$busy_poll"
             if [ "$busy_poll" = 0 ]; then
-                "$UDPLAT" ping "$UDP_HOST" --port "$UDP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --samples
+                if "$UDPLAT" ping "$UDP_HOST" --port "$UDP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --samples; then
+                    :
+                else
+                    printf '# status=%s\n' "$?"
+                fi
             else
-                "$UDPLAT" ping "$UDP_HOST" --port "$UDP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --busy-poll-us "$busy_poll" --samples
+                if "$UDPLAT" ping "$UDP_HOST" --port "$UDP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --busy-poll-us "$busy_poll" --samples; then
+                    :
+                else
+                    printf '# status=%s\n' "$?"
+                fi
             fi
         done
     done
@@ -91,14 +103,36 @@ fi
 
 if [ -n "$IFACE" ] && [ -n "$DST" ]; then
     printf '# transport=af_packet iface=%s dst=%s ethertype=%s\n' "$IFACE" "$DST" "$ETHERTYPE"
-    for busy_poll in $BUSY_POLLS; do
-        for size in $SIZES; do
-            printf '# case=af_packet_raw size=%s busy_poll_us=%s\n' "$size" "$busy_poll"
-            if [ "$busy_poll" = 0 ]; then
-                "$ETHERLAT" ping -i "$IFACE" --dst "$DST" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --ethertype "$ETHERTYPE" --samples
-            else
-                "$ETHERLAT" ping -i "$IFACE" --dst "$DST" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --ethertype "$ETHERTYPE" --busy-poll-us "$busy_poll" --samples
-            fi
+    for packet_mode in $PACKET_MODES; do
+        for qdisc_bypass in $QDISC_BYPASSES; do
+            qdisc_arg=
+            [ "$qdisc_bypass" = 0 ] || qdisc_arg=--qdisc-bypass
+            for tx_ring in $TX_RINGS; do
+                tx_ring_arg=
+                [ "$tx_ring" = 0 ] || tx_ring_arg=--tx-ring
+                for rx_ring in $RX_RINGS; do
+                    rx_ring_arg=
+                    [ "$rx_ring" = 0 ] || rx_ring_arg=--rx-ring
+                    for busy_poll in $BUSY_POLLS; do
+                        for size in $SIZES; do
+                            printf '# case=af_packet packet_mode=%s qdisc_bypass=%s tx_ring=%s rx_ring=%s size=%s busy_poll_us=%s\n' "$packet_mode" "$qdisc_bypass" "$tx_ring" "$rx_ring" "$size" "$busy_poll"
+                            if [ "$busy_poll" = 0 ]; then
+                                if "$ETHERLAT" ping -i "$IFACE" --dst "$DST" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --ethertype "$ETHERTYPE" --packet-mode "$packet_mode" $qdisc_arg $tx_ring_arg $rx_ring_arg --samples; then
+                                    :
+                                else
+                                    printf '# status=%s\n' "$?"
+                                fi
+                            else
+                                if "$ETHERLAT" ping -i "$IFACE" --dst "$DST" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --ethertype "$ETHERTYPE" --packet-mode "$packet_mode" $qdisc_arg $tx_ring_arg $rx_ring_arg --busy-poll-us "$busy_poll" --samples; then
+                                    :
+                                else
+                                    printf '# status=%s\n' "$?"
+                                fi
+                            fi
+                        done
+                    done
+                done
+            done
         done
     done
 fi
