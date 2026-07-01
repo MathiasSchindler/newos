@@ -9,6 +9,7 @@
 #endif
 
 #define NEWOS_PROFILE_BUFFER_SIZE 65536U
+#define NEWOS_PROFILE_HOOK_THREADS 128U
 #define NEWOS_PROFILE_O_WRONLY 0x0001
 #define NEWOS_PROFILE_O_CREAT  0x0200
 #define NEWOS_PROFILE_O_TRUNC  0x0400
@@ -18,11 +19,18 @@ extern char **environ;
 static int newos_profile_fd = -2;
 static int newos_profile_initialized;
 static int newos_profile_disabled;
+static int newos_profile_limit_reached;
 static unsigned int newos_profile_depth;
-static unsigned int newos_profile_in_hook;
 static unsigned long long newos_profile_event_count;
+static unsigned long long newos_profile_skip_events;
 static unsigned long long newos_profile_max_events;
+static unsigned long long newos_profile_initial_thread_id;
+static int newos_profile_worker_only;
 static volatile int newos_profile_write_lock;
+static volatile int newos_profile_hook_lock;
+static unsigned long long newos_profile_hook_thread_ids[NEWOS_PROFILE_HOOK_THREADS];
+static unsigned char newos_profile_hook_thread_used[NEWOS_PROFILE_HOOK_THREADS];
+static unsigned char newos_profile_hook_thread_active[NEWOS_PROFILE_HOOK_THREADS];
 static size_t newos_profile_buffer_length;
 static char newos_profile_buffer[NEWOS_PROFILE_BUFFER_SIZE];
 
@@ -37,8 +45,15 @@ static long newos_profile_write(int fd, const void *buffer, size_t size) NEWOS_P
 static unsigned long long newos_profile_counter_ticks(void) NEWOS_PROFILER_NOINSTR;
 static unsigned long long newos_profile_counter_frequency(void) NEWOS_PROFILER_NOINSTR;
 static unsigned long long newos_profile_time_ns(void) NEWOS_PROFILER_NOINSTR;
+static unsigned long long newos_profile_thread_id(void) NEWOS_PROFILER_NOINSTR;
+static unsigned long long newos_profile_event_limit(void) NEWOS_PROFILER_NOINSTR;
 static void newos_profile_lock(void) NEWOS_PROFILER_NOINSTR;
 static void newos_profile_unlock(void) NEWOS_PROFILER_NOINSTR;
+static void newos_profile_hook_table_lock(void) NEWOS_PROFILER_NOINSTR;
+static void newos_profile_hook_table_unlock(void) NEWOS_PROFILER_NOINSTR;
+static int newos_profile_skip_hook(void) NEWOS_PROFILER_NOINSTR;
+static int newos_profile_hook_enter(void) NEWOS_PROFILER_NOINSTR;
+static void newos_profile_hook_exit(void) NEWOS_PROFILER_NOINSTR;
 static void newos_profile_initialize(void) NEWOS_PROFILER_NOINSTR;
 static void newos_profile_flush_locked(void) NEWOS_PROFILER_NOINSTR;
 static void newos_profile_flush(void) NEWOS_PROFILER_NOINSTR;
@@ -155,6 +170,25 @@ static unsigned long long newos_profile_time_ns(void) {
     return (seconds * 1000000000ULL) + ((remainder * 1000000000ULL) / frequency);
 }
 
+static unsigned long long newos_profile_thread_id(void) {
+#if defined(__aarch64__) || defined(__arm64__)
+    unsigned long value;
+
+    __asm__ volatile("mrs %0, TPIDRRO_EL0" : "=r"(value));
+    if (value != 0UL) return (unsigned long long)value;
+#endif
+    return 0ULL;
+}
+
+static unsigned long long newos_profile_event_limit(void) {
+    unsigned long long limit;
+
+    if (newos_profile_max_events == 0ULL) return 0ULL;
+    limit = newos_profile_skip_events + newos_profile_max_events;
+    if (limit < newos_profile_skip_events) return ~0ULL;
+    return limit;
+}
+
 static void newos_profile_lock(void) {
     while (__atomic_exchange_n(&newos_profile_write_lock, 1, __ATOMIC_ACQUIRE) != 0) {
     }
@@ -162,6 +196,65 @@ static void newos_profile_lock(void) {
 
 static void newos_profile_unlock(void) {
     __atomic_store_n(&newos_profile_write_lock, 0, __ATOMIC_RELEASE);
+}
+
+static void newos_profile_hook_table_lock(void) {
+    while (__atomic_exchange_n(&newos_profile_hook_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+    }
+}
+
+static void newos_profile_hook_table_unlock(void) {
+    __atomic_store_n(&newos_profile_hook_lock, 0, __ATOMIC_RELEASE);
+}
+
+static int newos_profile_skip_hook(void) {
+    return newos_profile_initialized && newos_profile_disabled;
+}
+
+static int newos_profile_hook_enter(void) {
+    unsigned long long thread_id = newos_profile_thread_id();
+    size_t i;
+    size_t free_slot = NEWOS_PROFILE_HOOK_THREADS;
+
+    newos_profile_hook_table_lock();
+    for (i = 0U; i < NEWOS_PROFILE_HOOK_THREADS; ++i) {
+        if (newos_profile_hook_thread_used[i]) {
+            if (newos_profile_hook_thread_ids[i] == thread_id) {
+                if (newos_profile_hook_thread_active[i]) {
+                    newos_profile_hook_table_unlock();
+                    return 0;
+                }
+                newos_profile_hook_thread_active[i] = 1U;
+                newos_profile_hook_table_unlock();
+                return 1;
+            }
+        } else if (free_slot == NEWOS_PROFILE_HOOK_THREADS) {
+            free_slot = i;
+        }
+    }
+    if (free_slot == NEWOS_PROFILE_HOOK_THREADS) {
+        newos_profile_hook_table_unlock();
+        return 0;
+    }
+    newos_profile_hook_thread_used[free_slot] = 1U;
+    newos_profile_hook_thread_ids[free_slot] = thread_id;
+    newos_profile_hook_thread_active[free_slot] = 1U;
+    newos_profile_hook_table_unlock();
+    return 1;
+}
+
+static void newos_profile_hook_exit(void) {
+    unsigned long long thread_id = newos_profile_thread_id();
+    size_t i;
+
+    newos_profile_hook_table_lock();
+    for (i = 0U; i < NEWOS_PROFILE_HOOK_THREADS; ++i) {
+        if (newos_profile_hook_thread_used[i] && newos_profile_hook_thread_ids[i] == thread_id) {
+            newos_profile_hook_thread_active[i] = 0U;
+            break;
+        }
+    }
+    newos_profile_hook_table_unlock();
 }
 
 static void newos_profile_initialize(void) {
@@ -175,7 +268,10 @@ static void newos_profile_initialize(void) {
         newos_profile_fd = -1;
         return;
     }
+    newos_profile_skip_events = newos_profile_parse_uint(newos_profile_getenv("NEWOS_PROFILE_SKIP_EVENTS"));
     newos_profile_max_events = newos_profile_parse_uint(newos_profile_getenv("NEWOS_PROFILE_MAX_EVENTS"));
+    newos_profile_initial_thread_id = newos_profile_thread_id();
+    newos_profile_worker_only = !newos_profile_text_is_disabled(newos_profile_getenv("NEWOS_PROFILE_WORKER_ONLY"));
     newos_profile_fd = newos_profile_open_write(path);
     if (newos_profile_fd < 0) newos_profile_disabled = 1;
 }
@@ -249,17 +345,25 @@ static void newos_profile_append_hex(unsigned long long value) {
 
 static void newos_profile_event(const char *kind, void *function_address) {
     unsigned long long event_index;
+    unsigned long long event_limit;
+    unsigned long long thread_id;
 
     if (!newos_profile_initialized) newos_profile_initialize();
-    if (newos_profile_disabled || newos_profile_fd < 0) return;
+    if (newos_profile_fd < 0) return;
+    if (newos_profile_disabled) return;
+    thread_id = newos_profile_thread_id();
+    if (newos_profile_worker_only && thread_id == newos_profile_initial_thread_id) return;
     event_index = __atomic_fetch_add(&newos_profile_event_count, 1ULL, __ATOMIC_RELAXED);
-    if (newos_profile_max_events != 0ULL && event_index >= newos_profile_max_events) {
+    if (event_index < newos_profile_skip_events) return;
+    event_limit = newos_profile_event_limit();
+    if (event_limit != 0ULL && event_index >= event_limit) {
         newos_profile_flush();
+        newos_profile_limit_reached = 1;
         newos_profile_disabled = 1;
         return;
     }
     newos_profile_lock();
-    if (newos_profile_disabled || newos_profile_fd < 0) {
+    if ((newos_profile_disabled && !newos_profile_limit_reached) || newos_profile_fd < 0) {
         newos_profile_unlock();
         return;
     }
@@ -267,10 +371,13 @@ static void newos_profile_event(const char *kind, void *function_address) {
     newos_profile_append_char(' ');
     newos_profile_append_uint(newos_profile_time_ns());
     newos_profile_append_char(' ');
+    newos_profile_append_uint(thread_id);
+    newos_profile_append_char(' ');
     newos_profile_append_hex((unsigned long long)(size_t)function_address);
     newos_profile_append_char('\n');
-    if (newos_profile_max_events != 0ULL && event_index + 1ULL >= newos_profile_max_events) {
+    if (event_limit != 0ULL && event_index + 1ULL >= event_limit) {
         newos_profile_flush_locked();
+        newos_profile_limit_reached = 1;
         newos_profile_disabled = 1;
     }
     newos_profile_unlock();
@@ -282,20 +389,20 @@ void __cyg_profile_func_exit(void *this_fn, void *call_site) NEWOS_PROFILER_NOIN
 void __cyg_profile_func_enter(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 void __cyg_profile_func_enter(void *this_fn, void *call_site) {
     (void)call_site;
-    if (newos_profile_in_hook) return;
-    newos_profile_in_hook = 1U;
+    if (newos_profile_skip_hook()) return;
+    if (!newos_profile_hook_enter()) return;
     newos_profile_depth += 1U;
     newos_profile_event("enter", this_fn);
-    newos_profile_in_hook = 0U;
+    newos_profile_hook_exit();
 }
 
 void __cyg_profile_func_exit(void *this_fn, void *call_site) NEWOS_PROFILER_NOINSTR;
 void __cyg_profile_func_exit(void *this_fn, void *call_site) {
     (void)call_site;
-    if (newos_profile_in_hook) return;
-    newos_profile_in_hook = 1U;
+    if (newos_profile_skip_hook()) return;
+    if (!newos_profile_hook_enter()) return;
     newos_profile_event("exit", this_fn);
     if (newos_profile_depth > 0U) newos_profile_depth -= 1U;
     if (newos_profile_depth == 0U) newos_profile_flush();
-    newos_profile_in_hook = 0U;
+    newos_profile_hook_exit();
 }

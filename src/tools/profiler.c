@@ -5,6 +5,8 @@
 #define PROFILER_MAX_FUNCTIONS 8192U
 #define PROFILER_MAX_SYMBOLS 8192U
 #define PROFILER_MAX_STACK 4096U
+#define PROFILER_MAX_THREADS 128U
+#define PROFILER_MAX_THREAD_STACK 2048U
 #define PROFILER_MAX_SLIDE_CANDIDATES 128U
 #define PROFILER_LINE_CAPACITY 1024U
 #define PROFILER_NAME_CAPACITY 256U
@@ -32,6 +34,16 @@ typedef struct {
 } ProfileStackEntry;
 
 typedef struct {
+    unsigned long long id;
+    unsigned long long events;
+    unsigned long long unmatched_exits;
+    unsigned long long root_ns;
+    size_t stack_depth;
+    size_t max_depth;
+    int used;
+} ProfileThread;
+
+typedef struct {
     size_t function_index;
 } ProfileRow;
 
@@ -42,6 +54,7 @@ typedef struct {
     unsigned long long malformed_lines;
     unsigned long long open_frames;
     unsigned long long event_limit;
+    unsigned long long thread_overflows;
     int trace_limited;
 } ProfileStats;
 
@@ -59,7 +72,8 @@ typedef enum {
 
 static ProfileFunction profiler_functions[PROFILER_MAX_FUNCTIONS];
 static ProfileSymbol profiler_symbols[PROFILER_MAX_SYMBOLS];
-static ProfileStackEntry profiler_stack[PROFILER_MAX_STACK];
+static ProfileThread profiler_threads[PROFILER_MAX_THREADS];
+static ProfileStackEntry profiler_thread_stacks[PROFILER_MAX_THREADS][PROFILER_MAX_THREAD_STACK];
 static ProfileRow profiler_rows[PROFILER_MAX_FUNCTIONS];
 static ProfileSlideCandidate profiler_slide_candidates[PROFILER_MAX_SLIDE_CANDIDATES];
 static int profiler_function_hash[PROFILER_FUNCTION_HASH_SIZE];
@@ -69,9 +83,10 @@ static size_t profiler_symbol_count;
 static ProfileSortKey profiler_sort_key = PROFILE_SORT_SELF;
 static unsigned long long profiler_min_self_ns;
 static unsigned long long profiler_min_total_ns;
+static int profiler_thread_summary;
 
 static void print_usage(void) {
-    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--csv] TRACE");
+    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--csv] TRACE");
 }
 
 static void print_instrumentation_help(void) {
@@ -83,12 +98,16 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  make freestanding PROFILE=1 LINKER_REPORTS=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/freestanding-linux-x86_64/tool ...\n");
     rt_write_cstr(1, "  NEWOS_PROFILE_MAX_EVENTS=1000000 caps trace generation before running out of disk.\n");
+    rt_write_cstr(1, "  NEWOS_PROFILE_SKIP_EVENTS=100000 skips early instrumentation records before writing.\n");
+    rt_write_cstr(1, "  NEWOS_PROFILE_WORKER_ONLY=1 records only non-initial thread events.\n");
     rt_write_cstr(1, "  build/freestanding-linux-x86_64/profiler -m build/freestanding-linux-x86_64/.maps/tool.map tool.nprof\n");
     rt_write_cstr(1, "  MACOS_NEWLINKER_MAP_DIR=build/profile-maps make freestanding PROFILE=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/newlinker-macos-aarch64/tool ...\n");
     rt_write_cstr(1, "\nTrace lines accepted by profiler:\n");
     rt_write_cstr(1, "  enter TIME_NS ADDRESS\n");
     rt_write_cstr(1, "  exit  TIME_NS ADDRESS\n");
+    rt_write_cstr(1, "  enter TIME_NS THREAD_ID ADDRESS\n");
+    rt_write_cstr(1, "  exit  TIME_NS THREAD_ID ADDRESS\n");
     rt_write_cstr(1, "Aliases: e/x and +/- are accepted for enter/exit.\n");
     rt_write_cstr(1, "\nSymbol files may use either format:\n");
     rt_write_cstr(1, "  0x401000 function_name\n");
@@ -175,6 +194,34 @@ static int find_or_add_function(unsigned long long address, size_t *index_out) {
     add_function_hash_entry(address, profiler_function_count);
     *index_out = profiler_function_count++;
     return 0;
+}
+
+static int find_or_add_thread(unsigned long long thread_id, ProfileStats *stats, ProfileThread **thread_out, ProfileStackEntry **stack_out) {
+    size_t i;
+
+    for (i = 0U; i < PROFILER_MAX_THREADS; ++i) {
+        if (profiler_threads[i].used && profiler_threads[i].id == thread_id) {
+            *thread_out = &profiler_threads[i];
+            *stack_out = profiler_thread_stacks[i];
+            return 0;
+        }
+    }
+    for (i = 0U; i < PROFILER_MAX_THREADS; ++i) {
+        if (!profiler_threads[i].used) {
+            profiler_threads[i].used = 1;
+            profiler_threads[i].id = thread_id;
+            profiler_threads[i].events = 0ULL;
+            profiler_threads[i].unmatched_exits = 0ULL;
+            profiler_threads[i].root_ns = 0ULL;
+            profiler_threads[i].stack_depth = 0U;
+            profiler_threads[i].max_depth = 0U;
+            *thread_out = &profiler_threads[i];
+            *stack_out = profiler_thread_stacks[i];
+            return 0;
+        }
+    }
+    stats->thread_overflows += 1ULL;
+    return -1;
 }
 
 static void add_symbol(unsigned long long address, const char *name, int function_symbol) {
@@ -281,6 +328,14 @@ static void write_ns_as_ms(unsigned long long ns) {
     rt_write_uint(1, ns / 1000000ULL);
     rt_write_char(1, '.');
     write_padded_3((ns % 1000000ULL) / 1000ULL);
+}
+
+static void write_ns_as_ms_fd(int fd, unsigned long long ns) {
+    rt_write_uint(fd, ns / 1000000ULL);
+    rt_write_char(fd, '.');
+    rt_write_char(fd, (char)('0' + (((ns % 1000000ULL) / 1000ULL) / 100ULL) % 10ULL));
+    rt_write_char(fd, (char)('0' + (((ns % 1000000ULL) / 1000ULL) / 10ULL) % 10ULL));
+    rt_write_char(fd, (char)('0' + ((ns % 1000000ULL) / 1000ULL) % 10ULL));
 }
 
 static int read_symbols(const char *path) {
@@ -432,44 +487,63 @@ static void infer_symbol_slide(void) {
     }
 }
 
-static int process_enter(unsigned long long timestamp_ns, unsigned long long address, size_t *stack_depth_io, ProfileStats *stats) {
+static int process_enter(unsigned long long timestamp_ns, unsigned long long thread_id, unsigned long long address, ProfileStats *stats) {
+    ProfileThread *thread;
+    ProfileStackEntry *stack;
     size_t function_index;
-    size_t depth = *stack_depth_io;
+    size_t depth;
+
+    if (find_or_add_thread(thread_id, stats, &thread, &stack) != 0) {
+        return 0;
+    }
+    thread->events += 1ULL;
+    depth = thread->stack_depth;
 
     if (find_or_add_function(address, &function_index) != 0) {
         stats->malformed_lines += 1ULL;
         return 0;
     }
     profiler_functions[function_index].calls += 1ULL;
-    if (depth >= PROFILER_MAX_STACK) {
+    if (depth >= PROFILER_MAX_THREAD_STACK) {
         stats->stack_overflows += 1ULL;
         return 0;
     }
-    profiler_stack[depth].function_index = function_index;
-    profiler_stack[depth].start_ns = timestamp_ns;
-    profiler_stack[depth].child_ns = 0ULL;
-    *stack_depth_io = depth + 1U;
+    stack[depth].function_index = function_index;
+    stack[depth].start_ns = timestamp_ns;
+    stack[depth].child_ns = 0ULL;
+    thread->stack_depth = depth + 1U;
+    if (thread->stack_depth > thread->max_depth) thread->max_depth = thread->stack_depth;
     return 0;
 }
 
-static int process_exit(unsigned long long timestamp_ns, unsigned long long address, size_t *stack_depth_io, ProfileStats *stats) {
-    size_t depth = *stack_depth_io;
+static int process_exit(unsigned long long timestamp_ns, unsigned long long thread_id, unsigned long long address, ProfileStats *stats) {
+    ProfileThread *thread;
+    ProfileStackEntry *stack;
+    size_t depth;
     size_t function_index;
     ProfileStackEntry frame;
     unsigned long long elapsed;
     unsigned long long self;
 
+    if (find_or_add_thread(thread_id, stats, &thread, &stack) != 0) {
+        return 0;
+    }
+    thread->events += 1ULL;
+    depth = thread->stack_depth;
+
     if (depth == 0U) {
         stats->unmatched_exits += 1ULL;
+        thread->unmatched_exits += 1ULL;
         return 0;
     }
-    function_index = profiler_stack[depth - 1U].function_index;
+    function_index = stack[depth - 1U].function_index;
     if (profiler_functions[function_index].address != address) {
         stats->unmatched_exits += 1ULL;
+        thread->unmatched_exits += 1ULL;
         return 0;
     }
-    frame = profiler_stack[depth - 1U];
-    *stack_depth_io = depth - 1U;
+    frame = stack[depth - 1U];
+    thread->stack_depth = depth - 1U;
     elapsed = timestamp_ns >= frame.start_ns ? timestamp_ns - frame.start_ns : 0ULL;
     self = elapsed >= frame.child_ns ? elapsed - frame.child_ns : 0ULL;
     profiler_functions[function_index].total_ns += elapsed;
@@ -477,8 +551,10 @@ static int process_exit(unsigned long long timestamp_ns, unsigned long long addr
     if (elapsed > profiler_functions[function_index].max_ns) {
         profiler_functions[function_index].max_ns = elapsed;
     }
-    if (*stack_depth_io > 0U) {
-        profiler_stack[*stack_depth_io - 1U].child_ns += elapsed;
+    if (thread->stack_depth > 0U) {
+        stack[thread->stack_depth - 1U].child_ns += elapsed;
+    } else {
+        thread->root_ns += elapsed;
     }
     return 0;
 }
@@ -490,32 +566,6 @@ static int parse_decimal_at(const char **cursor_io, unsigned long long *value_ou
 
     while (*cursor >= '0' && *cursor <= '9') {
         value = value * 10ULL + (unsigned long long)(*cursor - '0');
-        saw_digit = 1;
-        cursor += 1;
-    }
-    if (!saw_digit) {
-        return -1;
-    }
-    *cursor_io = cursor;
-    *value_out = value;
-    return 0;
-}
-
-static int parse_hex_address_at(const char **cursor_io, unsigned long long *value_out) {
-    const char *cursor = *cursor_io;
-    unsigned long long value = 0ULL;
-    int saw_digit = 0;
-
-    if (cursor[0] == '0' && (cursor[1] == 'x' || cursor[1] == 'X')) {
-        cursor += 2;
-    }
-    while (*cursor != '\0' && !tool_ascii_is_token_space(*cursor)) {
-        int digit = tool_hex_value(*cursor);
-
-        if (digit < 0) {
-            return -1;
-        }
-        value = (value << 4U) | (unsigned long long)digit;
         saw_digit = 1;
         cursor += 1;
     }
@@ -571,15 +621,46 @@ static int parse_hex_address_span(const char **cursor_io, const char *end, unsig
     return 0;
 }
 
+static int parse_trace_values_span(const char **cursor_io, const char *end, unsigned long long *thread_id_out, unsigned long long *address_out) {
+    const char *cursor = *cursor_io;
+    const char *first_start;
+    const char *first_end;
+    unsigned long long first_value;
+
+    first_start = cursor;
+    if (parse_hex_address_span(&cursor, end, &first_value) != 0) {
+        return -1;
+    }
+    first_end = cursor;
+    while (cursor < end && tool_ascii_is_token_space(*cursor)) {
+        cursor += 1;
+    }
+    if (cursor < end) {
+        const char *thread_cursor = first_start;
+
+        if (parse_decimal_span(&thread_cursor, first_end, thread_id_out) != 0 || thread_cursor != first_end) {
+            return -1;
+        }
+        if (parse_hex_address_span(&cursor, end, address_out) != 0) {
+            return -1;
+        }
+    } else {
+        *thread_id_out = 0ULL;
+        *address_out = first_value;
+    }
+    *cursor_io = cursor;
+    return 0;
+}
+
 static int process_standard_trace_span(const char *line,
                                        size_t length,
-                                       size_t *stack_depth_io,
                                        ProfileStats *stats,
                                        int *handled_out) {
     const char *cursor;
     const char *end = line + length;
     int is_enter;
     unsigned long long timestamp_ns;
+    unsigned long long thread_id;
     unsigned long long address;
 
     *handled_out = 0;
@@ -602,22 +683,23 @@ static int process_standard_trace_span(const char *line,
     while (cursor < end && tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
-    if (parse_hex_address_span(&cursor, end, &address) != 0) {
+    if (parse_trace_values_span(&cursor, end, &thread_id, &address) != 0) {
         return 0;
     }
 
     *handled_out = 1;
     stats->events += 1ULL;
     if (is_enter) {
-        return process_enter(timestamp_ns, address, stack_depth_io, stats);
+        return process_enter(timestamp_ns, thread_id, address, stats);
     }
-    return process_exit(timestamp_ns, address, stack_depth_io, stats);
+    return process_exit(timestamp_ns, thread_id, address, stats);
 }
 
-static int process_standard_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats, int *handled_out) {
+static int process_standard_trace_line(const char *line, ProfileStats *stats, int *handled_out) {
     const char *cursor;
     int is_enter;
     unsigned long long timestamp_ns;
+    unsigned long long thread_id;
     unsigned long long address;
 
     *handled_out = 0;
@@ -640,24 +722,24 @@ static int process_standard_trace_line(const char *line, size_t *stack_depth_io,
     while (tool_ascii_is_token_space(*cursor)) {
         cursor += 1;
     }
-    if (parse_hex_address_at(&cursor, &address) != 0) {
+    if (parse_trace_values_span(&cursor, cursor + rt_strlen(cursor), &thread_id, &address) != 0) {
         return 0;
     }
 
     *handled_out = 1;
     stats->events += 1ULL;
     if (is_enter) {
-        return process_enter(timestamp_ns, address, stack_depth_io, stats);
+        return process_enter(timestamp_ns, thread_id, address, stats);
     }
-    return process_exit(timestamp_ns, address, stack_depth_io, stats);
+    return process_exit(timestamp_ns, thread_id, address, stats);
 }
 
-static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats);
+static int process_trace_line(const char *line, ProfileStats *stats);
 
-static int process_trace_record(const char *record, size_t length, size_t *stack_depth_io, ProfileStats *stats) {
+static int process_trace_record(const char *record, size_t length, ProfileStats *stats) {
     int handled;
 
-    if (process_standard_trace_span(record, length, stack_depth_io, stats, &handled) != 0) {
+    if (process_standard_trace_span(record, length, stats, &handled) != 0) {
         return -1;
     }
     if (handled) {
@@ -670,7 +752,7 @@ static int process_trace_record(const char *record, size_t length, size_t *stack
             memcpy(line, record, length);
         }
         line[length] = '\0';
-        return process_trace_line(line, stack_depth_io, stats);
+        return process_trace_line(line, stats);
     }
     stats->malformed_lines += 1ULL;
     return 0;
@@ -684,17 +766,19 @@ static int profile_event_limit_reached(ProfileStats *stats) {
     return 0;
 }
 
-static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileStats *stats) {
+static int process_trace_line(const char *line, ProfileStats *stats) {
     const char *cursor = line;
     char kind[32];
     char time_token[64];
+    char third_token[64];
     char address_token[64];
     int is_enter;
     unsigned long long timestamp_ns;
+    unsigned long long thread_id = 0ULL;
     unsigned long long address;
     int handled;
 
-    if (process_standard_trace_line(line, stack_depth_io, stats, &handled) != 0) {
+    if (process_standard_trace_line(line, stats, &handled) != 0) {
         return -1;
     }
     if (handled) {
@@ -706,17 +790,25 @@ static int process_trace_line(const char *line, size_t *stack_depth_io, ProfileS
     }
     if (event_kind_from_token(kind, &is_enter) != 0 ||
         !tool_next_token(&cursor, time_token, sizeof(time_token)) ||
-        !tool_next_token(&cursor, address_token, sizeof(address_token)) ||
-        tool_parse_unsigned_auto(time_token, &timestamp_ns) != 0 ||
-        tool_parse_address_token(address_token, &address) != 0) {
+        !tool_next_token(&cursor, third_token, sizeof(third_token)) ||
+        tool_parse_unsigned_auto(time_token, &timestamp_ns) != 0) {
+        stats->malformed_lines += 1ULL;
+        return 0;
+    }
+    if (tool_next_token(&cursor, address_token, sizeof(address_token))) {
+        if (tool_parse_unsigned_auto(third_token, &thread_id) != 0 || tool_parse_address_token(address_token, &address) != 0) {
+            stats->malformed_lines += 1ULL;
+            return 0;
+        }
+    } else if (tool_parse_address_token(third_token, &address) != 0) {
         stats->malformed_lines += 1ULL;
         return 0;
     }
     stats->events += 1ULL;
     if (is_enter) {
-        return process_enter(timestamp_ns, address, stack_depth_io, stats);
+        return process_enter(timestamp_ns, thread_id, address, stats);
     }
-    return process_exit(timestamp_ns, address, stack_depth_io, stats);
+    return process_exit(timestamp_ns, thread_id, address, stats);
 }
 
 static int read_trace(const char *path, ProfileStats *stats) {
@@ -725,7 +817,7 @@ static int read_trace(const char *path, ProfileStats *stats) {
     char buffer[PROFILER_TRACE_READ_BUFFER_SIZE];
     char partial[PROFILER_LINE_CAPACITY];
     size_t partial_len = 0U;
-    size_t stack_depth = 0U;
+    size_t thread_index;
 
     if (tool_open_input(path, &fd, &should_close) != 0) {
         tool_write_error("profiler", "failed to open trace: ", path);
@@ -751,7 +843,7 @@ static int read_trace(const char *path, ProfileStats *stats) {
                     span_len -= 1U;
                 }
                 if (partial_len == 0U) {
-                    if (process_trace_record(buffer + start, span_len, &stack_depth, stats) != 0) {
+                    if (process_trace_record(buffer + start, span_len, stats) != 0) {
                         tool_close_input(fd, should_close);
                         return -1;
                     }
@@ -768,7 +860,7 @@ static int read_trace(const char *path, ProfileStats *stats) {
                         if (partial_len > 0U && partial[partial_len - 1U] == '\r') {
                             partial_len -= 1U;
                         }
-                        if (process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
+                        if (process_trace_record(partial, partial_len, stats) != 0) {
                             tool_close_input(fd, should_close);
                             return -1;
                         }
@@ -796,14 +888,51 @@ done:
         if (partial[partial_len - 1U] == '\r') {
             partial_len -= 1U;
         }
-        if (!stats->trace_limited && process_trace_record(partial, partial_len, &stack_depth, stats) != 0) {
+        if (!stats->trace_limited && process_trace_record(partial, partial_len, stats) != 0) {
             tool_close_input(fd, should_close);
             return -1;
         }
     }
-    stats->open_frames = (unsigned long long)stack_depth;
+    for (thread_index = 0U; thread_index < PROFILER_MAX_THREADS; ++thread_index) {
+        if (profiler_threads[thread_index].used) {
+            stats->open_frames += (unsigned long long)profiler_threads[thread_index].stack_depth;
+        }
+    }
     tool_close_input(fd, should_close);
     return 0;
+}
+
+static size_t profiler_thread_count(void) {
+    size_t i;
+    size_t count = 0U;
+
+    for (i = 0U; i < PROFILER_MAX_THREADS; ++i) {
+        if (profiler_threads[i].used) count += 1U;
+    }
+    return count;
+}
+
+static void write_thread_summary(void) {
+    size_t i;
+
+    if (!profiler_thread_summary) return;
+    rt_write_cstr(2, "profiler: thread id events root_ms max_depth open_frames unmatched_exits\n");
+    for (i = 0U; i < PROFILER_MAX_THREADS; ++i) {
+        if (!profiler_threads[i].used) continue;
+        rt_write_cstr(2, "profiler: thread ");
+        rt_write_uint(2, profiler_threads[i].id);
+        rt_write_char(2, ' ');
+        rt_write_uint(2, profiler_threads[i].events);
+        rt_write_char(2, ' ');
+        write_ns_as_ms_fd(2, profiler_threads[i].root_ns);
+        rt_write_char(2, ' ');
+        rt_write_uint(2, (unsigned long long)profiler_threads[i].max_depth);
+        rt_write_char(2, ' ');
+        rt_write_uint(2, (unsigned long long)profiler_threads[i].stack_depth);
+        rt_write_char(2, ' ');
+        rt_write_uint(2, profiler_threads[i].unmatched_exits);
+        rt_write_char(2, '\n');
+    }
 }
 
 static int compare_rows(const void *left_ptr, const void *right_ptr) {
@@ -920,6 +1049,8 @@ static void write_report(unsigned long long limit, int csv, const ProfileStats *
         rt_write_uint(2, stats->events);
         rt_write_cstr(2, " functions=");
         rt_write_uint(2, (unsigned long long)profiler_function_count);
+        rt_write_cstr(2, " threads=");
+        rt_write_uint(2, (unsigned long long)profiler_thread_count());
         rt_write_cstr(2, " matched=");
         rt_write_uint(2, (unsigned long long)matched_count);
         if (hidden_by_filter != 0U) {
@@ -944,10 +1075,15 @@ static void write_report(unsigned long long limit, int csv, const ProfileStats *
             rt_write_cstr(2, " trace_limited_at=");
             rt_write_uint(2, stats->event_limit);
         }
+        if (stats->thread_overflows != 0ULL) {
+            rt_write_cstr(2, " thread_overflows=");
+            rt_write_uint(2, stats->thread_overflows);
+        }
         rt_write_char(2, '\n');
         if (stats->unmatched_exits != 0ULL || stats->open_frames != 0ULL) {
-            rt_write_cstr(2, "profiler: warning: unmatched/open frames can indicate truncated traces or interleaved multi-threaded call stacks; exact threaded attribution needs per-thread trace ids\n");
+            rt_write_cstr(2, "profiler: warning: unmatched/open frames can indicate truncated traces or missing begin/end records\n");
         }
+        write_thread_summary();
     }
 }
 
@@ -995,6 +1131,8 @@ int main(int argc, char **argv) {
             return 0;
         } else if (rt_strcmp(arg, "--csv") == 0) {
             csv = 1;
+        } else if (rt_strcmp(arg, "--thread-summary") == 0 || rt_strcmp(arg, "--threads") == 0) {
+            profiler_thread_summary = 1;
         } else if (rt_strcmp(arg, "-m") == 0 || rt_strcmp(arg, "--map") == 0 || rt_strcmp(arg, "--symbols") == 0) {
             if (argi + 1 >= argc) {
                 tool_write_error("profiler", "missing option value: ", arg);
