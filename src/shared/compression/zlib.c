@@ -57,7 +57,7 @@ typedef struct {
     const unsigned char *data;
     size_t size;
     size_t byte_offset;
-    unsigned int bit_buffer;
+    unsigned long long bit_buffer;
     unsigned int bit_count;
 } ZlibBitReader;
 
@@ -89,14 +89,21 @@ static int zlib_ensure_bits(ZlibBitReader *reader, unsigned int count) {
         if (reader->byte_offset >= reader->size) {
             return -1;
         }
-        reader->bit_buffer |= ((unsigned int)reader->data[reader->byte_offset++]) << reader->bit_count;
+        reader->bit_buffer |= ((unsigned long long)reader->data[reader->byte_offset++]) << reader->bit_count;
         reader->bit_count += 8U;
     }
     return 0;
 }
 
+static void zlib_prefill_decode_bits(ZlibBitReader *reader) {
+    while (reader->bit_count < 32U && reader->byte_offset < reader->size) {
+        reader->bit_buffer |= ((unsigned long long)reader->data[reader->byte_offset++]) << reader->bit_count;
+        reader->bit_count += 8U;
+    }
+}
+
 static int zlib_read_bits(ZlibBitReader *reader, unsigned int count, unsigned int *value_out) {
-    unsigned int mask;
+    unsigned long long mask;
 
     if (count == 0U) {
         *value_out = 0U;
@@ -105,8 +112,8 @@ static int zlib_read_bits(ZlibBitReader *reader, unsigned int count, unsigned in
     if (zlib_ensure_bits(reader, count) != 0) {
         return -1;
     }
-    mask = (1U << count) - 1U;
-    *value_out = reader->bit_buffer & mask;
+    mask = (1ULL << count) - 1ULL;
+    *value_out = (unsigned int)(reader->bit_buffer & mask);
     reader->bit_buffer >>= count;
     reader->bit_count -= count;
     return 0;
@@ -114,9 +121,16 @@ static int zlib_read_bits(ZlibBitReader *reader, unsigned int count, unsigned in
 
 static void zlib_align_byte(ZlibBitReader *reader) {
     unsigned int drop = reader->bit_count & 7U;
+    unsigned int unread_bytes;
 
     reader->bit_buffer >>= drop;
     reader->bit_count -= drop;
+    unread_bytes = reader->bit_count / 8U;
+    if (unread_bytes > 0U && unread_bytes <= reader->byte_offset) {
+        reader->byte_offset -= unread_bytes;
+    }
+    reader->bit_buffer = 0U;
+    reader->bit_count = 0U;
 }
 
 unsigned int compression_zlib_reverse_bits(unsigned int value, unsigned int count) {
@@ -439,10 +453,7 @@ static int zlib_huffman_decode(ZlibBitReader *reader, const ZlibHuffman *huffman
     unsigned int key;
     unsigned int length;
 
-    while (reader->bit_count < huffman->table_bits && reader->byte_offset < reader->size) {
-        reader->bit_buffer |= ((unsigned int)reader->data[reader->byte_offset++]) << reader->bit_count;
-        reader->bit_count += 8U;
-    }
+    zlib_prefill_decode_bits(reader);
     if (reader->bit_count == 0U) {
         return -1;
     }
