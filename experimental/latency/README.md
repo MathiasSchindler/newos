@@ -3,7 +3,8 @@
 This directory is for local-network latency experiments that keep the project
 style: freestanding-first, dependency-free, and no libc for the normal build.
 
-`udplat` is the UDP baseline and `etherlat` is the raw Ethernet slice.
+`tcplat` is the TCP stream baseline, `udplat` is the UDP baseline, and
+`etherlat` is the raw Ethernet slice.
 `etherlat` sends a tiny custom protocol directly in Ethernet frames through
 Linux `AF_PACKET` raw sockets. It bypasses IP, UDP, TCP, routing, ARP in the
 fast path, and socket protocol demux above layer 2. It still uses the NIC,
@@ -61,12 +62,19 @@ For a UDP baseline, start the UDP responder too:
 experimental/latency/build/udplat listen --bind 0.0.0.0 --port 17777
 ```
 
+For a TCP/IP baseline, start the TCP responder as well:
+
+```sh
+experimental/latency/build/tcplat listen --bind 0.0.0.0 --port 17778
+```
+
 For symmetric `SO_BUSY_POLL` runs, put the option on both the responder and
 the sender. The tools fail if the kernel rejects the requested socket option,
 so a busy-poll benchmark row means the option was actually accepted:
 
 ```sh
 experimental/latency/build/udplat listen --bind 0.0.0.0 --port 17777 --busy-poll-us 50
+experimental/latency/build/tcplat listen --bind 0.0.0.0 --port 17778 --busy-poll-us 50
 experimental/latency/build/etherlat listen -i eth0 --busy-poll-us 50
 ```
 
@@ -74,6 +82,7 @@ Run benchmarks from the peer, using the responder's IPv4 address and MAC address
 
 ```sh
 experimental/latency/build/udplat ping 192.0.2.10 --port 17777 --count 10000 --samples
+experimental/latency/build/tcplat ping 192.0.2.10 --port 17778 --count 10000 --samples
 experimental/latency/build/etherlat ping -i eth0 --dst aa:bb:cc:dd:ee:ff --count 10000 --samples
 ```
 
@@ -116,8 +125,8 @@ the measurements that matter most.
 Run a payload-size sweep from inside this directory:
 
 ```sh
-./bench-latency.sh --udp-host 192.0.2.10 -i eth0 --dst aa:bb:cc:dd:ee:ff > build/latency.tsv
-./bench-latency.sh --udp-host 192.0.2.10 -i eth0 --discover > build/latency.tsv
+./bench-latency.sh --ip-host 192.0.2.10 -i eth0 --dst aa:bb:cc:dd:ee:ff > build/latency.tsv
+./bench-latency.sh --ip-host 192.0.2.10 -i eth0 --discover > build/latency.tsv
 ./bench-etherlat.sh -i eth0 --dst aa:bb:cc:dd:ee:ff > build/af-packet.tsv
 ./bench-etherlat.sh -i eth0 --discover > build/af-packet.tsv
 ```
@@ -125,11 +134,13 @@ Run a payload-size sweep from inside this directory:
 For a busy-poll sweep:
 
 ```sh
-BUSY_POLLS="0 25 50 100" COUNT=10000 ./bench-latency.sh --udp-host 192.0.2.10 -i eth0 --dst aa:bb:cc:dd:ee:ff > build/latency-busy-poll.tsv
+BUSY_POLLS="0 25 50 100" COUNT=10000 ./bench-latency.sh --ip-host 192.0.2.10 -i eth0 --dst aa:bb:cc:dd:ee:ff > build/latency-busy-poll.tsv
 ```
 
-The sweep script applies `--busy-poll-us` to the sender. Start the responder
-with the same value when you want a fully symmetric busy-poll comparison.
+The sweep script applies `--busy-poll-us` to the sender. Start the TCP, UDP, or
+raw Ethernet responder with the same value when you want a fully symmetric
+busy-poll comparison. TCP runs use `TCP_NODELAY` by default; set
+`TCP_NODELAYS="0 1"` to compare Nagle versus no-delay mode.
 
 Before tuning, capture the local host state:
 
@@ -206,15 +217,16 @@ Useful knobs:
 
 The initial benchmark ladder is deliberately data-driven:
 
-1. UDP echo baseline, with and without `SO_BUSY_POLL`.
-2. `AF_PACKET` raw `sendto`/`recvfrom`, with fixed peer MACs.
-3. `AF_PACKET` `SOCK_RAW` versus `SOCK_DGRAM`, with and without `PACKET_QDISC_BYPASS`.
-4. `AF_PACKET` plus `SO_BUSY_POLL`.
-5. `AF_PACKET` mmap transmit with `PACKET_TX_RING`.
-6. `AF_PACKET` mmap receive with `PACKET_RX_RING`.
-7. Combined `PACKET_TX_RING` plus `PACKET_RX_RING` sweeps.
-8. `AF_XDP` copy mode.
-9. `AF_XDP` zero-copy mode on hardware and drivers that support it.
+1. TCP echo baseline over a persistent IPv4 stream, with `TCP_NODELAY` control.
+2. UDP echo baseline, with and without `SO_BUSY_POLL`.
+3. `AF_PACKET` raw `sendto`/`recvfrom`, with fixed peer MACs.
+4. `AF_PACKET` `SOCK_RAW` versus `SOCK_DGRAM`, with and without `PACKET_QDISC_BYPASS`.
+5. `AF_PACKET` plus `SO_BUSY_POLL`.
+6. `AF_PACKET` mmap transmit with `PACKET_TX_RING`.
+7. `AF_PACKET` mmap receive with `PACKET_RX_RING`.
+8. Combined `PACKET_TX_RING` plus `PACKET_RX_RING` sweeps.
+9. `AF_XDP` copy mode.
+10. `AF_XDP` zero-copy mode on hardware and drivers that support it.
 
 Keep the comparisons on the same hardware and record the kernel/NIC setup:
 CPU governor, CPU affinity, IRQ affinity, NIC interrupt coalescing, link speed,

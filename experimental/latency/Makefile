@@ -41,16 +41,17 @@ source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(RO
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
 CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 
-.PHONY: all freestanding test grant-cap test-loopback test-udp-loopback test-etherlat-loopback test-etherlat-discover-loopback test-busy-poll-loopback test-udp-busy-poll-loopback test-etherlat-busy-poll-loopback clean
+.PHONY: all freestanding test grant-cap test-loopback test-udp-loopback test-tcp-loopback test-etherlat-loopback test-etherlat-discover-loopback test-busy-poll-loopback test-udp-busy-poll-loopback test-etherlat-busy-poll-loopback clean
 .SECONDARY:
 
 all: freestanding
 
-freestanding: $(BUILD_DIR)/etherlat $(BUILD_DIR)/udplat $(BUILD_DIR)/xsklat
+freestanding: $(BUILD_DIR)/etherlat $(BUILD_DIR)/udplat $(BUILD_DIR)/tcplat $(BUILD_DIR)/xsklat
 
 test: freestanding
 	$(BUILD_DIR)/etherlat --help >/dev/null
 	$(BUILD_DIR)/udplat --help >/dev/null
+	$(BUILD_DIR)/tcplat --help >/dev/null
 	$(BUILD_DIR)/xsklat --help >/dev/null
 	sh -n bench-etherlat.sh
 	sh -n bench-latency.sh
@@ -64,7 +65,7 @@ grant-cap: freestanding
 	getcap $(BUILD_DIR)/etherlat
 	getcap $(BUILD_DIR)/xsklat
 
-test-loopback: test-udp-loopback test-etherlat-loopback test-etherlat-discover-loopback
+test-loopback: test-udp-loopback test-tcp-loopback test-etherlat-loopback test-etherlat-discover-loopback
 
 test-busy-poll-loopback: test-udp-busy-poll-loopback test-etherlat-busy-poll-loopback
 
@@ -78,6 +79,19 @@ test-udp-loopback: freestanding
 	listen_status=$$?; \
 	cat /tmp/newos-udplat-lo-warmup.err >&2; \
 	cat /tmp/newos-udplat-lo-listen.err >&2; \
+	if [ $$listen_status -ne 0 ] && [ $$listen_status -ne 143 ]; then exit $$listen_status; fi; \
+	test $$ping_status -eq 0
+
+test-tcp-loopback: freestanding
+	$(BUILD_DIR)/tcplat listen --bind 127.0.0.1 --port 17778 --count 21 --quiet >/tmp/newos-tcplat-lo-listen.out 2>/tmp/newos-tcplat-lo-listen.err & listener=$$!; \
+	$(BUILD_DIR)/tcplat ping 127.0.0.1 --port 17778 --count 1 --timeout-ms 500 --quiet >/tmp/newos-tcplat-lo-warmup.out 2>/tmp/newos-tcplat-lo-warmup.err || true; \
+	$(BUILD_DIR)/tcplat ping 127.0.0.1 --port 17778 --count 20 --timeout-ms 500 --quiet --samples > $(BUILD_DIR)/tcp-loopback.tsv; \
+	ping_status=$$?; \
+	kill $$listener 2>/dev/null || true; \
+	wait $$listener 2>/dev/null; \
+	listen_status=$$?; \
+	cat /tmp/newos-tcplat-lo-warmup.err >&2; \
+	cat /tmp/newos-tcplat-lo-listen.err >&2; \
 	if [ $$listen_status -ne 0 ] && [ $$listen_status -ne 143 ]; then exit $$listen_status; fi; \
 	test $$ping_status -eq 0
 
@@ -153,6 +167,9 @@ $(BUILD_DIR)/etherlat: $(OBJ_DIR)/etherlat.o $(FREESTANDING_OBJECTS) | $(BUILD_D
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
 $(BUILD_DIR)/udplat: $(OBJ_DIR)/udplat.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
+	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
+
+$(BUILD_DIR)/tcplat: $(OBJ_DIR)/tcplat.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)
 	$(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(COMMON_CFLAGS) $(CRT_OBJECT) $< $(filter-out $(CRT_OBJECT),$(FREESTANDING_OBJECTS)) $(LDFLAGS) $(TARGET_BUILTINS_LIB) -o $@
 
 $(BUILD_DIR)/xsklat: $(OBJ_DIR)/xsklat.o $(FREESTANDING_OBJECTS) | $(BUILD_DIR)

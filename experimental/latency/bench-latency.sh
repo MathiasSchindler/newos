@@ -2,10 +2,12 @@
 set -eu
 
 UDPLAT=${UDPLAT:-./build/udplat}
+TCPLAT=${TCPLAT:-./build/tcplat}
 ETHERLAT=${ETHERLAT:-./build/etherlat}
 COUNT=${COUNT:-1000}
 SIZES=${SIZES:-46 64 128 256 512 1024 1400}
 BUSY_POLLS=${BUSY_POLLS:-0}
+TCP_NODELAYS=${TCP_NODELAYS:-1}
 PACKET_MODES=${PACKET_MODES:-raw}
 QDISC_BYPASSES=${QDISC_BYPASSES:-0}
 TX_RINGS=${TX_RINGS:-0}
@@ -13,19 +15,32 @@ RX_RINGS=${RX_RINGS:-0}
 TIMEOUT_MS=${TIMEOUT_MS:-1000}
 INTERVAL_US=${INTERVAL_US:-0}
 UDP_PORT=${UDP_PORT:-17777}
+TCP_PORT=${TCP_PORT:-17778}
 ETHERTYPE=${ETHERTYPE:-0x88b5}
 
 usage() {
-    printf '%s\n' "usage: $0 [--udp-host IPv4] [--iface IFACE [--dst MAC | --discover]]" >&2
-    printf '%s\n' "env: COUNT='$COUNT' SIZES='$SIZES' BUSY_POLLS='$BUSY_POLLS' PACKET_MODES='$PACKET_MODES' QDISC_BYPASSES='$QDISC_BYPASSES' TX_RINGS='$TX_RINGS' RX_RINGS='$RX_RINGS' TIMEOUT_MS='$TIMEOUT_MS' INTERVAL_US='$INTERVAL_US' UDP_PORT='$UDP_PORT'" >&2
+    printf '%s\n' "usage: $0 [--ip-host IPv4] [--udp-host IPv4] [--tcp-host IPv4] [--iface IFACE [--dst MAC | --discover]]" >&2
+    printf '%s\n' "env: COUNT='$COUNT' SIZES='$SIZES' BUSY_POLLS='$BUSY_POLLS' TCP_NODELAYS='$TCP_NODELAYS' PACKET_MODES='$PACKET_MODES' QDISC_BYPASSES='$QDISC_BYPASSES' TX_RINGS='$TX_RINGS' RX_RINGS='$RX_RINGS' TIMEOUT_MS='$TIMEOUT_MS' INTERVAL_US='$INTERVAL_US' UDP_PORT='$UDP_PORT' TCP_PORT='$TCP_PORT'" >&2
 }
 
 UDP_HOST=
+TCP_HOST=
 IFACE=
 DST=
 DISCOVER=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --ip-host)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            UDP_HOST=$2
+            TCP_HOST=$2
+            shift 2
+            ;;
+        --ip-host=*)
+            UDP_HOST=${1#--ip-host=}
+            TCP_HOST=$UDP_HOST
+            shift
+            ;;
         --udp-host)
             [ "$#" -ge 2 ] || { usage; exit 2; }
             UDP_HOST=$2
@@ -33,6 +48,15 @@ while [ "$#" -gt 0 ]; do
             ;;
         --udp-host=*)
             UDP_HOST=${1#--udp-host=}
+            shift
+            ;;
+        --tcp-host)
+            [ "$#" -ge 2 ] || { usage; exit 2; }
+            TCP_HOST=$2
+            shift 2
+            ;;
+        --tcp-host=*)
+            TCP_HOST=${1#--tcp-host=}
             shift
             ;;
         -i|--iface)
@@ -73,12 +97,38 @@ if [ -n "$IFACE" ] && [ -z "$DST" ] && [ "$DISCOVER" = 1 ]; then
     DST=$($ETHERLAT discover -i "$IFACE" --timeout-ms "$TIMEOUT_MS" --ethertype "$ETHERTYPE" --quiet)
 fi
 
-if [ -z "$UDP_HOST" ] && { [ -z "$IFACE" ] || [ -z "$DST" ]; }; then
+if [ -z "$UDP_HOST" ] && [ -z "$TCP_HOST" ] && { [ -z "$IFACE" ] || [ -z "$DST" ]; }; then
     usage
     exit 2
 fi
 
 printf '# count=%s timeout_ms=%s interval_us=%s\n' "$COUNT" "$TIMEOUT_MS" "$INTERVAL_US"
+if [ -n "$TCP_HOST" ]; then
+    printf '# transport=tcp host=%s port=%s\n' "$TCP_HOST" "$TCP_PORT"
+    for nodelay in $TCP_NODELAYS; do
+        nodelay_arg=--nodelay
+        [ "$nodelay" = 1 ] || nodelay_arg=--nagle
+        for busy_poll in $BUSY_POLLS; do
+            for size in $SIZES; do
+                printf '# case=tcp size=%s busy_poll_us=%s nodelay=%s\n' "$size" "$busy_poll" "$nodelay"
+                if [ "$busy_poll" = 0 ]; then
+                    if "$TCPLAT" ping "$TCP_HOST" --port "$TCP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" "$nodelay_arg" --samples; then
+                        :
+                    else
+                        printf '# status=%s\n' "$?"
+                    fi
+                else
+                    if "$TCPLAT" ping "$TCP_HOST" --port "$TCP_PORT" --count "$COUNT" --size "$size" --timeout-ms "$TIMEOUT_MS" --interval-us "$INTERVAL_US" --busy-poll-us "$busy_poll" "$nodelay_arg" --samples; then
+                        :
+                    else
+                        printf '# status=%s\n' "$?"
+                    fi
+                fi
+            done
+        done
+    done
+fi
+
 if [ -n "$UDP_HOST" ]; then
     printf '# transport=udp host=%s port=%s\n' "$UDP_HOST" "$UDP_PORT"
     for busy_poll in $BUSY_POLLS; do
