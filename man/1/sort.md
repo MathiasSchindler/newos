@@ -84,11 +84,11 @@ by their first three letters after leading blanks.
 
 - Comparisons are bytewise rather than locale-aware.
 - `-u` removes duplicate output lines after sorting; it is not a replacement for `uniq` when you need adjacent-group counts.
-- Normal sorting uses bounded in-memory chunks of up to 8192 lines, 64 KiB per line, and 2 MiB of stored text, then spills additional sorted chunks to temporary files under `/tmp` and merges them back. This keeps hosted and freestanding behavior identical while allowing much larger inputs than one chunk.
+- Normal sorting uses bounded in-memory chunks of up to 131072 lines, 64 KiB per line, and 4 MiB of stored text, then spills additional sorted chunks to temporary files under `/tmp` and merges them back. This keeps hosted and freestanding behavior identical while allowing much larger inputs than one chunk.
 - A single line is still limited to 64 KiB. The external sorter keeps up to 128 temporary runs before reporting "too many temporary runs".
 - Merge mode keeps fixed per-input state and currently accepts up to eight input files at a time. If `-o FILE` names one of the input paths, sort buffers first so the input is not truncated before it is read.
 - Human-size arithmetic saturates at the largest unsigned machine value for extremely large scaled inputs.
-- No `--parallel` mode or locale collation is implemented.
+- No `--parallel` command-line mode or locale collation is implemented. Large in-memory chunks may be sorted with the project task pool, using `NEWOS_SORT_WORKERS` as a debugging and benchmark knob; small chunks run inline without creating a pool.
 
 ## EXAMPLES
 

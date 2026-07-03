@@ -93,6 +93,14 @@ typedef struct {
 } SortChunkJob;
 
 typedef struct {
+    RtTaskPool pool;
+    unsigned int requested_workers;
+    int have_requested_workers;
+    int initialized;
+    int disabled;
+} SortParallelContext;
+
+typedef struct {
     int valid;
     int negative;
     const char *int_digits;
@@ -107,7 +115,7 @@ typedef struct {
     unsigned long long magnitude;
 } SortHumanKey;
 
-static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs);
+static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs, SortParallelContext *parallel);
 static void sort_collection_free(SortCollection *collection);
 
 static void write_usage(int fd) {
@@ -367,13 +375,14 @@ static void sort_run_set_cleanup(SortRunSet *runs) {
 static int collect_external_line(SortCollection *collection,
                                  const SortOptions *options,
                                  SortRunSet *runs,
+                                 SortParallelContext *parallel,
                                  const char *text,
                                  size_t length) {
     if (sort_collection_store_line(collection, text, length) == 0) {
         return 0;
     }
 
-    if (collection->count == 0U || flush_sort_run(collection, options, runs) != 0) {
+    if (collection->count == 0U || flush_sort_run(collection, options, runs, parallel) != 0) {
         return SORT_COLLECT_MEMORY_ERROR;
     }
     if (sort_collection_store_line(collection, text, length) != 0) {
@@ -385,7 +394,8 @@ static int collect_external_line(SortCollection *collection,
 static int collect_external_from_fd(int fd,
                                     SortCollection *collection,
                                     const SortOptions *options,
-                                    SortRunSet *runs) {
+                                    SortRunSet *runs,
+                                    SortParallelContext *parallel) {
     char buffer[SORT_IO_BUFFER_SIZE];
     SortLineBuilder builder;
     long bytes_read;
@@ -416,7 +426,7 @@ static int collect_external_from_fd(int fd,
                     line_text = builder.data != 0 ? builder.data : "";
                     line_length = builder.length;
                 }
-                if (collect_external_line(collection, options, runs, line_text, line_length) != 0) {
+                if (collect_external_line(collection, options, runs, parallel, line_text, line_length) != 0) {
                     line_builder_free(&builder);
                     return SORT_COLLECT_MEMORY_ERROR;
                 }
@@ -435,7 +445,7 @@ static int collect_external_from_fd(int fd,
     }
 
     if (builder.length > 0U) {
-        if (collect_external_line(collection, options, runs, builder.data != 0 ? builder.data : "", builder.length) != 0) {
+        if (collect_external_line(collection, options, runs, parallel, builder.data != 0 ? builder.data : "", builder.length) != 0) {
             line_builder_free(&builder);
             return SORT_COLLECT_MEMORY_ERROR;
         }
@@ -1174,8 +1184,22 @@ static size_t sort_parallel_chunk_count(size_t line_count, unsigned int worker_c
     return chunk_count;
 }
 
-static void sort_lines_parallel(SortCollection *collection, const SortOptions *options) {
-    RtTaskPool pool;
+static void sort_parallel_context_destroy(SortParallelContext *context) {
+    if (context->initialized) {
+        rt_task_pool_destroy(&context->pool);
+    }
+    rt_memset(context, 0, sizeof(*context));
+}
+
+static unsigned int sort_parallel_requested_workers(SortParallelContext *context) {
+    if (!context->have_requested_workers) {
+        context->requested_workers = tool_worker_count_from_env("NEWOS_SORT_WORKERS", SORT_DEFAULT_MAX_WORKERS);
+        context->have_requested_workers = 1;
+    }
+    return context->requested_workers;
+}
+
+static void sort_lines_parallel(SortCollection *collection, const SortOptions *options, SortParallelContext *parallel) {
     RtTaskGroup group;
     SortChunkJob jobs[RT_TASK_POOL_MAX_WORKERS];
     size_t begins[RT_TASK_POOL_MAX_WORKERS];
@@ -1185,17 +1209,33 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     size_t chunk_size;
     size_t active_count;
     int result;
+    unsigned int requested_workers;
 
-    rt_memset(&pool, 0, sizeof(pool));
-    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_SORT_WORKERS", SORT_DEFAULT_MAX_WORKERS)) != 0) {
-        rt_task_pool_destroy(&pool);
+    if (parallel == 0 || parallel->disabled) {
         merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
         return;
     }
 
-    chunk_count = sort_parallel_chunk_count(collection->count, rt_task_pool_width(&pool));
+    requested_workers = sort_parallel_requested_workers(parallel);
+    chunk_count = sort_parallel_chunk_count(collection->count, requested_workers);
     if (chunk_count < 2U) {
-        rt_task_pool_destroy(&pool);
+        merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+        return;
+    }
+
+    if (!parallel->initialized) {
+        rt_memset(&parallel->pool, 0, sizeof(parallel->pool));
+        if (rt_task_pool_init(&parallel->pool, requested_workers) != 0) {
+            rt_task_pool_destroy(&parallel->pool);
+            parallel->disabled = 1;
+            merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+            return;
+        }
+        parallel->initialized = 1;
+    }
+
+    chunk_count = sort_parallel_chunk_count(collection->count, rt_task_pool_width(&parallel->pool));
+    if (chunk_count < 2U) {
         merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
         return;
     }
@@ -1215,7 +1255,7 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     }
 
     result = 0;
-    if (rt_task_group_begin(&pool, &group) != 0 || rt_task_group_reserve(&group, chunk_count) != 0) {
+    if (rt_task_group_begin(&parallel->pool, &group) != 0 || rt_task_group_reserve(&group, chunk_count) != 0) {
         result = -1;
     }
     for (chunk_index = 0U; result == 0 && chunk_index < chunk_count; ++chunk_index) {
@@ -1226,7 +1266,6 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     if (result == 0 && rt_task_group_wait(&group) != 0) {
         result = -1;
     }
-    rt_task_pool_destroy(&pool);
 
     if (result != 0) {
         merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
@@ -1257,12 +1296,12 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     }
 }
 
-static void sort_lines(SortCollection *collection, const SortOptions *options) {
+static void sort_lines(SortCollection *collection, const SortOptions *options, SortParallelContext *parallel) {
     if (collection->count < 2U) {
         return;
     }
 
-    sort_lines_parallel(collection, options);
+    sort_lines_parallel(collection, options, parallel);
 }
 
 static int sort_output_write_line(SortOutput *output, const SortLine *line) {
@@ -1297,7 +1336,7 @@ static int write_sorted_output(int fd, const SortCollection *collection, const S
     return tool_output_buffer_flush(&output);
 }
 
-static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs) {
+static int flush_sort_run(SortCollection *collection, const SortOptions *options, SortRunSet *runs, SortParallelContext *parallel) {
     int fd;
 
     if (collection->count == 0U) {
@@ -1316,7 +1355,7 @@ static int flush_sort_run(SortCollection *collection, const SortOptions *options
     }
 
     sort_collection_prepare_order(collection);
-    sort_lines(collection, options);
+    sort_lines(collection, options, parallel);
     if (write_sorted_output(fd, collection, options) != 0) {
         rt_write_line(2, "sort: write error");
         (void)platform_close(fd);
@@ -1679,6 +1718,7 @@ static int output_conflicts_with_inputs(const char *output_path, int argc, char 
 static int sort_regular_inputs(int argc, char **argv, int argi, const SortOptions *options) {
     SortCollection collection;
     SortRunSet runs;
+    SortParallelContext parallel;
     int exit_code = 0;
     int output_fd = 1;
     int close_output = 0;
@@ -1689,18 +1729,21 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
         return 1;
     }
     rt_memset(&runs, 0, sizeof(runs));
+    rt_memset(&parallel, 0, sizeof(parallel));
 
     if (argi == argc) {
-        int collect_status = collect_external_from_fd(0, &collection, options, &runs);
+        int collect_status = collect_external_from_fd(0, &collection, options, &runs, &parallel);
         if (collect_status == SORT_COLLECT_READ_ERROR) {
             rt_write_line(2, "sort: read error");
             sort_run_set_cleanup(&runs);
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
         if (collect_status == SORT_COLLECT_MEMORY_ERROR) {
             rt_write_line(2, "sort: input too large for available memory");
             sort_run_set_cleanup(&runs);
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
@@ -1717,7 +1760,7 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
                 continue;
             }
 
-            collect_status = collect_external_from_fd(fd, &collection, options, &runs);
+            collect_status = collect_external_from_fd(fd, &collection, options, &runs, &parallel);
             if (collect_status == SORT_COLLECT_READ_ERROR) {
                 rt_write_cstr(2, "sort: read error on ");
                 rt_write_line(2, argv[i]);
@@ -1727,6 +1770,7 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
                 rt_write_line(2, argv[i]);
                 tool_close_input(fd, should_close);
                 sort_run_set_cleanup(&runs);
+                sort_parallel_context_destroy(&parallel);
                 sort_collection_free(&collection);
                 return 1;
             }
@@ -1736,8 +1780,9 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
     }
 
     if (runs.count > 0U) {
-        if (flush_sort_run(&collection, options, &runs) != 0) {
+        if (flush_sort_run(&collection, options, &runs, &parallel) != 0) {
             sort_run_set_cleanup(&runs);
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
@@ -1749,6 +1794,7 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
             rt_write_cstr(2, "sort: cannot open output ");
             rt_write_line(2, options->output_path);
             sort_run_set_cleanup(&runs);
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
@@ -1761,17 +1807,19 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
                 (void)platform_close(output_fd);
             }
             sort_run_set_cleanup(&runs);
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
     } else {
         sort_collection_prepare_order(&collection);
-        sort_lines(&collection, options);
+        sort_lines(&collection, options, &parallel);
         if (write_sorted_output(output_fd, &collection, options) != 0) {
             rt_write_line(2, "sort: write error");
             if (close_output) {
                 (void)platform_close(output_fd);
             }
+            sort_parallel_context_destroy(&parallel);
             sort_collection_free(&collection);
             return 1;
         }
@@ -1780,11 +1828,13 @@ static int sort_regular_inputs(int argc, char **argv, int argi, const SortOption
     if (close_output && platform_close(output_fd) != 0) {
         rt_write_line(2, "sort: write error");
         sort_run_set_cleanup(&runs);
+        sort_parallel_context_destroy(&parallel);
         sort_collection_free(&collection);
         return 1;
     }
 
     sort_run_set_cleanup(&runs);
+    sort_parallel_context_destroy(&parallel);
     sort_collection_free(&collection);
     return exit_code;
 }
