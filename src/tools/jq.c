@@ -736,6 +736,33 @@ static int find_top_level_operator(const char *text, char op) {
     return -1;
 }
 
+static int has_top_level_trailing_question(const char *text) {
+    size_t length = rt_strlen(text);
+    size_t pos;
+    int bracket_depth = 0;
+    int paren_depth = 0;
+    int brace_depth = 0;
+
+    while (length > 0U && (text[length - 1U] == ' ' || text[length - 1U] == '\t' || text[length - 1U] == '\n' || text[length - 1U] == '\r')) length--;
+    if (length == 0U || text[length - 1U] != '?') return 0;
+    for (pos = 0U; pos + 1U < length; ++pos) {
+        if (text[pos] == '"') {
+            const char *end = skip_string(text + pos);
+            if (end == 0) return 0;
+            pos = (size_t)(end - text) - 1U;
+            continue;
+        }
+        if (text[pos] == '[') bracket_depth++;
+        else if (text[pos] == ']') bracket_depth--;
+        else if (text[pos] == '(') paren_depth++;
+        else if (text[pos] == ')') paren_depth--;
+        else if (text[pos] == '{') brace_depth++;
+        else if (text[pos] == '}') brace_depth--;
+        if (bracket_depth < 0 || paren_depth < 0 || brace_depth < 0) return 0;
+    }
+    return bracket_depth == 0 && paren_depth == 0 && brace_depth == 0;
+}
+
 static int find_top_level_two_char_operator(const char *text, char first, char second) {
     int bracket_depth = 0;
     int paren_depth = 0;
@@ -1139,6 +1166,7 @@ static int emit_results(const JqSlice *results, size_t count) {
 }
 
 static int eval_filter_text(const char *filter, size_t filter_length, const char *current_start, const char *current_end, JqSlice *out, size_t *count_io);
+static int compare_slices_jq(const JqSlice *left, const JqSlice *right);
 
 static int eval_path_collect(const char *filter, size_t pos, const char *current_start, const char *current_end, JqSlice *out, size_t *count_io) {
     if (filter[pos] == '\0') {
@@ -1489,13 +1517,11 @@ static int eval_comparison(const char *expression, int op_pos, const char *op, c
             if (op[0] == '=' || op[0] == '!') {
                 if (slice_equals_text(&left[i], right_values[j].start, (size_t)(right_values[j].end - right_values[j].start))) matched = 1;
             } else {
-                long long left_number;
-                long long right_number;
-                if (parse_json_int(left[i].start, left[i].end, &left_number) != 0 || parse_json_int(right_values[j].start, right_values[j].end, &right_number) != 0) return -1;
-                if ((op[0] == '<' && op[1] == '=' && left_number <= right_number) ||
-                    (op[0] == '>' && op[1] == '=' && left_number >= right_number) ||
-                    (op[0] == '<' && op[1] != '=' && left_number < right_number) ||
-                    (op[0] == '>' && op[1] != '=' && left_number > right_number)) matched = 1;
+                int cmp = compare_slices_jq(&left[i], &right_values[j]);
+                if ((op[0] == '<' && op[1] == '=' && cmp <= 0) ||
+                    (op[0] == '>' && op[1] == '=' && cmp >= 0) ||
+                    (op[0] == '<' && op[1] != '=' && cmp < 0) ||
+                    (op[0] == '>' && op[1] != '=' && cmp > 0)) matched = 1;
             }
             if (matched) break;
         }
@@ -1821,6 +1847,7 @@ static int append_object_constructor(const char *inner, size_t inner_length, con
     const char *key_starts[64];
     size_t key_lengths[64];
     int quoted_keys[64];
+    char computed_keys[64][JQ_NAME_CAPACITY];
     JqSlice values[64];
     size_t pair_count = 0U;
     size_t generated_start;
@@ -1830,6 +1857,8 @@ static int append_object_constructor(const char *inner, size_t inner_length, con
         const char *key_start;
         size_t key_length;
         int quoted = 0;
+        int computed = 0;
+        size_t key_text_length = 0U;
         int colon;
         int comma;
         JqSlice value;
@@ -1844,24 +1873,56 @@ static int append_object_constructor(const char *inner, size_t inner_length, con
             quoted = 1;
             key_length = (size_t)(key_end - key_start);
             pos = (size_t)(key_end - inner);
+        } else if (inner[pos] == '(') {
+            size_t scan = pos + 1U;
+            int depth = 1;
+            JqSlice key_value;
+
+            while (scan < inner_length && depth > 0) {
+                if (inner[scan] == '"') {
+                    const char *string_end = skip_string(inner + scan);
+                    if (string_end == 0 || string_end > inner + inner_length) return -1;
+                    scan = (size_t)(string_end - inner);
+                    continue;
+                }
+                if (inner[scan] == '(') depth++;
+                else if (inner[scan] == ')') depth--;
+                scan++;
+            }
+            if (depth != 0 || eval_filter_single(inner + pos + 1U, scan - pos - 2U, start, end, &key_value) != 0) return -1;
+            if (value_to_text_buffer(key_value.start, key_value.end, computed_keys[pair_count], sizeof(computed_keys[pair_count]), &key_text_length) != 0) return -1;
+            computed = 1;
+            key_start = computed_keys[pair_count];
+            key_length = key_text_length;
+            pos = scan;
         } else {
             if (!is_ident_start(inner[pos])) return -1;
             while (pos < inner_length && is_ident_char(inner[pos])) pos++;
             key_length = (size_t)(inner + pos - key_start);
         }
         while (pos < inner_length && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == '\n' || inner[pos] == '\r')) pos++;
-        if (pos >= inner_length || inner[pos] != ':') return -1;
-        pos++;
-        colon = (int)pos;
-        comma = find_top_level_operator(inner + pos, ',');
-        if (comma < 0) comma = (int)(inner_length - pos);
-        if (eval_filter_single(inner + colon, (size_t)comma, start, end, &value) != 0) return -1;
+        if (pos < inner_length && inner[pos] == ':') {
+            pos++;
+            colon = (int)pos;
+            comma = find_top_level_operator(inner + pos, ',');
+            if (comma < 0) comma = (int)(inner_length - pos);
+            if (eval_filter_single(inner + colon, (size_t)comma, start, end, &value) != 0) return -1;
+            pos = (size_t)(colon + comma);
+        } else if (!quoted && !computed) {
+            char path[JQ_NAME_CAPACITY + 1U];
+            if (key_length + 2U > sizeof(path)) return -1;
+            path[0] = '.';
+            memcpy(path + 1, key_start, key_length);
+            path[key_length + 1U] = '\0';
+            if (eval_filter_single(path, key_length + 1U, start, end, &value) != 0) return -1;
+        } else {
+            return -1;
+        }
         key_starts[pair_count] = key_start;
         key_lengths[pair_count] = key_length;
-        quoted_keys[pair_count] = quoted;
+        quoted_keys[pair_count] = quoted && !computed;
         values[pair_count] = value;
         pair_count++;
-        pos = (size_t)(colon + comma);
         while (pos < inner_length && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == '\n' || inner[pos] == '\r')) pos++;
         if (pos < inner_length) {
             if (inner[pos] != ',') return -1;
@@ -2306,6 +2367,873 @@ static int bind_pattern_variables(const char *pattern, size_t pattern_length, co
     return -1;
 }
 
+static int find_top_level_word_after(const char *text, const char *word, size_t start_pos) {
+    int bracket_depth = 0;
+    int paren_depth = 0;
+    int brace_depth = 0;
+    size_t word_length = rt_strlen(word);
+    size_t pos = start_pos;
+
+    while (text[pos] != '\0') {
+        if (text[pos] == '"') {
+            const char *end = skip_string(text + pos);
+            if (end == 0) return -1;
+            pos = (size_t)(end - text);
+            continue;
+        }
+        if (text[pos] == '[') bracket_depth++;
+        else if (text[pos] == ']') bracket_depth--;
+        else if (text[pos] == '(') paren_depth++;
+        else if (text[pos] == ')') paren_depth--;
+        else if (text[pos] == '{') brace_depth++;
+        else if (text[pos] == '}') brace_depth--;
+        if (bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 && rt_strncmp(text + pos, word, word_length) == 0 &&
+            (pos == 0U || !is_ident_char(text[pos - 1U])) && !is_ident_char(text[pos + word_length])) return (int)pos;
+        if (bracket_depth < 0 || paren_depth < 0 || brace_depth < 0) return -1;
+        pos++;
+    }
+    return -1;
+}
+
+static int eval_if_expression(const char *expression, const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    int then_pos;
+    int else_pos;
+    int end_pos;
+    JqSlice condition;
+
+    if (rt_strncmp(expression, "if", 2U) != 0 || is_ident_char(expression[2])) return -1;
+    then_pos = find_top_level_word_after(expression, "then", 2U);
+    if (then_pos < 0) return -1;
+    else_pos = find_top_level_word_after(expression, "else", (size_t)then_pos + 4U);
+    if (else_pos < 0) return -1;
+    end_pos = find_top_level_word_after(expression, "end", (size_t)else_pos + 4U);
+    if (end_pos < 0) return -1;
+    if (skip_ws(expression + end_pos + 3)[0] != '\0') return -1;
+    if (eval_filter_single(expression + 2, (size_t)then_pos - 2U, start, end, &condition) != 0) return -1;
+    if (json_truthy(condition.start, condition.end)) {
+        return eval_filter_text(expression + then_pos + 4, (size_t)(else_pos - then_pos - 4), start, end, out, count_io);
+    }
+    return eval_filter_text(expression + else_pos + 4, (size_t)(end_pos - else_pos - 4), start, end, out, count_io);
+}
+
+static int append_deleted_value(const char *start, const char *end, const JqPathToken *tokens, size_t token_index, size_t token_count) {
+    const char *p = skip_ws(start);
+
+    if (token_index >= token_count) return generated_append(start, (size_t)(end - start));
+    if (!tokens[token_index].is_index && *p == '{') {
+        int first = 1;
+        p++;
+        if (generated_append(start, (size_t)(p - start)) != 0) return -1;
+        for (;;) {
+            const char *key_start;
+            const char *key_end;
+            const char *value_start;
+            const char *value_end;
+            int matched;
+
+            p = skip_ws(p);
+            if (*p == '}') return generated_append(p, (size_t)(end - p));
+            key_start = p;
+            key_end = skip_string(p);
+            if (key_end == 0) return -1;
+            matched = string_key_equals(key_start, tokens[token_index].key, &value_start);
+            p = skip_ws(key_end);
+            if (*p != ':') return -1;
+            value_start = skip_ws(p + 1);
+            value_end = skip_value(value_start);
+            if (value_end == 0) return -1;
+            if (matched && token_index + 1U == token_count) {
+                /* Drop this key. */
+            } else {
+                if (!first && generated_append_cstr(",") != 0) return -1;
+                if (generated_append(key_start, (size_t)(value_start - key_start)) != 0) return -1;
+                if (matched) {
+                    if (append_deleted_value(value_start, value_end, tokens, token_index + 1U, token_count) != 0) return -1;
+                } else if (generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+                first = 0;
+            }
+            p = skip_ws(value_end);
+            if (*p == ',') p++;
+            else if (*p == '}') return generated_append(p, (size_t)(end - p));
+            else return -1;
+        }
+    }
+    if (tokens[token_index].is_index && *p == '[') {
+        size_t index = 0U;
+        int first = 1;
+        p++;
+        if (generated_append(start, (size_t)(p - start)) != 0) return -1;
+        for (;;) {
+            const char *value_start;
+            const char *value_end;
+            int matched;
+
+            p = skip_ws(p);
+            if (*p == ']') return generated_append(p, (size_t)(end - p));
+            value_start = p;
+            value_end = skip_value(value_start);
+            if (value_end == 0) return -1;
+            matched = index == tokens[token_index].index;
+            if (matched && token_index + 1U == token_count) {
+                /* Drop this element. */
+            } else {
+                if (!first && generated_append_cstr(",") != 0) return -1;
+                if (matched) {
+                    if (append_deleted_value(value_start, value_end, tokens, token_index + 1U, token_count) != 0) return -1;
+                } else if (generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+                first = 0;
+            }
+            index++;
+            p = skip_ws(value_end);
+            if (*p == ',') p++;
+            else if (*p == ']') return generated_append(p, (size_t)(end - p));
+            else return -1;
+        }
+    }
+    return generated_append(start, (size_t)(end - start));
+}
+
+static int append_del_result(const char *start, const char *end, const char *arg, size_t arg_length, JqSlice *out, size_t *count_io) {
+    char paths[JQ_MAX_FILTER];
+    const char *path_starts[JQ_MAX_PATH_TOKENS];
+    size_t path_lengths[JQ_MAX_PATH_TOKENS];
+    size_t path_count = 0U;
+    JqSlice current;
+    size_t i;
+
+    if (copy_filter_text(arg, arg_length, paths, sizeof(paths)) != 0 || split_top_level_args(paths, path_starts, path_lengths, JQ_MAX_PATH_TOKENS, &path_count) != 0 || path_count == 0U) return -1;
+    current.start = start;
+    current.end = end;
+    for (i = 0U; i < path_count; ++i) {
+        char single_path[JQ_MAX_FILTER];
+        JqPathToken tokens[JQ_MAX_PATH_TOKENS];
+        size_t token_count = 0U;
+        size_t generated_start;
+
+        if (copy_filter_text(path_starts[i], path_lengths[i], single_path, sizeof(single_path)) != 0 || parse_path_tokens(single_path, rt_strlen(single_path), tokens, &token_count) != 0) return -1;
+        generated_start = jq_generated_used;
+        if (append_deleted_value(current.start, current.end, tokens, 0U, token_count) != 0) return -1;
+        current.start = jq_generated + generated_start;
+        current.end = jq_generated + jq_generated_used;
+    }
+    return append_result(out, count_io, current.start, current.end);
+}
+
+static int append_to_entries_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    size_t generated_start = jq_generated_used;
+    int first = 1;
+    (void)end;
+
+    if (generated_append_cstr("[") != 0) return -1;
+    if (*p == '{') {
+        p++;
+        for (;;) {
+            const char *key_start;
+            const char *key_end;
+            const char *value_start;
+            const char *value_end;
+
+            p = skip_ws(p);
+            if (*p == '}') break;
+            key_start = p;
+            key_end = skip_string(p);
+            if (key_end == 0) return -1;
+            p = skip_ws(key_end);
+            if (*p != ':') return -1;
+            value_start = skip_ws(p + 1);
+            value_end = skip_value(value_start);
+            if (value_end == 0) return -1;
+            if (!first && generated_append_cstr(",") != 0) return -1;
+            if (generated_append_cstr("{\"key\":") != 0 || generated_append(key_start, (size_t)(key_end - key_start)) != 0 || generated_append_cstr(",\"value\":") != 0 || generated_append(value_start, (size_t)(value_end - value_start)) != 0 || generated_append_cstr("}") != 0) return -1;
+            first = 0;
+            p = skip_ws(value_end);
+            if (*p == ',') p++;
+            else if (*p != '}') return -1;
+        }
+    } else if (*p == '[') {
+        size_t index = 0U;
+        p++;
+        for (;;) {
+            const char *value_start;
+            const char *value_end;
+
+            p = skip_ws(p);
+            if (*p == ']') break;
+            value_start = p;
+            value_end = skip_value(value_start);
+            if (value_end == 0) return -1;
+            if (!first && generated_append_cstr(",") != 0) return -1;
+            if (generated_append_cstr("{\"key\":") != 0 || generated_append_uint(index) != 0 || generated_append_cstr(",\"value\":") != 0 || generated_append(value_start, (size_t)(value_end - value_start)) != 0 || generated_append_cstr("}") != 0) return -1;
+            first = 0;
+            index++;
+            p = skip_ws(value_end);
+            if (*p == ',') p++;
+            else if (*p != ']') return -1;
+        }
+    } else return -1;
+    if (generated_append_cstr("]") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_from_entries_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    size_t generated_start = jq_generated_used;
+    int first = 1;
+    (void)end;
+
+    if (*p != '[' || generated_append_cstr("{") != 0) return -1;
+    p++;
+    for (;;) {
+        const char *entry_start;
+        const char *entry_end;
+        const char *key_start;
+        const char *key_end;
+        const char *value_start;
+        const char *value_end;
+        char key[JQ_MAX_FILTER];
+        size_t key_length;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        entry_start = p;
+        entry_end = skip_value(entry_start);
+        if (entry_end == 0 || find_key(entry_start, "key", &key_start, &key_end) != 0 || find_key(entry_start, "value", &value_start, &value_end) != 0 || value_to_text_buffer(key_start, key_end, key, sizeof(key), &key_length) != 0) return -1;
+        if (!first && generated_append_cstr(",") != 0) return -1;
+        if (generated_append_cstr("\"") != 0 || generated_append_json_escaped_content(key, key_length) != 0 || generated_append_cstr("\":") != 0 || generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+        first = 0;
+        p = skip_ws(entry_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (generated_append_cstr("}") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_with_entries_result(const char *start, const char *end, const char *arg, size_t arg_length, JqSlice *out, size_t *count_io) {
+    JqSlice entries[1];
+    JqSlice mapped[JQ_MAX_RESULTS];
+    JqSlice object[1];
+    size_t entries_count = 0U;
+    size_t mapped_count = 0U;
+    size_t object_count = 0U;
+    size_t generated_start;
+    size_t i;
+
+    if (append_to_entries_result(start, end, entries, &entries_count) != 0 || entries_count != 1U) return -1;
+    if (append_map_result(entries[0].start, entries[0].end, arg, arg_length, mapped, &mapped_count) != 0 || mapped_count != 1U) return -1;
+    generated_start = jq_generated_used;
+    if (append_from_entries_result(mapped[0].start, mapped[0].end, object, &object_count) != 0 || object_count != 1U) return -1;
+    (void)generated_start;
+    for (i = 0U; i < object_count; ++i) {
+        if (append_result(out, count_io, object[i].start, object[i].end) != 0) return -1;
+    }
+    return 0;
+}
+
+static int compare_slices_for_sort(const JqSlice *left, const JqSlice *right) {
+    long long left_number;
+    long long right_number;
+    char left_text[JQ_MAX_FILTER];
+    char right_text[JQ_MAX_FILTER];
+    size_t left_length;
+    size_t right_length;
+    size_t min_length;
+    int cmp;
+
+    if (parse_json_int(left->start, left->end, &left_number) == 0 && parse_json_int(right->start, right->end, &right_number) == 0) {
+        if (left_number < right_number) return -1;
+        if (left_number > right_number) return 1;
+        return 0;
+    }
+    if (value_to_text_buffer(left->start, left->end, left_text, sizeof(left_text), &left_length) != 0 || value_to_text_buffer(right->start, right->end, right_text, sizeof(right_text), &right_length) != 0) return 0;
+    min_length = left_length < right_length ? left_length : right_length;
+    cmp = memcmp(left_text, right_text, min_length);
+    if (cmp != 0) return cmp;
+    if (left_length < right_length) return -1;
+    if (left_length > right_length) return 1;
+    return 0;
+}
+
+static int json_type_rank(const JqSlice *slice) {
+    const char *p = skip_ws(slice->start);
+
+    if (rt_strncmp(p, "null", 4U) == 0) return 0;
+    if (rt_strncmp(p, "false", 5U) == 0 || rt_strncmp(p, "true", 4U) == 0) return 1;
+    if ((*p >= '0' && *p <= '9') || *p == '-') return 2;
+    if (*p == '"') return 3;
+    if (*p == '[') return 4;
+    if (*p == '{') return 5;
+    return 6;
+}
+
+static int compare_slices_jq(const JqSlice *left, const JqSlice *right) {
+    int left_rank = json_type_rank(left);
+    int right_rank = json_type_rank(right);
+    if (left_rank != right_rank) return left_rank < right_rank ? -1 : 1;
+    return compare_slices_for_sort(left, right);
+}
+
+static int append_sort_result(const char *start, const char *end, const char *arg, size_t arg_length, int has_key_filter, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    JqSlice values[JQ_MAX_RESULTS];
+    JqSlice keys[JQ_MAX_RESULTS];
+    size_t value_count = 0U;
+    size_t i, j;
+    size_t generated_start;
+    (void)end;
+
+    if (*p != '[') return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        if (value_count >= JQ_MAX_RESULTS) return -1;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        values[value_count].start = value_start;
+        values[value_count].end = value_end;
+        if (has_key_filter) {
+            if (eval_filter_single(arg, arg_length, value_start, value_end, &keys[value_count]) != 0) return -1;
+        } else keys[value_count] = values[value_count];
+        value_count++;
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    for (i = 0U; i < value_count; ++i) {
+        for (j = i + 1U; j < value_count; ++j) {
+            if (compare_slices_jq(&keys[j], &keys[i]) < 0) {
+                JqSlice tmp = values[i];
+                JqSlice tmp_key = keys[i];
+                values[i] = values[j];
+                keys[i] = keys[j];
+                values[j] = tmp;
+                keys[j] = tmp_key;
+            }
+        }
+    }
+    generated_start = jq_generated_used;
+    if (generated_append_cstr("[") != 0) return -1;
+    for (i = 0U; i < value_count; ++i) {
+        if (i != 0U && generated_append_cstr(",") != 0) return -1;
+        if (generated_append(values[i].start, (size_t)(values[i].end - values[i].start)) != 0) return -1;
+    }
+    if (generated_append_cstr("]") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_add_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    long long sum = 0;
+    char text[JQ_MAX_FILTER];
+    size_t text_length = 0U;
+    int saw_string = 0;
+    (void)end;
+
+    if (*p != '[') return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        long long number;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        if (*skip_ws(value_start) == '"') {
+            saw_string = 1;
+            if (append_value_text_to_buffer(value_start, value_end, text, sizeof(text), &text_length) != 0) return -1;
+        } else {
+            if (saw_string || parse_json_int(value_start, value_end, &number) != 0) return -1;
+            sum += number;
+        }
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (saw_string) {
+        size_t generated_start = jq_generated_used;
+        if (generated_append_cstr("\"") != 0 || generated_append_json_escaped_content(text, text_length) != 0 || generated_append_cstr("\"") != 0) return -1;
+        return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+    }
+    return append_generated_int_value(out, count_io, sum);
+}
+
+static int append_first_last_result(const char *start, const char *end, int want_last, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    JqSlice last;
+    int found = 0;
+    (void)end;
+
+    if (*p != '[') return append_result(out, count_io, start, end);
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        if (!want_last) return append_result(out, count_io, value_start, value_end);
+        last.start = value_start;
+        last.end = value_end;
+        found = 1;
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (!found) return 0;
+    return append_result(out, count_io, last.start, last.end);
+}
+
+static int append_min_max_result(const char *start, const char *end, const char *arg, size_t arg_length, int has_key_filter, int want_max, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    JqSlice best;
+    JqSlice best_key;
+    int found = 0;
+    (void)end;
+
+    if (*p != '[') return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        JqSlice key;
+        int cmp;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        key.start = value_start;
+        key.end = value_end;
+        if (has_key_filter && eval_filter_single(arg, arg_length, value_start, value_end, &key) != 0) return -1;
+        if (!found) {
+            best.start = value_start;
+            best.end = value_end;
+            best_key = key;
+            found = 1;
+        } else {
+            cmp = compare_slices_jq(&key, &best_key);
+            if ((want_max && cmp > 0) || (!want_max && cmp < 0)) {
+                best.start = value_start;
+                best.end = value_end;
+                best_key = key;
+            }
+        }
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (!found) return 0;
+    return append_result(out, count_io, best.start, best.end);
+}
+
+static int append_any_all_result(const char *start, const char *end, const char *arg, size_t arg_length, int has_filter, int want_all, JqSlice *out, size_t *count_io) {
+    const char *p = skip_ws(start);
+    int result = want_all ? 1 : 0;
+    (void)end;
+
+    if (*p != '[') return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        JqSlice value;
+        int truthy;
+
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        if (has_filter) {
+            if (eval_filter_single(arg, arg_length, value_start, value_end, &value) != 0) return -1;
+        } else {
+            value.start = value_start;
+            value.end = value_end;
+        }
+        truthy = json_truthy(value.start, value.end);
+        if (want_all && !truthy) { result = 0; break; }
+        if (!want_all && truthy) { result = 1; break; }
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    return append_generated_value(out, count_io, result ? "true" : "false");
+}
+
+static int append_flatten_value(const char *start, const char *end, int *first_io) {
+    const char *p = skip_ws(start);
+
+    if (*p != '[') {
+        if (!*first_io && generated_append_cstr(",") != 0) return -1;
+        *first_io = 0;
+        return generated_append(start, (size_t)(end - start));
+    }
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        p = skip_ws(p);
+        if (*p == ']') return 0;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0 || append_flatten_value(value_start, value_end, first_io) != 0) return -1;
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+}
+
+static int append_flatten_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    size_t generated_start = jq_generated_used;
+    int first = 1;
+    if (*skip_ws(start) != '[' || generated_append_cstr("[") != 0) return -1;
+    if (append_flatten_value(start, end, &first) != 0 || generated_append_cstr("]") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_unique_result(const char *start, const char *end, const char *arg, size_t arg_length, int has_key_filter, JqSlice *out, size_t *count_io) {
+    JqSlice sorted[1];
+    size_t sorted_count = 0U;
+    const char *p;
+    JqSlice last_key;
+    int have_last = 0;
+    size_t generated_start;
+    int first = 1;
+
+    if (append_sort_result(start, end, arg, arg_length, has_key_filter, sorted, &sorted_count) != 0 || sorted_count != 1U) return -1;
+    p = skip_ws(sorted[0].start);
+    if (*p != '[') return -1;
+    generated_start = jq_generated_used;
+    if (generated_append_cstr("[") != 0) return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        JqSlice key;
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0) return -1;
+        key.start = value_start;
+        key.end = value_end;
+        if (has_key_filter && eval_filter_single(arg, arg_length, value_start, value_end, &key) != 0) return -1;
+        if (!have_last || !slice_equals_text(&last_key, key.start, (size_t)(key.end - key.start))) {
+            if (!first && generated_append_cstr(",") != 0) return -1;
+            if (generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+            first = 0;
+            last_key = key;
+            have_last = 1;
+        }
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (generated_append_cstr("]") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_group_by_result(const char *start, const char *end, const char *arg, size_t arg_length, JqSlice *out, size_t *count_io) {
+    JqSlice sorted[1];
+    size_t sorted_count = 0U;
+    const char *p;
+    JqSlice last_key;
+    int have_last = 0;
+    int first_group = 1;
+    int first_item = 1;
+    size_t generated_start;
+
+    if (append_sort_result(start, end, arg, arg_length, 1, sorted, &sorted_count) != 0 || sorted_count != 1U) return -1;
+    p = skip_ws(sorted[0].start);
+    if (*p != '[') return -1;
+    generated_start = jq_generated_used;
+    if (generated_append_cstr("[") != 0) return -1;
+    p++;
+    for (;;) {
+        const char *value_start;
+        const char *value_end;
+        JqSlice key;
+        int same_group;
+        p = skip_ws(p);
+        if (*p == ']') break;
+        value_start = p;
+        value_end = skip_value(value_start);
+        if (value_end == 0 || eval_filter_single(arg, arg_length, value_start, value_end, &key) != 0) return -1;
+        same_group = have_last && slice_equals_text(&last_key, key.start, (size_t)(key.end - key.start));
+        if (!same_group) {
+            if (have_last && generated_append_cstr("]") != 0) return -1;
+            if (!first_group && generated_append_cstr(",") != 0) return -1;
+            if (generated_append_cstr("[") != 0) return -1;
+            first_group = 0;
+            first_item = 1;
+        }
+        if (!first_item && generated_append_cstr(",") != 0) return -1;
+        if (generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+        first_item = 0;
+        last_key = key;
+        have_last = 1;
+        p = skip_ws(value_end);
+        if (*p == ',') p++;
+        else if (*p != ']') return -1;
+    }
+    if (have_last && generated_append_cstr("]") != 0) return -1;
+    if (generated_append_cstr("]") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_range_result(const char *arg, size_t arg_length, const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    char args[JQ_MAX_FILTER];
+    const char *starts[3];
+    size_t lengths[3];
+    size_t count = 0U;
+    JqSlice value;
+    long long begin = 0;
+    long long stop;
+    long long step = 1;
+    long long i;
+
+    if (arg_length + 1U > sizeof(args)) return -1;
+    memcpy(args, arg, arg_length);
+    args[arg_length] = '\0';
+    if (split_top_level_args(args, starts, lengths, 3U, &count) != 0 || count == 0U || count > 3U) return -1;
+    if (count == 1U) {
+        if (eval_filter_single(starts[0], lengths[0], start, end, &value) != 0 || parse_json_int(value.start, value.end, &stop) != 0) return -1;
+    } else {
+        if (eval_filter_single(starts[0], lengths[0], start, end, &value) != 0 || parse_json_int(value.start, value.end, &begin) != 0) return -1;
+        if (eval_filter_single(starts[1], lengths[1], start, end, &value) != 0 || parse_json_int(value.start, value.end, &stop) != 0) return -1;
+        if (count == 3U && (eval_filter_single(starts[2], lengths[2], start, end, &value) != 0 || parse_json_int(value.start, value.end, &step) != 0)) return -1;
+    }
+    if (step == 0) return -1;
+    for (i = begin; step > 0 ? i < stop : i > stop; i += step) {
+        if (append_generated_int_value(out, count_io, i) != 0) return -1;
+    }
+    return 0;
+}
+
+static int append_index_result(const char *start, const char *end, const char *arg, size_t arg_length, int all, JqSlice *out, size_t *count_io) {
+    JqSlice needle;
+    const char *p = skip_ws(start);
+    size_t generated_start;
+    int first = 1;
+    size_t index = 0U;
+    (void)end;
+
+    if (eval_filter_single(arg, arg_length, start, end, &needle) != 0) return -1;
+    if (*p == '[') {
+        if (all) {
+            generated_start = jq_generated_used;
+            if (generated_append_cstr("[") != 0) return -1;
+        }
+        p++;
+        for (;;) {
+            const char *value_start;
+            const char *value_end;
+            p = skip_ws(p);
+            if (*p == ']') break;
+            value_start = p;
+            value_end = skip_value(value_start);
+            if (value_end == 0) return -1;
+            if (slice_equals_text(&needle, value_start, (size_t)(value_end - value_start))) {
+                if (!all) return append_generated_uint_value(out, count_io, index);
+                if (!first && generated_append_cstr(",") != 0) return -1;
+                if (generated_append_uint(index) != 0) return -1;
+                first = 0;
+            }
+            index++;
+            p = skip_ws(value_end);
+            if (*p == ',') p++;
+            else if (*p != ']') return -1;
+        }
+        if (all) {
+            if (generated_append_cstr("]") != 0) return -1;
+            return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+        }
+        return append_generated_null(out, count_io);
+    }
+    if (*p == '"') {
+        char text[JQ_MAX_FILTER];
+        char needle_text[JQ_MAX_FILTER];
+        size_t text_length;
+        size_t needle_length;
+        size_t pos;
+        if (decode_json_string_to_buffer(start, end, text, sizeof(text), &text_length) != 0 || value_to_text_buffer(needle.start, needle.end, needle_text, sizeof(needle_text), &needle_length) != 0) return -1;
+        if (all) {
+            generated_start = jq_generated_used;
+            if (generated_append_cstr("[") != 0) return -1;
+        }
+        for (pos = 0U; needle_length != 0U && pos + needle_length <= text_length; ++pos) {
+            if (memcmp(text + pos, needle_text, needle_length) == 0) {
+                if (!all) return append_generated_uint_value(out, count_io, pos);
+                if (!first && generated_append_cstr(",") != 0) return -1;
+                if (generated_append_uint(pos) != 0) return -1;
+                first = 0;
+            }
+        }
+        if (all) {
+            if (generated_append_cstr("]") != 0) return -1;
+            return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+        }
+        return append_generated_null(out, count_io);
+    }
+    return -1;
+}
+
+static int append_regex_match_result(const char *start, const char *end, const char *arg, size_t arg_length, int capture_only, JqSlice *out, size_t *count_io) {
+    char text[JQ_MAX_FILTER];
+    char pattern[JQ_MAX_FILTER];
+    size_t text_length;
+    size_t pattern_length;
+    size_t match_start = 0U;
+    size_t match_end = 0U;
+    JqSlice arg_value;
+    size_t generated_start;
+
+    if (decode_json_string_to_buffer(start, end, text, sizeof(text), &text_length) != 0 || eval_filter_single(arg, arg_length, start, end, &arg_value) != 0 || value_to_text_buffer(arg_value.start, arg_value.end, pattern, sizeof(pattern), &pattern_length) != 0) return -1;
+    (void)pattern_length;
+    if (!tool_regex_search(pattern, text, 0, 0U, &match_start, &match_end)) return 0;
+    generated_start = jq_generated_used;
+    if (capture_only) {
+        if (generated_append_cstr("{\"match\":\"") != 0 || generated_append_json_escaped_content(text + match_start, match_end - match_start) != 0 || generated_append_cstr("\"}") != 0) return -1;
+    } else {
+        if (generated_append_cstr("{\"offset\":") != 0 || generated_append_uint(match_start) != 0 || generated_append_cstr(",\"length\":") != 0 || generated_append_uint(match_end - match_start) != 0 || generated_append_cstr(",\"string\":\"") != 0 || generated_append_json_escaped_content(text + match_start, match_end - match_start) != 0 || generated_append_cstr("\"}") != 0) return -1;
+    }
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int append_regex_replace_result(const char *start, const char *end, const char *arg, size_t arg_length, int global, JqSlice *out, size_t *count_io) {
+    char args[JQ_MAX_FILTER];
+    const char *starts[2];
+    size_t lengths[2];
+    size_t count = 0U;
+    char text[JQ_MAX_FILTER];
+    char pattern[JQ_MAX_FILTER];
+    char replacement[JQ_MAX_FILTER];
+    char replaced[JQ_MAX_GENERATED < JQ_MAX_INPUT ? JQ_MAX_GENERATED : JQ_MAX_INPUT];
+    size_t text_length;
+    size_t pattern_length;
+    size_t replacement_length;
+    JqSlice value;
+    int changed = 0;
+    size_t generated_start;
+
+    if (arg_length + 1U > sizeof(args)) return -1;
+    memcpy(args, arg, arg_length);
+    args[arg_length] = '\0';
+    if (split_top_level_args(args, starts, lengths, 2U, &count) != 0 || count != 2U || decode_json_string_to_buffer(start, end, text, sizeof(text), &text_length) != 0) return -1;
+    if (eval_filter_single(starts[0], lengths[0], start, end, &value) != 0 || value_to_text_buffer(value.start, value.end, pattern, sizeof(pattern), &pattern_length) != 0) return -1;
+    if (eval_filter_single(starts[1], lengths[1], start, end, &value) != 0 || value_to_text_buffer(value.start, value.end, replacement, sizeof(replacement), &replacement_length) != 0) return -1;
+    (void)text_length;
+    (void)pattern_length;
+    (void)replacement_length;
+    if (tool_regex_replace(pattern, replacement, text, 0, global, replaced, sizeof(replaced), &changed) != 0) return -1;
+    generated_start = jq_generated_used;
+    if (generated_append_cstr("\"") != 0 || generated_append_json_escaped_content(replaced, rt_strlen(replaced)) != 0 || generated_append_cstr("\"") != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
+static int eval_reduce_expression(const char *expression, int emit_each, const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    const char *prefix = emit_each ? "foreach" : "reduce";
+    size_t prefix_length = rt_strlen(prefix);
+    int as_pos;
+    const char *paren;
+    const char *close;
+    char args[JQ_MAX_FILTER];
+    const char *parts[3];
+    size_t lengths[3];
+    size_t part_count = 0U;
+    JqSlice stream[JQ_MAX_RESULTS];
+    size_t stream_count = 0U;
+    JqSlice accumulator;
+    size_t i;
+    size_t saved_count;
+
+    if (rt_strncmp(expression, prefix, prefix_length) != 0 || is_ident_char(expression[prefix_length])) return -1;
+    as_pos = find_top_level_word_after(expression, "as", prefix_length);
+    if (as_pos < 0) return -1;
+    paren = expression + as_pos + 2;
+    while (*paren == ' ' || *paren == '\t' || *paren == '\n' || *paren == '\r') paren++;
+    while (*paren != '\0' && *paren != '(') paren++;
+    if (*paren != '(') return -1;
+    close = expression + rt_strlen(expression) - 1U;
+    while (close > paren && (*close == ' ' || *close == '\t' || *close == '\n' || *close == '\r')) close--;
+    if (*close != ')') return -1;
+    if ((size_t)(close - paren - 1) + 1U > sizeof(args)) return -1;
+    memcpy(args, paren + 1, (size_t)(close - paren - 1));
+    args[close - paren - 1] = '\0';
+    if (split_top_level_args(args, parts, lengths, 3U, &part_count) != 0 || part_count < 2U || part_count > 3U) return -1;
+    if (eval_filter_text(expression + prefix_length, (size_t)as_pos - prefix_length, start, end, stream, &stream_count) != 0) return -1;
+    if (eval_filter_single(parts[0], lengths[0], start, end, &accumulator) != 0) return -1;
+    saved_count = jq_variable_count;
+    for (i = 0U; i < stream_count; ++i) {
+        JqSlice next;
+        jq_variable_count = saved_count;
+        if (bind_pattern_variables(expression + as_pos + 2, (size_t)(paren - (expression + as_pos + 2)), stream[i].start, stream[i].end) != 0) return -1;
+        if (eval_filter_single(parts[1], lengths[1], accumulator.start, accumulator.end, &next) != 0) return -1;
+        accumulator = next;
+        if (emit_each) {
+            JqSlice extracted;
+            if (part_count == 3U) {
+                if (eval_filter_single(parts[2], lengths[2], accumulator.start, accumulator.end, &extracted) != 0) return -1;
+            } else extracted = accumulator;
+            if (append_result(out, count_io, extracted.start, extracted.end) != 0) return -1;
+        }
+    }
+    jq_variable_count = saved_count;
+    if (!emit_each) return append_result(out, count_io, accumulator.start, accumulator.end);
+    return 0;
+}
+
+static int eval_try_expression(const char *expression, const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    int catch_pos;
+    size_t before = *count_io;
+
+    if (rt_strncmp(expression, "try", 3U) != 0 || is_ident_char(expression[3])) return -1;
+    catch_pos = find_top_level_word_after(expression, "catch", 3U);
+    if (catch_pos < 0) return eval_filter_text(expression + 3, rt_strlen(expression + 3), start, end, out, count_io) == 0 ? 0 : 0;
+    if (eval_filter_text(expression + 3, (size_t)catch_pos - 3U, start, end, out, count_io) == 0) return 0;
+    *count_io = before;
+    return eval_filter_text(expression + catch_pos + 5, rt_strlen(expression + catch_pos + 5), start, end, out, count_io);
+}
+
+static int append_tonumber_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    long long number;
+    char text[JQ_MAX_FILTER];
+    size_t text_length;
+
+    if (parse_json_int(start, end, &number) == 0) return append_generated_int_value(out, count_io, number);
+    if (decode_json_string_to_buffer(start, end, text, sizeof(text), &text_length) != 0 || parse_json_int(text, text + text_length, &number) != 0) return -1;
+    return append_generated_int_value(out, count_io, number);
+}
+
+static int append_fromjson_result(const char *start, const char *end, JqSlice *out, size_t *count_io) {
+    char text[JQ_MAX_INPUT];
+    size_t text_length;
+    const char *value_start;
+    const char *value_end;
+    size_t generated_start;
+
+    if (decode_json_string_to_buffer(start, end, text, sizeof(text), &text_length) != 0) return -1;
+    value_start = skip_ws(text);
+    value_end = skip_value(value_start);
+    if (value_end == 0 || skip_ws(value_end)[0] != '\0') return -1;
+    generated_start = jq_generated_used;
+    if (generated_append(value_start, (size_t)(value_end - value_start)) != 0) return -1;
+    return append_result(out, count_io, jq_generated + generated_start, jq_generated + jq_generated_used);
+}
+
 static int eval_filter_text(const char *filter, size_t filter_length, const char *current_start, const char *current_end, JqSlice *out, size_t *count_io) {
     char expression[JQ_MAX_FILTER];
     const char *arg;
@@ -2315,6 +3243,40 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
     int function_result;
 
     if (copy_filter_text(filter, filter_length, expression, sizeof(expression)) != 0 || expression[0] == '\0') return -1;
+    if (expression[0] != '.' && has_top_level_trailing_question(expression)) {
+        size_t optional_length = rt_strlen(expression);
+        size_t before = *count_io;
+        while (optional_length > 0U && (expression[optional_length - 1U] == ' ' || expression[optional_length - 1U] == '\t' || expression[optional_length - 1U] == '\n' || expression[optional_length - 1U] == '\r')) optional_length--;
+        if (optional_length == 0U) return -1;
+        optional_length--;
+        if (eval_filter_text(expression, optional_length, current_start, current_end, out, count_io) != 0) {
+            *count_io = before;
+            return 0;
+        }
+        return 0;
+    }
+    if (rt_strncmp(expression, "if", 2U) == 0 && !is_ident_char(expression[2])) return eval_if_expression(expression, current_start, current_end, out, count_io);
+    if (rt_strncmp(expression, "try", 3U) == 0 && !is_ident_char(expression[3])) return eval_try_expression(expression, current_start, current_end, out, count_io);
+    if ((rt_strncmp(expression, "reduce", 6U) == 0 && !is_ident_char(expression[6])) || (rt_strncmp(expression, "foreach", 7U) == 0 && !is_ident_char(expression[7]))) {
+        pos = find_top_level_operator(expression, '|');
+        if (pos > 0) {
+            JqSlice intermediate[JQ_MAX_RESULTS];
+            size_t intermediate_count = 0U;
+            size_t i;
+
+            if (eval_filter_text(expression, (size_t)pos, current_start, current_end, intermediate, &intermediate_count) != 0) return -1;
+            for (i = 0U; i < intermediate_count; ++i) {
+                if (eval_filter_text(expression + pos + 1, rt_strlen(expression + pos + 1), intermediate[i].start, intermediate[i].end, out, count_io) != 0) return -1;
+            }
+            return 0;
+        }
+        pos = find_top_level_operator(expression, ',');
+        if (pos > 0) {
+            if (eval_filter_text(expression, (size_t)pos, current_start, current_end, out, count_io) != 0) return -1;
+            return eval_filter_text(expression + pos + 1, rt_strlen(expression + pos + 1), current_start, current_end, out, count_io);
+        }
+        return rt_strncmp(expression, "reduce", 6U) == 0 ? eval_reduce_expression(expression, 0, current_start, current_end, out, count_io) : eval_reduce_expression(expression, 1, current_start, current_end, out, count_io);
+    }
     pos = find_top_level_word_operator(expression, "as");
     if (pos > 0) return eval_as_binding(expression, pos, current_start, current_end, out, count_io);
     {
@@ -2384,13 +3346,27 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
     if (expression[0] == '[' && expression[rt_strlen(expression) - 1U] == ']') return append_array_constructor(expression + 1, rt_strlen(expression) - 2U, current_start, current_end, out, count_io);
     if (expression[0] == '{' && expression[rt_strlen(expression) - 1U] == '}') return append_object_constructor(expression + 1, rt_strlen(expression) - 2U, current_start, current_end, out, count_io);
     if (rt_strcmp(expression, ".") == 0) return append_result(out, count_io, current_start, current_end);
+    if (rt_strcmp(expression, "empty") == 0) return 0;
     if (rt_strcmp(expression, "..") == 0) return collect_descendants(current_start, current_end, out, count_io);
     if (rt_strcmp(expression, "type") == 0) return append_type_result(current_start, current_end, out, count_io);
     if (rt_strcmp(expression, "length") == 0) return append_length_result(current_start, current_end, out, count_io);
     if (rt_strcmp(expression, "keys") == 0) return append_keys_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "to_entries") == 0) return append_to_entries_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "from_entries") == 0) return append_from_entries_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "sort") == 0) return append_sort_result(current_start, current_end, 0, 0U, 0, out, count_io);
     if (rt_strcmp(expression, "tostring") == 0) return append_generated_json_string_from_value(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "tonumber") == 0) return append_tonumber_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "fromjson") == 0) return append_fromjson_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "tojson") == 0) return append_generated_json_string_from_slice(current_start, current_end, out, count_io);
     if (rt_strcmp(expression, "ascii_upcase") == 0) return append_ascii_case_result(current_start, current_end, 1, out, count_io);
     if (rt_strcmp(expression, "ascii_downcase") == 0) return append_ascii_case_result(current_start, current_end, 0, out, count_io);
+    if (rt_strcmp(expression, "add") == 0) return append_add_result(current_start, current_end, out, count_io);
+    if (rt_strcmp(expression, "first") == 0) return append_first_last_result(current_start, current_end, 0, out, count_io);
+    if (rt_strcmp(expression, "last") == 0) return append_first_last_result(current_start, current_end, 1, out, count_io);
+    if (rt_strcmp(expression, "min") == 0) return append_min_max_result(current_start, current_end, 0, 0U, 0, 0, out, count_io);
+    if (rt_strcmp(expression, "max") == 0) return append_min_max_result(current_start, current_end, 0, 0U, 0, 1, out, count_io);
+    if (rt_strcmp(expression, "unique") == 0) return append_unique_result(current_start, current_end, 0, 0U, 0, out, count_io);
+    if (rt_strcmp(expression, "flatten") == 0) return append_flatten_result(current_start, current_end, out, count_io);
 
     function_result = parse_function_arg(expression, "has", &arg, &arg_length);
     if (function_result < 0) return -1;
@@ -2401,6 +3377,42 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
     function_result = parse_function_arg(expression, "select", &arg, &arg_length);
     if (function_result < 0) return -1;
     if (function_result > 0) return append_select_result(current_start, current_end, arg, arg_length, out, count_io);
+    function_result = parse_function_arg(expression, "del", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_del_result(current_start, current_end, arg, arg_length, out, count_io);
+    function_result = parse_function_arg(expression, "with_entries", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_with_entries_result(current_start, current_end, arg, arg_length, out, count_io);
+    function_result = parse_function_arg(expression, "sort_by", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_sort_result(current_start, current_end, arg, arg_length, 1, out, count_io);
+    function_result = parse_function_arg(expression, "min_by", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_min_max_result(current_start, current_end, arg, arg_length, 1, 0, out, count_io);
+    function_result = parse_function_arg(expression, "max_by", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_min_max_result(current_start, current_end, arg, arg_length, 1, 1, out, count_io);
+    function_result = parse_function_arg(expression, "unique_by", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_unique_result(current_start, current_end, arg, arg_length, 1, out, count_io);
+    function_result = parse_function_arg(expression, "group_by", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_group_by_result(current_start, current_end, arg, arg_length, out, count_io);
+    function_result = parse_function_arg(expression, "any", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_any_all_result(current_start, current_end, arg, arg_length, arg_length != 0U, 0, out, count_io);
+    function_result = parse_function_arg(expression, "all", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_any_all_result(current_start, current_end, arg, arg_length, arg_length != 0U, 1, out, count_io);
+    function_result = parse_function_arg(expression, "range", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_range_result(arg, arg_length, current_start, current_end, out, count_io);
+    function_result = parse_function_arg(expression, "index", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_index_result(current_start, current_end, arg, arg_length, 0, out, count_io);
+    function_result = parse_function_arg(expression, "indices", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_index_result(current_start, current_end, arg, arg_length, 1, out, count_io);
     function_result = parse_function_arg(expression, "contains", &arg, &arg_length);
     if (function_result < 0) return -1;
     if (function_result > 0) return append_string_predicate_result(current_start, current_end, arg, arg_length, "contains", out, count_io);
@@ -2413,6 +3425,18 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
     function_result = parse_function_arg(expression, "test", &arg, &arg_length);
     if (function_result < 0) return -1;
     if (function_result > 0) return append_regex_test_result(current_start, current_end, arg, arg_length, out, count_io);
+    function_result = parse_function_arg(expression, "match", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_regex_match_result(current_start, current_end, arg, arg_length, 0, out, count_io);
+    function_result = parse_function_arg(expression, "capture", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_regex_match_result(current_start, current_end, arg, arg_length, 1, out, count_io);
+    function_result = parse_function_arg(expression, "sub", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_regex_replace_result(current_start, current_end, arg, arg_length, 0, out, count_io);
+    function_result = parse_function_arg(expression, "gsub", &arg, &arg_length);
+    if (function_result < 0) return -1;
+    if (function_result > 0) return append_regex_replace_result(current_start, current_end, arg, arg_length, 1, out, count_io);
     function_result = parse_function_arg(expression, "split", &arg, &arg_length);
     if (function_result < 0) return -1;
     if (function_result > 0) return append_split_result(current_start, current_end, arg, arg_length, out, count_io);
@@ -2441,7 +3465,6 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
 static int parse_function_definitions(const char *filter, const char **body_out) {
     const char *p = filter;
 
-    jq_function_count = 0U;
     for (;;) {
         JqFunction *function;
         size_t name_length = 0U;
@@ -2500,6 +3523,84 @@ static int parse_function_definitions(const char *filter, const char **body_out)
     }
 }
 
+static const char *skip_module_header(const char *filter) {
+    const char *p = skip_ws(filter);
+    int semicolon;
+
+    if (rt_strncmp(p, "module", 6U) != 0 || is_ident_char(p[6])) return filter;
+    semicolon = find_top_level_operator(p, ';');
+    if (semicolon < 0) return filter;
+    return p + semicolon + 1;
+}
+
+static int load_jq_module_file(const char *path) {
+    unsigned char *data;
+    char *text;
+    size_t size;
+    const char *body;
+
+    if (tool_read_all_input(path, &data, &size) != 0) return -1;
+    if (size + 1U < size || size + 1U > JQ_MAX_INPUT) {
+        rt_free(data);
+        return -1;
+    }
+    text = (char *)rt_malloc(size + 1U);
+    if (text == 0) {
+        rt_free(data);
+        return -1;
+    }
+    memcpy(text, data, size);
+    text[size] = '\0';
+    rt_free(data);
+    if (parse_function_definitions(skip_module_header(text), &body) != 0 || skip_ws(body)[0] != '\0') {
+        rt_free(text);
+        return -1;
+    }
+    rt_free(text);
+    return 0;
+}
+
+static int parse_module_directives(const char *filter, const char **body_out) {
+    const char *p = skip_ws(filter);
+
+    for (;;) {
+        int is_include = 0;
+        int is_import = 0;
+        const char *path_start;
+        const char *path_end;
+        char path[JQ_MAX_FILTER];
+        size_t path_length;
+
+        if (rt_strncmp(p, "include", 7U) == 0 && !is_ident_char(p[7])) {
+            is_include = 1;
+            p += 7;
+        } else if (rt_strncmp(p, "import", 6U) == 0 && !is_ident_char(p[6])) {
+            is_import = 1;
+            p += 6;
+        } else {
+            *body_out = p;
+            return 0;
+        }
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (*p != '"') return -1;
+        path_start = p;
+        path_end = skip_string(p);
+        if (path_end == 0 || decode_json_string_to_buffer(path_start, path_end, path, sizeof(path), &path_length) != 0) return -1;
+        path[path_length] = '\0';
+        p = skip_ws(path_end);
+        if (is_import) {
+            if (rt_strncmp(p, "as", 2U) != 0 || is_ident_char(p[2])) return -1;
+            p = skip_ws(p + 2);
+            if (!is_ident_start(*p)) return -1;
+            while (is_ident_char(*p)) p++;
+            p = skip_ws(p);
+        }
+        if (*p != ';') return -1;
+        if ((is_include || is_import) && load_jq_module_file(path) != 0) return -1;
+        p = skip_ws(p + 1);
+    }
+}
+
 static int run_filter(const char *filter, const char *input) {
     const char *current_start = skip_ws(input);
     const char *current_end = skip_value(current_start);
@@ -2510,7 +3611,9 @@ static int run_filter(const char *filter, const char *input) {
     if (current_end == 0) return -1;
     jq_generated_used = 0U;
     jq_variable_count = 0U;
-    if (parse_function_definitions(filter, &filter_body) != 0) return -1;
+    jq_function_count = 0U;
+    if (parse_module_directives(filter, &filter_body) != 0) return -1;
+    if (parse_function_definitions(filter_body, &filter_body) != 0) return -1;
     if (eval_filter_text(filter_body, rt_strlen(filter_body), current_start, current_end, results, &result_count) != 0) return -1;
     return emit_results(results, result_count);
 }
