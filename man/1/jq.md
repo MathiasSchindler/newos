@@ -18,6 +18,44 @@ dependency-free scripts. Supported filters are:
 - `.` - print the full JSON value
 - `.key` - print an object field
 - `.key.subkey` - print nested object fields
+- `."key-name"` and `["key-name"]` - select object fields whose names are not simple identifiers
+- `.array[0]` - print an array element by zero-based index
+- `.array[-1]` - print an array element by negative index from the end
+- `.array[start:end]` - print an array slice, with omitted or negative bounds allowed
+- `.array[]` - print each array element, one JSON value per line
+- `.array[].key` - combine array iteration with later object-field selection
+- `.key?` and `.array[0]?` - return `null` instead of failing when an access is missing
+- `left | right` - pipe each value produced by `left` into `right`
+- `left, right` - emit the results of both filters
+- `left // right` - evaluate `right` when `left` is missing, `null`, `false`, or empty
+- `select(filter)` - keep the input value when `filter` produces a truthy value
+- `map(filter)` - apply a filter to each array element and return an array of the results
+- `contains(string)`, `startswith(string)`, and `endswith(string)` - test string content
+- `split(string)` and `join(string)` - split a string or join array values into a string
+- `test(regex)` - test a string against the shared regular-expression engine
+- `length` - return the length of an array, object, or string
+- `keys` - return array indexes or object keys in input order
+- `has("key")` and `has(index)` - test whether an object field or array index exists
+- `type` - print the JSON type name as a string
+- `tostring`, `ascii_upcase`, and `ascii_downcase` - perform small string conversions
+- `@json`, `@text`, and `@string` - format the current value as a JSON string
+- `..` - recursively emit the current value and all descendant values
+- integer arithmetic with `+`, `-`, `*`, `/`, and `%`
+- string concatenation with `+`
+- ordering and equality comparisons with `==`, `!=`, `<`, `<=`, `>`, and `>=`
+- boolean operators `and`, `or`, and unary `not`
+- string interpolation such as `"user=\(.name)"`
+- array construction such as `[.name, .meta.count]`
+- object construction such as `{name: .name, count: .meta.count}`
+- variable binding with `filter as $name | filter` and destructuring patterns
+	such as `. as {name: $name, users: [$first]} | filter`
+- user-defined functions such as `def inc($x): $x + 1; inc(.count)`, including
+	access to active `as` bindings at the call site
+- path assignment and update, such as `.count = 3` and `.count |= . + 1`, with
+	object/array path creation and comma-separated target paths
+
+`select` also supports simple equality predicates such as
+`select(.name == "Ada")` and `select(.active != false)`.
 
 FILE defaults to standard input.
 
@@ -28,8 +66,44 @@ FILE defaults to standard input.
 
 ## LIMITATIONS
 
-This is not full jq. Arrays, pipes, expressions, updates, iteration, arithmetic,
-and complete JSON reformatting are outside the initial scope.
+This is not full jq. The supported filter forms are listed in DESCRIPTION, and
+the command-line flags are listed in OPTIONS. The current limitations are:
+
+- Arithmetic is integer-only, so floating-point operations are not supported.
+- String processing is intentionally small. Interpolation, `contains`,
+	`startswith`, `endswith`, `split`, `join`, `ascii_upcase`, `ascii_downcase`,
+	`tostring`, `test`, `@json`, and `@text` are supported, but jq's broader
+	string, regex capture, replacement, escaping, and formatting libraries are not
+	implemented.
+- User-defined functions are still limited to simple `def` declarations with
+	fixed arguments. They can read active bindings at the call site, but modules,
+	imports, and full jq closure semantics are not implemented.
+- Variable binding supports `$name`, object destructuring, and array
+	destructuring, but it does not support default values, alternative patterns, or
+	all jq destructuring forms.
+- Assignment and update create missing object fields and array elements, filling
+	skipped array positions with `null`, and comma-separated target paths are
+	applied left to right. More advanced assignment forms, destructuring assignment,
+	and deletion are not implemented.
+- Update operators other than `=` and `|=` are not implemented.
+- Control-flow forms such as `if`, `then`, `else`, `try`, and `catch` are not
+	implemented.
+- Slices are supported for arrays, but string and object slicing are not
+	implemented.
+- Optional access with `?` returns `null` for missing object fields,
+	out-of-range array indexes, and type mismatches; it does not implement full
+	jq-compatible missing-value propagation.
+- Values selected directly from the input are emitted as the original input
+	slice rather than as normalized or pretty-printed JSON.
+- Generated arrays, objects, mapped values, and updated documents are emitted in
+	compact form only.
+- `keys` preserves input object order rather than sorting keys as full jq does.
+- `map` requires an array input.
+- Missing fields, malformed JSON, unsupported filters, and out-of-range indexes
+	report a filter failure in direct path selection instead of producing full
+	jq-compatible `null` or empty-stream behavior.
+- Raw output with `-r` decodes JSON string escapes for string results, including
+	Unicode escapes, but non-string results are still emitted as JSON.
 
 ## JSON Output
 

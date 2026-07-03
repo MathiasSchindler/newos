@@ -1198,7 +1198,7 @@ static int expack_compress_xlz(const unsigned char *data, size_t size, unsigned 
         rt_free(head);
         return -1;
     }
-    states = (ExpackXlzParseState *)rt_malloc_array(size + 1U, EXPACK_XLZ_PARSE_BEAM * sizeof(*states));
+    states = (ExpackXlzParseState *)rt_malloc_array((size + 1U) * EXPACK_XLZ_PARSE_BEAM, sizeof(*states));
     if (states == 0) {
         rt_free(previous);
         rt_free(head);
