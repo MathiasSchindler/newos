@@ -50,8 +50,8 @@ while records are collected out of band.
 For one command, use normal `strace`:
 
 ```sh
-./build/newlinker-macos-aarch64/strace -c ./build/newlinker-macos-aarch64/pgpmsg inspect message.pgp
-./build/newlinker-macos-aarch64/strace -e open,read,write,close ./build/newlinker-macos-aarch64/tar -tf archive.tar
+./build/macos-aarch64/strace -c ./build/macos-aarch64/pgpmsg inspect message.pgp
+./build/macos-aarch64/strace -e open,read,write,close ./build/macos-aarch64/tar -tf archive.tar
 ```
 
 Use `-c` for a compact syscall table. The `bytes` column is meaningful only for
@@ -69,8 +69,8 @@ Use `-e` to narrow the trace before inspecting details. Good first filters are:
 Use `--records FILE` when replaying a raw macOS project-linked capture:
 
 ```sh
-./build/newlinker-macos-aarch64/strace -c --records tests/tmp/records.bin
-./build/newlinker-macos-aarch64/strace --records tests/tmp/records.bin
+./build/macos-aarch64/strace -c --records tests/tmp/records.bin
+./build/macos-aarch64/strace --records tests/tmp/records.bin
 ```
 
 ## PHASE 1 STOCKTAKE
@@ -134,7 +134,7 @@ Useful categories are:
 Always inspect a raw replay before changing code:
 
 ```sh
-./build/newlinker-macos-aarch64/strace --records tests/tmp/strace-phase1-stocktake/raw/tools_text_ripgrep.records
+./build/macos-aarch64/strace --records tests/tmp/strace-phase1-stocktake/raw/tools_text_ripgrep.records
 ```
 
 The raw lines show whether a count is one bad loop, normal search behavior, or a
@@ -190,10 +190,10 @@ After changing a traced pattern, run both behavior tests and a focused stocktake
 For example:
 
 ```sh
-make build/newlinker-macos-aarch64/ripgrep build/newlinker-macos-aarch64/strace
-NEWOS_TEST_BUILD_DIR="$PWD/build/newlinker-macos-aarch64" \
+make build/macos-aarch64/ripgrep build/macos-aarch64/strace
+NEWOS_TEST_BUILD_DIR="$PWD/build/macos-aarch64" \
   PHASE1_JOBS=1 sh ./tests/phase1/run_phase1_tests.sh tools/text/ripgrep
-NEWOS_TEST_BUILD_DIR="$PWD/build/newlinker-macos-aarch64" \
+NEWOS_TEST_BUILD_DIR="$PWD/build/macos-aarch64" \
   sh ./scripts/stocktake-strace-phase1.sh tools/text/ripgrep
 ```
 
@@ -203,7 +203,6 @@ For shared path, runtime, or output changes, follow with the broader gates:
 make freestanding
 make host
 make stocktake-strace-phase1
-make -j4 test-macos-newlinker-tools
 ```
 
 A stocktake improvement is not a substitute for correctness tests. It is a way

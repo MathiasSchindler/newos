@@ -635,7 +635,7 @@ static int expack_make_elf_exec_image(const unsigned char *input_data, size_t in
     if (phoff > input_size || phdr_size > input_size - phoff) {
         return -1;
     }
-    loads = (ExpackLoadRange *)rt_malloc((size_t)phnum * sizeof(*loads));
+    loads = (ExpackLoadRange *)rt_malloc_array((size_t)phnum, sizeof(*loads));
     if (loads == 0) {
         return -1;
     }

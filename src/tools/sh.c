@@ -49,9 +49,12 @@ static int shell_grow_string_array(char ***items_io, size_t *capacity_io, size_t
     size_t next_capacity = *capacity_io == 0U ? initial_capacity : *capacity_io;
 
     while (next_capacity < needed) {
+        if (next_capacity > ((size_t)-1) / 2U) {
+            return -1;
+        }
         next_capacity *= 2U;
     }
-    next_items = (char **)rt_realloc(*items_io, next_capacity * sizeof(*next_items));
+    next_items = (char **)rt_realloc_array(*items_io, next_capacity, sizeof(*next_items));
     if (next_items == 0) {
         return -1;
     }
@@ -167,7 +170,7 @@ static int shell_save_positional_parameters(char ***saved_args_out, int *saved_a
     if (shell_positional_argc == 0) {
         return 0;
     }
-    saved_args = (char **)rt_malloc((size_t)shell_positional_argc * sizeof(*saved_args));
+    saved_args = (char **)rt_malloc_array((size_t)shell_positional_argc, sizeof(*saved_args));
     if (saved_args == 0) {
         return -1;
     }
@@ -380,7 +383,11 @@ int sh_set_shell_alias(const char *assignment) {
     if (slot == (size_t)-1) {
         if (shell_alias_count >= shell_alias_capacity) {
             size_t next_capacity = shell_alias_capacity == 0U ? SH_ALIAS_INITIAL_CAPACITY : shell_alias_capacity * 2U;
-            ShAlias *next_aliases = (ShAlias *)rt_realloc(shell_aliases, next_capacity * sizeof(*next_aliases));
+            ShAlias *next_aliases;
+            if (next_capacity < shell_alias_capacity) {
+                return -1;
+            }
+            next_aliases = (ShAlias *)rt_realloc_array(shell_aliases, next_capacity, sizeof(*next_aliases));
             if (next_aliases == 0) {
                 return -1;
             }
@@ -424,7 +431,11 @@ int sh_set_shell_function(const char *name, const char *body) {
     if (slot == (size_t)-1) {
         if (shell_function_count >= shell_function_capacity) {
             size_t next_capacity = shell_function_capacity == 0U ? SH_FUNCTION_INITIAL_CAPACITY : shell_function_capacity * 2U;
-            ShFunction *next_functions = (ShFunction *)rt_realloc(shell_functions, next_capacity * sizeof(*next_functions));
+            ShFunction *next_functions;
+            if (next_capacity < shell_function_capacity) {
+                return -1;
+            }
+            next_functions = (ShFunction *)rt_realloc_array(shell_functions, next_capacity, sizeof(*next_functions));
             if (next_functions == 0) {
                 return -1;
             }

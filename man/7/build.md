@@ -83,9 +83,8 @@ keeps tool and shared runtime code on the same universal path as the other
 targets, compiles Mach-O arm64 objects with Clang, and links final executables
 with the in-tree `linker --target=mach-o-arm64` backend.
 
-- built with `make freestanding` on local macOS/aarch64, or explicitly with
-  `make macos-newlinker-tools`
-- writes binaries to `build/newlinker-macos-aarch64/`
+- built with `make freestanding` on local macOS/aarch64
+- writes binaries to `build/macos-aarch64/`
 - uses the project `_start` shim, project runtime, and Darwin syscall-backed
   platform layer
 - builds the declared macOS project-linked tool surface by default
@@ -94,7 +93,7 @@ with the in-tree `linker --target=mach-o-arm64` backend.
 - writes `LC_DYLD_INFO_ONLY` rebase metadata: empty when no absolute pointer
   rebases are needed, and populated for 64-bit absolute pointer relocations that
   remain in the linked image
-- links with `MACOS_NEWLINKER_LINK_FLAGS`, which defaults to
+- links with the project-linker flags, which default to
   `--macho-compact --gc-sections`; compact mode keeps loader-safe 16 KiB segment
   alignment while trimming optional load-command payload, and `--gc-sections`
   asks the Clang LTO prelink step to dead-strip when LTO inputs are present
@@ -108,7 +107,7 @@ with the in-tree `linker --target=mach-o-arm64` backend.
   behavior, with `src/platform/macos/newlinker_start.S` and
   `src/platform/macos/newlinker_runtime.c` providing the project-linked entry and
   runtime additions
-- `test-macos-newlinker-tools` builds the same declared set before running
+- the macOS freestanding test path builds the same declared set before running
   representative smoke assertions and no-import checks
 - `make macos-freestanding-size-report` follows this normal project-linked
   build and reports exact file bytes, summed file-backed Mach-O section bytes,
@@ -118,7 +117,7 @@ with the in-tree `linker --target=mach-o-arm64` backend.
   BASELINE=previous.tsv` to get exact file-byte and file-section-byte deltas
 - the Mach-O linker supports `--map FILE` for build-time attribution without
   keeping symbols in final executables. For per-tool maps in the Makefile path,
-  create a directory and pass `MACOS_NEWLINKER_MAP_DIR=DIR`; each link writes
+  create a directory and pass `MACOS_MAP_DIR=DIR`; each link writes
   `DIR/TOOL.map`. `scripts/report-macos-freestanding-size.sh --maps DIR` consumes those
   files and appends top input-section and top-symbol contributor columns.
 
@@ -173,9 +172,8 @@ and anything that adds new low-level dependencies.
 
     make               — on macOS build the local hosted set for compatibility symlinks; on Linux build host plus freestanding
     make host          — build the secondary hosted POSIX binaries under build/host-<os>-<arch>/ with compatibility symlinks in build/
-    make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the project-linked Mach-O target under build/newlinker-macos-aarch64/
+    make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the project-linked Mach-O target under build/macos-aarch64/
     make freestanding-macos — build the older Apple-ld/libSystem comparison target under build/freestanding-macos-aarch64/
-    make macos-newlinker-tools — explicitly build the macOS project-linked Mach-O tool tree under build/newlinker-macos-aarch64/
     make run-userland  — on Linux build the freestanding tree and start an isolated shell using only those tools
     make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
     make test          — build host binaries, run smoke/Phase 1 checks, and on Linux run the freestanding and isolated userland smoke suites

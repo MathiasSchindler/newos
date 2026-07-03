@@ -137,9 +137,9 @@ static int expack_deflate_make_tokens(const unsigned char *data, size_t size, Ex
     if (size > 0x7fffffffU) {
         return -1;
     }
-    tokens = (ExpackDeflateToken *)rt_malloc((size + 1U) * sizeof(ExpackDeflateToken));
-    head = (int *)rt_malloc(EXPACK_DEFLATE_HASH_SIZE * sizeof(int));
-    prev = (int *)rt_malloc((size == 0U ? 1U : size) * sizeof(int));
+    tokens = (ExpackDeflateToken *)rt_malloc_array(size + 1U, sizeof(ExpackDeflateToken));
+    head = (int *)rt_malloc_array(EXPACK_DEFLATE_HASH_SIZE, sizeof(int));
+    prev = (int *)rt_malloc_array(size == 0U ? 1U : size, sizeof(int));
     if (tokens == 0 || head == 0 || prev == 0) {
         if (tokens != 0) rt_free(tokens);
         if (head != 0) rt_free(head);

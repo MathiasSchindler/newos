@@ -99,7 +99,7 @@ model Apple recommends for general macOS software.
   platform adapter
 
 The normal project-linked path builds the declared macOS tool surface under
-`build/newlinker-macos-aarch64/`. The tools use the same project runtime and
+`build/macos-aarch64/`. The tools use the same project runtime and
 platform interface as other freestanding targets, with Darwin-specific syscall,
 startup, and Mach-O loader details hidden behind `src/platform/macos/`,
 `src/arch/aarch64/macos/`, and the in-tree linker. Some privileged or

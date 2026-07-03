@@ -95,7 +95,7 @@ static int editor_clone_lines(const EditorLine *source, size_t line_count, Edito
         *lines_out = 0;
         return 0;
     }
-    lines = (EditorLine *)rt_malloc(line_count * sizeof(EditorLine));
+    lines = (EditorLine *)rt_malloc_array(line_count, sizeof(EditorLine));
     if (lines == 0) {
         return -1;
     }
@@ -198,7 +198,7 @@ static int editor_reserve_lines(EditorState *editor, size_t capacity) {
         }
         next_capacity *= 2U;
     }
-    next = (EditorLine *)rt_realloc(editor->lines, next_capacity * sizeof(EditorLine));
+    next = (EditorLine *)rt_realloc_array(editor->lines, next_capacity, sizeof(EditorLine));
     if (next == 0) {
         return -1;
     }

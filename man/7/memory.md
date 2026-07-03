@@ -178,6 +178,23 @@ Callers should stop open-coding unchecked multiplication before `rt_malloc` or
 `rt_realloc`. This is both safer and more compact once repeated patterns are
 migrated.
 
+Current ordinary tool code has mostly moved in this direction. Shell parser and
+job vectors, editor line arrays, `portscan` positional arguments, `expack`
+codec tables, PDF/XML/Git vectors, SQL aggregate state, zip entry lists, sort
+line storage, and checksum result arrays all use the checked helpers for
+element-count allocation. Byte buffers that grow by byte capacity, such as
+streaming input buffers, may still use `rt_malloc` or `rt_realloc` directly when
+there is no element-size multiplication to centralize.
+
+The expected effect of this migration is correctness and consistency rather
+than a user-visible speedup. Successful allocation sizes are the same as before,
+so steady-state runtime and memory use should be unchanged. Binary-size deltas
+should be neutral or small: repeated open-coded overflow checks can shrink when
+they become helper calls, while simple call sites may grow by a few bytes if the
+helper was not otherwise referenced. The behavioral improvement is that
+oversized vectors fail cleanly through the same overflow path instead of relying
+on each caller to get multiplication and capacity growth checks right.
+
 ## ARENAS
 
 Arenas are a first-class runtime facility for phase-lifetime allocation. The API

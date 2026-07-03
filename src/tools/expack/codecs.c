@@ -399,9 +399,9 @@ static int expack_lzrep_match_index_build(const unsigned char *data, size_t size
     if (hash_count > ((size_t)-1) / sizeof(*index->head) || (size == 0U ? 1U : size) > ((size_t)-1) / sizeof(*index->next)) {
         return -1;
     }
-    index->head = (size_t *)rt_malloc(hash_count * sizeof(*index->head));
-    tail = (size_t *)rt_malloc(hash_count * sizeof(*tail));
-    index->next = (size_t *)rt_malloc((size == 0U ? 1U : size) * sizeof(*index->next));
+    index->head = (size_t *)rt_malloc_array(hash_count, sizeof(*index->head));
+    tail = (size_t *)rt_malloc_array(hash_count, sizeof(*tail));
+    index->next = (size_t *)rt_malloc_array(size == 0U ? 1U : size, sizeof(*index->next));
     if (index->head == 0 || tail == 0 || index->next == 0) {
         if (tail != 0) {
             rt_free(tail);
@@ -728,7 +728,7 @@ static int expack_compress_lz4_block(const unsigned char *data, size_t size, uns
         return -1;
     }
     bound = size * 2U + 32U;
-    hash_table = (size_t *)rt_malloc(hash_count * sizeof(*hash_table));
+    hash_table = (size_t *)rt_malloc_array(hash_count, sizeof(*hash_table));
     if (hash_table == 0) {
         return -1;
     }
@@ -1189,29 +1189,29 @@ static int expack_compress_xlz(const unsigned char *data, size_t size, unsigned 
         return -1;
     }
     bound = size * 2U + 64U;
-    head = (size_t *)rt_malloc(hash_count * sizeof(*head));
+    head = (size_t *)rt_malloc_array(hash_count, sizeof(*head));
     if (head == 0) {
         return -1;
     }
-    previous = (size_t *)rt_malloc((size == 0U ? 1U : size) * sizeof(*previous));
+    previous = (size_t *)rt_malloc_array(size == 0U ? 1U : size, sizeof(*previous));
     if (previous == 0) {
         rt_free(head);
         return -1;
     }
-    states = (ExpackXlzParseState *)rt_malloc((size + 1U) * EXPACK_XLZ_PARSE_BEAM * sizeof(*states));
+    states = (ExpackXlzParseState *)rt_malloc_array(size + 1U, EXPACK_XLZ_PARSE_BEAM * sizeof(*states));
     if (states == 0) {
         rt_free(previous);
         rt_free(head);
         return -1;
     }
-    state_counts = (unsigned int *)rt_malloc((size + 1U) * sizeof(*state_counts));
+    state_counts = (unsigned int *)rt_malloc_array(size + 1U, sizeof(*state_counts));
     if (state_counts == 0) {
         rt_free(states);
         rt_free(previous);
         rt_free(head);
         return -1;
     }
-    sequences = (ExpackXlzSequence *)rt_malloc((size == 0U ? 1U : size) * sizeof(*sequences));
+    sequences = (ExpackXlzSequence *)rt_malloc_array(size == 0U ? 1U : size, sizeof(*sequences));
     if (sequences == 0) {
         rt_free(state_counts);
         rt_free(states);

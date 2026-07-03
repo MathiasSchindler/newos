@@ -1209,7 +1209,7 @@ int main(int argc, char **argv) {
     options.started_at = (unsigned long long)platform_get_epoch_time();
     options.program_name = argv[0];
 
-    positionals = (char **)rt_malloc(sizeof(char *) * (size_t)(argc > 1 ? argc - 1 : 1));
+    positionals = (char **)rt_malloc_array((size_t)(argc > 1 ? argc - 1 : 1), sizeof(*positionals));
     if (positionals == 0) {
         tool_write_error("portscan", "out of memory", 0);
         return 1;

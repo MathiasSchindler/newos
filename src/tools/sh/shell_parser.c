@@ -138,16 +138,22 @@ static int sh_command_ensure_arg_capacity(ShCommand *command, size_t needed) {
 
     next_capacity = command->argv_capacity == 0U ? 8U : command->argv_capacity;
     while (next_capacity < needed) {
+        if (next_capacity > ((size_t)-1) / 2U) {
+            return -1;
+        }
         next_capacity *= 2U;
     }
 
-    next_argv = (char **)rt_realloc(command->argv, (next_capacity + 1U) * sizeof(*next_argv));
+    if (next_capacity == (size_t)-1) {
+        return -1;
+    }
+    next_argv = (char **)rt_realloc_array(command->argv, next_capacity + 1U, sizeof(*next_argv));
     if (next_argv == 0) {
         return -1;
     }
     command->argv = next_argv;
 
-    next_no_expand = (int *)rt_realloc(command->no_expand, next_capacity * sizeof(*next_no_expand));
+    next_no_expand = (int *)rt_realloc_array(command->no_expand, next_capacity, sizeof(*next_no_expand));
     if (next_no_expand == 0) {
         return -1;
     }
@@ -173,7 +179,10 @@ static int sh_command_take_owned_word(ShCommand *command, char *word) {
 
     if (command->owned_word_count >= command->owned_word_capacity) {
         next_capacity = command->owned_word_capacity == 0U ? 8U : command->owned_word_capacity * 2U;
-        next_words = (char **)rt_realloc(command->owned_words, next_capacity * sizeof(*next_words));
+        if (next_capacity < command->owned_word_capacity) {
+            return -1;
+        }
+        next_words = (char **)rt_realloc_array(command->owned_words, next_capacity, sizeof(*next_words));
         if (next_words == 0) {
             return -1;
         }
@@ -190,7 +199,10 @@ static int sh_pipeline_add_command(ShPipeline *pipeline, ShCommand **command_out
 
     if (pipeline->count >= pipeline->capacity) {
         next_capacity = pipeline->capacity == 0U ? 4U : pipeline->capacity * 2U;
-        next_commands = (ShCommand *)rt_realloc(pipeline->commands, next_capacity * sizeof(*next_commands));
+        if (next_capacity < pipeline->capacity) {
+            return -1;
+        }
+        next_commands = (ShCommand *)rt_realloc_array(pipeline->commands, next_capacity, sizeof(*next_commands));
         if (next_commands == 0) {
             return -1;
         }
@@ -213,8 +225,15 @@ static int expand_command_globs(ShCommand *command) {
 #define APPEND_EXPANDED_ARG(arg_text, no_expand_value) do { \
         if ((size_t)new_argc >= expanded_capacity) { \
             size_t next_capacity__ = expanded_capacity == 0U ? 8U : expanded_capacity * 2U; \
-            char **next_argv__ = (char **)rt_malloc((next_capacity__ + 1U) * sizeof(*next_argv__)); \
-            int *next_no_expand__ = (int *)rt_malloc(next_capacity__ * sizeof(*next_no_expand__)); \
+            char **next_argv__; \
+            int *next_no_expand__; \
+            if (next_capacity__ < expanded_capacity || next_capacity__ == (size_t)-1) { \
+                rt_free(expanded_argv); \
+                rt_free(expanded_no_expand); \
+                return -1; \
+            } \
+            next_argv__ = (char **)rt_malloc_array(next_capacity__ + 1U, sizeof(*next_argv__)); \
+            next_no_expand__ = (int *)rt_malloc_array(next_capacity__, sizeof(*next_no_expand__)); \
             if (next_argv__ == 0 || next_no_expand__ == 0) { \
                 rt_free(next_argv__); \
                 rt_free(next_no_expand__); \

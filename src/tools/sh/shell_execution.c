@@ -14,7 +14,10 @@ static ShJob *allocate_job_slot(void) {
 
     if (shell_jobs_count >= shell_jobs_capacity) {
         next_capacity = shell_jobs_capacity == 0U ? 16U : shell_jobs_capacity * 2U;
-        next_jobs = (ShJob *)rt_realloc(shell_jobs, next_capacity * sizeof(*next_jobs));
+        if (next_capacity < shell_jobs_capacity) {
+            return 0;
+        }
+        next_jobs = (ShJob *)rt_realloc_array(shell_jobs, next_capacity, sizeof(*next_jobs));
         if (next_jobs == 0) {
             return 0;
         }
@@ -54,7 +57,7 @@ static void remember_job(const int *pids, size_t pid_count, const char *command_
     job->job_id = shell_next_job_id++;
     job->pid_count = (int)pid_count;
     rt_free(job->pids);
-    job->pids = (int *)rt_malloc(pid_count * sizeof(*job->pids));
+    job->pids = (int *)rt_malloc_array(pid_count, sizeof(*job->pids));
     if (job->pids == 0) {
         job->active = 0;
         return;
@@ -72,8 +75,8 @@ int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *
     int exit_status = 0;
     size_t i;
 
-    pids = (int *)rt_malloc(pipeline->count * sizeof(*pids));
-    resolved_paths = (char (*)[SH_MAX_LINE])rt_malloc(pipeline->count * sizeof(*resolved_paths));
+    pids = (int *)rt_malloc_array(pipeline->count, sizeof(*pids));
+    resolved_paths = (char (*)[SH_MAX_LINE])rt_malloc_array(pipeline->count, sizeof(*resolved_paths));
     if (pids == 0 || resolved_paths == 0) {
         rt_free(pids);
         rt_free(resolved_paths);
@@ -119,7 +122,7 @@ int sh_execute_pipeline(const ShPipeline *pipeline, int background, const char *
             return 127;
         }
 
-        argv_copy = (char **)rt_malloc(((size_t)pipeline->commands[i].argc + 1U) * sizeof(*argv_copy));
+        argv_copy = (char **)rt_malloc_array((size_t)pipeline->commands[i].argc + 1U, sizeof(*argv_copy));
         if (argv_copy == 0) {
             if (stdin_fd >= 0) {
                 platform_close(stdin_fd);

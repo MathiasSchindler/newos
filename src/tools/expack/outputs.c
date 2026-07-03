@@ -166,7 +166,7 @@ typedef struct {
 } ExpackMachoPageHasher;
 
 static int expack_macho_page_hasher_init(ExpackMachoPageHasher *hasher, size_t hash_count) {
-    hasher->hashes = (unsigned char *)rt_malloc(hash_count * CRYPTO_SHA256_DIGEST_SIZE);
+    hasher->hashes = (unsigned char *)rt_malloc_array(hash_count, CRYPTO_SHA256_DIGEST_SIZE);
     if (hasher->hashes == 0 && hash_count != 0U) {
         return -1;
     }

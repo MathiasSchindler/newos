@@ -22,8 +22,7 @@ On a Mac, the normal build outputs are native Mach-O executables for the local
 machine.
 
 - `make freestanding` on local macOS/aarch64 is the preferred path; it builds
-  the project-linked Darwin tool set under `build/newlinker-macos-aarch64/`
-- `make macos-newlinker-tools` builds that same project-linked target explicitly
+  the project-linked Darwin tool set under `build/macos-aarch64/`
 - `make host` builds hosted POSIX binaries under `build/host-macos-aarch64/`
   with compatibility symlinks in `build/`; use it for secondary verification,
   quick POSIX bring-up, and host-side comparisons
@@ -47,8 +46,8 @@ machine.
 This policy exists because the repository is actively developed on macOS, and
 the project-linked Darwin path is now strong enough to act as the normal local
 freestanding build. It exercises the project runtime, the Darwin platform
-boundary, direct syscall wrappers, and the in-tree Mach-O linker while producing
-real launchable binaries that avoid `libSystem` imports.
+boundary, direct syscall wrappers, and the project linker while producing real
+launchable binaries that avoid `libSystem` imports.
 
 ## LIMITATIONS
 
