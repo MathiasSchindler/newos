@@ -8,6 +8,10 @@
 #define RT_TASK_POOL_MAX_WORKERS 32U
 #define RT_TASK_POOL_DEFAULT_STACK_SIZE (512U * 1024U)
 
+#ifndef NEWOS_RUNTIME_TASK_STATS
+#define NEWOS_RUNTIME_TASK_STATS 0
+#endif
+
 typedef int (*RtParallelBody)(size_t begin, size_t end, unsigned int worker_index, void *arg);
 typedef int (*RtTaskFn)(unsigned int worker_index, void *arg);
 
@@ -79,7 +83,9 @@ typedef struct RtTaskPool {
     RtTaskFn task_body;
     void *work_arg;
     RtTaskGroup *group;
+#if NEWOS_RUNTIME_TASK_STATS
     RtTaskPoolStats stats;
+#endif
     RtTaskWorker workers[RT_TASK_POOL_MAX_WORKERS];
 } RtTaskPool;
 

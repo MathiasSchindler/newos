@@ -484,7 +484,10 @@ void *rt_arena_alloc(RtArena *arena, size_t size) {
     size = rt_align_up(size, RT_ALIGN);
     if (size == 0U) return 0;
     block = arena->blocks;
-    if (block == 0 || block->used + size < block->used || block->used + size > block->size) {
+    while (block != 0 && (block->used + size < block->used || block->used + size > block->size)) {
+        block = block->next;
+    }
+    if (block == 0) {
         size_t payload_size = size > arena->default_block_size ? size : arena->default_block_size;
         RtArenaBlock *next = rt_arena_new_block(payload_size);
         if (next == 0) return 0;

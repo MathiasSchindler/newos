@@ -44,6 +44,11 @@
 #define WIN_INVALID_SOCKET (~(unsigned long long)0ULL)
 #define WIN_SOCKET_ERROR (-1)
 #define WIN_FD_SETSIZE 64
+#define WIN_POLLRDNORM 0x0100
+#define WIN_POLLWRNORM 0x0010
+#define WIN_POLLERR 0x0001
+#define WIN_POLLHUP 0x0002
+#define WIN_POLLNVAL 0x0004
 
 typedef unsigned long long WinSocket;
 
@@ -69,6 +74,12 @@ typedef struct {
     long tv_sec;
     long tv_usec;
 } WinTimeval;
+
+typedef struct {
+    WinSocket fd;
+    short events;
+    short revents;
+} WinPollFd;
 
 typedef struct {
     unsigned long low;
@@ -170,6 +181,7 @@ __declspec(dllimport) int __stdcall closesocket(WinSocket s);
 __declspec(dllimport) int __stdcall recv(WinSocket s, char *buffer, int length, int flags);
 __declspec(dllimport) int __stdcall send(WinSocket s, const char *buffer, int length, int flags);
 __declspec(dllimport) int __stdcall select(int nfds, WinFdSet *readfds, WinFdSet *writefds, WinFdSet *exceptfds, WinTimeval *timeout);
+__declspec(dllimport) int __stdcall WSAPoll(WinPollFd *fds, unsigned long fd_count, int timeout_milliseconds);
 
 unsigned long __stack_chk_guard;
 
@@ -961,51 +973,90 @@ int platform_shutdown_system(int action) {
     return -1;
 }
 
-int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
-    WinFdSet readfds;
-    WinTimeval timeout;
-    WinTimeval *timeout_ptr = &timeout;
-    size_t indexes[WIN_FD_SETSIZE];
+int platform_poll(PlatformPollFd *fds, size_t fd_count, int timeout_milliseconds) {
+    WinPollFd stack_fds[16];
+    WinPollFd *poll_fds = stack_fds;
+    size_t *indexes;
+    size_t socket_count = 0U;
+    size_t ready_count = 0U;
     size_t i;
     int result;
 
-    if (fds == 0 || fd_count == 0U || ready_index_out == 0) return -1;
+    if (fds == 0 || fd_count == 0U || fd_count > 0xffffffffU ||
+        fd_count > ((size_t)-1) / sizeof(*poll_fds) || fd_count > ((size_t)-1) / sizeof(*indexes)) return -1;
     if (windows_winsock_start() != 0) return -1;
 
-    readfds.fd_count = 0U;
-    for (i = 0U; i < fd_count && readfds.fd_count < WIN_FD_SETSIZE; ++i) {
-        if (windows_fd_is_socket(fds[i])) {
-            indexes[readfds.fd_count] = i;
-            readfds.fd_array[readfds.fd_count] = windows_socket_for_fd(fds[i]);
-            readfds.fd_count += 1U;
-        } else if (fds[i] >= 0) {
-            *ready_index_out = i;
-            return 1;
+    indexes = (size_t *)rt_malloc_array(fd_count, sizeof(*indexes));
+    if (indexes == 0) return -1;
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (WinPollFd *)rt_malloc_array(fd_count, sizeof(*poll_fds));
+        if (poll_fds == 0) {
+            rt_free(indexes);
+            return -1;
         }
     }
-    if (readfds.fd_count == 0U) return -1;
 
-    if (timeout_milliseconds < 0) {
-        timeout_ptr = 0;
-    } else {
-        timeout.tv_sec = timeout_milliseconds / 1000;
-        timeout.tv_usec = (long)(timeout_milliseconds % 1000) * 1000L;
+    for (i = 0U; i < fd_count; ++i) {
+        fds[i].revents = 0U;
+        if (windows_fd_is_socket(fds[i].fd)) {
+            indexes[socket_count] = i;
+            poll_fds[socket_count].fd = windows_socket_for_fd(fds[i].fd);
+            poll_fds[socket_count].events = 0;
+            if ((fds[i].events & PLATFORM_POLL_READ) != 0U) poll_fds[socket_count].events |= WIN_POLLRDNORM;
+            if ((fds[i].events & PLATFORM_POLL_WRITE) != 0U) poll_fds[socket_count].events |= WIN_POLLWRNORM;
+            poll_fds[socket_count].revents = 0;
+            socket_count += 1U;
+        } else if (fds[i].fd >= 0) {
+            fds[i].revents = fds[i].events;
+            ready_count += 1U;
+        }
     }
 
-    result = select(0, &readfds, 0, 0, timeout_ptr);
-    if (result <= 0) return result;
-    if (readfds.fd_count > 0U) {
-        WinSocket ready_socket = readfds.fd_array[0];
+    result = 0;
+    if (socket_count != 0U) {
+        result = WSAPoll(poll_fds, (unsigned long)socket_count, ready_count != 0U ? 0 : timeout_milliseconds);
+        if (result < 0) ready_count = (size_t)-1;
+        for (i = 0U; result > 0 && i < socket_count; ++i) {
+            unsigned int revents = 0U;
+            if ((poll_fds[i].revents & WIN_POLLRDNORM) != 0) revents |= PLATFORM_POLL_READ;
+            if ((poll_fds[i].revents & WIN_POLLWRNORM) != 0) revents |= PLATFORM_POLL_WRITE;
+            if ((poll_fds[i].revents & (WIN_POLLERR | WIN_POLLHUP | WIN_POLLNVAL)) != 0) revents |= PLATFORM_POLL_ERROR;
+            fds[indexes[i]].revents = revents;
+            if (revents != 0U) ready_count += 1U;
+        }
+    } else if (ready_count == 0U) {
+        ready_count = (size_t)-1;
+    }
+    if (poll_fds != stack_fds) rt_free(poll_fds);
+    rt_free(indexes);
+    return ready_count == (size_t)-1 ? -1 : (int)ready_count;
+}
+
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    PlatformPollFd *poll_fds;
+    int result;
+    size_t i;
+
+    if (fds == 0 || fd_count == 0U || ready_index_out == 0) return -1;
+    poll_fds = (PlatformPollFd *)rt_malloc_array(fd_count, sizeof(*poll_fds));
+    if (poll_fds == 0) return -1;
+    for (i = 0U; i < fd_count; ++i) {
+        poll_fds[i].fd = fds[i];
+        poll_fds[i].events = PLATFORM_POLL_READ;
+        poll_fds[i].revents = 0U;
+    }
+    result = platform_poll(poll_fds, fd_count, timeout_milliseconds);
+    if (result > 0) {
         for (i = 0U; i < fd_count; ++i) {
-            if (windows_fd_is_socket(fds[i]) && windows_socket_for_fd(fds[i]) == ready_socket) {
+            if (poll_fds[i].revents != 0U) {
                 *ready_index_out = i;
-                return 1;
+                result = 1;
+                break;
             }
         }
-        *ready_index_out = indexes[0];
-        return 1;
     }
-    return 0;
+    rt_free(poll_fds);
+    return result;
 }
 
 int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out) {

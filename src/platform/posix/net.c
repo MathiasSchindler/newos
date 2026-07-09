@@ -592,14 +592,14 @@ int platform_accept_tcp(int listener_fd, int *client_fd_out) {
     return 0;
 }
 
-int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+int platform_poll(PlatformPollFd *fds, size_t fd_count, int timeout_milliseconds) {
     struct pollfd stack_fds[16];
     struct pollfd *poll_fds = stack_fds;
     int has_valid_fd = 0;
     size_t i;
     int rc;
 
-    if (fds == NULL || fd_count == 0U || ready_index_out == NULL) {
+    if (fds == NULL || fd_count == 0U || fd_count > ((size_t)-1) / sizeof(struct pollfd)) {
         errno = EINVAL;
         return -1;
     }
@@ -613,10 +613,13 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
     }
 
     for (i = 0; i < fd_count; ++i) {
-        poll_fds[i].fd = fds[i];
-        poll_fds[i].events = (short)(POLLIN | POLLERR | POLLHUP);
+        poll_fds[i].fd = fds[i].fd;
+        poll_fds[i].events = 0;
+        if ((fds[i].events & PLATFORM_POLL_READ) != 0U) poll_fds[i].events |= POLLIN;
+        if ((fds[i].events & PLATFORM_POLL_WRITE) != 0U) poll_fds[i].events |= POLLOUT;
         poll_fds[i].revents = 0;
-        if (fds[i] >= 0) {
+        fds[i].revents = 0U;
+        if (fds[i].fd >= 0) {
             has_valid_fd = 1;
         }
     }
@@ -638,19 +641,48 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
     }
 
     for (i = 0; i < fd_count; ++i) {
-        if (poll_fds[i].fd >= 0 && (poll_fds[i].revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
-            *ready_index_out = i;
-            if (poll_fds != stack_fds) {
-                free(poll_fds);
-            }
-            return 1;
-        }
+        if ((poll_fds[i].revents & POLLIN) != 0) fds[i].revents |= PLATFORM_POLL_READ;
+        if ((poll_fds[i].revents & POLLOUT) != 0) fds[i].revents |= PLATFORM_POLL_WRITE;
+        if ((poll_fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) fds[i].revents |= PLATFORM_POLL_ERROR;
     }
 
     if (poll_fds != stack_fds) {
         free(poll_fds);
     }
-    return 0;
+    return rc;
+}
+
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    PlatformPollFd stack_fds[16];
+    PlatformPollFd *poll_fds = stack_fds;
+    int result;
+    size_t i;
+
+    if (fds == NULL || fd_count == 0U || ready_index_out == NULL || fd_count > ((size_t)-1) / sizeof(*poll_fds)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (PlatformPollFd *)malloc(fd_count * sizeof(*poll_fds));
+        if (poll_fds == NULL) return -1;
+    }
+    for (i = 0U; i < fd_count; ++i) {
+        poll_fds[i].fd = fds[i];
+        poll_fds[i].events = PLATFORM_POLL_READ;
+        poll_fds[i].revents = 0U;
+    }
+    result = platform_poll(poll_fds, fd_count, timeout_milliseconds);
+    if (result > 0) {
+        for (i = 0U; i < fd_count; ++i) {
+            if (poll_fds[i].revents != 0U) {
+                *ready_index_out = i;
+                result = 1;
+                break;
+            }
+        }
+    }
+    if (poll_fds != stack_fds) free(poll_fds);
+    return result;
 }
 
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {

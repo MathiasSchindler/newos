@@ -142,7 +142,11 @@ mapfile -t TLS_SOURCES < <(grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/sou
 mapfile -t USB_SOURCES < <(grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t SSH_TRANSPORT_SOURCES < <(grep -oE '"src/shared/ssh/ssh_(core|client_io)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 mapfile -t SSH_CLIENT_SOURCES < <(grep -oE '"src/shared/ssh/ssh_(core|known_hosts|client[^"]*)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
-REUSE_SOURCES=("${SHARED_SOURCES[@]}" "${PLATFORM_SOURCES[@]}" src/arch/x86_64/linux/syscall_stubs.S)
+MEMORY_SOURCE=src/shared/runtime/memory.c
+REUSE_SOURCES=()
+for src in "${SHARED_SOURCES[@]}" "${PLATFORM_SOURCES[@]}" src/arch/x86_64/linux/syscall_stubs.S; do
+  [[ "$src" == "$MEMORY_SOURCE" ]] || REUSE_SOURCES+=("$src")
+done
 SSH_CRYPTO_SOURCES=("${CRYPTO_SOURCES[@]}" src/shared/crypto/curve25519.c src/shared/crypto/ed25519.c src/shared/crypto/chacha20_poly1305.c src/shared/crypto/ssh_kdf.c)
 HASH_SOURCES=(src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c)
 TLS_PLATFORM_SOURCE=src/platform/linux/tls.c
@@ -150,10 +154,10 @@ USB_PLATFORM_SOURCE=src/platform/linux/usb.c
 TUI_SOURCE=src/shared/tui.c
 CRT_SRC=src/arch/x86_64/linux/crt0.S
 if [[ "$NEWLINKER_IS_NCC" == "1" ]]; then
-  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -ffunction-sections -fdata-sections "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DNEWOS_HAVE_PTHREAD=0 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_RUNTIME_ALLOC_LOCK=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -ffunction-sections -fdata-sections "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DNEWOS_HAVE_PTHREAD=0 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
   ASMFLAGS=(-m64 -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
 else
-  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DNEWOS_HAVE_PTHREAD=0 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_RUNTIME_ALLOC_LOCK=1 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
+  CFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" "${NEWLINKER_EXTRA_CFLAGS_ARRAY[@]}" -DNEWOS_HAVE_PTHREAD=0 -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
   ASMFLAGS=("${NEWLINKER_TARGET_FLAGS[@]}" -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fno-pic -fno-pie "${NEWLINKER_NO_ADDRSIG_FLAGS[@]}" -Isrc/shared -Isrc/compiler -Isrc/platform/posix -Isrc/platform/linux -Isrc/platform/common -Isrc/arch/x86_64/linux)
 fi
 if [[ "$NEWLINKER_PROFILE" == "1" || "$NEWLINKER_PROFILE" == "yes" || "$NEWLINKER_PROFILE" == "true" ]]; then
@@ -221,11 +225,21 @@ first_line() { local f="$1"; grep -m1 -E 'error:|undefined reference|multiple de
 tool_stem() { local n="$1"; if [[ "$n" == "[" ]]; then printf 'lbracket'; else n="${n//\//_}"; n="${n//[/lb}"; n="${n//]/rb}"; printf '%s' "$n"; fi; }
 variant_for_tool_source() {
   local tool="$1" src="$2"
+  if [[ "$src" == "$MEMORY_SOURCE" ]]; then
+    if tool_needs_allocator_lock "$tool"; then printf 'alloc-lock'; else printf 'alloc-none'; fi
+    return 0
+  fi
   if [[ "$src" == "src/compiler/linker.c" || "$src" == "src/compiler/linker_"*.c ]]; then
     if [[ "$tool" == "linker" ]]; then printf 'linker-report'; return 0; fi
     if [[ "$tool" == "ncc" ]]; then printf 'linker-core'; return 0; fi
   fi
   printf ''
+}
+tool_needs_allocator_lock() {
+  case "$1" in
+    zip|bzip2|bunzip2|expack|pgpmsg) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 compile_direct() {
   local src="$1" variant="${2:-}" result="$3" key obj log rc cflags asmflags
@@ -233,6 +247,7 @@ compile_direct() {
   obj=$(obj_for "$src" "$variant"); log="$LOGROOT/compile-${obj##*/}.log"; mkdir -p "$(dirname "$obj")"
   cflags=("${CFLAGS[@]}"); asmflags=("${ASMFLAGS[@]}")
   case "$variant" in
+    alloc-lock) cflags+=(-DNEWOS_RUNTIME_ALLOC_LOCK=1) ;;
     linker-core) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
     linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1); asmflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
@@ -263,6 +278,7 @@ compile_manifest_direct() {
   local variant="$1" manifest="$2" result="$3" log="$4" rc cflags key src obj
   cflags=("${CFLAGS[@]}")
   case "$variant" in
+    alloc-lock) cflags+=(-DNEWOS_RUNTIME_ALLOC_LOCK=1) ;;
     linker-core) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
     linker-report) cflags+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
@@ -521,6 +537,7 @@ link_one_tool_lto() {
     ncc) args+=(-DCOMPILER_LINKER_ENABLE_REPORTING=0) ;;
     linker) args+=(-DCOMPILER_LINKER_ENABLE_REPORTING=1) ;;
   esac
+  if tool_needs_allocator_lock "$tool"; then args+=(-DNEWOS_RUNTIME_ALLOC_LOCK=1); fi
   args+=(-nostdlib -static -flto)
   append_ncc_linker_flags args
   args+=(-o "$outbin" "$CRT_OBJ")
@@ -577,6 +594,7 @@ for tool in $TOOLS; do
   elif [[ "$tool" == "[" && -f src/tools/test.c ]]; then append_unique_source tool_sources src/tools/test.c
   else compile_fail=$((compile_fail+1)); printf 'compile\t%s\t%s\n' "$tool" "missing main source" >> "$FAILFILE"; continue
   fi
+  append_unique_source tool_sources "$MEMORY_SOURCE"
   case "$tool" in
     sql)
       ;;

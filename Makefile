@@ -161,6 +161,22 @@ FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/(fontrender_runtime|fontrend
 FONTRENDER_DEPS := $(FONTRENDER_SOURCES) src/shared/fontrender_runtime.h $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
 FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
+CONCURRENCYTEST_SOURCE := tests/fixtures/platform/concurrencytest.c
+CONCURRENCYTEST_SOURCES := \
+	$(CONCURRENCYTEST_SOURCE) \
+	src/shared/runtime/concurrency.c \
+	src/shared/runtime/io_loop.c \
+	src/shared/runtime/io.c \
+	src/shared/runtime/memory.c \
+	src/shared/runtime/parse.c \
+	src/shared/runtime/string.c \
+	src/platform/linux/fs.c \
+	src/platform/linux/io.c \
+	src/platform/linux/net.c \
+	src/platform/linux/process.c \
+	src/platform/linux/thread.c \
+	src/platform/linux/time.c \
+	src/platform/linux/stack_guard.c
 CRYPTO_USB_TEST_SOURCE := tests/fixtures/crypto_usb_test.c
 HASH_SOURCES := \
 	$(shell grep -oE '"src/shared/hash_util\.c"' src/compiler/source_manifest.h | tr -d '"') \
@@ -240,7 +256,9 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 
 .PHONY: all host freestanding test benchmark compiler-benchmark clean
 
-test: $(DEFAULT_ALL_TARGETS)
+TEST_RUNTIME_TARGETS := $(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest)
+
+test: $(DEFAULT_ALL_TARGETS) $(TEST_RUNTIME_TARGETS)
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
 
@@ -655,6 +673,9 @@ $(TARGET_BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_DEPS) $(PROFILE_RUNTIM
 
 $(TARGET_BUILD_DIR)/threadtest: $(THREADTEST_SOURCE) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
+$(TARGET_BUILD_DIR)/concurrencytest: $(CONCURRENCYTEST_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/concurrency.h src/shared/io_loop.h $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(filter-out $(FREESTANDING_LTO_FLAGS),$(FREESTANDING_CFLAGS)) -DNEWOS_RUNTIME_ALLOC_LOCK=1 $(CONCURRENCYTEST_SOURCES) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(filter-out $(FREESTANDING_LTO_FLAGS),$(TARGET_LDFLAGS)) -o $@
 
 $(INCEPTION_BUILD_DIR)/man: src/tools/man.c $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(INCEPTION_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(PROFILE_RUNTIME_SOURCE) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

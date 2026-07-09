@@ -21,7 +21,7 @@ MACOS_FREESTANDING_TRIPLE ?= arm64-apple-macos11
 ROOT_LINKER ?= $(ROOT)/build/linker
 TARGET_CC := $(MACOS_FREESTANDING_CC)
 TARGET_ARCH_DIR := $(ROOT)/src/arch/$(TARGET_ARCH)/macos
-COMMON_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-common -fno-jump-tables -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -DNEWOS_MACOS_NEWLINKER -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_RUNTIME_ALLOC_LOCK=3 -DNEWOS_TOOL_DEFAULT_COLOR_NEVER=1 -flto -I$(ROOT)/src/shared -I$(ROOT)/src/platform/macos -I$(TARGET_ARCH_DIR)
+COMMON_CFLAGS ?= -target $(MACOS_FREESTANDING_TRIPLE) $(if $(MACOS_FREESTANDING_SDKROOT),-isysroot $(MACOS_FREESTANDING_SDKROOT)) -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-builtin -fno-common -fno-jump-tables -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-exceptions -DNEWOS_MACOS_NEWLINKER -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_RUNTIME_ALLOC_LOCK=3 -DNEWOS_RUNTIME_TASK_STATS=1 -DNEWOS_TOOL_DEFAULT_COLOR_NEVER=1 -flto -I$(ROOT)/src/shared -I$(ROOT)/src/platform/macos -I$(TARGET_ARCH_DIR)
 LDFLAGS ?= --macho-compact --gc-sections
 TARGET_CC_TARGET_FLAG ?=
 TARGET_BUILTINS_LIB ?=
@@ -40,7 +40,7 @@ $(error Unsupported TARGET_ARCH '$(TARGET_ARCH)'; expected x86_64 or aarch64)
 endif
 TARGET_CC_TARGET_FLAG ?= $(shell mkdir -p "$(OBJ_DIR)" && printf 'int main(void){return 0;}\n' | "$(TARGET_CC)" --target=$(TARGET_TRIPLE) -x c - -c -o "$(OBJ_DIR)/newos-threading-target-check.o" >/dev/null 2>&1 && echo --target=$(TARGET_TRIPLE); rm -f "$(OBJ_DIR)/newos-threading-target-check.o")
 TARGET_BUILTINS_LIB ?= $(shell "$(TARGET_CC)" -print-libgcc-file-name >/dev/null 2>&1 && echo -lgcc || true)
-COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
+COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-unwind-tables -fno-asynchronous-unwind-tables -ffunction-sections -fdata-sections -fPIE -DNEWOS_DISABLE_STACK_GUARD_INIT=1 -DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1 -DNEWOS_RUNTIME_TASK_STATS=1 -I$(ROOT)/src/shared -I$(ROOT)/src/platform/linux -I$(ROOT)/src/platform/common -I$(TARGET_ARCH_DIR)
 LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections $(STRIP_LDFLAGS)
 TARGET_PLATFORM_C_SOURCES := $(ROOT)/src/platform/linux/io.c $(ROOT)/src/platform/linux/time.c $(ROOT)/src/platform/linux/thread.c
 PROFILE_RUNTIME_SOURCE := $(if $(filter 1 yes true,$(PROFILE)),$(ROOT)/src/platform/linux/profiler_runtime.c)

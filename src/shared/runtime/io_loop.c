@@ -77,6 +77,7 @@ void rt_io_loop_destroy(RtIoLoop *loop) {
     rt_free(loop->registrations);
     rt_free(loop->timers);
     rt_free(loop->deferred);
+    rt_free(loop->poll_fds);
     rt_memset(loop, 0, sizeof(*loop));
 }
 
@@ -259,11 +260,10 @@ static void rt_io_loop_compact_timers(RtIoLoop *loop) {
 }
 
 static int rt_io_loop_poll_once(RtIoLoop *loop, int timeout_ms) {
-    int stack_fds[16];
-    int *fds = stack_fds;
+    PlatformPollFd stack_fds[16];
+    PlatformPollFd *fds = stack_fds;
     size_t fd_count = 0U;
     size_t index;
-    size_t ready_index = 0U;
     int poll_result;
 
     rt_io_loop_compact_registrations(loop);
@@ -274,26 +274,38 @@ static int rt_io_loop_poll_once(RtIoLoop *loop, int timeout_ms) {
         return 0;
     }
     if (loop->registration_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
-        fds = (int *)rt_malloc_array(loop->registration_count, sizeof(fds[0]));
-        if (fds == 0) {
-            return -1;
+        if (loop->registration_count > loop->poll_capacity) {
+            PlatformPollFd *next = (PlatformPollFd *)rt_realloc_array(loop->poll_fds, loop->registration_count, sizeof(fds[0]));
+            if (next == 0) return -1;
+            loop->poll_fds = next;
+            loop->poll_capacity = loop->registration_count;
         }
+        fds = loop->poll_fds;
     }
     for (index = 0U; index < loop->registration_count; ++index) {
-        fds[fd_count++] = loop->registrations[index].fd;
+        fds[fd_count].fd = loop->registrations[index].fd;
+        fds[fd_count].events = 0U;
+        if ((loop->registrations[index].events & RT_IO_READ) != 0U) fds[fd_count].events |= PLATFORM_POLL_READ;
+        if ((loop->registrations[index].events & RT_IO_WRITE) != 0U) fds[fd_count].events |= PLATFORM_POLL_WRITE;
+        fds[fd_count].revents = 0U;
+        fd_count += 1U;
     }
-    poll_result = platform_poll_fds(fds, fd_count, &ready_index, timeout_ms);
-    if (fds != stack_fds) {
-        rt_free(fds);
-    }
+    poll_result = platform_poll(fds, fd_count, timeout_ms);
     if (poll_result <= 0) {
         return poll_result;
     }
-    if (ready_index < loop->registration_count && loop->registrations[ready_index].active) {
-        RtIoRegistration registration = loop->registrations[ready_index];
-        registration.callback(registration.fd, registration.events, registration.arg);
+    for (index = 0U; index < fd_count && !loop->stop; ++index) {
+        unsigned int events = 0U;
+        RtIoRegistration registration;
+
+        if (fds[index].revents == 0U || index >= loop->registration_count || !loop->registrations[index].active) continue;
+        if ((fds[index].revents & PLATFORM_POLL_READ) != 0U) events |= RT_IO_READ;
+        if ((fds[index].revents & PLATFORM_POLL_WRITE) != 0U) events |= RT_IO_WRITE;
+        if ((fds[index].revents & PLATFORM_POLL_ERROR) != 0U) events |= RT_IO_ERROR;
+        registration = loop->registrations[index];
+        registration.callback(registration.fd, events, registration.arg);
     }
-    return 1;
+    return poll_result;
 }
 
 int rt_io_loop_run(RtIoLoop *loop) {

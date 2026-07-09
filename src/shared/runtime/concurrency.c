@@ -38,6 +38,7 @@ static void rt_task_pool_record_error(RtTaskPool *pool, int error) {
     }
 }
 
+#if NEWOS_RUNTIME_TASK_STATS
 static void rt_task_pool_stat_add(unsigned long long *field, unsigned long long value) {
     (void)__atomic_fetch_add(field, value, __ATOMIC_RELAXED);
 }
@@ -59,6 +60,12 @@ static void rt_task_pool_stat_add_worker(unsigned long long *fields, unsigned in
         rt_task_pool_stat_add(&fields[worker_index], value);
     }
 }
+#else
+#define rt_task_pool_stat_add(field, value) ((void)0)
+#define rt_task_pool_stat_store_uint(field, value) ((void)0)
+#define rt_task_pool_stat_store_size(field, value) ((void)0)
+#define rt_task_pool_stat_add_worker(fields, worker_index, value) ((void)0)
+#endif
 
 static size_t rt_task_pool_next_chunk(RtTaskPool *pool, size_t *end_out) {
     size_t begin;
@@ -326,11 +333,14 @@ RtArena *rt_task_pool_worker_arena(RtTaskPool *pool, unsigned int worker_index) 
 }
 
 void rt_task_pool_reset_stats(RtTaskPool *pool) {
+#if NEWOS_RUNTIME_TASK_STATS
     unsigned int index;
+#endif
 
     if (pool == 0) {
         return;
     }
+#if NEWOS_RUNTIME_TASK_STATS
     __atomic_store_n(&pool->stats.dispatches, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.parallel_dispatches, 0ULL, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->stats.group_dispatches, 0ULL, __ATOMIC_RELAXED);
@@ -367,6 +377,7 @@ void rt_task_pool_reset_stats(RtTaskPool *pool) {
         __atomic_store_n(&pool->stats.worker_chunks[index], 0ULL, __ATOMIC_RELAXED);
         __atomic_store_n(&pool->stats.worker_group_tasks[index], 0ULL, __ATOMIC_RELAXED);
     }
+#endif
 }
 
 void rt_task_pool_get_stats(const RtTaskPool *pool, RtTaskPoolStats *stats_out) {
@@ -377,7 +388,11 @@ void rt_task_pool_get_stats(const RtTaskPool *pool, RtTaskPoolStats *stats_out) 
         rt_memset(stats_out, 0, sizeof(*stats_out));
         return;
     }
+#if NEWOS_RUNTIME_TASK_STATS
     *stats_out = pool->stats;
+#else
+    rt_memset(stats_out, 0, sizeof(*stats_out));
+#endif
 }
 
 static int rt_task_pool_run_serial_parallel(size_t count, size_t min_chunk, RtParallelBody body, void *arg) {
@@ -405,6 +420,7 @@ static int rt_task_pool_run_serial_parallel(size_t count, size_t min_chunk, RtPa
 
 static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
     unsigned int expected;
+#if NEWOS_RUNTIME_TASK_STATS
     unsigned long long dispatch_start_ns;
     unsigned long long body_start_ns;
     unsigned long long body_end_ns;
@@ -414,6 +430,7 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
 
     dispatch_start_ns = rt_task_pool_now_ns();
     workers_ran_before = __atomic_load_n(&pool->stats.workers_ran, __ATOMIC_RELAXED);
+#endif
     rt_task_pool_stat_add(&pool->stats.dispatches, 1ULL);
     if (work_kind == RT_TASK_WORK_PARALLEL) {
         rt_task_pool_stat_add(&pool->stats.parallel_dispatches, 1ULL);
@@ -441,17 +458,23 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
         rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
         platform_wake_word_count(&pool->generation, pool->active_workers - 1U);
     }
+#if NEWOS_RUNTIME_TASK_STATS
     body_start_ns = rt_task_pool_now_ns();
+#endif
     rt_task_pool_run_work(pool, 0U);
+#if NEWOS_RUNTIME_TASK_STATS
     body_end_ns = rt_task_pool_now_ns();
     rt_task_pool_stat_add(&pool->stats.body_ns, body_end_ns - body_start_ns);
+#endif
     rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
     if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= pool->active_workers) {
         rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
         platform_wake_word_all(&pool->finished_workers);
     }
+#if NEWOS_RUNTIME_TASK_STATS
     rt_task_pool_stat_add(&pool->stats.dispatch_ns, body_start_ns - dispatch_start_ns);
     join_start_ns = rt_task_pool_now_ns();
+#endif
     for (;;) {
         expected = __atomic_load_n(&pool->finished_workers, __ATOMIC_ACQUIRE);
         if (expected >= pool->active_workers) {
@@ -477,11 +500,13 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
         rt_task_pool_stat_add(&pool->stats.join_waits, 1ULL);
         platform_wait_word(&pool->finished_workers, expected);
     }
+#if NEWOS_RUNTIME_TASK_STATS
     rt_task_pool_stat_add(&pool->stats.join_ns, rt_task_pool_now_ns() - join_start_ns);
     workers_ran = __atomic_load_n(&pool->stats.workers_ran, __ATOMIC_RELAXED) - workers_ran_before;
     if ((unsigned long long)pool->active_workers > workers_ran) {
         rt_task_pool_stat_add(&pool->stats.idle_worker_completions, (unsigned long long)pool->active_workers - workers_ran);
     }
+#endif
     __atomic_store_n(&pool->work_kind, RT_TASK_WORK_NONE, __ATOMIC_RELEASE);
     return pool->first_error;
 }

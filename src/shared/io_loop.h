@@ -2,6 +2,7 @@
 #define NEWOS_IO_LOOP_H
 
 #include <stddef.h>
+#include "platform.h"
 
 #define RT_IO_READ  (1U << 0)
 #define RT_IO_WRITE (1U << 1)
@@ -42,6 +43,8 @@ struct RtIoLoop {
     RtIoDeferredEntry *deferred;
     size_t deferred_count;
     size_t deferred_capacity;
+    PlatformPollFd *poll_fds;
+    size_t poll_capacity;
     int stop;
 };
 

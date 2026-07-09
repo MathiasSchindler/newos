@@ -24,6 +24,7 @@
 #define LINUX_POLLOUT 0x0004
 #define LINUX_POLLERR 0x0008
 #define LINUX_POLLHUP 0x0010
+#define LINUX_POLLNVAL 0x0020
 #define LINUX_MSG_ERRQUEUE 0x2000
 #define LINUX_EPERM 1
 #define LINUX_EAGAIN 11
@@ -1693,20 +1694,30 @@ int platform_accept_tcp(int listener_fd, int *client_fd_out) {
     return 0;
 }
 
-int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
-    struct linux_pollfd poll_fds[16];
+int platform_poll(PlatformPollFd *fds, size_t fd_count, int timeout_milliseconds) {
+    struct linux_pollfd stack_fds[16];
+    struct linux_pollfd *poll_fds = stack_fds;
     struct linux_timespec timeout;
     long result;
     size_t i;
 
-    if (fds == 0 || fd_count == 0U || fd_count > sizeof(poll_fds) / sizeof(poll_fds[0]) || ready_index_out == 0) {
+    if (fds == 0 || fd_count == 0U || fd_count > ((size_t)-1) / sizeof(poll_fds[0])) {
         return -1;
     }
 
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (struct linux_pollfd *)platform_allocate_pages(fd_count * sizeof(poll_fds[0]));
+        if (poll_fds == 0) return -1;
+    }
+
     for (i = 0U; i < fd_count; ++i) {
-        poll_fds[i].fd = fds[i];
-        poll_fds[i].events = (short)(LINUX_POLLIN | LINUX_POLLERR | LINUX_POLLHUP);
+        short events = 0;
+        if ((fds[i].events & PLATFORM_POLL_READ) != 0U) events |= LINUX_POLLIN;
+        if ((fds[i].events & PLATFORM_POLL_WRITE) != 0U) events |= LINUX_POLLOUT;
+        poll_fds[i].fd = fds[i].fd;
+        poll_fds[i].events = events;
         poll_fds[i].revents = 0;
+        fds[i].revents = 0U;
     }
 
     if (timeout_milliseconds >= 0) {
@@ -1717,18 +1728,47 @@ int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, 
         result = linux_syscall5(LINUX_SYS_PPOLL, (long)poll_fds, fd_count, 0, 0, 0);
     }
 
-    if (result <= 0) {
-        return (int)result;
-    }
-
-    for (i = 0U; i < fd_count; ++i) {
-        if ((poll_fds[i].revents & (LINUX_POLLIN | LINUX_POLLERR | LINUX_POLLHUP)) != 0) {
-            *ready_index_out = i;
-            return 1;
+    if (result > 0) {
+        for (i = 0U; i < fd_count; ++i) {
+            if ((poll_fds[i].revents & LINUX_POLLIN) != 0) fds[i].revents |= PLATFORM_POLL_READ;
+            if ((poll_fds[i].revents & LINUX_POLLOUT) != 0) fds[i].revents |= PLATFORM_POLL_WRITE;
+            if ((poll_fds[i].revents & (LINUX_POLLERR | LINUX_POLLHUP | LINUX_POLLNVAL)) != 0) {
+                fds[i].revents |= PLATFORM_POLL_ERROR;
+            }
         }
     }
+    if (poll_fds != stack_fds) (void)platform_free_pages(poll_fds, fd_count * sizeof(poll_fds[0]));
+    return (int)result;
+}
 
-    return 0;
+int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds) {
+    PlatformPollFd stack_fds[16];
+    PlatformPollFd *poll_fds = stack_fds;
+    int result;
+    size_t i;
+
+    if (fds == 0 || fd_count == 0U || ready_index_out == 0 || fd_count > ((size_t)-1) / sizeof(poll_fds[0])) return -1;
+    if (fd_count > sizeof(stack_fds) / sizeof(stack_fds[0])) {
+        poll_fds = (PlatformPollFd *)platform_allocate_pages(fd_count * sizeof(poll_fds[0]));
+        if (poll_fds == 0) return -1;
+    }
+    for (i = 0U; i < fd_count; ++i) {
+        poll_fds[i].fd = fds[i];
+        poll_fds[i].events = PLATFORM_POLL_READ;
+        poll_fds[i].revents = 0U;
+    }
+    result = platform_poll(poll_fds, fd_count, timeout_milliseconds);
+    if (result > 0) {
+        for (i = 0U; i < fd_count; ++i) {
+            if (poll_fds[i].revents != 0U) {
+                *ready_index_out = i;
+                result = 1;
+                break;
+            }
+        }
+    }
+    if (poll_fds != stack_fds) (void)platform_free_pages(poll_fds, fd_count * sizeof(poll_fds[0]));
+    return result;
 }
 
 int platform_netcat(const char *host, unsigned int port, const PlatformNetcatOptions *options) {

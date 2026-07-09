@@ -90,11 +90,12 @@ These primitives should be:
 - small enough to remain acceptable in tiny binaries
 - deterministic and independent of libc
 
-The current byte-wise volatile implementations are conservative. The target is a
-careful word-at-a-time implementation with byte tails, while preserving the
-anti-recursion property through compiler flags, attributes, or implementation
-style. Any replacement must be checked on hosted, Linux freestanding, and macOS
-project-linked builds.
+The current implementations copy and compare machine words where alignment and
+remaining length permit, then finish with byte tails. They retain conservative
+byte paths and are compiled with the freestanding anti-recursion policy. Changes
+must still be checked on hosted, Linux freestanding, and macOS project-linked
+builds because compiler loop recognition can otherwise turn a primitive back
+into a call to itself.
 
 ## GENERAL HEAP
 
@@ -114,6 +115,12 @@ The exact classes should continue to be benchmarked. The current behavior is:
 - `rt_free` of a small allocation pushes the slot back onto the class free list
 - large allocations are page-backed directly rather than stored in small bins
 - large freed allocations enter a bounded cache or return pages to the platform
+
+The release defaults bound the large-allocation cache to 8 MiB and 32 mappings.
+These are implementation defaults, not API guarantees, and can be overridden at
+compile time with `RT_LARGE_CACHE_MAX_BYTES` and
+`RT_LARGE_CACHE_MAX_COUNT`. A public cache-trim operation has not been added;
+long-running-service measurements should decide whether one is necessary.
 
 This model favors speed, small code, and predictable behavior over perfect heap
 packing. That trade is appropriate for this userland: many tools are short-lived,
@@ -214,8 +221,10 @@ is:
 
 Arena allocation should be a bump-pointer fast path inside page-backed blocks.
 Passing `0` as `default_block_size` selects the runtime default. `rt_arena_reset`
-rewinds all allocations in existing backing blocks as a group. `rt_arena_destroy`
-returns backing pages to the platform.
+rewinds all allocations in existing backing blocks as a group. Subsequent
+allocations scan those reset blocks before obtaining more pages, so a repeated
+phase with the same high-water mark reuses its mappings. Blocks remain attached
+until `rt_arena_destroy` returns their backing pages to the platform.
 
 Good arena candidates include:
 
@@ -240,6 +249,7 @@ The intended modes are:
     NEWOS_RUNTIME_ALLOC_LOCK_NONE
     NEWOS_RUNTIME_ALLOC_LOCK_ATOMIC
     NEWOS_RUNTIME_ALLOC_LOCK_PTHREAD
+    NEWOS_RUNTIME_ALLOC_LOCK_PLATFORM
 
 Single-threaded tools should use no allocator lock. Tools that allocate across
 project threads should opt into the smallest correct lock mode for the selected
@@ -248,6 +258,15 @@ but freestanding targets should avoid pthread assumptions.
 
 This is a deliberate performance and size choice. The common case is a
 single-threaded freestanding tool; it should not pay for atomics or mutexes.
+
+The normal Linux x86-64 project-linker build compiles separate no-lock and
+atomic-lock `memory.c` objects. It selects the locked object only for current
+tools whose worker bodies can allocate: `zip`, `bzip2`, `bunzip2`, `expack`, and
+`pgpmsg`. `sort` and the checksum tools use preallocated or fixed worker state
+and retain the no-lock allocator. The macOS project-linked build still selects
+the platform-mutex allocator globally as a bring-up safety policy; narrowing its
+LTO object grouping remains an implementation task rather than an achieved
+zero-cost property.
 
 ## DEBUGGING MODES
 

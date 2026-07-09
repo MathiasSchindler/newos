@@ -317,6 +317,16 @@ typedef struct {
     volatile int count;
 } PlatformSemaphore;
 
+#define PLATFORM_POLL_READ  (1U << 0)
+#define PLATFORM_POLL_WRITE (1U << 1)
+#define PLATFORM_POLL_ERROR (1U << 2)
+
+typedef struct {
+    int fd;
+    unsigned int events;
+    unsigned int revents;
+} PlatformPollFd;
+
 typedef struct {
     unsigned int index;
     unsigned int flags;
@@ -581,6 +591,7 @@ int platform_dhcp_request(
     PlatformDhcpLease *lease_out
 );
 int platform_list_sockets(PlatformSocketEntry *entries_out, size_t entry_capacity, size_t *count_out, int include_tcp, int include_udp, int listening_only);
+int platform_poll(PlatformPollFd *fds, size_t fd_count, int timeout_milliseconds);
 int platform_poll_fds(const int *fds, size_t fd_count, size_t *ready_index_out, int timeout_milliseconds);
 int platform_create_pipe(int pipe_fds[2]);
 int platform_drop_privileges(const char *username, const char *groupname);

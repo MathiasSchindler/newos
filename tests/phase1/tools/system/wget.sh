@@ -186,6 +186,60 @@ PY
     wait "$malformed_pid" || true
     assert_file_contains "$WORK_DIR/wget_malformed_server.out" 'WGET_CLOSED_AFTER_LENGTH' "wget should close after declared Content-Length bytes"
     assert_file_contains "$WORK_DIR/wget_malformed_server.out" 'MOCK_WGET_MALFORMED_OK' "mock wget malformed server did not complete"
+
+    timeout_port_file="$WORK_DIR/wget_timeout_port.txt"
+    python3 - <<'PY' "$timeout_port_file" > "$WORK_DIR/wget_timeout_server.out" 2>&1 &
+import socket
+import sys
+import time
+
+port_file = sys.argv[1]
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind(("127.0.0.1", 0))
+sock.listen(2)
+with open(port_file, "w", encoding="utf-8") as handle:
+    handle.write(str(sock.getsockname()[1]) + "\n")
+
+conn, _ = sock.accept()
+conn.recv(4096)
+conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na")
+for byte in (b"b", b"c", b"d"):
+    time.sleep(0.35)
+    conn.sendall(byte)
+conn.close()
+
+conn, _ = sock.accept()
+conn.recv(4096)
+conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhe")
+time.sleep(1.2)
+try:
+    conn.sendall(b"llo")
+except (BrokenPipeError, ConnectionResetError):
+    pass
+conn.close()
+sock.close()
+print("MOCK_WGET_TIMEOUT_OK")
+PY
+    timeout_pid=$!
+    waits=0
+    while [ ! -s "$timeout_port_file" ] && [ "$waits" -lt 5 ]; do
+        "${TEST_BIN_DIR}/sleep" 1
+        waits=$((waits + 1))
+    done
+    [ -s "$timeout_port_file" ] || fail "wget timeout mock server did not publish a port"
+    timeout_port=$(cat "$timeout_port_file" | tr -d ' \r\n')
+
+    assert_command_succeeds "${TEST_BIN_DIR}/wget" -q -T 700ms -O "$WORK_DIR/wget_paced.out" "http://127.0.0.1:$timeout_port/paced"
+    assert_text_equals "$(cat "$WORK_DIR/wget_paced.out")" 'abcd' "wget timeout should reset after receive activity"
+
+    wget_stall_status=0
+    "${TEST_BIN_DIR}/wget" -q -T 500ms -O "$WORK_DIR/wget_stall.out" "http://127.0.0.1:$timeout_port/stall" > "$WORK_DIR/wget_stall.err" 2>&1 || wget_stall_status=$?
+    assert_exit_code "$wget_stall_status" 1 "wget should fail after a mid-body inactivity timeout"
+    assert_file_contains "$WORK_DIR/wget_stall.err" 'request failed' "wget did not report the stalled response"
+
+    wait "$timeout_pid" || true
+    assert_file_contains "$WORK_DIR/wget_timeout_server.out" 'MOCK_WGET_TIMEOUT_OK' "mock wget timeout server did not complete"
 else
     note "python3 not available; skipping malformed wget HTTP tests"
 fi

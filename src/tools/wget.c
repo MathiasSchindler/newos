@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "io_loop.h"
 #include "runtime.h"
 #include "tool_util.h"
 
@@ -26,6 +27,27 @@ typedef struct {
 } WgetOptions;
 
 typedef ToolHttpConnection WgetConnection;
+
+typedef struct {
+    RtIoLoop loop;
+    WgetConnection *connection;
+    const WgetUrl *url;
+    const WgetOptions *options;
+    char *redirect_url;
+    size_t redirect_size;
+    int output_fd;
+    int should_close_output;
+    char output_path[512];
+    char header_buffer[WGET_HEADER_CAPACITY];
+    size_t header_length;
+    size_t content_length;
+    size_t body_written;
+    int header_complete;
+    int has_content_length;
+    int result;
+    int done;
+    unsigned long long last_activity_ns;
+} WgetHttpState;
 
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
 
@@ -488,16 +510,90 @@ static int write_body_bytes(int output_fd, const char *data, size_t size, int ha
     return 0;
 }
 
-static int maybe_wait_for_socket(int socket_fd, unsigned long long timeout_ms) {
-    int fds[1];
-    size_t ready_index = 0;
+static void wget_http_finish(WgetHttpState *state, int result) {
+    if (state->done) return;
+    state->done = 1;
+    state->result = result;
+    (void)rt_io_loop_remove(&state->loop, tool_http_connection_fd(state->connection));
+    rt_io_loop_stop(&state->loop);
+}
 
-    if (timeout_ms == 0ULL) {
-        return 0;
+static int wget_http_consume(WgetHttpState *state, const char *buffer, size_t size) {
+    if (!state->header_complete) {
+        size_t body_offset = 0U;
+        int status_code = 0;
+
+        if (state->header_length + size >= sizeof(state->header_buffer)) return -1;
+        memcpy(state->header_buffer + state->header_length, buffer, size);
+        state->header_length += size;
+        state->header_buffer[state->header_length] = '\0';
+        if (tool_find_http_header_end(state->header_buffer, state->header_length, &body_offset) != 0) return 0;
+
+        state->header_complete = 1;
+        {
+            char saved_char = state->header_buffer[body_offset];
+            state->header_buffer[body_offset] = '\0';
+            if (state->options->show_headers && rt_write_all(2, state->header_buffer, body_offset) != 0) return -1;
+            if (parse_http_headers(state->header_buffer, &status_code, state->redirect_url, state->redirect_size,
+                                   &state->content_length, &state->has_content_length) != 0) return -1;
+            state->header_buffer[body_offset] = saved_char;
+        }
+
+        if (status_code >= 300 && status_code < 400 && state->redirect_url[0] != '\0') return 1;
+        if (status_code < 200 || status_code >= 300) return -1;
+        if (open_output_for_url(state->options, state->url, state->output_path, sizeof(state->output_path), &state->output_fd) != 0) return -1;
+        state->should_close_output = state->output_fd > 1;
+        if (!state->options->quiet && !state->options->output_to_stdout) write_info_line("saving to ", state->output_path);
+        if (state->header_length > body_offset &&
+            write_body_bytes(state->output_fd, state->header_buffer + body_offset, state->header_length - body_offset,
+                             state->has_content_length, state->content_length, &state->body_written) != 0) return -1;
+    } else if (write_body_bytes(state->output_fd, buffer, size, state->has_content_length,
+                                state->content_length, &state->body_written) != 0) {
+        return -1;
     }
 
-    fds[0] = socket_fd;
-    return platform_poll_fds(fds, 1U, &ready_index, (int)timeout_ms) > 0 ? 0 : -1;
+    return state->has_content_length && state->body_written >= state->content_length ? 2 : 0;
+}
+
+static int wget_http_eof_result(const WgetHttpState *state) {
+    if (!state->header_complete) return -1;
+    if (state->has_content_length && state->body_written < state->content_length) return -1;
+    return 0;
+}
+
+static void wget_http_ready(int fd, unsigned int events, void *arg) {
+    WgetHttpState *state = (WgetHttpState *)arg;
+    char buffer[WGET_BUFFER_CAPACITY];
+    long bytes_read;
+    int consume_result;
+
+    (void)fd;
+    if (state->done || (events & (RT_IO_READ | RT_IO_ERROR)) == 0U) return;
+    bytes_read = tool_http_connection_read(state->connection, buffer, sizeof(buffer));
+    if (bytes_read <= 0) {
+        wget_http_finish(state, wget_http_eof_result(state));
+        return;
+    }
+    state->last_activity_ns = platform_get_monotonic_time_ns();
+    consume_result = wget_http_consume(state, buffer, (size_t)bytes_read);
+    if (consume_result != 0) wget_http_finish(state, consume_result == 2 ? 0 : consume_result);
+}
+
+static void wget_http_timeout(void *arg) {
+    WgetHttpState *state = (WgetHttpState *)arg;
+    unsigned long long now;
+    unsigned long long elapsed_ms;
+    unsigned long long remaining_ms;
+
+    if (state->done || state->options->timeout_ms == 0ULL) return;
+    now = platform_get_monotonic_time_ns();
+    elapsed_ms = now >= state->last_activity_ns ? (now - state->last_activity_ns) / 1000000ULL : 0ULL;
+    if (elapsed_ms >= state->options->timeout_ms) {
+        wget_http_finish(state, -1);
+        return;
+    }
+    remaining_ms = state->options->timeout_ms - elapsed_ms;
+    if (rt_io_loop_timer(&state->loop, remaining_ms, wget_http_timeout, state) != 0) wget_http_finish(state, -1);
 }
 
 static int fetch_http_body(
@@ -511,16 +607,11 @@ static int fetch_http_body(
     int should_close_output = 0;
     char output_path[512];
     char request[2048];
-    char header_buffer[WGET_HEADER_CAPACITY];
     size_t request_length = 0;
-    size_t header_length = 0;
-    int header_complete = 0;
-    int status_code = 0;
-    size_t content_length = 0U;
-    size_t body_written = 0U;
-    int has_content_length = 0;
     char buffer[WGET_BUFFER_CAPACITY];
     long bytes_read = 0;
+    WgetHttpState state;
+    int consume_result = 0;
 
     if (tool_http_connection_connect(&connection, url->host, url->port, url->scheme == WGET_SCHEME_HTTPS) != 0) {
         return -1;
@@ -543,105 +634,45 @@ static int fetch_http_body(
         return -1;
     }
 
-    for (;;) {
-        if (!connection.use_tls && maybe_wait_for_socket(tool_http_connection_fd(&connection), options->timeout_ms) != 0) {
-            bytes_read = -1;
-            break;
+    rt_memset(&state, 0, sizeof(state));
+    state.connection = &connection;
+    state.url = url;
+    state.options = options;
+    state.redirect_url = redirect_url;
+    state.redirect_size = redirect_size;
+    state.output_fd = -1;
+    state.result = -1;
+
+    if (!connection.use_tls) {
+        state.last_activity_ns = platform_get_monotonic_time_ns();
+        if (rt_io_loop_init(&state.loop) != 0 ||
+            rt_io_loop_add(&state.loop, tool_http_connection_fd(&connection), RT_IO_READ | RT_IO_ERROR, wget_http_ready, &state) != 0 ||
+            (options->timeout_ms != 0ULL && rt_io_loop_timer(&state.loop, options->timeout_ms, wget_http_timeout, &state) != 0) ||
+            rt_io_loop_run(&state.loop) != 0) {
+            state.result = -1;
         }
-
-        bytes_read = tool_http_connection_read(&connection, buffer, sizeof(buffer));
-        if (bytes_read < 0 && connection.use_tls && header_complete) {
-            bytes_read = 0;
-            break;
-        }
-        if (bytes_read <= 0) {
-            break;
-        }
-
-        if (!header_complete) {
-            size_t body_offset = 0;
-
-            if (header_length + (size_t)bytes_read >= sizeof(header_buffer)) {
-                tool_http_connection_close(&connection);
-                return -1;
-            }
-
-            memcpy(header_buffer + header_length, buffer, (size_t)bytes_read);
-            header_length += (size_t)bytes_read;
-            header_buffer[header_length] = '\0';
-
-            if (tool_find_http_header_end(header_buffer, header_length, &body_offset) != 0) {
-                continue;
-            }
-
-            header_complete = 1;
-            {
-                char saved_char = header_buffer[body_offset];
-                header_buffer[body_offset] = '\0';
-
-                if (options->show_headers && rt_write_all(2, header_buffer, body_offset) != 0) {
-                    tool_http_connection_close(&connection);
-                    return -1;
-                }
-
-                if (parse_http_headers(header_buffer, &status_code, redirect_url, redirect_size, &content_length, &has_content_length) != 0) {
-                    tool_http_connection_close(&connection);
-                    return -1;
-                }
-
-                header_buffer[body_offset] = saved_char;
-            }
-
-            if (status_code >= 300 && status_code < 400 && redirect_url[0] != '\0') {
-                tool_http_connection_close(&connection);
-                return 1;
-            }
-
-            if (status_code < 200 || status_code >= 300) {
-                tool_http_connection_close(&connection);
-                return -1;
-            }
-
-            if (open_output_for_url(options, url, output_path, sizeof(output_path), &output_fd) != 0) {
-                tool_http_connection_close(&connection);
-                return -1;
-            }
-            should_close_output = output_fd > 1;
-            if (!options->quiet && !options->output_to_stdout) {
-                write_info_line("saving to ", output_path);
-            }
-
-            if (header_length > body_offset &&
-                write_body_bytes(output_fd, header_buffer + body_offset, header_length - body_offset, has_content_length, content_length, &body_written) != 0) {
-                if (should_close_output) {
-                    (void)platform_close(output_fd);
-                }
-                tool_http_connection_close(&connection);
-                return -1;
-            }
-            if (has_content_length && body_written >= content_length) {
+        rt_io_loop_destroy(&state.loop);
+    } else {
+        for (;;) {
+            bytes_read = tool_http_connection_read(&connection, buffer, sizeof(buffer));
+            if (bytes_read < 0 && state.header_complete) bytes_read = 0;
+            if (bytes_read <= 0) break;
+            consume_result = wget_http_consume(&state, buffer, (size_t)bytes_read);
+            if (consume_result != 0) {
+                state.result = consume_result == 2 ? 0 : consume_result;
+                state.done = 1;
                 break;
             }
-        } else if (write_body_bytes(output_fd, buffer, (size_t)bytes_read, has_content_length, content_length, &body_written) != 0) {
-            if (should_close_output) {
-                (void)platform_close(output_fd);
-            }
-            tool_http_connection_close(&connection);
-            return -1;
-        } else if (has_content_length && body_written >= content_length) {
-            break;
         }
+        if (!state.done) state.result = wget_http_eof_result(&state);
     }
 
     tool_http_connection_close(&connection);
-    if (should_close_output) {
-        (void)platform_close(output_fd);
-    }
-    if (!header_complete || bytes_read < 0 || (has_content_length && body_written < content_length)) {
-        return -1;
-    }
-
-    return 0;
+    output_fd = state.output_fd;
+    should_close_output = state.should_close_output;
+    rt_copy_string(output_path, sizeof(output_path), state.output_path);
+    if (should_close_output) (void)platform_close(output_fd);
+    return state.result;
 }
 
 static int copy_file_url(const WgetUrl *url, int output_fd) {

@@ -10,7 +10,7 @@ This is the project-owned concurrency design for the freestanding userland. It i
 
 The central decision of this design is that tools do not program against raw threads. They program against two high-level models — a parallel task pool and an I/O readiness loop — and the threads, syscalls, and wait/wake primitives sit underneath as a private substrate. This inversion is what lets the project keep the non-negotiable constraints while still being ambitious:
 
-- a single-threaded tool pays exactly nothing: no extra code, no allocator locking, no TLS setup, no startup cost
+- the target is that a single-threaded tool pays exactly nothing: no extra code, no allocator locking, no TLS setup, no startup cost
 - nothing here introduces an external dependency, a standard C library call, or `libSystem`/dylib imports on macOS
 - the same tool source runs correctly on every platform, including platforms whose native thread backend does not exist yet, because serial execution is a real backend rather than an error path
 
@@ -39,7 +39,7 @@ This convention is not abstraction for its own sake. It is a guardrail: public n
 ## DESIGN PRINCIPLES
 
 - Tools call a model, not a thread. The public surface is the task pool and the I/O loop. Raw thread creation, mutexes, and wait/wake are a private substrate, not the tool-facing contract.
-- Zero cost when unused. A tool that does not call a concurrency model links none of it. Single-threaded binaries are byte-for-byte unaffected.
+- Zero cost when unused is the target and is achieved for concurrency code through section GC and LTO. The Linux x86-64 project-linker path also selects a no-lock allocator for ordinary tools; the macOS project-linked allocator policy is still broader than this target.
 - Serial is a first-class backend. Every parallel API has a correct inline implementation that runs on the calling thread. A missing native backend means "slower," never "broken."
 - No external dependency, ever. No libc, no pthreads in the normal path, no `libSystem`/dylib imports on macOS. Synchronization uses compiler atomic builtins plus one raw kernel wait/wake syscall per platform.
 - Reuse threads, never churn them. Threads are created once into a pool sized to the machine. Per-chunk create/join is treated as a bug, not an API.
@@ -168,13 +168,32 @@ void rt_io_loop_stop(RtIoLoop *loop);
 
 Because everything runs on one thread, there is no shared mutable state across handlers, no mutex, no allocator locking, and no per-connection stack. A downloader fetching several files, or an `httpd` serving many clients, becomes a set of small state machines driven by readiness — typically smaller in both code and memory than the worker-per-client equivalent, and with none of the synchronization surface. Timers and deferred callbacks belong to the model because retry backoff, connection timeouts, and "finish this after the current callback" behavior otherwise get reinvented inside each tool. When such a server also has a genuinely CPU-bound step, it hands that one step to the task pool and continues driving I/O.
 
-The current loop is the portable backend: it keeps registrations, timers, and deferred callbacks in runtime-owned arrays and waits through `platform_poll_fds`. That is enough to validate the model without creating threads for I/O. Native `epoll` on Linux and `kqueue` on macOS remain planned backend swaps behind the same `rt_io_loop_*` interface, with `io_uring` available later only if a real workload justifies the extra backend.
+The current loop is the portable backend: it keeps registrations, timers,
+deferred callbacks, and reusable poll storage in runtime-owned arrays. It waits
+through `platform_poll`, which accepts requested read/write masks and returns
+actual read/write/error masks for every ready descriptor. Linux and hosted POSIX
+have no fixed 16-descriptor limit; the small arrays are only stack fast paths.
+Callbacks for all descriptors reported by one wait are dispatched before the
+next wait. Native `epoll` on Linux and `kqueue` on macOS remain planned backend
+swaps behind the same `rt_io_loop_*` interface.
+
+Plain HTTP receives in `wget` are the first production adopter. HTTPS remains on
+the blocking TLS path because the current TLS abstraction can buffer decrypted
+bytes independently of socket readiness. `wget` uses an activity-based loop
+timer: receive progress resets the effective timeout, while a stalled header or
+body fails. Multi-URL overlap and nonblocking connect/TLS state machines remain
+future work; the current adoption proves readiness and timeout semantics without
+claiming full downloader concurrency yet.
 
 ## LAYER 0: THE SUBSTRATE
 
 Layer 0 is the only code that touches the kernel's threading and synchronization syscalls. It exposes three capabilities and no more.
 
-Raw worker threads start and join a single worker on a page-backed stack the platform owns and releases on join. These calls live in a private substrate header, not in the tool-facing platform API. Pools are the only expected caller; tool code is not meant to use them directly.
+Raw worker threads start and join a single worker on a page-backed stack the
+platform owns and releases on join. The calls currently live in the general
+`platform.h` contract even though pools are the only intended caller. Moving
+them to a private substrate header remains a layering cleanup; tool code must
+continue to use `concurrency.h` rather than call them directly.
 
 ```
 typedef int (*PlatformWorkerMain)(void *arg);
@@ -214,7 +233,11 @@ The I/O loop on macOS currently uses the portable poll backend. A `kqueue` backe
 
 ## HOSTED BACKENDS
 
-Hosted POSIX builds may implement the substrate with pthreads as a bring-up and verification convenience. This is never the contract: hosted code obeys the same Layer 1 semantics so tools cannot accidentally depend on pthread behavior that the freestanding substrate does not provide. The hosted path exists to cross-check the project substrate, not to define it.
+Hosted POSIX currently reports no native worker support and therefore exercises
+the serial backend. A future pthread-backed verification substrate is allowed,
+but it is not implemented and would not define the contract. The hosted path
+still cross-checks model semantics, parsing, and ordinary C behavior; native
+wait/wake and thread startup require the relevant project-linked platform build.
 
 ## PLATFORM EXPECTATIONS FOR TOOL CODE
 
@@ -300,11 +323,11 @@ The migration plan is now past the first-tool stage. The model exists, native wo
 Current status:
 
 1. The serial backend is implemented and remains the correctness baseline. Width 1 runs inline and is used as the deterministic path for tests and debugging.
-2. `RtTaskPool`, `rt_parallel_for`, `RtTaskGroup`, task-group reservation, and pool statistics are implemented in `src/shared/runtime/concurrency.c`.
+2. `RtTaskPool`, `rt_parallel_for`, `RtTaskGroup`, and task-group reservation are implemented in `src/shared/runtime/concurrency.c`. Detailed pool statistics are compiled out by default with zero-filled query results; experimental threading builds enable them with `NEWOS_RUNTIME_TASK_STATS=1`.
 3. Native worker support exists for freestanding Linux x86-64 and project-linked macOS AArch64. Linux AArch64 still falls back to serial execution until its clone trampoline exists.
-4. The portable I/O loop exists in `src/shared/runtime/io_loop.c` and currently runs over `platform_poll_fds`. Native `epoll` and `kqueue` backends have not landed yet.
+4. The portable I/O loop exists in `src/shared/runtime/io_loop.c` and runs over the all-ready `platform_poll` contract. It honors requested masks, reports actual masks, dispatches all returned descriptors, and has no Linux 16-FD cap. Native `epoll` and `kqueue` backends have not landed yet.
 5. Experimental measurement lives under `experimental/threading`: `threadbench`, `threadstress`, `threadcompress`, `threadread`, `benchcmp.sh`, `benchguide.sh`, and `report.sh`.
-6. The macOS project-linked build uses the platform-mutex allocator lock mode for thread-safe global heap access in the current threaded bring-up path. This fixed hangs seen with the atomic spin allocator lock under `zip` and `threadread`-style concurrent read/allocation pressure.
+6. The Linux x86-64 project-linker build selects an atomic-lock allocator object only for tools whose workers allocate. The macOS project-linked build still uses the platform-mutex allocator lock globally for thread-safe heap access in the current threaded bring-up path. This fixed hangs seen with `zip` and `threadread`-style concurrent read/allocation pressure but remains broader than the target policy.
 
 Real tool migrations now cover several workload shapes:
 
@@ -321,7 +344,7 @@ Remaining roadmap:
 
 1. Keep broadening real-tool coverage into image, compiler, linker, SQL, and archive workloads that can use per-index or per-worker output slots.
 2. Finish native Linux AArch64 worker thread support so both Linux project architectures share the same native pool behavior.
-3. Add native `epoll` and `kqueue` I/O-loop backends behind `rt_io_loop_*`, then migrate one I/O-bound tool such as a downloader or server loop and compare it against the existing polling shape.
+3. Extend the first `wget` adoption to overlapping plain-HTTP transfers and, once TLS exposes nonblocking buffered-progress semantics, HTTPS; add native `epoll` and `kqueue` backends only when portable-poll measurements justify them.
 4. Move hot worker allocation paths toward preallocated output arrays and per-worker arenas so the global allocator lock becomes rare rather than structural.
 5. Standardize worker-count parsing and benchmark reporting so each tool does not reinvent the same `NEWOS_<TOOL>_WORKERS` plumbing differently.
 6. Tighten build granularity so tools that never use concurrency do not inherit thread-safe allocator policy or concurrency object code merely because one threaded tool in the same build tree needs it.
@@ -382,7 +405,9 @@ A design that speeds up one large workload but grows tiny tools, forces global a
 
 The intended result is a concurrency layer where:
 
-- single-threaded tools are byte-for-byte unaffected and pay nothing
+- concurrency code is absent from single-threaded tools after section GC/LTO,
+  and allocator locking is absent where build granularity currently permits it;
+  macOS allocator-object granularity still has to reach this target
 - tools express CPU parallelism through a reusable task pool and I/O concurrency through an I/O loop, never through hand-rolled threads
 - the hot parallel path is lock-free by construction via per-worker arenas, with no thread-local storage
 - one wait/wake substrate (`platform_wait_word` over Linux `futex` or Darwin `__ulock`) and compiler atomics carry all synchronization, with no libc and no `libSystem`
