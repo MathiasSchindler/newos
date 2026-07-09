@@ -152,7 +152,7 @@ TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_
 PGPQUERY_TOOLS := pgpquery
 PGPQUERY_SOURCES := $(sort $(PGP_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES))
 USB_SOURCES := $(shell grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"')
-HOST_USB_PLATFORM_SOURCES := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter arm64 aarch64,$(HOST_ARCH)),src/platform/macos/iokit.c src/platform/macos/usb.c,src/platform/posix/usb.c),$(if $(filter Linux,$(HOST_OS)),src/platform/linux/usb.c,src/platform/posix/usb.c))
+HOST_USB_PLATFORM_SOURCES := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter arm64 aarch64,$(HOST_ARCH)),src/platform/macos/iokit.c src/platform/macos/usb.c,src/platform/posix/usb.c),$(if $(filter Linux,$(HOST_OS)),src/platform/linux/usb.c $(TARGET_ARCH_DIR)/syscall_stubs.S,src/platform/posix/usb.c))
 TARGET_USB_PLATFORM_SOURCES := src/platform/linux/usb.c
 MACOS_USB_PLATFORM_SOURCES := src/platform/macos/iokit.c src/platform/macos/usb.c
 
@@ -541,13 +541,13 @@ $(TARGET_BUILD_DIR)/editor: src/tools/editor.c $(EDITOR_TOOL_SOURCES) $(TARGET_T
 $(BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_USB_PLATFORM_SOURCES) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+$(BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb_descriptor.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_USB_PLATFORM_SOURCES) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(USB_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) $(HOST_USB_PLATFORM_SOURCES) -o $@
 
 $(TARGET_BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_TLS_OBJECTS) $(TARGET_CRYPTO_OBJECTS) $(TARGET_TLS_PLATFORM_OBJECT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_TLS_OBJECTS) $(TARGET_CRYPTO_OBJECTS) $(TARGET_TLS_PLATFORM_OBJECT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(TARGET_BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb.h $(TARGET_USB_PLATFORM_SOURCES) $(TARGET_REUSABLE_OBJECTS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb_descriptor.h $(TARGET_USB_PLATFORM_SOURCES) $(TARGET_REUSABLE_OBJECTS) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(USB_SOURCES) $(TARGET_USB_PLATFORM_SOURCES) $(TARGET_REUSABLE_OBJECTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/wtf: src/tools/wtf.c $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)

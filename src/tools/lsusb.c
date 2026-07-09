@@ -1,7 +1,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "usb.h"
+#include "usb_descriptor.h"
 
 #define LSUSB_DEVICE_CAPACITY 256U
 #define LSUSB_CONFIG_BUFFER_SIZE 4096U

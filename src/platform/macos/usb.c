@@ -1,6 +1,6 @@
 #include "platform.h"
 #include "runtime.h"
-#include "usb.h"
+#include "usb_descriptor.h"
 
 #include "mach.h"
 
@@ -290,7 +290,7 @@ int platform_usb_list_devices(PlatformUsbDevice *entries_out, size_t entry_capac
     if (macos_iokit_get_main_port(&main_port) != 0) return -1;
     if (macos_iokit_get_root_entry(main_port, &root) != 0) return -1;
     if (macos_usb_walk_ioreg(root, entries_out, entry_capacity, &count, 0U) != 0) return -1;
-    *count_out = count;
+    *count_out = count < entry_capacity ? count : entry_capacity;
     return 0;
 }
 

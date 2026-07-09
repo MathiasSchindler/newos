@@ -1,5 +1,5 @@
-#ifndef NEWOS_USB_H
-#define NEWOS_USB_H
+#ifndef NEWOS_USB_DESCRIPTOR_H
+#define NEWOS_USB_DESCRIPTOR_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -39,7 +39,7 @@ typedef struct {
     uint8_t configuration_value;
     uint8_t configuration_index;
     uint8_t attributes;
-    uint8_t max_power_ma;
+    uint16_t max_power_ma;
 } UsbConfigurationDescriptor;
 
 typedef struct {

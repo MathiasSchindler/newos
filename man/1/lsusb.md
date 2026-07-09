@@ -18,7 +18,10 @@ address, vendor/product ID, device class, configuration count, and optionally
 the backend path.
 
 On macOS freestanding builds, the tool uses the raw Mach/IOKit USB backend. On
-Linux freestanding builds, it uses `/dev/bus/usb` and `usbfs` ioctls.
+Linux freestanding builds, it uses `/dev/bus/usb`. Device discovery and
+descriptor inspection read the usbfs descriptor stream without requiring
+write access to device nodes; interface claims and live transfers use usbfs
+ioctls when the caller has permission.
 
 ## CURRENT CAPABILITIES
 
@@ -55,6 +58,8 @@ lsusb -c 09
 
 - Device names are not resolved through `usb.ids`.
 - Host-controller topology is inferred from bus grouping; full port topology is not yet modeled.
+- Linux interface claims and control/bulk transfers require write access to the
+	usbfs device node and can be blocked while a kernel driver owns the interface.
 - macOS live transfers can still be blocked by another driver owning an interface.
 - Windows currently links the API-complete stub backend.
 

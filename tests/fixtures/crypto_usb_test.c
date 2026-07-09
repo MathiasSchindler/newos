@@ -2,7 +2,7 @@
 #include "crypto/brainpoolp256r1.h"
 #include "crypto/sha1.h"
 #include "runtime.h"
-#include "usb.h"
+#include "usb_descriptor.h"
 
 static int bytes_equal(const unsigned char *left, const unsigned char *right, size_t length) {
     return memcmp(left, right, length) == 0;

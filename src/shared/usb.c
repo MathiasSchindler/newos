@@ -1,4 +1,4 @@
-#include "usb.h"
+#include "usb_descriptor.h"
 
 #include "runtime.h"
 
@@ -33,11 +33,12 @@ int usb_parse_configuration_descriptor(const uint8_t *bytes, size_t length, UsbC
     if (!usb_descriptor_header_valid(bytes, length, USB_DESCRIPTOR_TYPE_CONFIGURATION, 9U) || descriptor_out == 0) return -1;
     rt_memset(descriptor_out, 0, sizeof(*descriptor_out));
     descriptor_out->total_length = usb_read_le16(bytes + 2U);
+    if (descriptor_out->total_length < 9U) return -1;
     descriptor_out->interface_count = bytes[4];
     descriptor_out->configuration_value = bytes[5];
     descriptor_out->configuration_index = bytes[6];
     descriptor_out->attributes = bytes[7];
-    descriptor_out->max_power_ma = (uint8_t)(bytes[8] * 2U);
+    descriptor_out->max_power_ma = (uint16_t)((uint16_t)bytes[8] * 2U);
     return 0;
 }
 
