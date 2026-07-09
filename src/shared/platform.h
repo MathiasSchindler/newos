@@ -264,6 +264,14 @@ typedef struct {
 
 typedef struct {
     char path[PLATFORM_USB_PATH_CAPACITY];
+    char topology[64];
+    char speed[24];
+    char usb_version[16];
+    char device_version[16];
+    char manufacturer[128];
+    char product[128];
+    char serial[128];
+    char driver[64];
     unsigned int bus_number;
     unsigned int device_address;
     unsigned int vendor_id;
@@ -272,6 +280,10 @@ typedef struct {
     unsigned int device_subclass;
     unsigned int device_protocol;
     unsigned int configuration_count;
+    unsigned int active_configuration;
+    unsigned int authorized;
+    int has_active_configuration;
+    int has_authorized;
 } PlatformUsbDevice;
 
 typedef struct {

@@ -2,6 +2,7 @@
 #include "usb_descriptor.h"
 
 #define LINUX_USB_ROOT "/dev/bus/usb"
+#define LINUX_USB_SYSFS_ROOT "/sys/bus/usb/devices"
 #define LINUX_O_RDWR 2
 #define LINUX_SEEK_SET 0
 #define LINUX_USB_DESCRIPTOR_STREAM_CAPACITY 4096U
@@ -59,6 +60,114 @@ static int linux_usb_is_decimal_name(const char *text) {
     return 1;
 }
 
+static void linux_usb_trim_text(char *text) {
+    size_t start = 0U;
+    size_t end;
+    size_t index;
+
+    if (text == 0) return;
+    end = rt_strlen(text);
+    while (start < end && (text[start] == ' ' || text[start] == '\t' || text[start] == '\r' || text[start] == '\n')) start += 1U;
+    while (end > start && (text[end - 1U] == ' ' || text[end - 1U] == '\t' || text[end - 1U] == '\r' || text[end - 1U] == '\n')) end -= 1U;
+    for (index = start; index < end; ++index) text[index - start] = text[index];
+    text[end - start] = '\0';
+}
+
+static int linux_usb_read_text_file(const char *path, char *buffer, size_t buffer_size) {
+    long fd;
+    long bytes;
+
+    if (path == 0 || buffer == 0 || buffer_size < 2U) return -1;
+    buffer[0] = '\0';
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)path, LINUX_O_RDONLY | LINUX_O_CLOEXEC, 0);
+    if (fd < 0) return -1;
+    do {
+        bytes = linux_syscall3(LINUX_SYS_READ, fd, (long)buffer, (long)(buffer_size - 1U));
+    } while (bytes == -LINUX_EINTR);
+    (void)linux_syscall1(LINUX_SYS_CLOSE, fd);
+    if (bytes <= 0) return -1;
+    buffer[(size_t)bytes] = '\0';
+    linux_usb_trim_text(buffer);
+    return buffer[0] == '\0' ? -1 : 0;
+}
+
+static int linux_usb_read_attribute(const char *device_path, const char *name, char *buffer, size_t buffer_size) {
+    char path[PLATFORM_USB_PATH_CAPACITY];
+
+    if (rt_join_path(device_path, name, path, sizeof(path)) != 0) return -1;
+    return linux_usb_read_text_file(path, buffer, buffer_size);
+}
+
+static int linux_usb_read_uint_attribute(const char *device_path, const char *name, unsigned int *value_out) {
+    char text[32];
+    unsigned long long value;
+
+    if (value_out == 0 || linux_usb_read_attribute(device_path, name, text, sizeof(text)) != 0 || rt_parse_uint(text, &value) != 0 || value > 0xffffffffULL) return -1;
+    *value_out = (unsigned int)value;
+    return 0;
+}
+
+static void linux_usb_read_driver(const char *device_path, char *driver, size_t driver_size) {
+    char path[PLATFORM_USB_PATH_CAPACITY];
+    char target[PLATFORM_USB_PATH_CAPACITY];
+    long length;
+    size_t start = 0U;
+    size_t index;
+
+    if (driver == 0 || driver_size == 0U) return;
+    driver[0] = '\0';
+    if (rt_join_path(device_path, "driver", path, sizeof(path)) != 0) return;
+    length = linux_syscall4(LINUX_SYS_READLINKAT, LINUX_AT_FDCWD, (long)path, (long)target, (long)(sizeof(target) - 1U));
+    if (length <= 0 || (size_t)length >= sizeof(target)) return;
+    target[(size_t)length] = '\0';
+    for (index = 0U; index < (size_t)length; ++index) {
+        if (target[index] == '/') start = index + 1U;
+    }
+    rt_copy_string(driver, driver_size, target + start);
+}
+
+static void linux_usb_enrich_device(PlatformUsbDevice *device) {
+    char entries[4096];
+    long fd;
+
+    if (device == 0) return;
+    fd = linux_syscall4(LINUX_SYS_OPENAT, LINUX_AT_FDCWD, (long)LINUX_USB_SYSFS_ROOT, LINUX_O_RDONLY | LINUX_O_DIRECTORY | LINUX_O_CLOEXEC, 0);
+    if (fd < 0) return;
+    for (;;) {
+        long bytes = linux_syscall3(LINUX_SYS_GETDENTS64, fd, (long)entries, sizeof(entries));
+        long offset = 0;
+
+        if (bytes <= 0) break;
+        while (offset < bytes) {
+            struct linux_dirent64 *entry = (struct linux_dirent64 *)(void *)(entries + offset);
+            char device_path[PLATFORM_USB_PATH_CAPACITY];
+            unsigned int bus_number;
+            unsigned int device_address;
+
+            if (entry->d_reclen == 0) break;
+            if (entry->d_name[0] != '.' && rt_join_path(LINUX_USB_SYSFS_ROOT, entry->d_name, device_path, sizeof(device_path)) == 0 &&
+                linux_usb_read_uint_attribute(device_path, "busnum", &bus_number) == 0 &&
+                linux_usb_read_uint_attribute(device_path, "devnum", &device_address) == 0 &&
+                bus_number == device->bus_number && device_address == device->device_address) {
+                rt_copy_string(device->topology, sizeof(device->topology), entry->d_name);
+                (void)linux_usb_read_attribute(device_path, "speed", device->speed, sizeof(device->speed));
+                (void)linux_usb_read_attribute(device_path, "version", device->usb_version, sizeof(device->usb_version));
+                (void)linux_usb_read_attribute(device_path, "bcdDevice", device->device_version, sizeof(device->device_version));
+                (void)linux_usb_read_attribute(device_path, "manufacturer", device->manufacturer, sizeof(device->manufacturer));
+                (void)linux_usb_read_attribute(device_path, "product", device->product, sizeof(device->product));
+                (void)linux_usb_read_attribute(device_path, "serial", device->serial, sizeof(device->serial));
+                if (linux_usb_read_uint_attribute(device_path, "bConfigurationValue", &device->active_configuration) == 0) device->has_active_configuration = 1;
+                if (linux_usb_read_uint_attribute(device_path, "authorized", &device->authorized) == 0) device->has_authorized = 1;
+                linux_usb_read_driver(device_path, device->driver, sizeof(device->driver));
+                (void)linux_syscall1(LINUX_SYS_CLOSE, fd);
+                return;
+            }
+            offset += entry->d_reclen;
+        }
+    }
+    (void)linux_syscall1(LINUX_SYS_CLOSE, fd);
+}
+
 static int linux_usb_open_device_path(const char *path, int flags) {
     long fd;
     if (path == 0) return -1;
@@ -111,6 +220,7 @@ static int linux_usb_add_device(const char *path, unsigned int bus_number, unsig
             entry->device_subclass = descriptor.device_subclass;
             entry->device_protocol = descriptor.device_protocol;
             entry->configuration_count = descriptor.configuration_count;
+            linux_usb_enrich_device(entry);
         }
         *count_io += 1U;
     }

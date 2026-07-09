@@ -30,6 +30,18 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ -d /dev/bus/usb ];
         assert_command_succeeds "${TEST_BIN_DIR}/lsusb" -d "$first_id" > "$WORK_DIR/filter.out"
         assert_file_contains "$WORK_DIR/filter.out" " ID $first_id " "Linux lsusb vendor/product filter did not retain the selected device"
 
+        first_bus=$(sed -n '1s/^Bus \([0-9][0-9]*\) Device \([0-9][0-9]*\):.*/\1/p' "$WORK_DIR/list.out")
+        first_address=$(sed -n '1s/^Bus \([0-9][0-9]*\) Device \([0-9][0-9]*\):.*/\2/p' "$WORK_DIR/list.out")
+        assert_command_succeeds "${TEST_BIN_DIR}/lsusb" -s "$first_bus:$first_address" > "$WORK_DIR/select.out"
+        [ "$(wc -l < "$WORK_DIR/select.out")" -eq 1 ] || fail "Linux lsusb bus/device selector did not select one device"
+        assert_command_succeeds "${TEST_BIN_DIR}/lsusb" -D "$first_device" > "$WORK_DIR/path-select.out"
+        [ "$(wc -l < "$WORK_DIR/path-select.out")" -eq 1 ] || fail "Linux lsusb path selector did not select one device"
+
+        assert_command_succeeds "${TEST_BIN_DIR}/lsusb" --json -s "$first_bus:$first_address" > "$WORK_DIR/json.out"
+        assert_file_contains "$WORK_DIR/json.out" '"schema":"newos.tool.v1"' "Linux lsusb JSON omitted the shared schema"
+        assert_file_contains "$WORK_DIR/json.out" '"event":"device"' "Linux lsusb JSON omitted the device event"
+        assert_file_contains "$WORK_DIR/json.out" '"bus":' "Linux lsusb JSON omitted the bus number"
+
         assert_command_succeeds "${TEST_BIN_DIR}/lsusb" -v -a > "$WORK_DIR/verbose.out"
         assert_file_contains "$WORK_DIR/verbose.out" '^    \(configuration [0-9][0-9]*:.*\|descriptors unavailable\)$' "Linux lsusb verbose mode did not report descriptor status"
     else

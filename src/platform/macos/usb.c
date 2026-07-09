@@ -82,6 +82,34 @@ static void macos_usb_append_cstr(char *buffer, size_t capacity, const char *tex
     buffer[length] = 0;
 }
 
+static void macos_usb_format_bcd(unsigned int value, char *buffer, size_t capacity) {
+    unsigned int digits[4];
+    size_t output = 0U;
+
+    if (buffer == 0 || capacity < 5U) return;
+    digits[0] = (value >> 12U) & 0x0fU;
+    digits[1] = (value >> 8U) & 0x0fU;
+    digits[2] = (value >> 4U) & 0x0fU;
+    digits[3] = value & 0x0fU;
+    if (digits[0] != 0U) buffer[output++] = (char)('0' + digits[0]);
+    buffer[output++] = (char)('0' + digits[1]);
+    buffer[output++] = '.';
+    buffer[output++] = (char)('0' + digits[2]);
+    buffer[output++] = (char)('0' + digits[3]);
+    buffer[output] = 0;
+}
+
+static void macos_usb_format_speed(unsigned int speed, char *buffer, size_t capacity) {
+    const char *text = 0;
+
+    if (speed == 0U) text = "1.5";
+    else if (speed == 1U) text = "12";
+    else if (speed == 2U) text = "480";
+    else if (speed == 3U) text = "5000";
+    else if (speed == 4U) text = "10000";
+    if (text != 0) rt_copy_string(buffer, capacity, text);
+}
+
 static void macos_usb_fill_path(char *path, size_t path_capacity, const char *name, unsigned int location_id, unsigned int address) {
     if (path == 0 || path_capacity == 0U) return;
     rt_copy_string(path, path_capacity, "iokit:");
@@ -98,6 +126,8 @@ static int macos_usb_add_device(MacosMachPort entry, PlatformUsbDevice *entries_
     unsigned int address;
     unsigned int vendor_id;
     unsigned int product_id;
+    unsigned int usb_version;
+    unsigned int device_version;
     char path[PLATFORM_USB_PATH_CAPACITY];
     size_t index;
 
@@ -107,6 +137,8 @@ static int macos_usb_add_device(MacosMachPort entry, PlatformUsbDevice *entries_
     address = macos_usb_get_uint_property(entry, "USB Address", 0U);
     vendor_id = macos_usb_get_uint_property(entry, "idVendor", 0U);
     product_id = macos_usb_get_uint_property(entry, "idProduct", 0U);
+    usb_version = macos_usb_get_uint_property(entry, "bcdUSB", 0U);
+    device_version = macos_usb_get_uint_property(entry, "bcdDevice", 0U);
     macos_usb_fill_path(path, sizeof(path), name, location_id, address);
     for (index = 0U; index < *count_io && index < entry_capacity; index++) {
         PlatformUsbDevice *existing = &entries_out[index];
@@ -116,6 +148,9 @@ static int macos_usb_add_device(MacosMachPort entry, PlatformUsbDevice *entries_
         PlatformUsbDevice *device = &entries_out[*count_io];
         rt_memset(device, 0, sizeof(*device));
         rt_copy_string(device->path, sizeof(device->path), path);
+        rt_copy_string(device->product, sizeof(device->product), name);
+        rt_copy_string(device->topology, sizeof(device->topology), "location:");
+        macos_usb_append_uint(device->topology, sizeof(device->topology), location_id);
         device->bus_number = (location_id >> 24U) & 0xffU;
         device->device_address = address;
         device->vendor_id = vendor_id;
@@ -124,6 +159,11 @@ static int macos_usb_add_device(MacosMachPort entry, PlatformUsbDevice *entries_
         device->device_subclass = macos_usb_get_uint_property(entry, "bDeviceSubClass", 0U);
         device->device_protocol = macos_usb_get_uint_property(entry, "bDeviceProtocol", 0U);
         device->configuration_count = macos_usb_get_uint_property(entry, "bNumConfigurations", 0U);
+        if (usb_version != 0U) macos_usb_format_bcd(usb_version, device->usb_version, sizeof(device->usb_version));
+        if (device_version != 0U) macos_usb_format_bcd(device_version, device->device_version, sizeof(device->device_version));
+        macos_usb_format_speed(macos_usb_get_uint_property(entry, "Device Speed", 0xffffffffU), device->speed, sizeof(device->speed));
+        device->active_configuration = macos_usb_get_uint_property(entry, "bConfigurationValue", 0U);
+        device->has_active_configuration = device->active_configuration != 0U;
     }
     *count_io += 1U;
     return 0;
