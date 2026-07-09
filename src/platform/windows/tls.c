@@ -45,7 +45,7 @@ int platform_random_bytes(unsigned char *buffer, size_t count) {
     return 0;
 }
 
-int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
+int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds) {
     Tls13Client *native;
     Tls12Client *native12;
     int socket_fd = -1;
@@ -68,7 +68,7 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         (void)platform_close(socket_fd);
         return -1;
     }
-    tls13_client_init(native, socket_fd, 30000U);
+    tls13_client_init(native, socket_fd, timeout_milliseconds);
     if (tls13_client_handshake(native, host, rt_strlen(host)) != 0) {
         windows_tls_set_error(tls13_client_last_error(native));
         rt_free(native);
@@ -84,7 +84,7 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
             (void)platform_close(socket_fd);
             return -1;
         }
-        tls12_client_init(native12, socket_fd, 30000U);
+        tls12_client_init(native12, socket_fd, timeout_milliseconds);
         if (tls12_client_handshake(native12, host, rt_strlen(host)) != 0) {
             windows_tls_set_error(tls12_client_last_error(native12));
             rt_free(native12);
@@ -104,6 +104,10 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
     client->active = 1;
     windows_tls_set_error("none");
     return 0;
+}
+
+int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
+    return platform_tls_connect_timeout(client, host, port, 30000U);
 }
 
 int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out) {

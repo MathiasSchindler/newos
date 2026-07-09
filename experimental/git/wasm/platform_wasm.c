@@ -820,6 +820,7 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
 int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) { (void)host; (void)port; (void)socket_fd_out; return -1; }
 int platform_accept_tcp(int listener_fd, int *client_fd_out) { (void)listener_fd; (void)client_fd_out; return -1; }
 int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) { (void)client; (void)host; (void)port; return -1; }
+int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds) { (void)timeout_milliseconds; return platform_tls_connect(client, host, port); }
 const char *platform_tls_last_error(void) { return "browser transport not implemented"; }
 const char *platform_tls_peer_verification_status(void) { return "unavailable"; }
 int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out) { (void)client; (void)info_out; return -1; }

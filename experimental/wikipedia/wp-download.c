@@ -8,17 +8,19 @@
 #define WP_BUFFER_SIZE 16384U
 #define WP_HEADER_SIZE 32768U
 #define WP_PAGE_MAX_SIZE 262144U
+#define WP_HTTP_RAW_MAX_SIZE (WP_PAGE_MAX_SIZE + 65536U)
 #define WP_URL_SIZE 2048U
 #define WP_PATH_SIZE 1024U
 #define WP_NAME_SIZE 256U
 #define WP_DATE_SIZE 16U
 #define WP_HASH_HEX_SIZE 65U
-#define WP_MAX_FILES 64U
+#define WP_INITIAL_FILE_CAPACITY 8U
 #define WP_DEFAULT_TIMEOUT_MS 30000ULL
 #define WP_PROGRESS_INTERVAL_NS 1000000000ULL
 #define WP_DEFAULT_RETRIES 3U
 #define WP_MAX_RETRIES 100U
 #define WP_MAX_PARALLEL_DOWNLOADS 3U
+#define WP_MAX_REDIRECTS 5U
 #define WP_CHILD_MODE "--wp-download-child"
 
 typedef struct {
@@ -31,6 +33,7 @@ typedef struct {
 typedef struct {
     const char *program_name;
     const char *out_dir;
+    const char *base_url;
     char date[WP_DATE_SIZE];
     unsigned long long timeout_ms;
     unsigned int retries;
@@ -50,15 +53,22 @@ typedef struct {
 } WpDumpFile;
 
 typedef struct {
-    WpDumpFile files[WP_MAX_FILES];
+    WpDumpFile *files;
     size_t count;
+    size_t capacity;
 } WpDumpList;
 
 typedef struct {
     int status_code;
     char location[WP_URL_SIZE];
     unsigned long long content_length;
+    unsigned long long range_start;
+    unsigned long long range_end;
+    unsigned long long range_total;
     int has_content_length;
+    int has_content_range;
+    int has_range_total;
+    int chunked;
 } WpHttpHeaders;
 
 typedef struct {
@@ -88,8 +98,22 @@ typedef struct {
     size_t file_index;
 } WpDownloadChild;
 
+typedef struct {
+    CryptoSha256Context sha;
+    unsigned long long offset;
+    int prepared;
+} WpResumeState;
+
+typedef struct {
+    char size_line[64];
+    size_t size_line_length;
+    size_t remaining;
+    int state;
+    int done;
+} WpChunkDecoder;
+
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
+    tool_write_usage(program_name, "[-q] [-o DIR] [--base-url URL] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
 }
 
 static int is_leap_year(long long year) {
@@ -325,11 +349,12 @@ static int parse_url(const char *text, WpUrl *url_out) {
     return -1;
 }
 
-static int build_url(const char *wiki_name, const char *date, const char *leaf, char *buffer, size_t buffer_size) {
+static int build_url(const char *base_url, const char *wiki_name, const char *date, const char *leaf, char *buffer, size_t buffer_size) {
     size_t length = 0U;
 
     buffer[0] = '\0';
-    if (append_cstr_checked(buffer, buffer_size, &length, "https://dumps.wikimedia.org/other/mediawiki_content_current/") != 0 ||
+    if (append_cstr_checked(buffer, buffer_size, &length, base_url) != 0 ||
+        (length > 0U && buffer[length - 1U] != '/' && append_char_checked(buffer, buffer_size, &length, '/') != 0) ||
         append_cstr_checked(buffer, buffer_size, &length, wiki_name) != 0 ||
         append_char_checked(buffer, buffer_size, &length, '/') != 0) {
         return -1;
@@ -420,6 +445,156 @@ static int copy_header_value(const char *value, size_t value_length, char *out, 
     return 0;
 }
 
+static int ascii_equal_insensitive_n(const char *left, const char *right, size_t size) {
+    size_t index;
+
+    for (index = 0U; index < size; ++index) {
+        if (tool_ascii_tolower(left[index]) != tool_ascii_tolower(right[index])) return 0;
+    }
+    return 1;
+}
+
+static int header_value_has_token(const char *value, size_t length, const char *token) {
+    size_t token_length = rt_strlen(token);
+    size_t index = 0U;
+
+    while (index < length) {
+        size_t start;
+        size_t end;
+
+        while (index < length && (value[index] == ' ' || value[index] == '\t' || value[index] == ',')) index += 1U;
+        start = index;
+        while (index < length && value[index] != ',' && value[index] != ';' && value[index] != ' ' && value[index] != '\t') index += 1U;
+        end = index;
+        if (end - start == token_length && ascii_equal_insensitive_n(value + start, token, token_length)) return 1;
+        while (index < length && value[index] != ',') index += 1U;
+    }
+    return 0;
+}
+
+static int parse_decimal_range_value(const char *text, size_t length, size_t *index_io, unsigned long long *value_out) {
+    size_t index = *index_io;
+    unsigned long long value = 0ULL;
+    int saw_digit = 0;
+
+    while (index < length && text[index] >= '0' && text[index] <= '9') {
+        unsigned long long digit = (unsigned long long)(text[index] - '0');
+        if (value > (((unsigned long long)-1) - digit) / 10ULL) return -1;
+        value = value * 10ULL + digit;
+        saw_digit = 1;
+        index += 1U;
+    }
+    if (!saw_digit) return -1;
+    *index_io = index;
+    *value_out = value;
+    return 0;
+}
+
+static int parse_content_range(const char *value, size_t length, WpHttpHeaders *parsed) {
+    size_t index = 0U;
+
+    while (index < length && (value[index] == ' ' || value[index] == '\t')) index += 1U;
+    if (index + 6U > length || !ascii_equal_insensitive_n(value + index, "bytes ", 6U)) return -1;
+    index += 6U;
+    if (parse_decimal_range_value(value, length, &index, &parsed->range_start) != 0 ||
+        index >= length || value[index++] != '-' ||
+        parse_decimal_range_value(value, length, &index, &parsed->range_end) != 0 ||
+        index >= length || value[index++] != '/') return -1;
+    if (parsed->range_end < parsed->range_start) return -1;
+    if (index < length && value[index] == '*') {
+        index += 1U;
+    } else {
+        if (parse_decimal_range_value(value, length, &index, &parsed->range_total) != 0 || parsed->range_total <= parsed->range_end) return -1;
+        parsed->has_range_total = 1;
+    }
+    while (index < length && (value[index] == ' ' || value[index] == '\t')) index += 1U;
+    if (index != length) return -1;
+    parsed->has_content_range = 1;
+    return 0;
+}
+
+static int hex_value(char ch);
+
+static int dechunk_http_body(unsigned char *body, size_t body_size, size_t *decoded_size_out) {
+    size_t input = 0U;
+    size_t output = 0U;
+
+    for (;;) {
+        size_t chunk_size = 0U;
+        int saw_digit = 0;
+
+        while (input < body_size) {
+            int value = hex_value((char)body[input]);
+            if (value < 0) break;
+            if (chunk_size > (((size_t)-1) >> 4U)) return -1;
+            chunk_size = (chunk_size << 4U) | (size_t)value;
+            saw_digit = 1;
+            input += 1U;
+        }
+        if (!saw_digit) return -1;
+        while (input < body_size && body[input] != '\n') input += 1U;
+        if (input == 0U || input >= body_size || body[input - 1U] != '\r') return -1;
+        input += 1U;
+        if (chunk_size == 0U) {
+            for (;;) {
+                size_t trailer_start = input;
+                while (input < body_size && body[input] != '\n') input += 1U;
+                if (input == trailer_start || input >= body_size || body[input - 1U] != '\r') return -1;
+                input += 1U;
+                if (input - trailer_start == 2U) {
+                    *decoded_size_out = output;
+                    body[output] = '\0';
+                    return 0;
+                }
+            }
+        }
+        if (chunk_size > body_size - input || output > WP_PAGE_MAX_SIZE - chunk_size) return -1;
+        memmove(body + output, body + input, chunk_size);
+        output += chunk_size;
+        input += chunk_size;
+        if (input + 1U >= body_size || body[input] != '\r' || body[input + 1U] != '\n') return -1;
+        input += 2U;
+    }
+}
+
+static int compose_redirect_url(const WpUrl *base, const char *location, char *buffer, size_t buffer_size) {
+    char port_text[16];
+    char base_path[sizeof(base->path)];
+    size_t length = 0U;
+    size_t index;
+
+    if (location == 0 || location[0] == '\0') return -1;
+    for (index = 0U; location[index] != '\0'; ++index) {
+        unsigned char ch = (unsigned char)location[index];
+        if (ch <= ' ' || ch == 0x7fU) return -1;
+    }
+    if (tool_starts_with(location, "http://") || tool_starts_with(location, "https://")) {
+        if (parse_url(location, &(WpUrl){0}) != 0 || rt_strlen(location) + 1U > buffer_size) return -1;
+        rt_copy_string(buffer, buffer_size, location);
+        return 0;
+    }
+    for (index = 1U; location[index] != '\0'; ++index) {
+        if (location[index] == ':') return -1;
+    }
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base->scheme == WP_SCHEME_HTTPS ? "https://" : "http://");
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base->host);
+    if ((base->scheme == WP_SCHEME_HTTP && base->port != 80U) || (base->scheme == WP_SCHEME_HTTPS && base->port != 443U)) {
+        rt_unsigned_to_string(base->port, port_text, sizeof(port_text));
+        length = tool_buffer_append_char(buffer, buffer_size, length, ':');
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, port_text);
+    }
+    if (location[0] == '/') {
+        length = tool_buffer_append_cstr(buffer, buffer_size, length, location);
+        return rt_strlen(buffer) == length ? 0 : -1;
+    }
+    rt_copy_string(base_path, sizeof(base_path), base->path);
+    index = rt_strlen(base_path);
+    while (index > 0U && base_path[index - 1U] != '/') base_path[--index] = '\0';
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, base_path[0] != '\0' ? base_path : "/");
+    length = tool_buffer_append_cstr(buffer, buffer_size, length, location);
+    return rt_strlen(buffer) == length ? 0 : -1;
+}
+
 static int parse_http_headers(const char *headers, WpHttpHeaders *parsed) {
     size_t line_start = 0U;
     int line_index = 0;
@@ -456,10 +631,16 @@ static int parse_http_headers(const char *headers, WpHttpHeaders *parsed) {
                         return -1;
                     }
                 } else if (header_name_equals(headers + line_start, name_end, "Content-Length")) {
-                    if (parse_header_u64(value, value_length, &parsed->content_length) != 0) {
-                        return -1;
-                    }
+                    unsigned long long content_length;
+                    if (parse_header_u64(value, value_length, &content_length) != 0 ||
+                        (parsed->has_content_length && parsed->content_length != content_length)) return -1;
+                    parsed->content_length = content_length;
                     parsed->has_content_length = 1;
+                } else if (header_name_equals(headers + line_start, name_end, "Transfer-Encoding")) {
+                    if (!header_value_has_token(value, value_length, "chunked")) return -1;
+                    parsed->chunked = 1;
+                } else if (header_name_equals(headers + line_start, name_end, "Content-Range")) {
+                    if (parsed->has_content_range || parse_content_range(value, value_length, parsed) != 0) return -1;
                 }
             }
         }
@@ -469,7 +650,7 @@ static int parse_http_headers(const char *headers, WpHttpHeaders *parsed) {
         line_start = line_end + 1U;
         line_index += 1;
     }
-    return 0;
+    return parsed->chunked && parsed->has_content_length ? -1 : 0;
 }
 
 static int maybe_wait_for_socket(int socket_fd, unsigned long long timeout_ms) {
@@ -498,7 +679,7 @@ static int http_request_start(ToolHttpConnection *connection, const WpUrl *url, 
         length = tool_buffer_append_char(request, sizeof(request), length, ':');
         length = tool_buffer_append_cstr(request, sizeof(request), length, port_text);
     }
-    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1 (+https://github.com/MathiasSchindler/newos/tree/main/experimental/wikipedia)\r\nFrom: mathias.schindler@gmaiil.com\r\nAccept: */*\r\n");
+    length = tool_buffer_append_cstr(request, sizeof(request), length, "\r\nUser-Agent: newos-wp-download/0.1 (+https://github.com/MathiasSchindler/newos/tree/main/experimental/wikipedia)\r\nAccept: */*\r\n");
     if (range_start > 0ULL) {
         rt_unsigned_to_string(range_start, range_text, sizeof(range_text));
         length = tool_buffer_append_cstr(request, sizeof(request), length, "Range: bytes=");
@@ -512,11 +693,13 @@ static int http_request_start(ToolHttpConnection *connection, const WpUrl *url, 
     return tool_http_connection_write_all(connection, request, length);
 }
 
-static int http_connect_and_request(const char *url_text, unsigned long long range_start, ToolHttpConnection *connection, WpUrl *url_out) {
+static int http_connect_and_request(const char *url_text, unsigned long long range_start, unsigned long long timeout_ms, ToolHttpConnection *connection, WpUrl *url_out) {
+    unsigned int transport_timeout = timeout_ms == 0ULL || timeout_ms > 2147483647ULL ? 2147483647U : (unsigned int)timeout_ms;
+
     if (parse_url(url_text, url_out) != 0) {
         return -1;
     }
-    if (tool_http_connection_connect(connection, url_out->host, url_out->port, url_out->scheme == WP_SCHEME_HTTPS) != 0) {
+    if (tool_http_connection_connect_timeout(connection, url_out->host, url_out->port, url_out->scheme == WP_SCHEME_HTTPS, transport_timeout) != 0) {
         return -1;
     }
     if (http_request_start(connection, url_out, range_start) != 0) {
@@ -526,7 +709,14 @@ static int http_connect_and_request(const char *url_text, unsigned long long ran
     return 0;
 }
 
-static int read_http_to_memory(const char *url_text, unsigned char **data_out, size_t *size_out, unsigned long long timeout_ms) {
+static int read_http_to_memory_once(
+    const char *url_text,
+    unsigned char **data_out,
+    size_t *size_out,
+    unsigned long long timeout_ms,
+    char *redirect_out,
+    size_t redirect_size
+) {
     ToolHttpConnection connection;
     WpUrl url;
     WpHttpHeaders headers;
@@ -541,7 +731,8 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
 
     *data_out = 0;
     *size_out = 0U;
-    if (http_connect_and_request(url_text, 0ULL, &connection, &url) != 0) {
+    redirect_out[0] = '\0';
+    if (http_connect_and_request(url_text, 0ULL, timeout_ms, &connection, &url) != 0) {
         return -1;
     }
 
@@ -551,10 +742,6 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
             break;
         }
         bytes_read = tool_http_connection_read(&connection, buffer, sizeof(buffer));
-        if (bytes_read < 0 && connection.use_tls && header_complete) {
-            bytes_read = 0;
-            break;
-        }
         if (bytes_read <= 0) {
             break;
         }
@@ -575,11 +762,20 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
             {
                 char saved = header_buffer[body_offset];
                 header_buffer[body_offset] = '\0';
-                if (parse_http_headers(header_buffer, &headers) != 0 || headers.status_code < 200 || headers.status_code >= 300) {
+                if (parse_http_headers(header_buffer, &headers) != 0) {
                     tool_http_connection_close(&connection);
                     return -1;
                 }
                 header_buffer[body_offset] = saved;
+            }
+            if (headers.status_code >= 300 && headers.status_code < 400 && headers.location[0] != '\0') {
+                int redirect_result = compose_redirect_url(&url, headers.location, redirect_out, redirect_size);
+                tool_http_connection_close(&connection);
+                return redirect_result == 0 ? 1 : -1;
+            }
+            if (headers.status_code < 200 || headers.status_code >= 300) {
+                tool_http_connection_close(&connection);
+                return -1;
             }
             if (headers.has_content_length && headers.content_length > WP_PAGE_MAX_SIZE) {
                 tool_http_connection_close(&connection);
@@ -587,21 +783,26 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
             }
             if (header_length > body_offset) {
                 size_t body_size = header_length - body_offset;
-                if (size + body_size > WP_PAGE_MAX_SIZE) {
+                unsigned char *resized;
+                if (size + body_size > WP_HTTP_RAW_MAX_SIZE ||
+                    (headers.has_content_length && (unsigned long long)body_size > headers.content_length)) {
                     tool_http_connection_close(&connection);
                     return -1;
                 }
-                data = (unsigned char *)rt_realloc(data, size + body_size + 1U);
-                if (data == 0) {
+                resized = (unsigned char *)rt_realloc(data, size + body_size + 1U);
+                if (resized == 0) {
+                    rt_free(data);
                     tool_http_connection_close(&connection);
                     return -1;
                 }
+                data = resized;
                 memcpy(data + size, header_buffer + body_offset, body_size);
                 size += body_size;
                 capacity = size + 1U;
             }
         } else {
-            if (size + (size_t)bytes_read > WP_PAGE_MAX_SIZE) {
+            if (size + (size_t)bytes_read > WP_HTTP_RAW_MAX_SIZE ||
+                (headers.has_content_length && (unsigned long long)(size + (size_t)bytes_read) > headers.content_length)) {
                 rt_free(data);
                 tool_http_connection_close(&connection);
                 return -1;
@@ -614,16 +815,19 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
                 if (next_capacity > WP_PAGE_MAX_SIZE + 1U) {
                     next_capacity = WP_PAGE_MAX_SIZE + 1U;
                 }
-                data = (unsigned char *)rt_realloc(data, next_capacity);
-                if (data == 0) {
+                unsigned char *resized = (unsigned char *)rt_realloc(data, next_capacity);
+                if (resized == 0) {
+                    rt_free(data);
                     tool_http_connection_close(&connection);
                     return -1;
                 }
+                data = resized;
                 capacity = next_capacity;
             }
             memcpy(data + size, buffer, (size_t)bytes_read);
             size += (size_t)bytes_read;
         }
+        if (!headers.chunked && headers.has_content_length && (unsigned long long)size == headers.content_length) break;
     }
 
     tool_http_connection_close(&connection);
@@ -637,10 +841,38 @@ static int read_http_to_memory(const char *url_text, unsigned char **data_out, s
             return -1;
         }
     }
+    if (headers.chunked) {
+        if (dechunk_http_body(data, size, &size) != 0) {
+            rt_free(data);
+            return -1;
+        }
+    } else if (headers.has_content_length && (unsigned long long)size != headers.content_length) {
+        rt_free(data);
+        return -1;
+    }
+    if (size > WP_PAGE_MAX_SIZE) {
+        rt_free(data);
+        return -1;
+    }
     data[size] = '\0';
     *data_out = data;
     *size_out = size;
     return 0;
+}
+
+static int read_http_to_memory(const char *url_text, unsigned char **data_out, size_t *size_out, unsigned long long timeout_ms) {
+    char current_url[WP_URL_SIZE];
+    char redirect_url[WP_URL_SIZE];
+    unsigned int redirect_count;
+
+    if (rt_strlen(url_text) + 1U > sizeof(current_url)) return -1;
+    rt_copy_string(current_url, sizeof(current_url), url_text);
+    for (redirect_count = 0U; redirect_count <= WP_MAX_REDIRECTS; ++redirect_count) {
+        int result = read_http_to_memory_once(current_url, data_out, size_out, timeout_ms, redirect_url, sizeof(redirect_url));
+        if (result != 1) return result;
+        rt_copy_string(current_url, sizeof(current_url), redirect_url);
+    }
+    return -1;
 }
 
 static int is_date_link(const char *name) {
@@ -693,7 +925,8 @@ static int html_name_is_safe(const char *name, size_t length) {
     }
     for (index = 0U; index < length; ++index) {
         unsigned char ch = (unsigned char)name[index];
-        if (ch <= ' ' || ch == '"' || ch == '\'' || ch == '<' || ch == '>' || ch == '&') {
+          if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+              (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.')) {
             return 0;
         }
     }
@@ -758,8 +991,16 @@ static int list_has_file(const WpDumpList *list, const char *name) {
 }
 
 static int add_list_file(WpDumpList *list, const char *name) {
-    if (list->count >= WP_MAX_FILES || list_has_file(list, name)) {
-        return list_has_file(list, name) ? 0 : -1;
+    if (list_has_file(list, name)) return 0;
+    if (list->count == list->capacity) {
+        size_t next_capacity = list->capacity == 0U ? WP_INITIAL_FILE_CAPACITY : list->capacity * 2U;
+        WpDumpFile *next;
+
+        if (next_capacity < list->capacity) return -1;
+        next = (WpDumpFile *)rt_realloc_array(list->files, next_capacity, sizeof(list->files[0]));
+        if (next == 0) return -1;
+        list->files = next;
+        list->capacity = next_capacity;
     }
     rt_copy_string(list->files[list->count].name, sizeof(list->files[list->count].name), name);
     list->files[list->count].expected_hex[0] = '\0';
@@ -767,6 +1008,11 @@ static int add_list_file(WpDumpList *list, const char *name) {
     list->files[list->count].has_content_length = 0;
     list->count += 1U;
     return 0;
+}
+
+static void destroy_dump_list(WpDumpList *list) {
+    rt_free(list->files);
+    rt_memset(list, 0, sizeof(*list));
 }
 
 static int parse_listing_size_value(const char *line, size_t length, unsigned long long *size_out) {
@@ -935,6 +1181,14 @@ static int join_output_path(const char *dir, const char *name, char *buffer, siz
     return rt_join_path(dir, name, buffer, buffer_size);
 }
 
+static int make_partial_path(const char *output_path, char *partial_path, size_t partial_size) {
+    size_t length = 0U;
+
+    partial_path[0] = '\0';
+    return append_cstr_checked(partial_path, partial_size, &length, output_path) == 0 &&
+           append_cstr_checked(partial_path, partial_size, &length, ".part") == 0 ? 0 : -1;
+}
+
 static void write_duration_value(int fd, unsigned long long seconds) {
     unsigned long long hours = seconds / 3600ULL;
     unsigned long long minutes = (seconds / 60ULL) % 60ULL;
@@ -1024,6 +1278,7 @@ static void write_complete_summary(const WpDownloadStats *stats, const WpProgres
 static void write_progress_line(
     const char *name,
     unsigned long long written,
+    unsigned long long transferred,
     int has_total,
     unsigned long long total,
     unsigned long long start_ns,
@@ -1035,7 +1290,7 @@ static void write_progress_line(
     char speed_text[32];
     unsigned long long now_ns = platform_get_monotonic_time_ns();
     unsigned long long elapsed_ms = now_ns > start_ns ? (now_ns - start_ns) / 1000000ULL : 0ULL;
-    unsigned long long bytes_per_second = elapsed_ms > 0ULL ? (written * 1000ULL) / elapsed_ms : 0ULL;
+    unsigned long long bytes_per_second = elapsed_ms > 0ULL ? (transferred / elapsed_ms) * 1000ULL + ((transferred % elapsed_ms) * 1000ULL) / elapsed_ms : 0ULL;
     unsigned long long package_written = progress->package_completed + written;
     unsigned long long package_elapsed_ms = now_ns > progress->package_start_ns ? (now_ns - progress->package_start_ns) / 1000000ULL : 0ULL;
     unsigned long long package_bytes_per_second = package_elapsed_ms > 0ULL ? (package_written * 1000ULL) / package_elapsed_ms : 0ULL;
@@ -1057,7 +1312,7 @@ static void write_progress_line(
         tool_format_size(total, 1, total_text, sizeof(total_text));
         rt_write_cstr(2, total_text);
         if (total > 0ULL) {
-            unsigned long long percent_tenths = (written * 1000ULL) / total;
+            unsigned long long percent_tenths = total > 0ULL ? (written / total) * 1000ULL + ((written % total) * 1000ULL) / total : 0ULL;
             rt_write_cstr(2, " (");
             rt_write_uint(2, percent_tenths / 10ULL);
             rt_write_char(2, '.');
@@ -1087,7 +1342,7 @@ static void write_progress_line(
         rt_write_cstr(2, "/");
         rt_write_cstr(2, package_total_text);
         if (progress->package_total > 0ULL) {
-            unsigned long long package_percent_tenths = (package_written * 1000ULL) / progress->package_total;
+            unsigned long long package_percent_tenths = (package_written / progress->package_total) * 1000ULL + ((package_written % progress->package_total) * 1000ULL) / progress->package_total;
             rt_write_cstr(2, " (");
             rt_write_uint(2, package_percent_tenths / 10ULL);
             rt_write_char(2, '.');
@@ -1165,6 +1420,7 @@ static int hash_existing_file(const char *path, CryptoSha256Context *sha, unsign
 
 static int prepare_resume_state(
     const char *output_path,
+    const char *partial_path,
     int resume_enabled,
     int has_expected_size,
     unsigned long long expected_size,
@@ -1175,28 +1431,47 @@ static int prepare_resume_state(
     unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
     unsigned long long existing_size = 0ULL;
     CryptoSha256Context existing_sha;
+    PlatformDirEntry partial_entry;
 
     crypto_sha256_init(sha);
     *resume_offset_out = 0ULL;
-    if (!resume_enabled) {
-        return 0;
-    }
     if (hash_existing_file(output_path, &existing_sha, &existing_size) != 0) {
         return -1;
     }
-    if (existing_size == 0ULL) {
-        return 0;
-    }
-    if (has_expected_size && existing_size > expected_size) {
-        (void)platform_truncate_path(output_path, 0ULL);
-        return 0;
-    }
-    if (has_expected_size && existing_size == expected_size) {
+    if (existing_size > 0ULL && (!has_expected_size || existing_size == expected_size)) {
         crypto_sha256_final(&existing_sha, digest);
         if (hex_digest_matches(digest, expected_hex)) {
+            *resume_offset_out = existing_size;
             return 1;
         }
-        (void)platform_truncate_path(output_path, 0ULL);
+    }
+    if (existing_size > 0ULL) {
+        int partial_exists = platform_get_path_info(partial_path, &partial_entry) == 0 && !partial_entry.is_dir;
+        if (resume_enabled && !partial_exists && (!has_expected_size || existing_size < expected_size)) {
+            if (platform_rename_path(output_path, partial_path) != 0) return -1;
+        } else if (platform_remove_file(output_path) != 0) {
+            return -1;
+        }
+    }
+    if (!resume_enabled) {
+        if (platform_get_path_info(partial_path, &partial_entry) == 0 && platform_remove_file(partial_path) != 0) return -1;
+        return 0;
+    }
+    if (hash_existing_file(partial_path, &existing_sha, &existing_size) != 0) return -1;
+    if (existing_size == 0ULL) return 0;
+    if (has_expected_size && existing_size > expected_size) {
+        if (platform_truncate_path(partial_path, 0ULL) != 0) return -1;
+        return 0;
+    }
+    if (existing_size > 0ULL && (!has_expected_size || existing_size == expected_size)) {
+        CryptoSha256Context completed_sha = existing_sha;
+        crypto_sha256_final(&completed_sha, digest);
+        if (hex_digest_matches(digest, expected_hex)) {
+            if (platform_sync_path_data(partial_path) != 0 || platform_rename_path(partial_path, output_path) != 0) return -1;
+            *resume_offset_out = existing_size;
+            return 1;
+        }
+        if (platform_truncate_path(partial_path, 0ULL) != 0) return -1;
         return 0;
     }
     *sha = existing_sha;
@@ -1215,6 +1490,92 @@ static void write_retry_line(const char *name, unsigned int attempt, unsigned in
     rt_write_cstr(2, ")\n");
 }
 
+static int parse_chunk_size_line(const char *line, size_t length, size_t *size_out) {
+    size_t index = 0U;
+    size_t value = 0U;
+    int saw_digit = 0;
+
+    while (index < length && line[index] != ';' && line[index] != '\r') {
+        int digit = hex_value(line[index]);
+        if (digit < 0 || value > (((size_t)-1) >> 4U)) return -1;
+        value = (value << 4U) | (size_t)digit;
+        saw_digit = 1;
+        index += 1U;
+    }
+    if (!saw_digit) return -1;
+    *size_out = value;
+    return 0;
+}
+
+static int consume_download_body(
+    int output_fd,
+    CryptoSha256Context *sha,
+    const unsigned char *data,
+    size_t size,
+    int chunked,
+    int has_content_length,
+    unsigned long long response_body_length,
+    unsigned long long resume_offset,
+    unsigned long long *written_io,
+    WpChunkDecoder *chunk_decoder
+) {
+    size_t offset = 0U;
+
+    if (!chunked) {
+        unsigned long long body_written = *written_io - resume_offset;
+        if (has_content_length && (body_written > response_body_length || (unsigned long long)size > response_body_length - body_written)) return -1;
+        if (size > 0U && rt_write_all(output_fd, data, size) != 0) return -1;
+        crypto_sha256_update(sha, data, size);
+        *written_io += (unsigned long long)size;
+        return 0;
+    }
+
+    while (offset < size && !chunk_decoder->done) {
+        if (chunk_decoder->state == 0) {
+            unsigned char ch = data[offset++];
+            if (ch == '\n') {
+                if (chunk_decoder->size_line_length == 0U || chunk_decoder->size_line[chunk_decoder->size_line_length - 1U] != '\r' ||
+                    parse_chunk_size_line(chunk_decoder->size_line, chunk_decoder->size_line_length - 1U, &chunk_decoder->remaining) != 0) return -1;
+                chunk_decoder->size_line_length = 0U;
+                if (chunk_decoder->remaining == 0U) {
+                    chunk_decoder->state = 4;
+                } else {
+                    chunk_decoder->state = 1;
+                }
+            } else {
+                if (chunk_decoder->size_line_length >= sizeof(chunk_decoder->size_line)) return -1;
+                chunk_decoder->size_line[chunk_decoder->size_line_length++] = (char)ch;
+            }
+        } else if (chunk_decoder->state == 1) {
+            size_t amount = size - offset;
+            if (amount > chunk_decoder->remaining) amount = chunk_decoder->remaining;
+            if (amount > 0U && rt_write_all(output_fd, data + offset, amount) != 0) return -1;
+            crypto_sha256_update(sha, data + offset, amount);
+            *written_io += (unsigned long long)amount;
+            offset += amount;
+            chunk_decoder->remaining -= amount;
+            if (chunk_decoder->remaining == 0U) chunk_decoder->state = 2;
+        } else if (chunk_decoder->state == 2) {
+            if (data[offset++] != '\r') return -1;
+            chunk_decoder->state = 3;
+        } else if (chunk_decoder->state == 3) {
+            if (offset >= size || data[offset++] != '\n') return -1;
+            chunk_decoder->state = 0;
+        } else {
+            unsigned char ch = data[offset++];
+            if (ch == '\n') {
+                if (chunk_decoder->size_line_length == 0U || chunk_decoder->size_line[chunk_decoder->size_line_length - 1U] != '\r') return -1;
+                if (chunk_decoder->size_line_length == 1U) chunk_decoder->done = 1;
+                chunk_decoder->size_line_length = 0U;
+            } else {
+                if (chunk_decoder->size_line_length >= sizeof(chunk_decoder->size_line)) return -1;
+                chunk_decoder->size_line[chunk_decoder->size_line_length++] = (char)ch;
+            }
+        }
+    }
+    return chunk_decoder->done ? 1 : 0;
+}
+
 static int download_file_attempt(
     const char *url_text,
     const char *output_path,
@@ -1224,13 +1585,17 @@ static int download_file_attempt(
     int has_expected_size,
     unsigned long long expected_size,
     WpProgressContext *progress,
-    WpDownloadStats *stats
+    WpDownloadStats *stats,
+    WpResumeState *resume_state,
+    char *redirect_out,
+    size_t redirect_size
 ) {
     ToolHttpConnection connection;
     WpUrl url;
     WpHttpHeaders headers;
     CryptoSha256Context sha;
     unsigned char digest[CRYPTO_SHA256_DIGEST_SIZE];
+    char partial_path[WP_PATH_SIZE];
     char header_buffer[WP_HEADER_SIZE];
     size_t header_length = 0U;
     int header_complete = 0;
@@ -1248,25 +1613,32 @@ static int download_file_attempt(
     long long start_epoch = 0LL;
     int failed = 0;
     int resume_result;
+    WpChunkDecoder chunk_decoder;
 
-    resume_result = prepare_resume_state(output_path, options->resume, has_expected_size, expected_size, expected_hex, &sha, &resume_offset);
-    if (resume_result == 1) {
-        if (!options->quiet) {
-            write_success_info("already verified ", name);
+    rt_memset(&chunk_decoder, 0, sizeof(chunk_decoder));
+    redirect_out[0] = '\0';
+
+    if (make_partial_path(output_path, partial_path, sizeof(partial_path)) != 0) return -1;
+    if (!resume_state->prepared) {
+        resume_result = prepare_resume_state(output_path, partial_path, options->resume, has_expected_size, expected_size, expected_hex, &resume_state->sha, &resume_state->offset);
+        if (resume_result == 1) {
+            unsigned long long verified_size = resume_state->offset;
+            if (!options->quiet) write_success_info("already verified ", name);
+            progress->package_completed += verified_size;
+            stats->verified_bytes += verified_size;
+            stats->files_verified += 1U;
+            stats->files_already_verified += 1U;
+            stats->last_epoch = platform_get_epoch_time();
+            return 0;
         }
-        progress->package_completed += expected_size;
-        stats->verified_bytes += expected_size;
-        stats->files_verified += 1U;
-        stats->files_already_verified += 1U;
-        stats->last_epoch = platform_get_epoch_time();
-        return 0;
+        if (resume_result != 0) return -1;
+        resume_state->prepared = 1;
     }
-    if (resume_result != 0) {
-        return -1;
-    }
+    sha = resume_state->sha;
+    resume_offset = resume_state->offset;
     written = resume_offset;
 
-    if (http_connect_and_request(url_text, resume_offset, &connection, &url) != 0) {
+    if (http_connect_and_request(url_text, resume_offset, options->timeout_ms, &connection, &url) != 0) {
         return -1;
     }
 
@@ -1291,10 +1663,6 @@ static int download_file_attempt(
             break;
         }
         bytes_read = tool_http_connection_read(&connection, buffer, sizeof(buffer));
-        if (bytes_read < 0 && connection.use_tls && header_complete) {
-            bytes_read = 0;
-            break;
-        }
         if (bytes_read <= 0) {
             break;
         }
@@ -1315,11 +1683,37 @@ static int download_file_attempt(
             {
                 char saved = header_buffer[body_offset];
                 header_buffer[body_offset] = '\0';
-                if (parse_http_headers(header_buffer, &headers) != 0 || headers.status_code < 200 || headers.status_code >= 300 || (resume_offset > 0ULL && headers.status_code != 200 && headers.status_code != 206)) {
+                if (parse_http_headers(header_buffer, &headers) != 0) {
                     bytes_read = -1;
                     break;
                 }
                 header_buffer[body_offset] = saved;
+            }
+            if (headers.status_code >= 300 && headers.status_code < 400 && headers.location[0] != '\0') {
+                bytes_read = compose_redirect_url(&url, headers.location, redirect_out, redirect_size) == 0 ? -2 : -1;
+                break;
+            }
+            if ((headers.status_code != 200 && headers.status_code != 206) ||
+                (resume_offset == 0ULL && headers.status_code != 200)) {
+                bytes_read = -1;
+                break;
+            }
+            if (headers.status_code == 206) {
+                unsigned long long range_length;
+                if (!headers.has_content_range || headers.range_start != resume_offset) {
+                    bytes_read = -1;
+                    break;
+                }
+                range_length = headers.range_end - headers.range_start + 1ULL;
+                if ((headers.has_content_length && headers.content_length != range_length) ||
+                    (has_expected_size && ((headers.has_range_total && headers.range_total != expected_size) || headers.range_end + 1ULL != expected_size))) {
+                    bytes_read = -1;
+                    break;
+                }
+            }
+            if (headers.status_code == 200 && has_expected_size && headers.has_content_length && headers.content_length != expected_size) {
+                bytes_read = -1;
+                break;
             }
             if (resume_offset > 0ULL && headers.status_code == 200) {
                 crypto_sha256_init(&sha);
@@ -1327,43 +1721,42 @@ static int download_file_attempt(
                 resume_offset = 0ULL;
             }
             append_output = resume_offset > 0ULL && headers.status_code == 206;
-            output_fd = append_output ? platform_open_append_existing(output_path) : platform_open_write(output_path, 0644U);
+            output_fd = append_output ? platform_open_append_existing(partial_path) : platform_open_write(partial_path, 0644U);
             if (output_fd < 0) {
                 bytes_read = -1;
                 break;
             }
             response_body_length = headers.has_content_length ? headers.content_length : 0ULL;
             has_progress_total = has_expected_size || headers.has_content_length;
+            if (headers.has_content_length && resume_offset > (unsigned long long)-1 - headers.content_length) {
+                bytes_read = -1;
+                break;
+            }
             progress_total = has_expected_size ? expected_size : (headers.has_content_length ? resume_offset + headers.content_length : 0ULL);
             if (header_length > body_offset) {
                 size_t body_size = header_length - body_offset;
-                unsigned long long body_written = written - resume_offset;
-                if (headers.has_content_length && (unsigned long long)body_size > response_body_length - body_written) {
-                    body_size = (size_t)(response_body_length - body_written);
-                }
-                if (body_size > 0U && rt_write_all(output_fd, header_buffer + body_offset, body_size) != 0) {
+                int body_result = consume_download_body(output_fd, &sha, (const unsigned char *)header_buffer + body_offset, body_size,
+                                                        headers.chunked, headers.has_content_length, response_body_length, resume_offset,
+                                                        &written, &chunk_decoder);
+                if (body_result < 0) {
                     bytes_read = -1;
                     break;
                 }
-                crypto_sha256_update(&sha, (const unsigned char *)header_buffer + body_offset, body_size);
-                written += (unsigned long long)body_size;
+                if (body_result > 0) break;
             }
-            if (headers.has_content_length && written - resume_offset >= response_body_length) {
+            if (!headers.chunked && headers.has_content_length && written - resume_offset == response_body_length) {
                 break;
             }
         } else {
             size_t body_size = (size_t)bytes_read;
-            unsigned long long body_written = written - resume_offset;
-            if (headers.has_content_length && (unsigned long long)body_size > response_body_length - body_written) {
-                body_size = (size_t)(response_body_length - body_written);
-            }
-            if (body_size > 0U && rt_write_all(output_fd, buffer, body_size) != 0) {
+            int body_result = consume_download_body(output_fd, &sha, (const unsigned char *)buffer, body_size,
+                                                    headers.chunked, headers.has_content_length, response_body_length, resume_offset,
+                                                    &written, &chunk_decoder);
+            if (body_result < 0) {
                 bytes_read = -1;
                 break;
             }
-            crypto_sha256_update(&sha, (const unsigned char *)buffer, body_size);
-            written += (unsigned long long)body_size;
-            if (headers.has_content_length && written - resume_offset >= response_body_length) {
+            if (body_result > 0 || (!headers.chunked && headers.has_content_length && written - resume_offset == response_body_length)) {
                 break;
             }
         }
@@ -1371,7 +1764,7 @@ static int download_file_attempt(
         if (!options->quiet) {
             unsigned long long now_ns = platform_get_monotonic_time_ns();
             if (now_ns >= next_progress_ns) {
-                write_progress_line(name, written, has_progress_total, progress_total, start_ns, start_epoch, progress);
+                write_progress_line(name, written, written - resume_offset, has_progress_total, progress_total, start_ns, start_epoch, progress);
                 next_progress_ns = now_ns + WP_PROGRESS_INTERVAL_NS;
             }
         }
@@ -1381,7 +1774,17 @@ static int download_file_attempt(
     if (output_fd >= 0 && platform_close(output_fd) != 0) {
         failed = 1;
     }
-    if (!header_complete || output_fd < 0 || bytes_read < 0 || (headers.has_content_length && written - resume_offset < response_body_length)) {
+    if (output_fd >= 0 && !failed) {
+        resume_state->sha = sha;
+        resume_state->offset = written;
+        resume_state->prepared = 1;
+    } else {
+        resume_state->prepared = 0;
+    }
+    if (bytes_read == -2) return 2;
+    if (!header_complete || output_fd < 0 || bytes_read < 0 ||
+        (headers.chunked && !chunk_decoder.done) ||
+        (!headers.chunked && headers.has_content_length && written - resume_offset != response_body_length)) {
         return -1;
     }
     if (failed) {
@@ -1389,14 +1792,15 @@ static int download_file_attempt(
     }
     crypto_sha256_final(&sha, digest);
     if (!hex_digest_matches(digest, expected_hex)) {
-        if (resume_offset > 0ULL) {
-            (void)platform_truncate_path(output_path, 0ULL);
-            return -1;
-        }
+        (void)platform_truncate_path(partial_path, 0ULL);
+        crypto_sha256_init(&resume_state->sha);
+        resume_state->offset = 0ULL;
+        resume_state->prepared = 1;
         return -2;
     }
+    if (platform_sync_path_data(partial_path) != 0 || platform_rename_path(partial_path, output_path) != 0) return -1;
     if (!options->quiet) {
-        write_progress_line(name, written, has_progress_total, progress_total, start_ns, start_epoch, progress);
+        write_progress_line(name, written, written - resume_offset, has_progress_total, progress_total, start_ns, start_epoch, progress);
         write_success_info("verified ", name);
     }
     progress->package_completed += written;
@@ -1422,24 +1826,40 @@ static int download_file(
     WpDownloadStats *stats
 ) {
     unsigned int max_attempts = options->retries + 1U;
-    unsigned int attempt;
+    unsigned int attempt = 0U;
+    unsigned int redirect_count = 0U;
+    int last_result = -1;
+    WpResumeState resume_state;
+    char current_url[WP_URL_SIZE];
+    char redirect_url[WP_URL_SIZE];
 
-    for (attempt = 1U; attempt <= max_attempts; ++attempt) {
-        int result = download_file_attempt(url_text, output_path, name, options, expected_hex, has_expected_size, expected_size, progress, stats);
-        if (result == 0 || result == -2) {
-            return result;
+    rt_memset(&resume_state, 0, sizeof(resume_state));
+    if (rt_strlen(url_text) + 1U > sizeof(current_url)) return -1;
+    rt_copy_string(current_url, sizeof(current_url), url_text);
+
+    while (attempt < max_attempts) {
+        int result = download_file_attempt(current_url, output_path, name, options, expected_hex, has_expected_size, expected_size,
+                                           progress, stats, &resume_state, redirect_url, sizeof(redirect_url));
+        if (result == 2) {
+            if (redirect_count++ >= WP_MAX_REDIRECTS) return -1;
+            rt_copy_string(current_url, sizeof(current_url), redirect_url);
+            continue;
         }
+        attempt += 1U;
+        if (result == 0) return 0;
+        last_result = result;
         if (attempt < max_attempts) {
-            unsigned long long delay_ms = 1000ULL * (unsigned long long)attempt;
+            unsigned int shift = attempt > 6U ? 6U : attempt - 1U;
+            unsigned long long delay_ms = (1000ULL << shift) + (unsigned long long)((attempt * 137U) % 500U);
             if (!options->quiet) {
                 write_retry_line(name, attempt + 1U, max_attempts);
             }
             stats->retries += 1U;
-            if (delay_ms > 5000ULL) delay_ms = 5000ULL;
+            if (delay_ms > 60000ULL) delay_ms = 60000ULL;
             (void)platform_sleep_milliseconds(delay_ms);
         }
     }
-    return -1;
+    return last_result;
 }
 
 static int run_download_child(int argc, char **argv) {
@@ -1560,21 +1980,34 @@ static int spawn_download_child(
 }
 
 static int wait_for_download_child(WpDownloadChild *children, size_t *active_count_io, const WpDumpList *list) {
-    int status = 1;
-    size_t index;
+    int status;
+    size_t completed_index;
 
     if (*active_count_io == 0U) {
         return 0;
     }
-    if (platform_wait_process(children[0].pid, &status) != 0) {
-        status = 1;
+    for (;;) {
+        for (completed_index = 0U; completed_index < *active_count_io; ++completed_index) {
+            int finished = 0;
+
+            status = 1;
+            if (platform_poll_process_exit(children[completed_index].pid, &finished, &status) != 0) {
+                finished = 1;
+                status = 1;
+            }
+            if (finished) goto child_finished;
+        }
+        (void)platform_sleep_milliseconds(10ULL);
     }
+
+child_finished:
     if (status != 0) {
-        const char *name = list->files[children[0].file_index].name;
+        const char *name = list->files[children[completed_index].file_index].name;
         tool_write_error("wp-download", status == 2 ? "sha256 mismatch for " : "download failed for ", name);
     }
-    for (index = 1U; index < *active_count_io; ++index) {
-        children[index - 1U] = children[index];
+    while (completed_index + 1U < *active_count_io) {
+        children[completed_index] = children[completed_index + 1U];
+        completed_index += 1U;
     }
     *active_count_io -= 1U;
     return status == 0 ? 0 : -1;
@@ -1584,7 +2017,7 @@ static int prepare_file_targets(WpDumpList *list, const char *wiki_name, const c
     size_t index;
 
     for (index = 0U; index < list->count; ++index) {
-        if (build_url(wiki_name, date, list->files[index].name, list->files[index].url, sizeof(list->files[index].url)) != 0 ||
+        if (build_url(options->base_url, wiki_name, date, list->files[index].name, list->files[index].url, sizeof(list->files[index].url)) != 0 ||
             join_output_path(options->out_dir, list->files[index].name, list->files[index].output_path, sizeof(list->files[index].output_path)) != 0) {
             tool_write_error("wp-download", "path too long for ", list->files[index].name);
             return -1;
@@ -1623,18 +2056,20 @@ static int download_files_parallel(const WpDumpList *list, const WpOptions *opti
     return failed ? -1 : 0;
 }
 
-static void fill_parallel_success_stats(const WpDumpList *list, WpDownloadStats *stats, WpProgressContext *progress) {
+static int fill_parallel_success_stats(const WpDumpList *list, WpDownloadStats *stats, WpProgressContext *progress) {
     size_t index;
 
     stats->files_verified = (unsigned int)list->count;
     for (index = 0U; index < list->count; ++index) {
-        stats->verified_bytes += list->files[index].content_length;
-        if (list->files[index].has_content_length) {
-            stats->downloaded_bytes += list->files[index].content_length;
-        }
+        PlatformDirEntry entry;
+
+        if (platform_get_path_info(list->files[index].output_path, &entry) != 0 || entry.is_dir) return -1;
+        stats->verified_bytes += entry.size;
+        stats->downloaded_bytes += entry.size;
     }
     progress->package_completed = stats->verified_bytes;
     stats->last_epoch = platform_get_epoch_time();
+    return 0;
 }
 
 static int run_download(const char *lang, const WpOptions *options) {
@@ -1661,7 +2096,7 @@ static int run_download(const char *lang, const WpOptions *options) {
             return 1;
         }
     } else {
-        if (build_url(wiki_name, 0, 0, root_url, sizeof(root_url)) != 0 || read_http_to_memory(root_url, &page, &page_size, options->timeout_ms) != 0) {
+        if (build_url(options->base_url, wiki_name, 0, 0, root_url, sizeof(root_url)) != 0 || read_http_to_memory(root_url, &page, &page_size, options->timeout_ms) != 0) {
             tool_write_error("wp-download", "cannot read dump index for ", wiki_name);
             return 1;
         }
@@ -1675,7 +2110,7 @@ static int run_download(const char *lang, const WpOptions *options) {
         page = 0;
     }
 
-    if (build_url(wiki_name, date, 0, listing_url, sizeof(listing_url)) != 0) {
+    if (build_url(options->base_url, wiki_name, date, 0, listing_url, sizeof(listing_url)) != 0) {
         tool_write_error("wp-download", "cannot build bzip2 listing URL for ", wiki_name);
         return 1;
     }
@@ -1687,30 +2122,35 @@ static int run_download(const char *lang, const WpOptions *options) {
     (void)page_size;
     if (parse_bzip2_listing((const char *)page, wiki_name, &list) != 0) {
         rt_free(page);
+        destroy_dump_list(&list);
         tool_write_error("wp-download", "cannot find bzip2 XML dumps for ", wiki_name);
         return 1;
     }
     rt_free(page);
     page = 0;
 
-    if (build_url(wiki_name, date, "SHA256SUMS", manifest_url, sizeof(manifest_url)) != 0) {
+    if (build_url(options->base_url, wiki_name, date, "SHA256SUMS", manifest_url, sizeof(manifest_url)) != 0) {
+        destroy_dump_list(&list);
         tool_write_error("wp-download", "cannot build SHA256SUMS URL for ", wiki_name);
         return 1;
     }
 
     if (read_http_to_memory(manifest_url, &page, &page_size, options->timeout_ms) != 0) {
+        destroy_dump_list(&list);
         tool_write_error("wp-download", "cannot read SHA256SUMS for ", wiki_name);
         return 1;
     }
     (void)page_size;
     if (parse_sha256sums((const char *)page, &list) != 0) {
         rt_free(page);
+        destroy_dump_list(&list);
         tool_write_error("wp-download", "SHA256SUMS does not cover all selected dumps", 0);
         return 1;
     }
     rt_free(page);
 
     if (prepare_file_targets(&list, wiki_name, date, options) != 0) {
+        destroy_dump_list(&list);
         return 1;
     }
 
@@ -1725,7 +2165,11 @@ static int run_download(const char *lang, const WpOptions *options) {
         if (!list.files[index].has_content_length) {
             progress.has_package_total = 0;
         }
-        progress.package_total += list.files[index].content_length;
+        if (progress.package_total > (unsigned long long)-1 - list.files[index].content_length) {
+            progress.has_package_total = 0;
+        } else {
+            progress.package_total += list.files[index].content_length;
+        }
     }
     progress.package_start_ns = platform_get_monotonic_time_ns();
     progress.package_start_epoch = platform_get_epoch_time();
@@ -1757,12 +2201,17 @@ static int run_download(const char *lang, const WpOptions *options) {
             rt_write_cstr(2, " concurrent downloads\n");
         }
         if (download_files_parallel(&list, options) != 0) {
+            destroy_dump_list(&list);
             return 1;
         }
-        fill_parallel_success_stats(&list, &stats, &progress);
+        if (fill_parallel_success_stats(&list, &stats, &progress) != 0) {
+            destroy_dump_list(&list);
+            return 1;
+        }
         if (!options->quiet) {
             write_complete_summary(&stats, &progress);
         }
+        destroy_dump_list(&list);
         return 0;
     }
 
@@ -1783,16 +2232,19 @@ static int run_download(const char *lang, const WpOptions *options) {
         );
         if (result == -2) {
             tool_write_error("wp-download", "sha256 mismatch for ", list.files[index].name);
+            destroy_dump_list(&list);
             return 1;
         }
         if (result != 0) {
             tool_write_error("wp-download", "download failed for ", list.files[index].name);
+            destroy_dump_list(&list);
             return 1;
         }
     }
     if (!options->quiet) {
         write_complete_summary(&stats, &progress);
     }
+    destroy_dump_list(&list);
     return 0;
 }
 
@@ -1815,7 +2267,8 @@ int main(int argc, char **argv) {
     options.color_mode = TOOL_COLOR_AUTO;
     tool_set_global_color_mode(options.color_mode);
 
-    tool_opt_init(&state, argc, argv, argv[0], "[-q] [-o DIR] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
+    options.base_url = "https://dumps.wikimedia.org/other/mediawiki_content_current/";
+    tool_opt_init(&state, argc, argv, argv[0], "[-q] [-o DIR] [--base-url URL] [--date YYYY-MM-DD] [-T TIMEOUT] [--retries N] [--jobs N] [--no-resume] [--color[=WHEN]|--no-color] LANG");
     while ((parse_result = tool_opt_next(&state)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(state.flag, "-q") == 0 || rt_strcmp(state.flag, "--quiet") == 0) {
             options.quiet = 1;
@@ -1838,6 +2291,18 @@ int main(int argc, char **argv) {
             options.out_dir = state.value;
         } else if (tool_starts_with(state.flag, "--output-dir=")) {
             options.out_dir = state.flag + 13;
+        } else if (rt_strcmp(state.flag, "--base-url") == 0) {
+            if (tool_opt_require_value(&state) != 0 || parse_url(state.value, &(WpUrl){0}) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.base_url = state.value;
+        } else if (tool_starts_with(state.flag, "--base-url=")) {
+            if (parse_url(state.flag + 11, &(WpUrl){0}) != 0) {
+                print_usage(argv[0]);
+                return 1;
+            }
+            options.base_url = state.flag + 11;
         } else if (rt_strcmp(state.flag, "--date") == 0) {
             if (tool_opt_require_value(&state) != 0 || copy_snapshot_date(options.date, sizeof(options.date), state.value) != 0) {
                 print_usage(argv[0]);

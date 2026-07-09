@@ -60,7 +60,11 @@ FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
 source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(ROOT)/%,%,$(1))))
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
+HOT_PATH_SOURCES := $(TLS_SOURCES) $(filter %/aes128.c %/aes128_gcm.c %/sha256.c,$(CRYPTO_SOURCES))
+HOT_PATH_OBJECTS := $(foreach src,$(HOT_PATH_SOURCES),$(call source_object,$(src)))
 MACOS_CRT_OBJECT := $(call source_object,$(TARGET_CRT))
+
+$(HOT_PATH_OBJECTS): COMMON_CFLAGS += -O2
 
 .PHONY: all freestanding test clean
 .SECONDARY: $(addprefix $(OBJ_DIR)/,$(addsuffix .o,$(TOOLS)))
@@ -77,6 +81,7 @@ endif
 freestanding: $(addprefix $(BUILD_DIR)/,$(TOOLS))
 
 test: freestanding
+	python3 ./test-wp-download.py
 	sh ./test-wp-retraction-match-smoke.sh
 
 $(BUILD_DIR) $(OBJ_DIR):

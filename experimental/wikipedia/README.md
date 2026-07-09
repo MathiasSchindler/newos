@@ -19,6 +19,7 @@ language edition code as input. For example:
 ```sh
 wp-download fur
 wp-download --date 2026-06-01 -o experimental/wikipedia/data fur
+wp-download --base-url https://mirror.example/mediawiki_content_current/ fur
 ```
 
 The tool discovers the latest snapshot date unless `--date YYYY-MM-DD` is
@@ -38,6 +39,26 @@ against `SHA256SUMS` before being accepted. `--retries N` controls retry count,
 and `--no-resume` forces a fresh download from byte 0. Successful verification
 lines and the final completion summary use the shared ANSI color helpers when
 color output is enabled.
+
+Active downloads use `<name>.part`; only a complete, SHA-256-verified file is
+data-synced and atomically renamed to its final name. Resume responses must
+return a matching `Content-Range`, while a server that ignores `Range` and
+returns `200` causes a safe restart from byte zero. HTTP bodies support exact
+`Content-Length` framing and streaming chunked transfer encoding. Metadata and
+dump redirects are followed up to a fixed limit. `-T` applies to plain HTTP
+waits and to TLS handshake and record I/O; activity starts a fresh per-read
+wait.
+
+Parallel mode reaps children in completion order, so a completed short download
+immediately frees a slot even when an earlier file is still running. TLS record,
+AES-GCM, and SHA-256 objects are built with `-O2`; the rest of the experimental
+tool tree retains the size-oriented `-Oz` default.
+
+`make test` runs a local deterministic downloader server in addition to the
+retraction matcher smoke test. The downloader suite covers chunked metadata and
+dump bodies, metadata and file redirects, valid resume, servers that ignore a
+range, malformed `Content-Range`, checksum retry, truncated metadata, stalled
+bodies, atomic promotion, and completion-order slot reuse.
 
 ## wp-cite-extract
 

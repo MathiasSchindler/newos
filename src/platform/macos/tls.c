@@ -206,7 +206,7 @@ int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_
     return 0;
 }
 
-int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
+int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds) {
     Tls13Client *native;
     int socket_fd = -1;
     const char *tls13_error;
@@ -229,7 +229,7 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
         (void)platform_close(socket_fd);
         return -1;
     }
-    tls13_client_init(native, socket_fd, 30000U);
+    tls13_client_init(native, socket_fd, timeout_milliseconds);
     int tls13_result = tls13_client_handshake(native, host, rt_strlen(host));
     if (tls13_result != 0 && native->handshake_done) {
         tls13_result = 0;
@@ -257,7 +257,7 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
             (void)platform_close(socket_fd);
             return -1;
         }
-        tls12_client_init(native12, socket_fd, 30000U);
+        tls12_client_init(native12, socket_fd, timeout_milliseconds);
         if (tls12_client_handshake(native12, host, rt_strlen(host)) != 0) {
             macos_tls_set_error(tls13_error);
             rt_free(native12);
@@ -306,6 +306,10 @@ int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned i
     client->active = 1;
     macos_tls_set_error("none");
     return 0;
+}
+
+int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port) {
+    return platform_tls_connect_timeout(client, host, port, 30000U);
 }
 
 long platform_tls_read(PlatformTlsClient *client, void *buffer, size_t count) {

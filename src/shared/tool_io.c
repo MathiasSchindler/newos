@@ -743,18 +743,22 @@ int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size) {
     return 0;
 }
 
-int tool_http_connection_connect(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls) {
+int tool_http_connection_connect_timeout(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls, unsigned int timeout_milliseconds) {
     rt_memset(connection, 0, sizeof(*connection));
     connection->socket_fd = -1;
     connection->use_tls = use_tls;
     if (connection->use_tls) {
-        if (platform_tls_connect(&connection->tls, host, port) != 0) {
+        if (platform_tls_connect_timeout(&connection->tls, host, port, timeout_milliseconds) != 0) {
             return -1;
         }
         connection->socket_fd = connection->tls.socket_fd;
         return 0;
     }
     return platform_connect_tcp(host, port, &connection->socket_fd);
+}
+
+int tool_http_connection_connect(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls) {
+    return tool_http_connection_connect_timeout(connection, host, port, use_tls, 30000U);
 }
 
 unsigned int tool_http_default_port(int use_tls) {

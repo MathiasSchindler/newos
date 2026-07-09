@@ -509,6 +509,7 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
 int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out);
 int platform_accept_tcp(int listener_fd, int *client_fd_out);
 int platform_tls_connect(PlatformTlsClient *client, const char *host, unsigned int port);
+int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds);
 const char *platform_tls_last_error(void);
 const char *platform_tls_peer_verification_status(void);
 int platform_tls_peer_info(PlatformTlsClient *client, PlatformTlsPeerInfo *info_out);

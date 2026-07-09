@@ -128,6 +128,7 @@ typedef struct {
 } ToolHttpConnection;
 
 int tool_http_connection_connect(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls);
+int tool_http_connection_connect_timeout(ToolHttpConnection *connection, const char *host, unsigned int port, int use_tls, unsigned int timeout_milliseconds);
 unsigned int tool_http_default_port(int use_tls);
 int tool_http_connection_fd(const ToolHttpConnection *connection);
 long tool_http_connection_read(ToolHttpConnection *connection, void *buffer, size_t count);
