@@ -446,6 +446,7 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
     int finished = 0;
     int stdout_open = 1;
     int stdin_open = 1;
+    int channel_failed = 0;
     unsigned int idle_ticks = 0U;
     char *argv_exec[4];
 
@@ -501,7 +502,10 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
             } else if (sshd_send_channel_data(t, remote_channel, chunk, (size_t)n) != 0) {
                 platform_close(stdout_pipe[0]);
                 if (stdin_open) platform_close(stdin_pipe[1]);
-                return -1;
+                stdout_open = 0;
+                stdin_open = 0;
+                channel_failed = 1;
+                break;
             }
         } else if (poll_status > 0 && stdin_open) {
             unsigned char payload[SSH_PACKET_BUFFER_CAPACITY];
@@ -555,10 +559,11 @@ static int sshd_run_exec(SshdTransport *t, const SshdConfig *config, unsigned in
         platform_close(stdin_pipe[1]);
     }
     if (!finished) {
-        (void)platform_wait_process_timeout(pid, 0ULL, 0ULL, 15, 0, &exit_status);
+        (void)platform_wait_process_timeout(pid, 0ULL, 1000ULL, 15, 0, &exit_status);
     } else {
         (void)platform_wait_process(pid, &exit_status);
     }
+    if (channel_failed) return -1;
     sshd_drain_pending_channel_input(t);
     return sshd_send_exit_and_close(t, remote_channel, exit_status);
 }
