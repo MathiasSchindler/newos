@@ -56,12 +56,11 @@ The Linux freestanding build is the primary Linux target without libc.
 - writes binaries to `build/freestanding-linux-$(TARGET_ARCH)/`
 - uses `src/platform/linux/` plus `src/arch/$(TARGET_ARCH)/linux/`
 - links with the minimal `crt0.S` entry path and direct syscalls
-- defaults to static PIE output with section garbage collection and size-oriented optimization
-- in the project-linker tiny ELF path, overlaps the final six bytes of the ELF
-  header with the first program header and omits section headers entirely; the
-  resulting Linux-loader-compatible files deliberately leave section-header size
-  and string-table-index fields meaningless because the section-header count is
-  zero
+- defaults to static ELF output with section garbage collection, safe ICF,
+  entry-rooted call-graph ordering, and page-separated RX/RW load segments
+- omits section headers from final project-linker output; explicit `--tiny`
+  builds additionally overlap the final six ELF-header bytes with the first
+  program header and may use one RWX segment when writable state is present
 - includes freestanding stack-canary runtime support, with compiler stack-protector instrumentation controlled by `FREESTANDING_STACK_CFLAGS`
 - is where Linux ABI, start-up, and libc-dependency mistakes become visible
 

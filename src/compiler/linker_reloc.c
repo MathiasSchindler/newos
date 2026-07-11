@@ -103,12 +103,12 @@ static int relocation_symbol_value(const LinkObject *object,
             int64_t const_addend = addend - relocation_bias;
 
             if (const_addend < 0 || (uint64_t)const_addend > input_size || symbol_offset > input_size - (uint64_t)const_addend) {
-                set_link_error(error_out, error_size, "invalid merge constant relocation", object->path);
+                set_link_error(error_out, error_size, "invalid merge constant relocation range", symbol_name(object, symbol));
                 return -1;
             }
             input_offset = symbol_offset + (uint64_t)const_addend;
             if (!translate_merge_const_offset(object, section, input_offset, &merged_offset)) {
-                set_link_error(error_out, error_size, "invalid merge constant relocation", object->path);
+                set_link_error(error_out, error_size, "merge constant not found in output pool", symbol_name(object, symbol));
                 return -1;
             }
             *value_out = LINKER_BASE_VADDR + master->out_offset + merged_offset;

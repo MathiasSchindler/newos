@@ -63,7 +63,9 @@ aliases.
   and represented by the ELF segment memory size instead. On Mach-O arm64 this
   selects the compact load-command policy described below.
 - `--separate-code`, `--page-align` - use the default page-aligned RX/RW segment
-  layout.
+  layout. This is the Linux `make freestanding` default. Binaries with writable
+  data receive distinct executable/non-writable and writable/non-executable
+  load segments.
 - `--gc-sections` - keep only sections reachable from the entry symbol through
   relocations. This is most useful with compiler inputs built using
   `-ffunction-sections -fdata-sections`. On Mach-O arm64, the final backend is
@@ -84,6 +86,20 @@ aliases.
   relocation records, and exact-size sections whose relocation records refer to
   equivalent targets. Conservative suffix folding is still limited to
   relocation-free read-only data.
+- `--icf=all` - additionally use iterative equivalence-class refinement for
+  executable sections. Relocation targets are compared by their current class,
+  allowing structurally identical mutually recursive local function groups to
+  fold. This mode may make distinct function addresses equal and is therefore
+  explicit rather than part of `--icf=safe`.
+- `--call-graph-order` - order live executable sections from the entry section
+  through relocation edges before applying the deterministic alignment/size
+  fallback. Edges to folded functions follow their canonical ICF master. This
+  keeps entry-path callers and callees close without requiring profile data.
+- `--merge-constants` - coalesce duplicate entries in eligible non-string ELF
+  `SHF_MERGE` sections. Input-section alignment and output-pool alignment are
+  tracked separately, and unsupported relocation patterns leave a section on
+  the normal path. The option is not enabled by default; see the measured result
+  below.
 
 The linker also coalesces eligible ELF mergeable byte-string sections
 (`SHF_MERGE | SHF_STRINGS`, entry size 1) into one string pool. Duplicate strings
@@ -91,12 +107,13 @@ and strings that are suffixes of longer strings share the same output bytes whil
 relocations are retargeted to the pooled offset. This primarily reduces tools
 with many diagnostics or compiler tables, such as `ncc`.
 
-The linker orders live sections by alignment and places zero-tailed writable data
-late in the data image so padding and trailing zero bytes are less likely to be
-written to disk. In `--tiny` mode, segment-internal text, data, and BSS starts
-are aligned to the strongest live section requirement instead of a fixed padding
-boundary, so post-LTO outputs do not keep unused header or segment gaps when GCC
-emits only byte-aligned sections.
+Without `--call-graph-order`, the linker orders live sections by alignment and
+size. With call-graph ordering, entry-reachable executable sections are placed
+first in relocation traversal order and the same alignment/size policy handles
+the remainder. Zero-tailed writable data is placed late so padding and trailing
+zero bytes are less likely to be written to disk. In `--tiny` mode,
+segment-internal text, data, and BSS starts are aligned to the strongest live
+section requirement instead of a fixed padding boundary.
 
 ## LTO Notes
 
@@ -162,8 +179,10 @@ overall size result, and `-fno-partial-inlining` made the total output larger.
 
 - `--stats` - print link statistics to standard output. The ELF backend reports
   live object and section counts, relocation count, folded/discarded bytes,
-  text/data/BSS sizes, file size, memory size, header bytes, padding bytes, and
-  active policy. The Mach-O backend reports input object/section counts,
+  GC bytes by section class, exact/suffix/equivalence ICF counts and bytes,
+  string and constant pool input/output/savings, text/data/BSS sizes, file size,
+  memory size, header and padding bytes, call-graph ordered-section count,
+  segment permissions, and active policy. The Mach-O backend reports input object/section counts,
   file-backed section payloads, BSS bytes, header bytes, segment file and VM
   sizes, signature offset/code limit/signature bytes, final file size, and the
   active page-aligned or compact policy.
@@ -182,6 +201,8 @@ linker -m elf_x86_64 -o app start.o main.o
 linker --tiny --gc-sections --stats -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --print-gc-sections -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --map app.map --why-live main -o app @objects.rsp
+linker --separate-code --gc-sections --icf=safe --call-graph-order -o app @objects.rsp
+linker --tiny --gc-sections --icf=all --merge-constants --stats -o app @objects.rsp
 linker --target=mach-o-arm64 --macho-compact --gc-sections --lto-cc=clang -o app start.o app.o runtime.o
 ```
 
@@ -225,15 +246,20 @@ size work. The report target follows the normal macOS `make freestanding`
 default and measures `build/newlinker-macos-aarch64/` unless the build directory
 is overridden.
 
-`make test-newlinker-optimizations` runs small standalone linker fixtures for
-relocation-aware ICF, mergeable string pooling, and reporting output. The ICF
-fixture verifies that two relocated functions fold to the same address while the
-linked executable still runs.
+`tests/suites/newlinker_optimizations.sh` runs standalone fixtures for
+relocation-aware safe ICF, mutually recursive equivalence-class ICF, entry-rooted
+call-graph ordering, mergeable string and constant pooling, detailed reporting,
+tiny layout, and LTO. The freestanding smoke suite checks every produced ELF for
+writable-executable load segments and verifies distinct RX/RW mappings on a tool
+with writable state.
 
 On Linux x86-64, `make freestanding` is the default newlinker build. It runs
 `scripts/build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
 `build/freestanding-linux-x86_64`, and uses `TARGET_CC` as the object compiler
-with this linker for the final links. The script supports both GCC and Clang;
+with this linker for the final links. Final links default to `--separate-code
+--gc-sections --icf=safe --call-graph-order`, so writable tools use W^X load
+segments. Pass `LINKER_FLAGS` explicitly when producing minimum-size `--tiny`
+artifacts. The script supports both GCC and Clang;
 when run directly, set `NEWLINKER_CC` to choose the compiler. Its default
 size-focused C flags include `-fmerge-all-constants`; set
 `NEWLINKER_EXTRA_CFLAGS` to override or extend the extra compiler flags. The
@@ -248,18 +274,13 @@ invocations; when unset, the script uses `PARALLEL_JOBS`, `nproc`, or the online
 processor count. Use `NEWLINKER_LINK_JOBS=1` for serial timing or easier log
 inspection. The build report records the selected link job count.
 
-Current default `make freestanding` newlinker sizes on this workspace with `cc`
-as `TARGET_CC` are: `true` 161 bytes, `false` 162 bytes, `cat` 2279 bytes,
-`linker` 26065 bytes, `ncc` 184653 bytes, `ssh` 51621 bytes, and `wget` 68541
-bytes. The 185-tool output total is 2420174 bytes.
-
-Current all-tool wall-clock measurements on this workspace: default
-`make freestanding` with `cc` as `TARGET_CC` and 16 link jobs took 45.39 seconds.
-`make freestanding TARGET_CC=clang` into a separate output tree took 42.41
-seconds. In earlier clang-focused timing, `NEWLINKER_LINK_JOBS=1` took 44.29
-seconds, the default 16-way link phase took 40.92 seconds, and a fake-linker run
-using `LINKER=/usr/bin/true` took 40.35 seconds, so parallel linking removed
-almost all linker wall-clock overhead for 185 tools.
+Constant merging was measured on the complete 214-tool hardened Linux build on
+2026-07-11. It removed 464 bytes of file-backed section payload across three
+tools (`solve` 368, `printf` 64, and `git` 32), but page-separated segment
+layout absorbed all of that space: aggregate final output remained 4,448,854
+bytes and no individual file changed size. The full freestanding smoke suite
+passed with the option enabled. Consequently `--merge-constants` remains an
+available measured optimization rather than a default build flag.
 
 ## LIMITATIONS
 
@@ -278,13 +299,14 @@ almost all linker wall-clock overhead for 185 tools.
   writable mappings are required.
 - `--icf=safe` relocation-aware folding is intentionally conservative: relocated
   sections fold only when relocation offsets, types, addends, and target symbols
-  are equivalent. General equivalence-class ICF for mutually recursive local
-  sections is not implemented yet.
+  are equivalent. `--icf=all` supports equivalence-class folding for mutually
+  recursive executable sections but is address-significant and intentionally
+  opt-in.
 - Mergeable string pooling is limited to allocatable read-only byte-string
   sections with no relocations in the string section itself. Other `SHF_MERGE`
-  entry sizes are implemented as an experimental build-time constant-pooling
-  path, but are disabled by default until every relocation pattern is proven
-  safe. Relocation-bearing merge sections are kept on the normal section path.
+  entry sizes are available through `--merge-constants` when their symbols and
+  relocation references are entry-aligned and translatable. Relocation-bearing
+  merge sections and unsupported reference patterns remain on the normal path.
 - x86-64 size-changing instruction relaxation is not implemented yet. The
   current freestanding `ncc` inputs do not expose common same-size GOT relaxation
   relocations; real byte savings would require rewriting section contents,

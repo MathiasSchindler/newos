@@ -43,11 +43,23 @@ typedef struct {
 } LinkLayoutEntry;
 
 static LinkSectionKind layout_sort_kind;
+static int layout_sort_call_graph;
 
 static int compare_layout_entries(const void *left_ptr, const void *right_ptr) {
     const LinkLayoutEntry *left = (const LinkLayoutEntry *)left_ptr;
     const LinkLayoutEntry *right = (const LinkLayoutEntry *)right_ptr;
 
+    if (layout_sort_call_graph && layout_sort_kind == LINK_SECTION_TEXT) {
+        int left_ranked = left->section->layout_rank != LINKER_UNPLACED_OFFSET;
+        int right_ranked = right->section->layout_rank != LINKER_UNPLACED_OFFSET;
+
+        if (left_ranked != right_ranked) {
+            return left_ranked ? -1 : 1;
+        }
+        if (left_ranked && left->section->layout_rank != right->section->layout_rank) {
+            return left->section->layout_rank < right->section->layout_rank ? -1 : 1;
+        }
+    }
     if (left->section->align != right->section->align) {
         return left->section->align > right->section->align ? -1 : 1;
     }
@@ -122,7 +134,7 @@ static uint64_t layout_sections_of_kind_slow(LinkObject *objects, size_t object_
     return size;
 }
 
-static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count, LinkSectionKind kind, int call_graph_order) {
     LinkLayoutEntry *entries;
     size_t entry_count = 0U;
     size_t entry_index = 0U;
@@ -172,6 +184,7 @@ static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count
         }
     }
     layout_sort_kind = kind;
+    layout_sort_call_graph = call_graph_order;
     rt_sort(entries, entry_count, sizeof(*entries), compare_layout_entries);
     for (entry_index = 0U; entry_index < entry_count; ++entry_index) {
         LinkSection *section = entries[entry_index].section;
@@ -184,10 +197,132 @@ static uint64_t layout_sections_of_kind(LinkObject *objects, size_t object_count
     return size;
 }
 
-void layout_objects(LinkObject *objects, size_t object_count, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out) {
-    *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT);
-    *data_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_DATA);
-    *bss_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_BSS);
+static LinkSection *layout_resolve_symbol_section(LinkObject *objects,
+                                                  size_t object_count,
+                                                  LinkObject *source,
+                                                  const unsigned char *symbol,
+                                                  LinkObject **object_out) {
+    uint16_t shndx = read_u16(symbol + 6);
+    LinkObject *object = source;
+
+    if (shndx == SHN_UNDEF) {
+        int owner = find_defined_symbol_owner(symbol_name(source, symbol));
+        uint32_t count;
+        uint32_t symbol_index;
+
+        if (owner < 0 || (size_t)owner >= object_count) {
+            return 0;
+        }
+        object = &objects[owner];
+        count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        for (symbol_index = 0; symbol_index < count; ++symbol_index) {
+            const unsigned char *definition = symbol_entry(object, symbol_index);
+
+            if (definition != 0 && read_u16(definition + 6) != SHN_UNDEF &&
+                rt_strcmp(symbol_name(object, definition), symbol_name(source, symbol)) == 0) {
+                shndx = read_u16(definition + 6);
+                break;
+            }
+        }
+        if (symbol_index == count) {
+            return 0;
+        }
+    }
+    if (shndx == SHN_ABS || shndx == SHN_UNDEF) {
+        return 0;
+    }
+    *object_out = object;
+    return find_link_section(object, shndx);
+}
+
+static void rank_call_graph_sections(LinkObject *objects, size_t object_count, const char *entry_symbol) {
+    LinkSection **queue;
+    LinkObject **queue_objects;
+    size_t capacity = 0U;
+    size_t head = 0U;
+    size_t tail = 0U;
+    uint64_t rank = 0ULL;
+    size_t object_index;
+
+    for (object_index = 0; object_index < object_count; ++object_index) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[object_index].section_count; ++section_index) {
+            objects[object_index].sections[section_index].layout_rank = LINKER_UNPLACED_OFFSET;
+            capacity += 1U;
+        }
+    }
+    queue = (LinkSection **)rt_malloc_array(capacity == 0U ? 1U : capacity, sizeof(*queue));
+    queue_objects = (LinkObject **)rt_malloc_array(capacity == 0U ? 1U : capacity, sizeof(*queue_objects));
+    if (queue == 0 || queue_objects == 0) {
+        rt_free(queue);
+        rt_free(queue_objects);
+        return;
+    }
+    for (object_index = 0; object_index < object_count && tail == 0U; ++object_index) {
+        LinkObject *object = &objects[object_index];
+        uint32_t count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        uint32_t symbol_index;
+
+        for (symbol_index = 0; symbol_index < count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(object, symbol_index);
+            LinkSection *section;
+
+            if (symbol == 0 || read_u16(symbol + 6) == SHN_UNDEF || rt_strcmp(symbol_name(object, symbol), entry_symbol) != 0) {
+                continue;
+            }
+            section = find_link_section(object, read_u16(symbol + 6));
+            if (section != 0 && section->live && !section->folded && (section->flags & SHF_EXECINSTR) != 0ULL) {
+                section->layout_rank = rank++;
+                queue[tail] = section;
+                queue_objects[tail++] = object;
+            }
+            break;
+        }
+    }
+    while (head < tail) {
+        LinkSection *section = queue[head];
+        LinkObject *object = queue_objects[head++];
+        const LinkRelaSection *rela = find_rela_section_const(object, section->index);
+        uint64_t relocation_count;
+        uint64_t relocation_index;
+
+        if (rela == 0 || rela->entsize == 0ULL) {
+            continue;
+        }
+        relocation_count = rela->size / rela->entsize;
+        for (relocation_index = 0ULL; relocation_index < relocation_count; ++relocation_index) {
+            const unsigned char *relocation = object->file + rela->offset + relocation_index * rela->entsize;
+            const unsigned char *symbol = symbol_entry(object, (uint32_t)(read_u64(relocation + 8) >> 32U));
+            LinkSection *target;
+            LinkObject *target_object;
+
+            if (symbol == 0) {
+                continue;
+            }
+            target = layout_resolve_symbol_section(objects, object_count, object, symbol, &target_object);
+            if (target != 0 && target->folded) {
+                target_object = &objects[target->fold_object_index];
+                target = &target_object->sections[target->fold_section_index];
+            }
+            if (target == 0 || !target->live || (target->flags & SHF_EXECINSTR) == 0ULL || target->layout_rank != LINKER_UNPLACED_OFFSET) {
+                continue;
+            }
+            target->layout_rank = rank++;
+            queue[tail] = target;
+            queue_objects[tail++] = target_object;
+        }
+    }
+    rt_free(queue);
+    rt_free(queue_objects);
+}
+
+void layout_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, int call_graph_order, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out) {
+    if (call_graph_order) {
+        rank_call_graph_sections(objects, object_count, entry_symbol);
+    }
+    *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT, call_graph_order);
+    *data_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_DATA, 0);
+    *bss_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_BSS, 0);
 }
 
 uint64_t max_live_section_alignment(const LinkObject *objects, size_t object_count, LinkSectionKind kind) {

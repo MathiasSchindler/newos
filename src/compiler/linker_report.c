@@ -74,6 +74,99 @@ static uint64_t count_discarded_section_bytes(const LinkObject *objects, size_t 
     return count;
 }
 
+static uint64_t count_discarded_kind_bytes(const LinkObject *objects, size_t object_count, LinkSectionKind kind) {
+    uint64_t count = 0ULL;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+            if (!section->live && section->kind == kind) {
+                count += section->size;
+            }
+        }
+    }
+    return count;
+}
+
+static void count_fold_reason(const LinkObject *objects, size_t object_count, const char *reason, uint64_t *sections_out, uint64_t *bytes_out) {
+    size_t i;
+
+    *sections_out = 0ULL;
+    *bytes_out = 0ULL;
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+            if (section->live && section->folded && rt_strcmp(section->why, reason) == 0) {
+                *sections_out += 1ULL;
+                *bytes_out += section->size;
+            }
+        }
+    }
+}
+
+static uint64_t merge_string_input_bytes(const LinkObject *objects, size_t object_count) {
+    uint64_t bytes = 0ULL;
+    size_t i;
+
+    if (!linker_merge_string_pool_active) {
+        return 0ULL;
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+            if (rt_strcmp(section->why, "merge string pool") == 0) {
+                bytes += linker_merge_master_input_size;
+            } else if (rt_strcmp(section->why, "merge string folded") == 0) {
+                bytes += section->size;
+            }
+        }
+    }
+    return bytes;
+}
+
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+static uint64_t merge_const_input_bytes(const LinkObject *objects, size_t object_count) {
+    uint64_t bytes = 0ULL;
+    size_t i;
+
+    if (!linker_merge_const_pool_active) {
+        return 0ULL;
+    }
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+            if (rt_strcmp(section->why, "merge constant pool") == 0) {
+                bytes += linker_merge_const_master_input_size;
+            } else if (rt_strcmp(section->why, "merge constant folded") == 0) {
+                bytes += section->size;
+            }
+        }
+    }
+    return bytes;
+}
+#endif
+
+static uint64_t count_ordered_sections(const LinkObject *objects, size_t object_count) {
+    uint64_t count = 0ULL;
+    size_t i;
+
+    for (i = 0; i < object_count; ++i) {
+        size_t section_index;
+        for (section_index = 0; section_index < objects[i].section_count; ++section_index) {
+            const LinkSection *section = &objects[i].sections[section_index];
+            if (section->live && !section->folded && (section->flags & SHF_EXECINSTR) != 0ULL && section->layout_rank != LINKER_UNPLACED_OFFSET) {
+                count += 1ULL;
+            }
+        }
+    }
+    return count;
+}
+
 static uint64_t count_total_sections(const LinkObject *objects, size_t object_count) {
     uint64_t count = 0;
     size_t i;
@@ -114,7 +207,28 @@ int write_link_stats(int fd,
                      uint64_t header_size,
                      uint64_t padding_size,
                      int tiny,
-                     int gc_sections) {
+                     int gc_sections,
+                     int call_graph_order,
+                     int has_writable_segment) {
+    uint64_t exact_sections;
+    uint64_t exact_bytes;
+    uint64_t suffix_sections;
+    uint64_t suffix_bytes;
+    uint64_t equivalence_sections;
+    uint64_t equivalence_bytes;
+    uint64_t string_input = merge_string_input_bytes(objects, object_count);
+    uint64_t string_output = linker_merge_string_pool_active ? linker_merge_string_pool_size : 0ULL;
+#if COMPILER_LINKER_ENABLE_CONST_MERGE
+    uint64_t const_input = merge_const_input_bytes(objects, object_count);
+    uint64_t const_output = linker_merge_const_pool_active ? linker_merge_const_pool_size : 0ULL;
+#else
+    uint64_t const_input = 0ULL;
+    uint64_t const_output = 0ULL;
+#endif
+
+    count_fold_reason(objects, object_count, "identical section folded", &exact_sections, &exact_bytes);
+    count_fold_reason(objects, object_count, "read-only suffix folded", &suffix_sections, &suffix_bytes);
+    count_fold_reason(objects, object_count, "equivalence-class ICF folded", &equivalence_sections, &equivalence_bytes);
     if (rt_write_cstr(fd, "linker stats\nobjects live/total: ") != 0) return -1;
     if (rt_write_uint(fd, count_live_objects(objects, object_count)) != 0) return -1;
     if (rt_write_cstr(fd, "/") != 0) return -1;
@@ -129,6 +243,36 @@ int write_link_stats(int fd,
     if (rt_write_uint(fd, count_folded_section_bytes(objects, object_count)) != 0) return -1;
     if (rt_write_cstr(fd, "/") != 0) return -1;
     if (rt_write_uint(fd, count_discarded_section_bytes(objects, object_count)) != 0) return -1;
+    if (rt_write_cstr(fd, "\ngc discarded text/data/bss: ") != 0) return -1;
+    if (rt_write_uint(fd, count_discarded_kind_bytes(objects, object_count, LINK_SECTION_TEXT)) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, count_discarded_kind_bytes(objects, object_count, LINK_SECTION_DATA)) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, count_discarded_kind_bytes(objects, object_count, LINK_SECTION_BSS)) != 0) return -1;
+    if (rt_write_cstr(fd, "\nicf exact sections/bytes: ") != 0) return -1;
+    if (rt_write_uint(fd, exact_sections) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, exact_bytes) != 0) return -1;
+    if (rt_write_cstr(fd, "\nicf suffix sections/bytes: ") != 0) return -1;
+    if (rt_write_uint(fd, suffix_sections) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, suffix_bytes) != 0) return -1;
+    if (rt_write_cstr(fd, "\nicf equivalence sections/bytes: ") != 0) return -1;
+    if (rt_write_uint(fd, equivalence_sections) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, equivalence_bytes) != 0) return -1;
+    if (rt_write_cstr(fd, "\nmerge strings input/output/saved: ") != 0) return -1;
+    if (rt_write_uint(fd, string_input) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, string_output) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, string_input >= string_output ? string_input - string_output : 0ULL) != 0) return -1;
+    if (rt_write_cstr(fd, "\nmerge constants input/output/saved: ") != 0) return -1;
+    if (rt_write_uint(fd, const_input) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, const_output) != 0) return -1;
+    if (rt_write_cstr(fd, "/") != 0) return -1;
+    if (rt_write_uint(fd, const_input >= const_output ? const_input - const_output : 0ULL) != 0) return -1;
     if (rt_write_cstr(fd, "\ntext/data/bss: ") != 0) return -1;
     if (rt_write_uint(fd, text_size) != 0) return -1;
     if (rt_write_cstr(fd, "/") != 0) return -1;
@@ -146,6 +290,13 @@ int write_link_stats(int fd,
     if (rt_write_cstr(fd, "\npolicy: ") != 0) return -1;
     if (rt_write_cstr(fd, tiny ? "tiny" : "page-aligned") != 0) return -1;
     if (rt_write_cstr(fd, gc_sections ? " gc-sections\n" : " object-gc\n") != 0) return -1;
+    if (rt_write_cstr(fd, "ordering: ") != 0) return -1;
+    if (rt_write_cstr(fd, call_graph_order ? "call-graph" : "alignment-size") != 0) return -1;
+    if (rt_write_cstr(fd, " ordered-sections=") != 0) return -1;
+    if (rt_write_uint(fd, call_graph_order ? count_ordered_sections(objects, object_count) : 0ULL) != 0) return -1;
+    if (rt_write_cstr(fd, "\nsegment permissions: ") != 0) return -1;
+    if (rt_write_cstr(fd, tiny && has_writable_segment ? "rwx" : (has_writable_segment ? "rx+rw" : "rx")) != 0) return -1;
+    if (rt_write_cstr(fd, "\n") != 0) return -1;
     return 0;
 }
 

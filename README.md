@@ -60,7 +60,10 @@ make host CC=gcc
 
 On Linux x86-64, `make freestanding` builds the canonical freestanding tool tree
 with the project ELF linker, parallel link jobs, size-focused compiler flags, and
-the raw Linux syscall backend. It honors `TARGET_CC`, so use `TARGET_CC=clang` or
+the raw Linux syscall backend. Final links use section GC, safe ICF,
+entry-rooted call-graph ordering, and page-separated RX/RW load segments by
+default; packed `--tiny` output is an explicit size profile. It honors
+`TARGET_CC`, so use `TARGET_CC=clang` or
 `TARGET_CC=gcc` to choose the object compiler; by default it uses the Makefile's
 normal target compiler selection. GCC LTO is enabled by default on this path:
 the build script compiles objects with `-flto` and lets the project linker invoke

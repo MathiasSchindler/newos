@@ -5,7 +5,7 @@ OBJROOT="$WORK/.obj"
 LOGROOT="$WORK/.logs"
 REPORT="$WORK/report.txt"
 LINKER=${LINKER:-build/host-linux-x86_64/linker}
-LINKER_FLAGS_DEFAULT=(--tiny --gc-sections --icf=safe)
+LINKER_FLAGS_DEFAULT=(--separate-code --gc-sections --icf=safe --call-graph-order)
 LINKER_REPORTS=${LINKER_REPORTS:-0}
 if [[ -z "${NEWLINKER_CC:-}" ]]; then
   if command -v clang >/dev/null 2>&1; then

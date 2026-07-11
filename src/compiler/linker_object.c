@@ -173,6 +173,7 @@ static void remember_section(LinkObject *object, uint16_t index) {
         link_section->offset = read_u64(section + 24);
         link_section->size = read_u64(section + 32);
         link_section->align = read_u64(section + 48);
+        link_section->input_align = link_section->align;
         link_section->out_offset = 0ULL;
         link_section->live = 0;
         link_section->folded = 0;

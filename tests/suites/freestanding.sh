@@ -50,16 +50,16 @@ fi
 
 "$BIN_DIR/readelf" -h "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes.out"
 if grep -q '^ELF Header:$' "$WORK_DIR/project_readelf_yes.out"; then
-    assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Program header offset:[[:space:]]*0x3a' "project readelf should report overlapped tiny ELF program headers"
+    assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Program header offset:[[:space:]]*0x40' "project readelf should report conventional ELF program headers"
     assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Section headers:[[:space:]]*0' "project readelf should report sectionless freestanding ELF files"
     assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Section header entry size:.*ignored; no section headers' "project readelf should treat section fields as ignored when sectionless"
     assert_file_contains "$WORK_DIR/project_readelf_yes.out" 'Section header string table index:[[:space:]]*ignored' "project readelf should ignore the section string table index when sectionless"
 
     "$BIN_DIR/file" "$BIN_DIR/yes" > "$WORK_DIR/project_file_yes.out"
-    assert_file_contains "$WORK_DIR/project_file_yes.out" 'ELF 64-bit LSB executable, x86-64' "project file should accept overlapped sectionless freestanding ELF files"
+    assert_file_contains "$WORK_DIR/project_file_yes.out" 'ELF 64-bit LSB executable, x86-64' "project file should accept sectionless freestanding ELF files"
 
     "$BIN_DIR/objdump" -f -h "$BIN_DIR/yes" > "$WORK_DIR/project_objdump_yes.out"
-    assert_file_contains "$WORK_DIR/project_objdump_yes.out" 'file format elf64-x86-64' "project objdump should accept overlapped sectionless freestanding ELF files"
+    assert_file_contains "$WORK_DIR/project_objdump_yes.out" 'file format elf64-x86-64' "project objdump should accept sectionless freestanding ELF files"
     assert_file_contains "$WORK_DIR/project_objdump_yes.out" '^Sections:$' "project objdump should print the section table heading for sectionless ELF files"
 
     "$BIN_DIR/readelf" -S "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_sections.out"
@@ -69,7 +69,7 @@ if grep -q '^ELF Header:$' "$WORK_DIR/project_readelf_yes.out"; then
     "$BIN_DIR/readelf" -l "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_programs.out"
     assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" '^Program Headers:$' "project readelf -l should print program headers"
     assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" 'LOAD off=0x0 .*filesz=.*memsz=.*flags=R-E' "project readelf -l should describe the newlinker load segment"
-    assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" 'align=0x1' "project readelf -l should report tiny ELF load alignment"
+    assert_file_contains "$WORK_DIR/project_readelf_yes_programs.out" 'align=0x1000' "project readelf -l should report page-aligned ELF load segments"
 
     "$BIN_DIR/readelf" -a "$BIN_DIR/yes" > "$WORK_DIR/project_readelf_yes_all.out"
     assert_file_contains "$WORK_DIR/project_readelf_yes_all.out" 'There is no dynamic section in this file' "project readelf -a should report missing dynamic section"
@@ -91,6 +91,17 @@ if command -v readelf >/dev/null 2>&1; then
     if grep -q 'GNU_STACK' "$WORK_DIR/httpd.phdr"; then
         assert_file_contains "$WORK_DIR/httpd.phdr" 'GNU_STACK[[:space:]].* RW ' "freestanding httpd stack should be non-executable"
     fi
+    assert_file_contains "$WORK_DIR/httpd.phdr" 'LOAD[[:space:]].* R E ' "freestanding httpd should have an executable non-writable load segment"
+    assert_file_contains "$WORK_DIR/httpd.phdr" 'LOAD[[:space:]].* RW ' "freestanding httpd should have a writable non-executable load segment"
+    for candidate in "$BIN_DIR"/*; do
+        if [ ! -f "$candidate" ] || [ ! -x "$candidate" ]; then
+            continue
+        fi
+        LC_ALL=C readelf -lW "$candidate" > "$WORK_DIR/candidate.phdr" 2>/dev/null || continue
+        if grep -q 'LOAD[[:space:]].*RWE' "$WORK_DIR/candidate.phdr"; then
+            fail "freestanding binary has a writable-executable load segment: $candidate"
+        fi
+    done
 fi
 
 "$BIN_DIR/echo" "hello freestanding" > "$WORK_DIR/echo.out"

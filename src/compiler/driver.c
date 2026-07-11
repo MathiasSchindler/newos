@@ -164,8 +164,22 @@ static void apply_native_linker_option_token(CompilerLinkerOptions *link_options
         link_options->icf_safe = 1;
         return;
     }
+    if (text_equals(token, "--icf=all")) {
+        link_options->icf_safe = 1;
+        link_options->icf_all = 1;
+        return;
+    }
     if (text_equals(token, "--icf=none")) {
         link_options->icf_safe = 0;
+        link_options->icf_all = 0;
+        return;
+    }
+    if (text_equals(token, "--call-graph-order")) {
+        link_options->call_graph_order = 1;
+        return;
+    }
+    if (text_equals(token, "--merge-constants")) {
+        link_options->merge_constants = 1;
         return;
     }
     if (starts_with(token, "--entry=")) {

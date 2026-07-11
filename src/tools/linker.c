@@ -11,7 +11,7 @@
 #define LINKER_TOOL_MANIFEST_CAPACITY (4U * 1024U * 1024U)
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--icf=safe|all] [--call-graph-order] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
 
@@ -467,6 +467,19 @@ int main(int argc, char **argv) {
         }
         if (parsing_options && (rt_strcmp(arg, "--icf=safe") == 0 || rt_strcmp(arg, "--icf") == 0)) {
             options.icf_safe = 1;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--icf=all") == 0) {
+            options.icf_safe = 1;
+            options.icf_all = 1;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--call-graph-order") == 0) {
+            options.call_graph_order = 1;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--merge-constants") == 0) {
+            options.merge_constants = 1;
             continue;
         }
         if (parsing_options && rt_strcmp(arg, "--stats") == 0) {

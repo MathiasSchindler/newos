@@ -16,6 +16,9 @@ typedef struct {
 	int gc_sections;
 	int stats;
 	int icf_safe;
+	int icf_all;
+	int call_graph_order;
+	int merge_constants;
 	int macho_compact;
 	int print_gc_sections;
 	const char *map_path;

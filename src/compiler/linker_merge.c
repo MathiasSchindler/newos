@@ -281,7 +281,7 @@ int translate_merge_const_offset(const LinkObject *object, const LinkSection *se
     if (!linker_merge_const_pool_active || entsize <= 1ULL || input_offset >= input_size || (input_offset % entsize) != 0ULL) {
         return 0;
     }
-    return merge_const_pool_find(object->file + section->offset + input_offset, entsize, section->align, output_offset_out);
+    return merge_const_pool_find(object->file + section->offset + input_offset, entsize, section->input_align, output_offset_out);
 }
 #endif
 
