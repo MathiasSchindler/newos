@@ -42,7 +42,6 @@ join reads two files sorted on a join field and writes one line per matching pai
 ## LIMITATIONS
 
 - both input files must be sorted on the join field before running join
-- maximum number of lines per file is bounded by internal static buffer (JOIN_MAX_LINES)
 - no support for reading from standard input via `-`
 - field parsing is byte-oriented and does not implement locale collation,
   multibyte blank handling, or CSV-style quoting

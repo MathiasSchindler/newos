@@ -39,3 +39,32 @@ assert_files_equal "$WORK_DIR/comm.expected" "$WORK_DIR/comm.out" "comm did not 
 "${TEST_BIN_DIR}/comm" -12 "$WORK_DIR/comm_left.txt" "$WORK_DIR/comm_right.txt" > "$WORK_DIR/comm_common.out"
 printf 'banana\ncarrot\n' > "$WORK_DIR/comm_common.expected"
 assert_files_equal "$WORK_DIR/comm_common.expected" "$WORK_DIR/comm_common.out" "comm -12 did not print only common lines"
+
+awk 'BEGIN { for (i = 0; i < 10000; ++i) printf "x"; printf "\n"; }' > "$WORK_DIR/long_left.txt"
+cp "$WORK_DIR/long_left.txt" "$WORK_DIR/long_right.txt"
+"${TEST_BIN_DIR}/comm" -12 "$WORK_DIR/long_left.txt" "$WORK_DIR/long_right.txt" > "$WORK_DIR/long_comm.out"
+[ "$(wc -c < "$WORK_DIR/long_comm.out")" -eq 10001 ] || fail "comm truncated a long streamed record"
+"${TEST_BIN_DIR}/paste" "$WORK_DIR/long_left.txt" "$WORK_DIR/long_right.txt" > "$WORK_DIR/long_paste.out"
+[ "$(wc -c < "$WORK_DIR/long_paste.out")" -eq 20002 ] || fail "paste truncated a long streamed record"
+
+set --
+i=0
+while [ "$i" -lt 70 ]; do
+	path="$WORK_DIR/paste-$i.txt"
+	printf '%s\n' "$i" > "$path"
+	set -- "$@" "$path"
+	i=$((i + 1))
+done
+"${TEST_BIN_DIR}/paste" "$@" > "$WORK_DIR/many-paste.out"
+[ "$(awk -F '\t' '{ print NF }' "$WORK_DIR/many-paste.out")" -eq 70 ] || fail "paste retained the old fixed file limit"
+
+i=0
+: > "$WORK_DIR/join_many_left.txt"
+: > "$WORK_DIR/join_many_right.txt"
+while [ "$i" -lt 1100 ]; do
+	printf 'k%04d left-%s\n' "$i" "$i" >> "$WORK_DIR/join_many_left.txt"
+	printf 'k%04d right-%s\n' "$i" "$i" >> "$WORK_DIR/join_many_right.txt"
+	i=$((i + 1))
+done
+"${TEST_BIN_DIR}/join" "$WORK_DIR/join_many_left.txt" "$WORK_DIR/join_many_right.txt" > "$WORK_DIR/join_many.out"
+[ "$(wc -l < "$WORK_DIR/join_many.out")" -eq 1100 ] || fail "join retained the old fixed line limit"

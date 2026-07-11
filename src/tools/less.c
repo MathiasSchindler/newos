@@ -1,6 +1,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
+#include "tui.h"
 
 #define PAGER_BUFFER_SIZE 4096
 #define LESS_BUFFER_CAPACITY 1048576
@@ -10,10 +11,10 @@
 
 typedef struct {
     int interactive;
-    int raw_mode_enabled;
+    int terminal_open;
     unsigned int page_lines;
     int color_mode;
-    PlatformTerminalState saved_state;
+    TuiTerminal terminal;
 } LessPager;
 
 static void print_usage(const char *program_name) {
@@ -28,8 +29,16 @@ static void pager_init(LessPager *pager, int color_mode) {
     pager->page_lines = pager_page_lines();
     pager->interactive = (platform_isatty(0) != 0 && platform_isatty(1) != 0);
     pager->color_mode = color_mode;
-    if (pager->interactive && platform_terminal_enable_raw_mode(0, &pager->saved_state) == 0) {
-        pager->raw_mode_enabled = 1;
+    if (pager->interactive && tui_terminal_open(&pager->terminal, 0, 1, 0) == 0) {
+        pager->terminal_open = 1;
+        if (pager->terminal.rows > 1U) pager->page_lines = pager->terminal.rows - 1U;
+    }
+}
+
+static void pager_close(LessPager *pager) {
+    if (pager->terminal_open) {
+        tui_terminal_close(&pager->terminal);
+        pager->terminal_open = 0;
     }
 }
 
@@ -345,26 +354,36 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
             size_t start = line_offsets[i];
             size_t end = line_end_offset(buffer, length, start);
             if (pager_write_line_with_number(buffer + start, end - start, (unsigned long long)(i + 1U), show_numbers) != 0) {
-                tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
+                pager_close(&pager);
                 return -1;
             }
         }
-        tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
+        pager_close(&pager);
         return 0;
     }
 
     for (;;) {
         char ch = '\0';
+        TuiKeyEvent event;
+
+        if (pager.terminal_open && tui_terminal_check_resize(&pager.terminal) > 0 && pager.terminal.rows > 1U) {
+            pager.page_lines = pager.terminal.rows - 1U;
+        }
 
         if (render_page(buffer, length, line_offsets, line_count, top_line, pager.page_lines, show_numbers, pager.color_mode, status) != 0) {
-            tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
+            pager_close(&pager);
             return -1;
         }
         status[0] = '\0';
 
-        if (platform_read(0, &ch, 1U) <= 0) {
+        if (!pager.terminal_open || tui_read_key(&pager.terminal, &event) != 0) {
             break;
         }
+        if (event.type == TUI_KEY_CHARACTER && event.codepoint < 128U) ch = (char)event.codepoint;
+        else if (event.type == TUI_KEY_SPECIAL && (event.codepoint == TUI_KEY_ENTER || event.codepoint == TUI_KEY_ARROW_DOWN)) ch = 'j';
+        else if (event.type == TUI_KEY_SPECIAL && event.codepoint == TUI_KEY_ARROW_UP) ch = 'k';
+        else if (event.type == TUI_KEY_SPECIAL && event.codepoint == TUI_KEY_PAGE_DOWN) ch = ' ';
+        else if (event.type == TUI_KEY_SPECIAL && event.codepoint == TUI_KEY_PAGE_UP) ch = 'b';
         if (ch == 'q' || ch == 'Q') {
             break;
         }
@@ -399,7 +418,7 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
             size_t match_line = 0U;
             pattern[0] = '\0';
             if (render_page(buffer, length, line_offsets, line_count, top_line, pager.page_lines, show_numbers, pager.color_mode, "") != 0) {
-                tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
+                pager_close(&pager);
                 return -1;
             }
             if (read_search_pattern(pattern, sizeof(pattern)) == 0 && pattern[0] != '\0') {
@@ -425,7 +444,7 @@ static int page_buffered(int fd, int show_numbers, const char *search_pattern, c
         }
     }
 
-    tool_restore_terminal_mode_if_enabled(0, &pager.raw_mode_enabled, &pager.saved_state);
+    pager_close(&pager);
     (void)rt_write_char(1, '\n');
     return 0;
 }

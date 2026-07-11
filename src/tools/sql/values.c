@@ -74,7 +74,7 @@ static int sql_store_row_value(SqlDatabase *db, SqlRow *row, unsigned int column
 }
 
 static int sql_store_row_null(SqlRow *row, unsigned int column) {
-    if (row == 0 || row->values == 0 || column >= SQL_MAX_COLUMNS) {
+    if (row == 0 || row->values == 0) {
         return -1;
     }
     row->values[column] = SQL_NULL_OFFSET;

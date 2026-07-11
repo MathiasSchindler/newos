@@ -39,12 +39,11 @@ shuf randomly permutes its input lines and writes the result to standard output.
 
 ## LIMITATIONS
 
-- maximum input size is bounded by an internal static buffer (SHUF_MAX_ITEMS)
+- input records are retained in memory, so maximum input size depends on available memory
 - no support for reading from multiple files
 - randomness comes from the project's available platform source and is not
   intended for cryptographic selection
-- no weighted sampling, stable seeding compatibility with GNU coreutils, or
-  NUL-delimited mode is implemented
+- no weighted sampling or stable seeding compatibility with GNU coreutils is implemented
 
 ## EXAMPLES
 

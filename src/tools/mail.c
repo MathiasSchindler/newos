@@ -997,6 +997,7 @@ int main(int argc, char **argv) {
     (void)tui_clear_screen(&mail.terminal);
     while (!quit) {
         TuiKeyEvent event;
+        (void)tui_terminal_check_resize(&mail.terminal);
         if (mail_refresh(&mail) != 0 || tui_read_key(&mail.terminal, &event) != 0) {
             break;
         }

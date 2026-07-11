@@ -96,7 +96,7 @@ static int sql_row_numeric_value(const SqlRow *row, unsigned int column, long lo
 }
 
 static int sql_result_row_numeric_value(const SqlResultRow *row, unsigned int table_index, unsigned int column, long long *value_out) {
-    if (row == 0 || table_index >= SQL_MAX_QUERY_TABLES || row->tables[table_index] == 0 || row->rows[table_index] == 0 ||
+    if (row == 0 || table_index >= row->count || row->tables[table_index] == 0 || row->rows[table_index] == 0 ||
         row->row_indices[table_index] == SQL_ROW_INDEX_NONE) {
         return -1;
     }
@@ -109,7 +109,7 @@ static int sql_condition_value_numeric(const SqlConditionValue *value, const Sql
     }
     if (value->is_column) {
         unsigned int table_index = (unsigned int)value->column.table_index;
-        if (row != 0 && table_index < SQL_MAX_QUERY_TABLES) {
+        if (row != 0 && table_index < row->count) {
             if (row->tables[table_index] != 0) {
                 if (row->rows[table_index] == 0 || row->row_indices[table_index] == SQL_ROW_INDEX_NONE) {
                     return -1;

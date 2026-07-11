@@ -51,29 +51,22 @@ The on-disk database is a newline-oriented `SQS1` text file managed by `sql`. It
 
 ## CAPACITY AND MEMORY USE
 
-The implementation keeps hard limits so malformed input cannot force unbounded growth, but the larger limits are backed by grow-on-demand storage. Small databases do not preallocate the maximum number of tables, rows, columns, statement bytes, import-line bytes, or result rows.
+Database and query collections grow on demand through the runtime allocator. Small databases do not preallocate large table, row, column, result, join, condition, grouping, or ordering arrays.
 
-Current notable limits are:
+Explicit byte-oriented limits are:
 
-- up to 1024 tables per database
-- up to 1024 columns per table
-- up to 1,048,576 rows per table
-- up to 1,048,576 rows in a SELECT result
 - SQL statement text and import lines up to 1 MiB each
 - table and column names up to 31 bytes
 - values up to 511 bytes each
-- up to 4 tables in a single SELECT query
-- up to 8 GROUP BY keys and 8 ORDER BY keys
-- up to 32 condition tree nodes and 32 IN-list values
 
-Table metadata, row value slots, INSERT scratch space, SELECT parse scratch space, SELECT item and aggregate arrays, SELECT result rows, statement text, import lines, and the value arena grow through the runtime allocator. This means a three-column table remains compact even though the hard column cap is much higher.
+Table metadata, row value slots, INSERT and UPDATE scratch space, SELECT parse state, source and join state, condition trees, result rows, statement text, import lines, and the value arena grow through the runtime allocator. Collection failure therefore depends on available memory or the representable 32-bit database offsets rather than a smaller hidden item count.
 
-For plain `SELECT ... LIMIT` queries without ordering, grouping, aggregates, `DISTINCT`, or `HAVING`, row collection stops once enough rows have been found for the requested offset and limit. Queries that need whole-result visibility still collect the full bounded result before applying the final output step.
+For plain `SELECT ... LIMIT` queries without ordering, grouping, aggregates, `DISTINCT`, or `HAVING`, row collection stops once enough rows have been found for the requested offset and limit. Queries that need whole-result visibility still collect the full result before applying the final output step.
 
 ## LIMITATIONS
 
 - this is a compact project-local SQL subset, not SQLite or a full SQL implementation
-- database size, table count, column count, row count, statement length, value length, result rows, joins, grouping keys, ordering keys, and condition tree size are bounded by implementation limits
+- statement text, import lines, names, individual values, and the 32-bit value arena have explicit size limits; collection counts otherwise depend on available memory
 - values are stored as text; `INTEGER` and `REAL` columns validate numeric input and comparisons use numeric ordering when both sides parse as numbers
 - there are no transactions, indexes persisted on disk, foreign keys, views, triggers, subqueries, prepared statements, or concurrent writers
 - `ALTER TABLE DROP COLUMN` refuses to drop the final remaining column

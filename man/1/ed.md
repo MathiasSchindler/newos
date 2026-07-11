@@ -38,7 +38,7 @@ ed accepts no flags other than an optional filename argument. `--help` prints us
 
 ## LIMITATIONS
 
-- the in-memory buffer remains fixed-size and line-oriented
+- the buffer is line-oriented and grows through the runtime allocator; very large edits and undo snapshots are limited by available memory
 - global commands support the common scripted edit operations `p`, `n`, `d`,
   and `s`; nested command lists are not implemented
 - full interactive diagnostics and recovery behavior are intentionally compact

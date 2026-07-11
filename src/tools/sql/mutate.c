@@ -68,7 +68,8 @@ static int sql_apply_assignment(SqlDatabase *db, SqlRow *row, const SqlAssignmen
 static int sql_execute_update(SqlDatabase *db, SqlParser *parser) {
     char table_name[SQL_NAME_SIZE];
     SqlTable *table;
-    SqlAssignment assignments[SQL_SET_CAPACITY];
+    SqlAssignment *assignments = 0;
+    unsigned int assignment_capacity = 0U;
     unsigned int assignment_count = 0U;
     SqlConditionList where;
     unsigned int changed = 0U;
@@ -84,7 +85,17 @@ static int sql_execute_update(SqlDatabase *db, SqlParser *parser) {
         return -1;
     }
     for (;;) {
-        if (assignment_count >= SQL_SET_CAPACITY || sql_parse_assignment(parser, table, &assignments[assignment_count]) != 0) {
+        if (assignment_count == assignment_capacity) {
+            unsigned int capacity;
+            SqlAssignment *grown;
+            if (sql_next_capacity(assignment_capacity, assignment_count + 1U, SQL_COLLECTION_MAX, 8U, &capacity) != 0) return -1;
+            grown = (SqlAssignment *)sql_resize_array(assignments, assignment_capacity, capacity, sizeof(assignments[0]));
+            if (grown == 0) return -1;
+            assignments = grown;
+            assignment_capacity = capacity;
+        }
+        if (sql_parse_assignment(parser, table, &assignments[assignment_count]) != 0) {
+            sql_free_bytes(assignments);
             return -1;
         }
         assignment_count += 1U;
@@ -123,6 +134,7 @@ static int sql_execute_update(SqlDatabase *db, SqlParser *parser) {
         sql_invalidate_table_runtime_caches(table);
     }
     sql_write_row_count(changed);
+    sql_free_bytes(assignments);
     return 1;
 }
 
@@ -384,7 +396,7 @@ static int sql_execute_alter(SqlDatabase *db, SqlParser *parser) {
             return -1;
         }
     }
-    if (table->column_count >= SQL_MAX_COLUMNS || sql_find_column(table, column_name) >= 0 || sql_ensure_column_capacity(table, table->column_count + 1U) != 0) {
+    if (sql_find_column(table, column_name) >= 0 || sql_ensure_column_capacity(table, table->column_count + 1U) != 0) {
         return -1;
     }
     if ((unique || primary_key) && table->row_count > 1U) {

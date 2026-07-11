@@ -36,6 +36,14 @@ printf 'red\nblue\ngreen\n' > "$WORK_DIR/ere.txt"
 printf 'color\ncolor\ngreen\n' > "$WORK_DIR/ere.expected"
 assert_files_equal "$WORK_DIR/ere.expected" "$WORK_DIR/ere.out" "sed -E did not enable extended regex syntax"
 
+printf '(red)\nred\n' > "$WORK_DIR/bre.txt"
+"${TEST_BIN_DIR}/sed" 's/(red)/literal/' "$WORK_DIR/bre.txt" > "$WORK_DIR/bre.out"
+printf 'literal\nred\n' > "$WORK_DIR/bre.expected"
+assert_files_equal "$WORK_DIR/bre.expected" "$WORK_DIR/bre.out" "sed basic regex did not keep unescaped parentheses literal"
+
+printf 'x\n' | "${TEST_BIN_DIR}/sed" 's/x/\99/' > "$WORK_DIR/capture_bounds.out"
+assert_file_contains "$WORK_DIR/capture_bounds.out" '^$' "sed did not safely ignore an unavailable replacement capture"
+
 printf 'red\0blue\0' | "${TEST_BIN_DIR}/sed" -z 's/blue/green/' | tr '\0' '\n' > "$WORK_DIR/zero.out"
 printf 'red\ngreen\n' > "$WORK_DIR/zero.expected"
 assert_files_equal "$WORK_DIR/zero.expected" "$WORK_DIR/zero.out" "sed -z did not process NUL-delimited records"

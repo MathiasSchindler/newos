@@ -50,6 +50,14 @@ assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/runtime/memory.c"$' 
 assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/tool_io.c"$' "grep -oE did not extract the tool manifest entry"
 assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/archive_util.c"$' "grep -oE did not extract the archive manifest entry"
 
+printf 'abc123\nplain\n' > "$WORK_DIR/posix-ere.txt"
+"${TEST_BIN_DIR}/grep" -E '^[[:alpha:]]+[[:digit:]]+$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/posix-ere.out"
+assert_file_contains "$WORK_DIR/posix-ere.out" '^abc123$' "grep -E did not support POSIX named classes"
+"${TEST_BIN_DIR}/grep" '^abc(123)$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/bre-literal.out"
+[ ! -s "$WORK_DIR/bre-literal.out" ] || fail "basic grep treated unescaped parentheses as a capture group"
+"${TEST_BIN_DIR}/grep" '^abc\(123\)$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/bre-group.out"
+assert_file_contains "$WORK_DIR/bre-group.out" '^abc123$' "basic grep did not support escaped capture groups"
+
 awk 'BEGIN { for (i = 0; i < 7000; ++i) printf "A"; printf "MARKER\n"; }' > "$WORK_DIR/long.txt"
 "${TEST_BIN_DIR}/grep" 'MARKER' "$WORK_DIR/long.txt" > "$WORK_DIR/long.out"
 assert_file_contains "$WORK_DIR/long.out" 'MARKER' "grep failed to match text at the end of a long input line"

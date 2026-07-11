@@ -6,12 +6,10 @@
 #include <limits.h>
 
 #define SORT_MAX_LINES 131072U
-#define SORT_MAX_INPUTS 8U
-#define SORT_MAX_RUNS 128U
+#define SORT_MERGE_FAN_IN 8U
 #define SORT_IO_BUFFER_SIZE 8192U
 #define SORT_OUTPUT_BUFFER_SIZE 16384U
 #define SORT_STORAGE_CAPACITY (4U * 1024U * 1024U)
-#define SORT_LINE_CAPACITY (64U * 1024U)
 #define SORT_TEMP_PATH_CAPACITY 256U
 #define SORT_DEFAULT_MAX_WORKERS 8U
 #define SORT_PARALLEL_MIN_LINES 8192U
@@ -53,7 +51,6 @@ typedef struct {
     char *data;
     size_t length;
     size_t capacity;
-    char fixed_data[SORT_LINE_CAPACITY];
 } SortLineBuilder;
 
 typedef struct {
@@ -79,7 +76,8 @@ typedef struct {
 
 typedef struct {
     size_t count;
-    char paths[SORT_MAX_RUNS][SORT_TEMP_PATH_CAPACITY];
+    size_t capacity;
+    char (*paths)[SORT_TEMP_PATH_CAPACITY];
 } SortRunSet;
 
 typedef ToolOutputBuffer SortOutput;
@@ -178,8 +176,6 @@ static int parse_key_spec(const char *text, SortOptions *options) {
 
 static void line_builder_init(SortLineBuilder *builder) {
     rt_memset(builder, 0, sizeof(*builder));
-    builder->data = builder->fixed_data;
-    builder->capacity = sizeof(builder->fixed_data);
 }
 
 static void line_builder_reset(SortLineBuilder *builder) {
@@ -187,7 +183,23 @@ static void line_builder_reset(SortLineBuilder *builder) {
 }
 
 static int line_builder_ensure_capacity(SortLineBuilder *builder, size_t needed) {
-    return needed <= builder->capacity ? 0 : -1;
+    size_t capacity;
+    char *data;
+
+    if (needed <= builder->capacity) return 0;
+    capacity = builder->capacity != 0U ? builder->capacity : 256U;
+    while (capacity < needed) {
+        if (capacity > ((size_t)-1) / 2U) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2U;
+    }
+    data = (char *)rt_realloc(builder->data, capacity);
+    if (data == 0) return -1;
+    builder->data = data;
+    builder->capacity = capacity;
+    return 0;
 }
 
 static int line_builder_append_span(SortLineBuilder *builder, const char *text, size_t length) {
@@ -205,7 +217,8 @@ static int line_builder_append_span(SortLineBuilder *builder, const char *text, 
 }
 
 static void line_builder_free(SortLineBuilder *builder) {
-    (void)builder;
+    rt_free(builder->data);
+    rt_memset(builder, 0, sizeof(*builder));
 }
 
 static int line_builder_copy_text(SortLineBuilder *builder, const char *text, size_t length) {
@@ -369,7 +382,28 @@ static void sort_run_set_cleanup(SortRunSet *runs) {
             runs->paths[i][0] = '\0';
         }
     }
-    runs->count = 0U;
+    rt_free(runs->paths);
+    rt_memset(runs, 0, sizeof(*runs));
+}
+
+static int sort_run_set_reserve(SortRunSet *runs, size_t needed) {
+    size_t capacity;
+    char (*paths)[SORT_TEMP_PATH_CAPACITY];
+
+    if (needed <= runs->capacity) return 0;
+    capacity = runs->capacity != 0U ? runs->capacity : 16U;
+    while (capacity < needed) {
+        if (capacity > ((size_t)-1) / 2U) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2U;
+    }
+    paths = (char (*)[SORT_TEMP_PATH_CAPACITY])rt_realloc_array(runs->paths, capacity, sizeof(runs->paths[0]));
+    if (paths == 0) return -1;
+    runs->paths = paths;
+    runs->capacity = capacity;
+    return 0;
 }
 
 static int collect_external_line(SortCollection *collection,
@@ -1342,8 +1376,8 @@ static int flush_sort_run(SortCollection *collection, const SortOptions *options
     if (collection->count == 0U) {
         return 0;
     }
-    if (runs->count >= SORT_MAX_RUNS) {
-        rt_write_line(2, "sort: too many temporary runs");
+    if (sort_run_set_reserve(runs, runs->count + 1U) != 0) {
+        rt_write_line(2, "sort: input too large for available memory");
         return -1;
     }
 
@@ -1494,8 +1528,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     int i;
     SortLineBuilder previous_builder;
     SortLine previous_line;
-    SortInput fixed_inputs[SORT_MAX_INPUTS];
-    SortInput *inputs = fixed_inputs;
+    SortInput *inputs;
     SortOutput output;
     int have_previous = 0;
 
@@ -1503,9 +1536,10 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     line_builder_init(&previous_builder);
     tool_output_buffer_init(&output, output_fd);
 
-    if ((size_t)input_count > SORT_MAX_INPUTS) {
+    inputs = (SortInput *)rt_malloc_array((size_t)input_count, sizeof(inputs[0]));
+    if (inputs == 0) {
         line_builder_free(&previous_builder);
-        rt_write_line(2, "sort: too many inputs for merge mode");
+        rt_write_line(2, "sort: input too large for available memory");
         return 1;
     }
 
@@ -1530,6 +1564,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
             rt_write_line(2, path);
             sort_input_close(&inputs[i]);
             line_builder_free(&previous_builder);
+            rt_free(inputs);
             return 1;
         }
         if (status == SORT_COLLECT_MEMORY_ERROR) {
@@ -1537,6 +1572,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
             rt_write_line(2, path);
             sort_input_close(&inputs[i]);
             line_builder_free(&previous_builder);
+            rt_free(inputs);
             return 1;
         }
     }
@@ -1564,6 +1600,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 for (i = 0; i < input_count; ++i) {
                     sort_input_close(&inputs[i]);
                 }
+                rt_free(inputs);
                 return 1;
             }
         } else if (!have_previous || compare_lines(&previous_line, &inputs[best_index].current, options) != 0) {
@@ -1573,6 +1610,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 for (i = 0; i < input_count; ++i) {
                     sort_input_close(&inputs[i]);
                 }
+                rt_free(inputs);
                 return 1;
             }
             if (copy_sort_line(&previous_builder, &previous_line, &inputs[best_index].current) != 0) {
@@ -1581,6 +1619,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                 for (i = 0; i < input_count; ++i) {
                     sort_input_close(&inputs[i]);
                 }
+                rt_free(inputs);
                 return 1;
             }
             have_previous = 1;
@@ -1596,6 +1635,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                     for (i = 0; i < input_count; ++i) {
                         sort_input_close(&inputs[i]);
                     }
+                    rt_free(inputs);
                     return 1;
                 }
                 if (status == SORT_COLLECT_MEMORY_ERROR) {
@@ -1605,6 +1645,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
                     for (i = 0; i < input_count; ++i) {
                         sort_input_close(&inputs[i]);
                     }
+                    rt_free(inputs);
                     return 1;
                 }
                 inputs[best_index].have_current = 0;
@@ -1619,6 +1660,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
         for (i = 0; i < input_count; ++i) {
             sort_input_close(&inputs[i]);
         }
+        rt_free(inputs);
         return 1;
     }
 
@@ -1626,6 +1668,7 @@ static int merge_sorted_inputs(int argc, char **argv, int argi, int output_fd, c
     for (i = 0; i < input_count; ++i) {
         sort_input_close(&inputs[i]);
     }
+    rt_free(inputs);
     return *exit_code;
 }
 
@@ -1633,24 +1676,31 @@ static int merge_run_paths(char paths[][SORT_TEMP_PATH_CAPACITY],
                            size_t path_count,
                            int output_fd,
                            const SortOptions *options) {
-    char *argv[SORT_MAX_INPUTS];
+    char **argv;
     int exit_code = 0;
     size_t i;
 
-    if (path_count == 0U || path_count > SORT_MAX_INPUTS) {
+    if (path_count == 0U) {
         return 1;
     }
+
+    argv = (char **)rt_malloc_array(path_count, sizeof(argv[0]));
+    if (argv == 0) return 1;
 
     for (i = 0U; i < path_count; ++i) {
         argv[i] = paths[i];
     }
-    return merge_sorted_inputs((int)path_count, argv, 0, output_fd, options, &exit_code);
+    {
+        int result = merge_sorted_inputs((int)path_count, argv, 0, output_fd, options, &exit_code);
+        rt_free(argv);
+        return result;
+    }
 }
 
 static int merge_run_set_to_output(SortRunSet *runs, int output_fd, const SortOptions *options) {
     SortRunSet next_runs;
 
-    while (runs->count > SORT_MAX_INPUTS) {
+    while (runs->count > SORT_MERGE_FAN_IN) {
         size_t index = 0U;
 
         rt_memset(&next_runs, 0, sizeof(next_runs));
@@ -1659,11 +1709,11 @@ static int merge_run_set_to_output(SortRunSet *runs, int output_fd, const SortOp
             int fd;
             int rc;
 
-            if (group_count > SORT_MAX_INPUTS) {
-                group_count = SORT_MAX_INPUTS;
+            if (group_count > SORT_MERGE_FAN_IN) {
+                group_count = SORT_MERGE_FAN_IN;
             }
-            if (next_runs.count >= SORT_MAX_RUNS) {
-                rt_write_line(2, "sort: too many temporary runs");
+            if (sort_run_set_reserve(&next_runs, next_runs.count + 1U) != 0) {
+                rt_write_line(2, "sort: input too large for available memory");
                 sort_run_set_cleanup(&next_runs);
                 return 1;
             }

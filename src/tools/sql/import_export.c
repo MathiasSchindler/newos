@@ -60,7 +60,7 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
     if (create_table) {
         char *field_cursor = line;
         unsigned int new_column_count = 0U;
-        if (db->table_count >= SQL_MAX_TABLES || sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
+        if (sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
             (void)platform_close(fd);
             return -1;
         }
@@ -73,7 +73,7 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
         for (;;) {
             int ok;
             char *field = sql_next_import_field(&field_cursor, csv, &ok);
-            if (!ok || new_column_count >= SQL_MAX_COLUMNS || !sql_valid_identifier(field) || sql_find_column(table, field) >= 0) {
+            if (!ok || !sql_valid_identifier(field) || sql_find_column(table, field) >= 0) {
                 (void)platform_close(fd);
                 return -1;
             }
@@ -117,7 +117,7 @@ static int sql_execute_import(SqlDatabase *db, SqlParser *parser) {
         if (line[0] == '\0') {
             continue;
         }
-        if (table->row_count >= SQL_MAX_ROWS || sql_ensure_row_capacity(table, table->row_count + 1U) != 0) {
+        if (sql_ensure_row_capacity(table, table->row_count + 1U) != 0) {
             (void)platform_close(fd);
             return -1;
         }

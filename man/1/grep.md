@@ -56,6 +56,7 @@ expression by default; use `-E` for extended syntax.
 
 - No support for Perl-compatible regular expressions (PCRE).
 - No `-P` flag.
+- Patterns are limited to 64 KiB, nesting is limited to 64 groups, and each search has a bounded matcher work budget to prevent pathological backtracking.
 - Context separators are `--` (standard) but no `--group-separator` option.
 
 Color output follows the shared project behavior documented in `output-style`.

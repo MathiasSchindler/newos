@@ -134,10 +134,16 @@ static int sql_parse_condition(SqlParser *parser, SqlSelectQuery *query, SqlCond
 }
 
 static int sql_add_condition_leaf(SqlConditionList *list, const SqlCondition *condition) {
+    unsigned int capacity;
+    SqlConditionNode *nodes;
     int index;
 
-    if (list->count >= SQL_MAX_CONDITION_NODES) {
-        return -1;
+    if (list->count == list->capacity) {
+        if (sql_next_capacity(list->capacity, list->count + 1U, SQL_COLLECTION_MAX, 8U, &capacity) != 0) return -1;
+        nodes = (SqlConditionNode *)sql_resize_array(list->nodes, list->capacity, capacity, sizeof(nodes[0]));
+        if (nodes == 0) return -1;
+        list->nodes = nodes;
+        list->capacity = capacity;
     }
     index = (int)list->count;
     list->nodes[index].kind = SQL_CONNECT_LEAF;
@@ -150,10 +156,16 @@ static int sql_add_condition_leaf(SqlConditionList *list, const SqlCondition *co
 }
 
 static int sql_add_condition_node(SqlConditionList *list, int kind, int left, int right) {
+    unsigned int capacity;
+    SqlConditionNode *nodes;
     int index;
 
-    if (list->count >= SQL_MAX_CONDITION_NODES) {
-        return -1;
+    if (list->count == list->capacity) {
+        if (sql_next_capacity(list->capacity, list->count + 1U, SQL_COLLECTION_MAX, 8U, &capacity) != 0) return -1;
+        nodes = (SqlConditionNode *)sql_resize_array(list->nodes, list->capacity, capacity, sizeof(nodes[0]));
+        if (nodes == 0) return -1;
+        list->nodes = nodes;
+        list->capacity = capacity;
     }
     index = (int)list->count;
     list->nodes[index].kind = kind;
@@ -217,7 +229,16 @@ static int sql_parse_select_condition_leaf(SqlParser *parser, SqlSelectQuery *qu
             return -1;
         }
         for (;;) {
-            if (condition.value_count >= SQL_MAX_IN_VALUES || sql_parse_condition_value(parser, query, &condition.values[condition.value_count]) != 0) {
+            if (condition.value_count == condition.value_capacity) {
+                unsigned int capacity;
+                SqlConditionValue *values;
+                if (sql_next_capacity(condition.value_capacity, condition.value_count + 1U, SQL_COLLECTION_MAX, 8U, &capacity) != 0) return -1;
+                values = (SqlConditionValue *)sql_resize_array(condition.values, condition.value_capacity, capacity, sizeof(values[0]));
+                if (values == 0) return -1;
+                condition.values = values;
+                condition.value_capacity = capacity;
+            }
+            if (sql_parse_condition_value(parser, query, &condition.values[condition.value_count]) != 0) {
                 return -1;
             }
             condition.value_count += 1U;

@@ -2,14 +2,14 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define ED_MAX_LINES 4096
 #define ED_LINE_CAPACITY 512
 #define ED_INPUT_CAPACITY 1024
 #define ED_PATH_CAPACITY 512
 
 typedef struct {
-    char lines[ED_MAX_LINES][ED_LINE_CAPACITY];
+    char **lines;
     size_t count;
+    size_t capacity;
     size_t current;
     char path[ED_PATH_CAPACITY];
     int modified;
@@ -81,13 +81,83 @@ static int ed_read_line(InputReader *reader, char *line, size_t line_size) {
     }
 }
 
-static int ed_append_line(char lines[ED_MAX_LINES][ED_LINE_CAPACITY], size_t *count, const char *text) {
-    return tool_store_fixed_record_text((char *)lines, ED_LINE_CAPACITY, ED_MAX_LINES, count, text, rt_strlen(text));
+static void ed_buffer_clear(EditorBuffer *buffer) {
+    size_t i;
+    for (i = 0U; i < buffer->count; ++i) rt_free(buffer->lines[i]);
+    rt_free(buffer->lines);
+    buffer->lines = 0;
+    buffer->count = 0U;
+    buffer->capacity = 0U;
 }
 
-static void ed_save_undo(UndoState *undo, const EditorBuffer *buffer) {
-    undo->buffer = *buffer;
+static int ed_reserve_lines(EditorBuffer *buffer, size_t needed) {
+    size_t capacity;
+    char **lines;
+
+    if (needed <= buffer->capacity) return 0;
+    capacity = buffer->capacity != 0U ? buffer->capacity : 16U;
+    while (capacity < needed) {
+        if (capacity > ((size_t)-1) / 2U) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2U;
+    }
+    lines = (char **)rt_realloc_array(buffer->lines, capacity, sizeof(buffer->lines[0]));
+    if (lines == 0) return -1;
+    buffer->lines = lines;
+    buffer->capacity = capacity;
+    return 0;
+}
+
+static char *ed_copy_line(const char *text) {
+    size_t length = rt_strlen(text);
+    char *copy = (char *)rt_malloc(length + 1U);
+    if (copy != 0) memcpy(copy, text, length + 1U);
+    return copy;
+}
+
+static int ed_insert_line(EditorBuffer *buffer, size_t index, const char *text) {
+    char *copy;
+
+    if (index > buffer->count || ed_reserve_lines(buffer, buffer->count + 1U) != 0) return -1;
+    copy = ed_copy_line(text);
+    if (copy == 0) return -1;
+    if (index < buffer->count) {
+        memmove(buffer->lines + index + 1U, buffer->lines + index, (buffer->count - index) * sizeof(buffer->lines[0]));
+    }
+    buffer->lines[index] = copy;
+    buffer->count += 1U;
+    return 0;
+}
+
+static int ed_append_line(EditorBuffer *buffer, const char *text) {
+    return ed_insert_line(buffer, buffer->count, text);
+}
+
+static int ed_copy_buffer(EditorBuffer *dst, const EditorBuffer *src) {
+    size_t i;
+
+    rt_memset(dst, 0, sizeof(*dst));
+    dst->current = src->current;
+    dst->modified = src->modified;
+    rt_copy_string(dst->path, sizeof(dst->path), src->path);
+    if (ed_reserve_lines(dst, src->count) != 0) return -1;
+    for (i = 0U; i < src->count; ++i) {
+        if (ed_append_line(dst, src->lines[i]) != 0) {
+            ed_buffer_clear(dst);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int ed_save_undo(UndoState *undo, const EditorBuffer *buffer) {
+    if (undo->valid) ed_buffer_clear(&undo->buffer);
+    undo->valid = 0;
+    if (ed_copy_buffer(&undo->buffer, buffer) != 0) return -1;
     undo->valid = 1;
+    return 0;
 }
 
 static int ed_restore_undo(UndoState *undo, EditorBuffer *buffer) {
@@ -105,12 +175,11 @@ static int ed_restore_undo(UndoState *undo, EditorBuffer *buffer) {
 
 static int ed_load_file(EditorBuffer *buffer, const char *path) {
     int fd;
-    char chunk[512];
-    char line[ED_LINE_CAPACITY];
-    size_t line_len = 0;
-    long bytes_read;
+    ToolRecordReader reader;
+    ToolByteBuffer line;
+    int result = 0;
 
-    buffer->count = 0;
+    ed_buffer_clear(buffer);
     buffer->current = 0;
     buffer->modified = 0;
     rt_copy_string(buffer->path, sizeof(buffer->path), path);
@@ -120,41 +189,23 @@ static int ed_load_file(EditorBuffer *buffer, const char *path) {
         return -1;
     }
 
-    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
-        long i;
-
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
-
-            if (ch == '\n') {
-                line[line_len] = '\0';
-                if (ed_append_line(buffer->lines, &buffer->count, line) != 0) {
-                    platform_close(fd);
-                    return -1;
-                }
-                line_len = 0;
-            } else if (line_len + 1 < sizeof(line)) {
-                line[line_len++] = ch;
-            }
+    tool_record_reader_init(&reader, fd, '\n');
+    tool_byte_buffer_init(&line);
+    for (;;) {
+        int has_line = 0;
+        if (tool_record_reader_next_buffer(&reader, &line, &has_line) != 0) {
+            result = -1;
+            break;
+        }
+        if (!has_line) break;
+        if (ed_append_line(buffer, (const char *)line.data) != 0) {
+            result = -1;
+            break;
         }
     }
-
-    if (bytes_read < 0) {
-        platform_close(fd);
-        return -1;
-    }
-
-    if (line_len > 0 || buffer->count == 0) {
-        line[line_len] = '\0';
-        if (!(buffer->count == 0 && line_len == 0)) {
-            if (ed_append_line(buffer->lines, &buffer->count, line) != 0) {
-                platform_close(fd);
-                return -1;
-            }
-        }
-    }
-
+    tool_byte_buffer_free(&line);
     platform_close(fd);
+    if (result != 0) return -1;
     if (buffer->count > 0) {
         buffer->current = buffer->count;
     }
@@ -163,68 +214,38 @@ static int ed_load_file(EditorBuffer *buffer, const char *path) {
 
 static int ed_read_file_after(EditorBuffer *buffer, size_t index, const char *path, unsigned long long *bytes_read_out) {
     int fd;
-    char chunk[512];
-    char line[ED_LINE_CAPACITY];
-    size_t line_len = 0;
+    ToolRecordReader reader;
+    ToolByteBuffer line;
     size_t insert_at = index;
-    long bytes_read;
     unsigned long long total_bytes = 0ULL;
+    int result = 0;
 
     fd = platform_open_read(path);
     if (fd < 0) {
         return -1;
     }
 
-    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
-        long i;
-
-        total_bytes += (unsigned long long)bytes_read;
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
-
-            if (ch == '\n') {
-                line[line_len] = '\0';
-                if (buffer->count >= ED_MAX_LINES || insert_at > buffer->count) {
-                    platform_close(fd);
-                    return -1;
-                }
-                if (insert_at < buffer->count) {
-                    memmove(buffer->lines[insert_at + 1U], buffer->lines[insert_at], (buffer->count - insert_at) * sizeof(buffer->lines[0]));
-                }
-                rt_copy_string(buffer->lines[insert_at], sizeof(buffer->lines[insert_at]), line);
-                buffer->count += 1U;
-                buffer->current = insert_at + 1U;
-                insert_at += 1U;
-                line_len = 0;
-            } else if (line_len + 1U < sizeof(line)) {
-                line[line_len++] = ch;
-            } else {
-                platform_close(fd);
-                return -1;
-            }
+    tool_record_reader_init(&reader, fd, '\n');
+    tool_byte_buffer_init(&line);
+    for (;;) {
+        int has_line = 0;
+        if (tool_record_reader_next_buffer(&reader, &line, &has_line) != 0) {
+            result = -1;
+            break;
         }
-    }
-
-    if (bytes_read < 0) {
-        platform_close(fd);
-        return -1;
-    }
-
-    if (line_len > 0U) {
-        line[line_len] = '\0';
-        if (buffer->count >= ED_MAX_LINES || insert_at > buffer->count) {
-            platform_close(fd);
-            return -1;
+        if (!has_line) break;
+        total_bytes += (unsigned long long)line.size + 1ULL;
+        if (ed_insert_line(buffer, insert_at, (const char *)line.data) != 0) {
+            result = -1;
+            break;
         }
-        if (insert_at < buffer->count) {
-            memmove(buffer->lines[insert_at + 1U], buffer->lines[insert_at], (buffer->count - insert_at) * sizeof(buffer->lines[0]));
-        }
-        rt_copy_string(buffer->lines[insert_at], sizeof(buffer->lines[insert_at]), line);
-        buffer->count += 1U;
         buffer->current = insert_at + 1U;
+        insert_at += 1U;
     }
 
+    tool_byte_buffer_free(&line);
     platform_close(fd);
+    if (result != 0) return -1;
     if (bytes_read_out != 0) {
         *bytes_read_out = total_bytes;
     }
@@ -277,8 +298,12 @@ static int ed_delete_range(EditorBuffer *buffer, size_t start, size_t end) {
     }
 
     remove_count = end - start + 1U;
+    {
+        size_t i;
+        for (i = start; i <= end; ++i) rt_free(buffer->lines[i]);
+    }
     if (end + 1U < buffer->count) {
-        memmove(buffer->lines[start], buffer->lines[end + 1U], (buffer->count - end - 1U) * sizeof(buffer->lines[0]));
+        memmove(buffer->lines + start, buffer->lines + end + 1U, (buffer->count - end - 1U) * sizeof(buffer->lines[0]));
     }
 
     buffer->count -= remove_count;
@@ -310,16 +335,7 @@ static int ed_insert_after(EditorBuffer *buffer, size_t index, InputReader *read
             break;
         }
 
-        if (buffer->count >= ED_MAX_LINES || insert_at > buffer->count) {
-            return -1;
-        }
-
-        if (insert_at < buffer->count) {
-            memmove(buffer->lines[insert_at + 1U], buffer->lines[insert_at], (buffer->count - insert_at) * sizeof(buffer->lines[0]));
-        }
-
-        rt_copy_string(buffer->lines[insert_at], sizeof(buffer->lines[insert_at]), line);
-        buffer->count += 1U;
+        if (ed_insert_line(buffer, insert_at, line) != 0) return -1;
         buffer->current = insert_at + 1U;
         insert_at += 1U;
         buffer->modified = 1;
@@ -484,7 +500,6 @@ static int ed_apply_substitute(EditorBuffer *buffer, size_t start, size_t end, c
     char delimiter;
     char old_text[ED_LINE_CAPACITY];
     char new_text[ED_LINE_CAPACITY];
-    char replaced[ED_LINE_CAPACITY];
     size_t pos = 1;
     int global = 0;
     size_t i;
@@ -516,13 +531,29 @@ static int ed_apply_substitute(EditorBuffer *buffer, size_t start, size_t end, c
 
     for (i = start - 1U; i < end; ++i) {
         int changed = 0;
-        if (ed_replace_text(buffer->lines[i], old_text, new_text, global, replaced, sizeof(replaced), &changed) != 0) {
-            return -1;
+        size_t capacity = rt_strlen(buffer->lines[i]) + rt_strlen(new_text) + 64U;
+        char *replaced = 0;
+        int replace_result;
+
+        if (capacity < 128U) capacity = 128U;
+        for (;;) {
+            replaced = (char *)rt_realloc(replaced, capacity);
+            if (replaced == 0) return -1;
+            replace_result = ed_replace_text(buffer->lines[i], old_text, new_text, global, replaced, capacity, &changed);
+            if (replace_result == 0) break;
+            if (capacity > ((size_t)-1) / 2U) {
+                rt_free(replaced);
+                return -1;
+            }
+            capacity *= 2U;
         }
         if (changed) {
-            rt_copy_string(buffer->lines[i], sizeof(buffer->lines[i]), replaced);
+            rt_free(buffer->lines[i]);
+            buffer->lines[i] = replaced;
             buffer->current = i + 1U;
             buffer->modified = 1;
+        } else {
+            rt_free(replaced);
         }
     }
 
@@ -681,7 +712,7 @@ int main(int argc, char **argv) {
             ed_print_range(&buffer, start - 1U, end - 1U, 1);
             buffer.current = end;
         } else if (op == 'd') {
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_delete_range(&buffer, start - 1U, end - 1U) != 0) {
                 ed_print_error();
             }
@@ -691,19 +722,19 @@ int main(int argc, char **argv) {
                 ed_print_error();
                 continue;
             }
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_insert_after(&buffer, insert_after, &reader) != 0) {
                 ed_print_error();
             }
         } else if (op == 'i') {
             size_t insert_before = has_range ? start - 1U : (buffer.current == 0 ? 0 : buffer.current - 1U);
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_insert_after(&buffer, insert_before, &reader) != 0) {
                 ed_print_error();
             }
         } else if (op == 'c') {
             size_t insert_at = start - 1U;
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_delete_range(&buffer, start - 1U, end - 1U) != 0 || ed_insert_after(&buffer, insert_at, &reader) != 0) {
                 ed_print_error();
             }
@@ -725,7 +756,7 @@ int main(int argc, char **argv) {
                 ed_print_error();
                 continue;
             }
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_read_file_after(&buffer, insert_after, path, &bytes_read) != 0) {
                 ed_print_error();
             } else {
@@ -752,7 +783,7 @@ int main(int argc, char **argv) {
         } else if (op == 'q' || op == 'Q') {
             return 0;
         } else if (op == 's') {
-            ed_save_undo(&undo, &buffer);
+            (void)ed_save_undo(&undo, &buffer);
             if (ed_apply_substitute(&buffer, start, end, command + pos) != 0) {
                 ed_print_error();
             }

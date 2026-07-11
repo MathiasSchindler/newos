@@ -74,6 +74,11 @@ long_first_len=$(awk 'NR == 1 { print length($0) }' "$WORK_DIR/sort_long_lines.o
 assert_text_equals "$long_first" 'a' "sort failed lexical ordering on long lines"
 assert_text_equals "$long_first_len" '701' "sort truncated a long input line"
 
+awk 'BEGIN { printf "b"; for (i = 0; i < 70000; ++i) printf "x"; printf "\n"; printf "a\n"; }' > "$WORK_DIR/sort_very_long_lines.txt"
+"${TEST_BIN_DIR}/sort" "$WORK_DIR/sort_very_long_lines.txt" > "$WORK_DIR/sort_very_long_lines.out"
+very_long_last_len=$(awk 'END { print length($0) }' "$WORK_DIR/sort_very_long_lines.out" | tr -d ' \r\n')
+assert_text_equals "$very_long_last_len" '70001' "sort retained the old fixed line-size limit"
+
 printf 'banana\nApple\ncarrot\n' > "$WORK_DIR/casefold.txt"
 "${TEST_BIN_DIR}/sort" -f "$WORK_DIR/casefold.txt" > "$WORK_DIR/casefold.out"
 printf 'Apple\nbanana\ncarrot\n' > "$WORK_DIR/casefold.expected"
@@ -231,7 +236,7 @@ cat > "$WORK_DIR/merge_limit_ok.expected" <<'EOF'
 007
 008
 EOF
-assert_files_equal "$WORK_DIR/merge_limit_ok.expected" "$WORK_DIR/merge_limit_ok.out" "sort -m rejected or misordered the maximum supported input count"
+assert_files_equal "$WORK_DIR/merge_limit_ok.expected" "$WORK_DIR/merge_limit_ok.out" "sort -m rejected or misordered eight inputs"
 
 printf 'pear\napple\nbanana\n' > "$WORK_DIR/output_file.txt"
 "${TEST_BIN_DIR}/sort" -o "$WORK_DIR/output_file.out" "$WORK_DIR/output_file.txt"
@@ -301,13 +306,13 @@ assert_text_equals "$external_in_place_last" '20000' "sort -o truncated a large 
 
 merge_args=""
 value=1
-while [ "$value" -le 9 ]; do
+while [ "$value" -le 12 ]; do
     printf '%s\n' "$value" > "$WORK_DIR/merge_limit_$value.txt"
     merge_args="$merge_args $WORK_DIR/merge_limit_$value.txt"
     value=$((value + 1))
 done
-if "${TEST_BIN_DIR}/sort" -m $merge_args > "$WORK_DIR/merge_limit.out" 2> "$WORK_DIR/merge_limit.err"
-then
-    fail "sort -m accepted more inputs than its bounded merge state allows"
-fi
-assert_file_contains "$WORK_DIR/merge_limit.err" '^sort: too many inputs for merge mode$' "sort -m did not report bounded merge input exhaustion"
+"${TEST_BIN_DIR}/sort" -m -n $merge_args > "$WORK_DIR/merge_limit.out"
+merge_many_count=$(wc -l < "$WORK_DIR/merge_limit.out" | tr -d ' \r\n')
+merge_many_last=$(tail -n 1 "$WORK_DIR/merge_limit.out" | tr -d '\r\n')
+assert_text_equals "$merge_many_count" '12' "sort -m retained the old fixed input limit"
+assert_text_equals "$merge_many_last" '12' "sort -m misordered dynamically stored inputs"

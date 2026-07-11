@@ -2,10 +2,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define JOIN_MAX_LINES 1024
-#define JOIN_LINE_CAPACITY 1024
-#define JOIN_MAX_OUTPUT_FIELDS 32
-
 typedef struct {
     int source;
     unsigned long long field_no;
@@ -21,49 +17,47 @@ typedef struct {
     int only_unpaired_left;
     int only_unpaired_right;
     int use_output_list;
-    char empty_replacement[JOIN_LINE_CAPACITY];
-    JoinOutputField output_fields[JOIN_MAX_OUTPUT_FIELDS];
-    size_t output_field_count;
+    const char *empty_replacement;
+    ToolArray output_fields;
 } JoinOptions;
+
+typedef struct {
+    char *line;
+    char *key;
+} JoinRecord;
 
 static ToolOutputBuffer join_output;
 
-static int store_line(char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count, const char *line, size_t len) {
-    return tool_store_fixed_record_text((char *)lines, JOIN_LINE_CAPACITY, JOIN_MAX_LINES, count, line, len);
-}
+static int collect_lines_from_fd(int fd, ToolArray *records) {
+    ToolRecordReader reader;
+    ToolByteBuffer line;
+    int result = 0;
 
-static int collect_lines_from_fd(int fd, char lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY], size_t *count) {
-    char chunk[4096];
-    char current[JOIN_LINE_CAPACITY];
-    size_t current_len = 0;
-    long bytes_read;
-
-    while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
-        long i;
-
-        for (i = 0; i < bytes_read; ++i) {
-            char ch = chunk[i];
-
-            if (ch == '\n') {
-                if (store_line(lines, count, current, current_len) != 0) {
-                    return -1;
-                }
-                current_len = 0;
-            } else if (current_len + 1U < sizeof(current)) {
-                current[current_len++] = ch;
-            }
+    tool_record_reader_init(&reader, fd, '\n');
+    tool_byte_buffer_init(&line);
+    for (;;) {
+        int has_line = 0;
+        JoinRecord *record;
+        if (tool_record_reader_next_buffer(&reader, &line, &has_line) != 0) {
+            result = -1;
+            break;
         }
+        if (!has_line) break;
+        record = (JoinRecord *)tool_array_append(records);
+        if (record == 0) {
+            result = -1;
+            break;
+        }
+        record->line = (char *)rt_malloc(line.size + 1U);
+        if (record->line == 0) {
+            records->count -= 1U;
+            result = -1;
+            break;
+        }
+        memcpy(record->line, line.data, line.size + 1U);
     }
-
-    if (bytes_read < 0) {
-        return -1;
-    }
-
-    if (current_len > 0U) {
-        return store_line(lines, count, current, current_len);
-    }
-
-    return 0;
+    tool_byte_buffer_free(&line);
+    return result;
 }
 
 static void print_usage(const char *program_name) {
@@ -311,7 +305,7 @@ static int emit_fields_except(const char *line, unsigned long long skip_field, c
 static int parse_output_list(const char *text, JoinOptions *options) {
     size_t index = 0;
 
-    options->output_field_count = 0U;
+    options->output_fields.count = 0U;
     while (text[index] != '\0') {
         char token[32];
         size_t token_len = 0;
@@ -333,10 +327,6 @@ static int parse_output_list(const char *text, JoinOptions *options) {
         }
         token[token_len] = '\0';
 
-        if (options->output_field_count >= JOIN_MAX_OUTPUT_FIELDS) {
-            return -1;
-        }
-
         if (rt_strcmp(token, "0") == 0) {
             field.source = 0;
             field.field_no = 0ULL;
@@ -349,10 +339,14 @@ static int parse_output_list(const char *text, JoinOptions *options) {
             return -1;
         }
 
-        options->output_fields[options->output_field_count++] = field;
+        {
+            JoinOutputField *stored = (JoinOutputField *)tool_array_append(&options->output_fields);
+            if (stored == 0) return -1;
+            *stored = field;
+        }
     }
 
-    options->use_output_list = options->output_field_count > 0U ? 1 : 0;
+    options->use_output_list = options->output_fields.count > 0U ? 1 : 0;
     return options->use_output_list ? 0 : -1;
 }
 
@@ -366,43 +360,58 @@ static int emit_optional_value(const char *text, int found, const JoinOptions *o
 static int emit_selected_line(const char *left, const char *right, const JoinOptions *options) {
     int first = 1;
     size_t i;
+    size_t value_size = 1U;
+    char *value;
 
-    for (i = 0; i < options->output_field_count; ++i) {
-        char value[JOIN_LINE_CAPACITY];
+    if (left != 0 && rt_strlen(left) + 1U > value_size) value_size = rt_strlen(left) + 1U;
+    if (right != 0 && rt_strlen(right) + 1U > value_size) value_size = rt_strlen(right) + 1U;
+    value = (char *)rt_malloc(value_size);
+    if (value == 0) return -1;
+
+    for (i = 0; i < options->output_fields.count; ++i) {
+        const JoinOutputField *field = (const JoinOutputField *)tool_array_get_const(&options->output_fields, i);
         int found = 0;
 
-        if (options->output_fields[i].source == 0) {
-            if (left != 0 && extract_field(left, options->left_field, options->delimiter, value, sizeof(value)) == 0) {
+        if (field->source == 0) {
+            if (left != 0 && extract_field(left, options->left_field, options->delimiter, value, value_size) == 0) {
                 found = 1;
-            } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, value, sizeof(value)) == 0) {
-                found = 1;
-            }
-        } else if (options->output_fields[i].source == 1) {
-            if (left != 0 && extract_field(left, options->output_fields[i].field_no, options->delimiter, value, sizeof(value)) == 0) {
+            } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, value, value_size) == 0) {
                 found = 1;
             }
-        } else if (options->output_fields[i].source == 2) {
-            if (right != 0 && extract_field(right, options->output_fields[i].field_no, options->delimiter, value, sizeof(value)) == 0) {
+        } else if (field->source == 1) {
+            if (left != 0 && extract_field(left, field->field_no, options->delimiter, value, value_size) == 0) {
+                found = 1;
+            }
+        } else if (field->source == 2) {
+            if (right != 0 && extract_field(right, field->field_no, options->delimiter, value, value_size) == 0) {
                 found = 1;
             }
         }
 
         if (emit_optional_value(value, found, options, &first) != 0) {
+            rt_free(value);
             return -1;
         }
     }
 
+    rt_free(value);
     return tool_output_buffer_write_char(&join_output, '\n');
 }
 
 static int emit_default_line(const char *left, const char *right, const JoinOptions *options) {
-    char key[JOIN_LINE_CAPACITY];
+    size_t key_size = 1U;
+    char *key;
     int first = 1;
     int found = 0;
 
-    if (left != 0 && extract_field(left, options->left_field, options->delimiter, key, sizeof(key)) == 0) {
+    if (left != 0 && rt_strlen(left) + 1U > key_size) key_size = rt_strlen(left) + 1U;
+    if (right != 0 && rt_strlen(right) + 1U > key_size) key_size = rt_strlen(right) + 1U;
+    key = (char *)rt_malloc(key_size);
+    if (key == 0) return -1;
+
+    if (left != 0 && extract_field(left, options->left_field, options->delimiter, key, key_size) == 0) {
         found = 1;
-    } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, key, sizeof(key)) == 0) {
+    } else if (right != 0 && extract_field(right, options->right_field, options->delimiter, key, key_size) == 0) {
         found = 1;
     } else {
         key[0] = '\0';
@@ -412,9 +421,11 @@ static int emit_default_line(const char *left, const char *right, const JoinOpti
         emit_fields_except(left, options->left_field, options->delimiter, &first) != 0 ||
         emit_fields_except(right, options->right_field, options->delimiter, &first) != 0 ||
         tool_output_buffer_write_char(&join_output, '\n') != 0) {
+        rt_free(key);
         return -1;
     }
 
+    rt_free(key);
     return 0;
 }
 
@@ -426,69 +437,85 @@ static int emit_output_line(const char *left, const char *right, const JoinOptio
     return emit_default_line(left, right, options);
 }
 
+static JoinRecord *join_record(ToolArray *records, size_t index) {
+    return (JoinRecord *)tool_array_get(records, index);
+}
+
+static void free_records(ToolArray *records) {
+    size_t i;
+    for (i = 0U; i < records->count; ++i) {
+        JoinRecord *record = join_record(records, i);
+        rt_free(record->line);
+        rt_free(record->key);
+    }
+    tool_array_free(records);
+}
+
+static int build_keys(ToolArray *records, unsigned long long field, char delimiter) {
+    size_t i;
+    for (i = 0U; i < records->count; ++i) {
+        JoinRecord *record = join_record(records, i);
+        size_t size = rt_strlen(record->line) + 1U;
+        record->key = (char *)rt_malloc(size);
+        if (record->key == 0) return -1;
+        if (extract_field(record->line, field, delimiter, record->key, size) != 0) record->key[0] = '\0';
+    }
+    return 0;
+}
+
 static int join_files(const char *left_path, const char *right_path, const JoinOptions *options) {
-    static char left_lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
-    static char right_lines[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
-    static char left_keys[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
-    static char right_keys[JOIN_MAX_LINES][JOIN_LINE_CAPACITY];
-    size_t left_count = 0;
-    size_t right_count = 0;
+    ToolArray left_records;
+    ToolArray right_records;
     int left_fd;
     int left_close;
     int right_fd;
     int right_close;
     size_t left_index = 0U;
     size_t right_index = 0U;
-    size_t i;
+    int result = -1;
 
     tool_output_buffer_init(&join_output, 1);
+    tool_array_init(&left_records, sizeof(JoinRecord));
+    tool_array_init(&right_records, sizeof(JoinRecord));
 
     if (tool_open_input(left_path, &left_fd, &left_close) != 0) {
         tool_write_error("join", "cannot open ", left_path);
         return -1;
     }
 
-    if (collect_lines_from_fd(left_fd, left_lines, &left_count) != 0) {
+    if (collect_lines_from_fd(left_fd, &left_records) != 0) {
         tool_close_input(left_fd, left_close);
         tool_write_error("join", "read error on ", left_path);
-        return -1;
+        goto cleanup;
     }
     tool_close_input(left_fd, left_close);
 
     if (tool_open_input(right_path, &right_fd, &right_close) != 0) {
         tool_write_error("join", "cannot open ", right_path);
-        return -1;
+        goto cleanup;
     }
 
-    if (collect_lines_from_fd(right_fd, right_lines, &right_count) != 0) {
+    if (collect_lines_from_fd(right_fd, &right_records) != 0) {
         tool_close_input(right_fd, right_close);
         tool_write_error("join", "read error on ", right_path);
-        return -1;
+        goto cleanup;
     }
     tool_close_input(right_fd, right_close);
 
-    for (i = 0; i < left_count; ++i) {
-        if (extract_field(left_lines[i], options->left_field, options->delimiter, left_keys[i], sizeof(left_keys[i])) != 0) {
-            left_keys[i][0] = '\0';
-        }
-    }
-    for (i = 0; i < right_count; ++i) {
-        if (extract_field(right_lines[i], options->right_field, options->delimiter, right_keys[i], sizeof(right_keys[i])) != 0) {
-            right_keys[i][0] = '\0';
-        }
-    }
+    if (build_keys(&left_records, options->left_field, options->delimiter) != 0 ||
+        build_keys(&right_records, options->right_field, options->delimiter) != 0) goto cleanup;
 
-    while (left_index < left_count && right_index < right_count) {
-        int comparison = compare_keys(left_keys[left_index], right_keys[right_index], options->ignore_case);
+    while (left_index < left_records.count && right_index < right_records.count) {
+        int comparison = compare_keys(join_record(&left_records, left_index)->key, join_record(&right_records, right_index)->key, options->ignore_case);
 
         if (comparison < 0) {
-            if (options->print_unpaired_left && emit_output_line(left_lines[left_index], 0, options) != 0) {
-                return -1;
+            if (options->print_unpaired_left && emit_output_line(join_record(&left_records, left_index)->line, 0, options) != 0) {
+                goto cleanup;
             }
             left_index += 1U;
         } else if (comparison > 0) {
-            if (options->print_unpaired_right && emit_output_line(0, right_lines[right_index], options) != 0) {
-                return -1;
+            if (options->print_unpaired_right && emit_output_line(0, join_record(&right_records, right_index)->line, options) != 0) {
+                goto cleanup;
             }
             right_index += 1U;
         } else {
@@ -497,10 +524,10 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
             size_t left_end;
             size_t right_end;
 
-            while (left_index < left_count && compare_keys(left_keys[left_start], left_keys[left_index], options->ignore_case) == 0) {
+            while (left_index < left_records.count && compare_keys(join_record(&left_records, left_start)->key, join_record(&left_records, left_index)->key, options->ignore_case) == 0) {
                 left_index += 1U;
             }
-            while (right_index < right_count && compare_keys(right_keys[right_start], right_keys[right_index], options->ignore_case) == 0) {
+            while (right_index < right_records.count && compare_keys(join_record(&right_records, right_start)->key, join_record(&right_records, right_index)->key, options->ignore_case) == 0) {
                 right_index += 1U;
             }
             left_end = left_index;
@@ -511,8 +538,8 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
                 for (left_group = left_start; left_group < left_end; ++left_group) {
                     size_t right_group;
                     for (right_group = right_start; right_group < right_end; ++right_group) {
-                        if (emit_output_line(left_lines[left_group], right_lines[right_group], options) != 0) {
-                            return -1;
+                        if (emit_output_line(join_record(&left_records, left_group)->line, join_record(&right_records, right_group)->line, options) != 0) {
+                            goto cleanup;
                         }
                     }
                 }
@@ -520,21 +547,25 @@ static int join_files(const char *left_path, const char *right_path, const JoinO
         }
     }
 
-    while (left_index < left_count) {
-        if (options->print_unpaired_left && emit_output_line(left_lines[left_index], 0, options) != 0) {
-            return -1;
+    while (left_index < left_records.count) {
+        if (options->print_unpaired_left && emit_output_line(join_record(&left_records, left_index)->line, 0, options) != 0) {
+            goto cleanup;
         }
         left_index += 1U;
     }
 
-    while (right_index < right_count) {
-        if (options->print_unpaired_right && emit_output_line(0, right_lines[right_index], options) != 0) {
-            return -1;
+    while (right_index < right_records.count) {
+        if (options->print_unpaired_right && emit_output_line(0, join_record(&right_records, right_index)->line, options) != 0) {
+            goto cleanup;
         }
         right_index += 1U;
     }
 
-    return tool_output_buffer_flush(&join_output);
+    result = tool_output_buffer_flush(&join_output);
+cleanup:
+    free_records(&left_records);
+    free_records(&right_records);
+    return result;
 }
 
 int main(int argc, char **argv) {
@@ -550,8 +581,8 @@ int main(int argc, char **argv) {
     options.only_unpaired_left = 0;
     options.only_unpaired_right = 0;
     options.use_output_list = 0;
-    options.empty_replacement[0] = '\0';
-    options.output_field_count = 0U;
+    options.empty_replacement = "";
+    tool_array_init(&options.output_fields, sizeof(JoinOutputField));
 
     while (argi < argc && argv[argi][0] == '-' && argv[argi][1] != '\0') {
         if (rt_strcmp(argv[argi], "-i") == 0 || rt_strcmp(argv[argi], "--ignore-case") == 0) {
@@ -629,7 +660,7 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
-            rt_copy_string(options.empty_replacement, sizeof(options.empty_replacement), argv[argi + 1]);
+            options.empty_replacement = argv[argi + 1];
             argi += 2;
         } else if (rt_strcmp(argv[argi], "-o") == 0) {
             if (argi + 1 >= argc || parse_output_list(argv[argi + 1], &options) != 0) {
@@ -651,5 +682,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    return join_files(argv[argi], argv[argi + 1], &options) == 0 ? 0 : 1;
+    {
+        int result = join_files(argv[argi], argv[argi + 1], &options) == 0 ? 0 : 1;
+        tool_array_free(&options.output_fields);
+        return result;
+    }
 }

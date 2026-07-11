@@ -657,6 +657,9 @@ for tool in $TOOLS; do
       append_dir_sources tool_sources src/tools/editor
       append_unique_source tool_sources "$TUI_SOURCE"
       ;;
+    less)
+      append_unique_source tool_sources "$TUI_SOURCE"
+      ;;
     lsusb)
       for src in "${USB_SOURCES[@]}"; do append_unique_source tool_sources "$src"; done
       append_unique_source tool_sources "$USB_PLATFORM_SOURCE"

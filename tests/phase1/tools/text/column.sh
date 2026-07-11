@@ -34,3 +34,16 @@ Bob:Ops:Infra
 EOF
 "${TEST_BIN_DIR}/column" -t -s ':' -o ' | ' "$WORK_DIR/table.txt" > "$WORK_DIR/table.out"
 assert_file_contains "$WORK_DIR/table.out" '^name \| role \| team$' "column did not honor the requested separators"
+
+i=0
+: > "$WORK_DIR/large.txt"
+while [ "$i" -lt 600 ]; do
+	printf 'row-%s value-%s\n' "$i" "$i" >> "$WORK_DIR/large.txt"
+	i=$((i + 1))
+done
+"${TEST_BIN_DIR}/column" -t "$WORK_DIR/large.txt" > "$WORK_DIR/large.out"
+[ "$(wc -l < "$WORK_DIR/large.out")" -eq 600 ] || fail "column retained the old fixed row limit"
+
+awk 'BEGIN { for (i = 0; i < 40; ++i) printf "%sfield%d", i ? ":" : "", i; printf "\n"; }' > "$WORK_DIR/wide.txt"
+"${TEST_BIN_DIR}/column" -t -s ':' "$WORK_DIR/wide.txt" > "$WORK_DIR/wide.out"
+assert_file_contains "$WORK_DIR/wide.out" 'field39' "column retained the old fixed field limit"

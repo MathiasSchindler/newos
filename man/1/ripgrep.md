@@ -104,6 +104,7 @@ An unknown TYPE is treated as a literal file extension, so `-t py` matches `.py`
 - This is a practical source-search subset, not a complete clone of upstream ripgrep.
 - Ignore-file parsing is intentionally small: blank lines, comments, negation with `!`, directory-only patterns ending in `/`, slash-relative patterns, and basename globs are supported; advanced gitignore escaping and precedence edge cases are not complete.
 - No PCRE2 support, multiline search, decompression, JSON output, or parallel directory walking is implemented.
+- Patterns are limited to 64 KiB, nesting is limited to 64 groups, and each record search has a bounded matcher work budget.
 - `--follow` uses the available platform follow-aware path information, but full symlink-loop detection is not implemented.
 - Binary files are skipped when a NUL byte is encountered.
 - Directory traversal uses fixed-size in-process entry buffers, so extremely large directories may need future streaming iteration support.

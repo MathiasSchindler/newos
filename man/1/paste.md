@@ -30,7 +30,7 @@ paste reads corresponding lines from multiple files and writes them joined by a 
 
 ## LIMITATIONS
 
-- maximum number of open files and line length are bounded by internal static buffers
+- the number of simultaneous input files is limited by available memory and the process file-descriptor limit
 - no support for multi-byte delimiter sequences (each character in DELIMS is a single-byte delimiter)
 - delimiter escape handling is intentionally smaller than GNU/BSD `paste`
 

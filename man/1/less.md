@@ -45,8 +45,7 @@ that common pager navigation works without external dependencies.
   buffered and remains bounded by the in-memory pager index
 - no mark/register commands, horizontal scrolling modes, follow mode, or
   external editor integration are implemented
-- terminal control is intentionally lightweight and may not handle every
-  terminfo capability or resize edge case
+- terminal control uses the shared built-in ANSI capability profile rather than terminfo; arrow keys, page keys, and resize-driven page height are handled through the shared streaming input decoder
 
 ## EXAMPLES
 

@@ -1,0 +1,21 @@
+# Query collections grow beyond their former fixed parser limits.
+CREATE TABLE wide(c1, c2, c3, c4, c5, c6, c7, c8, c9);
+INSERT INTO wide VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9);
+SELECT c1 FROM wide WHERE c1 IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40);
+SELECT c1 FROM wide WHERE c1 = 1 OR c1 = 2 OR c1 = 3 OR c1 = 4 OR c1 = 5 OR c1 = 6 OR c1 = 7 OR c1 = 8 OR c1 = 9 OR c1 = 10 OR c1 = 11 OR c1 = 12 OR c1 = 13 OR c1 = 14 OR c1 = 15 OR c1 = 16 OR c1 = 17 OR c1 = 18 OR c1 = 19 OR c1 = 20;
+SELECT c1, c2, c3, c4, c5, c6, c7, c8, c9 FROM wide GROUP BY c1, c2, c3, c4, c5, c6, c7, c8, c9 ORDER BY c1, c2, c3, c4, c5, c6, c7, c8, c9;
+CREATE TABLE j1(id);
+CREATE TABLE j2(id);
+CREATE TABLE j3(id);
+CREATE TABLE j4(id);
+CREATE TABLE j5(id);
+INSERT INTO j1 VALUES (7);
+INSERT INTO j2 VALUES (7);
+INSERT INTO j3 VALUES (7);
+INSERT INTO j4 VALUES (7);
+INSERT INTO j5 VALUES (7);
+SELECT j1.id FROM j1 JOIN j2 ON j1.id = j2.id JOIN j3 ON j2.id = j3.id JOIN j4 ON j3.id = j4.id JOIN j5 ON j4.id = j5.id;
+CREATE TABLE updates(c01, c02, c03, c04, c05, c06, c07, c08, c09, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33);
+INSERT INTO updates VALUES (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+UPDATE updates SET c01 = 1, c02 = 2, c03 = 3, c04 = 4, c05 = 5, c06 = 6, c07 = 7, c08 = 8, c09 = 9, c10 = 10, c11 = 11, c12 = 12, c13 = 13, c14 = 14, c15 = 15, c16 = 16, c17 = 17, c18 = 18, c19 = 19, c20 = 20, c21 = 21, c22 = 22, c23 = 23, c24 = 24, c25 = 25, c26 = 26, c27 = 27, c28 = 28, c29 = 29, c30 = 30, c31 = 31, c32 = 32, c33 = 33;
+SELECT c01, c33 FROM updates;

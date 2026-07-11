@@ -40,6 +40,7 @@ and writes results to standard output. Multiple expressions may be combined.
 ## LIMITATIONS
 
 - Branch and label support may differ from GNU sed in edge cases.
+- Shared regular-expression patterns are limited to 64 KiB and 64 nested groups, with a bounded work budget for pathological backtracking.
 
 ## EXAMPLES
 

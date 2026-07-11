@@ -23,7 +23,7 @@ static int sql_ensure_create_scratch_capacity(SqlCreateScratch *scratch, unsigne
     char (*defaults)[SQL_VALUE_SIZE];
     unsigned int capacity;
 
-    if (scratch == 0 || sql_next_capacity(scratch->capacity, needed, SQL_MAX_COLUMNS, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
+    if (scratch == 0 || sql_next_capacity(scratch->capacity, needed, SQL_COLLECTION_MAX, SQL_INITIAL_COLUMN_CAPACITY, &capacity) != 0) {
         return -1;
     }
     if (capacity == scratch->capacity) {
@@ -115,7 +115,7 @@ static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
     }
     for (;;) {
         int done_column = 0;
-        if (column_count >= SQL_MAX_COLUMNS || sql_ensure_create_scratch_capacity(&scratch, column_count + 1U) != 0 ||
+        if (sql_ensure_create_scratch_capacity(&scratch, column_count + 1U) != 0 ||
             sql_read_identifier(parser, scratch.columns[column_count], sizeof(scratch.columns[column_count])) != 0 ||
             sql_column_seen(scratch.columns, column_count, scratch.columns[column_count])) {
             goto out;
@@ -194,7 +194,7 @@ static int sql_execute_create(SqlDatabase *db, SqlParser *parser) {
         result = 0;
         goto out;
     }
-    if (db->table_count >= SQL_MAX_TABLES || sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
+    if (sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
         goto out;
     }
     table = &db->tables[db->table_count];
@@ -262,7 +262,7 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
         return -1;
     }
     table = sql_find_table(db, table_name);
-    if (table == 0 || table->row_count >= SQL_MAX_ROWS) {
+    if (table == 0) {
         return -1;
     }
     target_columns = (int *)sql_resize_array(0, 0U, table->column_count, sizeof(int));
@@ -301,9 +301,6 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
             }
         }
     } else {
-        if (table->column_count > SQL_MAX_COLUMNS) {
-            goto out;
-        }
         for (target_count = 0U; target_count < table->column_count; ++target_count) {
             target_columns[target_count] = (int)target_count;
         }
@@ -328,7 +325,7 @@ static int sql_execute_insert(SqlDatabase *db, SqlParser *parser) {
                 goto out;
             }
         }
-        if (value_count != target_count || table->row_count >= SQL_MAX_ROWS || sql_ensure_row_capacity(table, table->row_count + 1U) != 0 || sql_prepare_new_row(table, &table->rows[table->row_count]) != 0) {
+        if (value_count != target_count || sql_ensure_row_capacity(table, table->row_count + 1U) != 0 || sql_prepare_new_row(table, &table->rows[table->row_count]) != 0) {
             goto out;
         }
         for (value_count = 0U; value_count < target_count; ++value_count) {

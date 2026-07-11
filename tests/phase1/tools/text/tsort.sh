@@ -27,3 +27,14 @@ cycle_status=0
 printf 'a b\nb a\n' | "${TEST_BIN_DIR}/tsort" > "$WORK_DIR/cycle.out" 2> "$WORK_DIR/cycle.err" || cycle_status=$?
 [ "$cycle_status" -ne 0 ] || fail "tsort should reject a dependency cycle"
 assert_file_contains "$WORK_DIR/cycle.err" 'cycle' "tsort cycle diagnostic did not mention the cycle"
+
+: > "$WORK_DIR/large.txt"
+i=0
+while [ "$i" -lt 300 ]; do
+	next=$((i + 1))
+	printf 'node%s node%s\n' "$i" "$next" >> "$WORK_DIR/large.txt"
+	i=$next
+done
+"${TEST_BIN_DIR}/tsort" "$WORK_DIR/large.txt" > "$WORK_DIR/large.out"
+[ "$(wc -l < "$WORK_DIR/large.out")" -eq 301 ] || fail "tsort retained the old fixed node limit"
+assert_file_contains "$WORK_DIR/large.out" '^node300$' "tsort lost nodes beyond the old fixed capacity"

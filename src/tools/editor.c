@@ -1215,6 +1215,7 @@ int main(int argc, char **argv) {
 
     while (!quit) {
         TuiKeyEvent event;
+        (void)tui_terminal_check_resize(&editor.terminal);
         if (editor_refresh(&editor) != 0 || tui_read_key(&editor.terminal, &event) != 0) {
             break;
         }

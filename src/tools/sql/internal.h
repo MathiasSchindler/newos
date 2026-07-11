@@ -5,17 +5,9 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#ifndef SQL_MAX_TABLES
-#define SQL_MAX_TABLES 1024U
-#endif
-#ifndef SQL_MAX_COLUMNS
-#define SQL_MAX_COLUMNS 1024U
-#endif
+#define SQL_COLLECTION_MAX ((unsigned int)-1)
 #ifndef SQL_INITIAL_COLUMN_CAPACITY
 #define SQL_INITIAL_COLUMN_CAPACITY 4U
-#endif
-#ifndef SQL_MAX_ROWS
-#define SQL_MAX_ROWS 1048576U
 #endif
 #ifndef SQL_INITIAL_TABLE_CAPACITY
 #define SQL_INITIAL_TABLE_CAPACITY 4U
@@ -47,32 +39,8 @@
 #ifndef SQL_IO_BUFFER_SIZE
 #define SQL_IO_BUFFER_SIZE 4096U
 #endif
-#ifndef SQL_SET_CAPACITY
-#define SQL_SET_CAPACITY 32U
-#endif
-#ifndef SQL_MAX_QUERY_TABLES
-#define SQL_MAX_QUERY_TABLES 4U
-#endif
-#ifndef SQL_MAX_RESULT_ROWS
-#define SQL_MAX_RESULT_ROWS 1048576U
-#endif
 #ifndef SQL_INITIAL_RESULT_CAPACITY
 #define SQL_INITIAL_RESULT_CAPACITY 256U
-#endif
-#ifndef SQL_MAX_GROUP_KEYS
-#define SQL_MAX_GROUP_KEYS 8U
-#endif
-#ifndef SQL_MAX_ORDER_KEYS
-#define SQL_MAX_ORDER_KEYS 8U
-#endif
-#ifndef SQL_MAX_CONDITIONS
-#define SQL_MAX_CONDITIONS 8U
-#endif
-#ifndef SQL_MAX_CONDITION_NODES
-#define SQL_MAX_CONDITION_NODES 32U
-#endif
-#ifndef SQL_MAX_IN_VALUES
-#define SQL_MAX_IN_VALUES 32U
 #endif
 #ifndef SQL_NUMERIC_CACHE_SLOTS
 #define SQL_NUMERIC_CACHE_SLOTS 16U
@@ -189,8 +157,9 @@ typedef struct {
     int operator_kind;
     SqlConditionValue left;
     SqlConditionValue right;
-    SqlConditionValue values[SQL_MAX_IN_VALUES];
+    SqlConditionValue *values;
     unsigned int value_count;
+    unsigned int value_capacity;
 } SqlCondition;
 
 typedef struct {
@@ -201,8 +170,9 @@ typedef struct {
 } SqlConditionNode;
 
 typedef struct {
-    SqlConditionNode nodes[SQL_MAX_CONDITION_NODES];
+    SqlConditionNode *nodes;
     unsigned int count;
+    unsigned int capacity;
     int root;
 } SqlConditionList;
 
@@ -229,9 +199,9 @@ typedef struct {
 } SqlOrderKey;
 
 typedef struct {
-    const SqlTable *tables[SQL_MAX_QUERY_TABLES];
-    const SqlRow *rows[SQL_MAX_QUERY_TABLES];
-    unsigned int row_indices[SQL_MAX_QUERY_TABLES];
+    const SqlTable **tables;
+    const SqlRow **rows;
+    unsigned int *row_indices;
     unsigned int *values;
     unsigned int *aggregates;
     unsigned int count;
@@ -239,12 +209,16 @@ typedef struct {
 
 typedef struct {
     SqlResultRow *rows;
+    const SqlTable **tables;
+    const SqlRow **row_refs;
+    unsigned int *row_indices;
     unsigned int *values;
     unsigned int *aggregates;
     unsigned int count;
     unsigned int capacity;
     unsigned int value_slots;
     unsigned int aggregate_slots;
+    unsigned int source_slots;
 } SqlResultBuffer;
 
 typedef struct {
@@ -259,21 +233,24 @@ extern SqlTextBuffer sql_import_line;
 #endif
 
 typedef struct {
-    SqlQuerySource sources[SQL_MAX_QUERY_TABLES];
+    SqlQuerySource *sources;
     unsigned int source_count;
+    unsigned int source_capacity;
     SqlSelectItem *items;
     unsigned int item_count;
     unsigned int item_capacity;
     int select_all;
-    SqlCondition joins[SQL_MAX_QUERY_TABLES - 1U];
-    int join_types[SQL_MAX_QUERY_TABLES - 1U];
+    SqlCondition *joins;
+    int *join_types;
     unsigned int join_count;
     SqlConditionList where;
-    SqlColumnRef group_by[SQL_MAX_GROUP_KEYS];
+    SqlColumnRef *group_by;
     unsigned int group_count;
+    unsigned int group_capacity;
     SqlConditionList having;
-    SqlOrderKey order_by[SQL_MAX_ORDER_KEYS];
+    SqlOrderKey *order_by;
     unsigned int order_count;
+    unsigned int order_capacity;
     int has_limit;
     unsigned int limit;
     int has_offset;
@@ -458,7 +435,7 @@ static void sql_index_equal_range(const SqlIndexCache *index, const char *value,
 static int sql_select_index_lookup(const SqlSelectQuery *query, unsigned int depth, const SqlResultRow *current, unsigned int *column_out, const char **value_out);
 static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int depth, SqlResultRow *current, SqlResultBuffer *result);
 static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow *rows, unsigned int row_count, SqlResultBuffer *groups);
-static void sql_init_result_buffer(SqlResultBuffer *buffer, unsigned int value_slots, unsigned int aggregate_slots);
+static void sql_init_result_buffer(SqlResultBuffer *buffer, unsigned int value_slots, unsigned int aggregate_slots, unsigned int source_slots);
 static void sql_free_result_buffer(SqlResultBuffer *buffer);
 static void sql_copy_result_row(const SqlSelectQuery *query, SqlResultRow *dst, const SqlResultRow *src);
 static void sql_set_result_buffer_row(const SqlSelectQuery *query, SqlResultBuffer *buffer, unsigned int index, const SqlResultRow *src);

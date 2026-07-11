@@ -52,8 +52,7 @@ static int sql_parse_select_list(SqlParser *parser, SqlSelectQuery *query, SqlSe
         return -1;
     }
     for (;;) {
-        if (query->item_count >= SQL_MAX_COLUMNS ||
-            sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0 ||
+        if (sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0 ||
             sql_ensure_select_scratch_capacity(scratch, query->item_count + 1U) != 0) {
             return -1;
         }
@@ -143,11 +142,9 @@ static int sql_add_query_source(SqlDatabase *db, SqlSelectQuery *query, const ch
     SqlTable *table;
     unsigned int i;
 
-    if (query->source_count >= SQL_MAX_QUERY_TABLES) {
-        return -1;
-    }
     table = sql_find_table(db, name);
-    if (table == 0 || sql_copy_checked(query->sources[query->source_count].name, sizeof(query->sources[query->source_count].name), name) != 0) {
+    if (table == 0 || sql_ensure_source_capacity(query, query->source_count + 1U) != 0 ||
+        sql_copy_checked(query->sources[query->source_count].name, sizeof(query->sources[query->source_count].name), name) != 0) {
         return -1;
     }
     if (alias != 0 && alias[0] != '\0') {
@@ -192,7 +189,7 @@ static int sql_resolve_select_items(SqlSelectQuery *query, SqlSelectScratch *scr
             unsigned int column_index;
             for (column_index = 0U; column_index < table->column_count; ++column_index) {
                 SqlSelectItem *item;
-                if (query->item_count >= SQL_MAX_COLUMNS || sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0) {
+                if (sql_ensure_select_item_capacity(query, query->item_count + 1U) != 0) {
                     return -1;
                 }
                 item = &query->items[query->item_count++];
@@ -301,9 +298,6 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
             sql_add_query_source(db, query, table_name, alias) != 0) {
             return -1;
         }
-        if (query->join_count >= SQL_MAX_QUERY_TABLES - 1U) {
-            return -1;
-        }
         if (natural) {
             unsigned int left_index;
             unsigned int right_index;
@@ -391,7 +385,8 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
             return -1;
         }
         for (;;) {
-            if (query->group_count >= SQL_MAX_GROUP_KEYS || sql_read_column_ref(parser, query, &query->group_by[query->group_count], 0, 0) != 0) {
+            if (sql_ensure_group_capacity(query, query->group_count + 1U) != 0 ||
+                sql_read_column_ref(parser, query, &query->group_by[query->group_count], 0, 0) != 0) {
                 return -1;
             }
             query->group_count += 1U;
@@ -412,7 +407,8 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
         for (;;) {
             SqlOrderKey *key;
 
-            if (query->order_count >= SQL_MAX_ORDER_KEYS || sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD) {
+            if (sql_ensure_order_capacity(query, query->order_count + 1U) != 0 ||
+                sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD) {
                 return -1;
             }
             key = &query->order_by[query->order_count];
@@ -441,12 +437,12 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
     }
     if (sql_try_word(parser, "limit")) {
         unsigned long long limit_value;
-        if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &limit_value) != 0 || limit_value > SQL_MAX_RESULT_ROWS) {
+        if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &limit_value) != 0) {
             return -1;
         }
         if (sql_try_symbol(parser, ',')) {
             unsigned long long comma_limit_value;
-            if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &comma_limit_value) != 0 || comma_limit_value > SQL_MAX_RESULT_ROWS) {
+            if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &comma_limit_value) != 0) {
                 return -1;
             }
             query->has_offset = 1;
@@ -460,7 +456,7 @@ static int sql_parse_select_tail(SqlDatabase *db, SqlParser *parser, SqlSelectQu
     }
     if (sql_try_word(parser, "offset")) {
         unsigned long long offset_value;
-        if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &offset_value) != 0 || offset_value > SQL_MAX_RESULT_ROWS) {
+        if (sql_next_token(parser) != 0 || parser->token_type != SQL_TOKEN_WORD || rt_parse_uint(parser->token, &offset_value) != 0) {
             return -1;
         }
         query->has_offset = 1;
@@ -572,7 +568,7 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
         if (!sql_condition_list_matches(&query->where, current)) {
             return 0;
         }
-        if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
+        if (sql_ensure_result_capacity(result, result->count + 1U) != 0) {
             return -1;
         }
         sql_set_result_buffer_row(query, result, result->count, current);
@@ -629,7 +625,7 @@ static int sql_collect_select_rows(const SqlSelectQuery *query, unsigned int dep
                     if (!sql_condition_list_matches(&query->where, current)) {
                         continue;
                     }
-                    if (result->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(result, result->count + 1U) != 0) {
+                    if (sql_ensure_result_capacity(result, result->count + 1U) != 0) {
                         return -1;
                     }
                     sql_set_result_buffer_row(query, result, result->count, current);
@@ -701,8 +697,8 @@ static void sql_configure_select_collection_limit(SqlSelectQuery *query) {
     needed = (unsigned long long)query->offset + (unsigned long long)query->limit;
     if (query->limit == 0U) {
         needed = 0ULL;
-    } else if (needed > (unsigned long long)SQL_MAX_RESULT_ROWS) {
-        needed = (unsigned long long)SQL_MAX_RESULT_ROWS;
+    } else if (needed > (unsigned long long)SQL_COLLECTION_MAX) {
+        needed = (unsigned long long)SQL_COLLECTION_MAX;
     }
     query->collection_limit_enabled = 1;
     query->collection_limit = (unsigned int)needed;
@@ -788,7 +784,7 @@ static int sql_group_select_rows_single_key(const SqlSelectQuery *query, const S
             groups->rows[group_index].count += 1U;
             continue;
         }
-        if (groups->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
+        if (sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
             rt_free(slots);
             return -1;
         }
@@ -1019,7 +1015,7 @@ static int sql_group_select_rows(const SqlSelectQuery *query, const SqlResultRow
             }
         }
         if (group_index == groups->count) {
-            if (groups->count >= SQL_MAX_RESULT_ROWS || sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
+            if (sql_ensure_result_capacity(groups, groups->count + 1U) != 0) {
                 return -1;
             }
             sql_set_result_buffer_row(query, groups, groups->count, &rows[row_index]);
@@ -1273,13 +1269,19 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
     rt_memset(&query, 0, sizeof(query));
     rt_memset(&current, 0, sizeof(current));
     rt_memset(&scratch, 0, sizeof(scratch));
-    sql_init_result_buffer(&result_rows, 0U, 0U);
-    sql_init_result_buffer(&group_rows, 0U, 0U);
+    sql_init_result_buffer(&result_rows, 0U, 0U, 0U);
+    sql_init_result_buffer(&group_rows, 0U, 0U, 0U);
     if (sql_parse_select_list(parser, &query, &scratch) != 0 ||
         sql_parse_select_tail(db, parser, &query, &scratch) != 0) {
         goto out;
     }
     sql_configure_select_collection_limit(&query);
+    current.tables = (const SqlTable **)rt_malloc_array(query.source_count, sizeof(current.tables[0]));
+    current.rows = (const SqlRow **)rt_malloc_array(query.source_count, sizeof(current.rows[0]));
+    current.row_indices = (unsigned int *)rt_malloc_array(query.source_count, sizeof(current.row_indices[0]));
+    if (current.tables == 0 || current.rows == 0 || current.row_indices == 0) goto out;
+    result_rows.source_slots = query.source_count;
+    group_rows.source_slots = query.source_count;
     group_rows.value_slots = query.item_count;
     group_rows.aggregate_slots = query.aggregate_count;
     if (sql_collect_select_rows(&query, 0U, &current, &result_rows) != 0 ||
@@ -1295,6 +1297,9 @@ static int sql_execute_select(SqlDatabase *db, SqlParser *parser) {
     result = 0;
 
 out:
+    rt_free(current.tables);
+    rt_free(current.rows);
+    rt_free(current.row_indices);
     sql_free_result_buffer(&result_rows);
     sql_free_result_buffer(&group_rows);
     sql_free_select_scratch(&scratch);

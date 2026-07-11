@@ -223,6 +223,62 @@ int tool_byte_buffer_append_text(ToolByteBuffer *buffer, const char *text, size_
     return tool_byte_buffer_terminate(buffer);
 }
 
+void tool_array_init(ToolArray *array, size_t item_size) {
+    if (array == 0) return;
+    rt_memset(array, 0, sizeof(*array));
+    array->item_size = item_size;
+}
+
+void tool_array_free(ToolArray *array) {
+    size_t item_size;
+
+    if (array == 0) return;
+    item_size = array->item_size;
+    rt_free(array->data);
+    tool_array_init(array, item_size);
+}
+
+int tool_array_reserve(ToolArray *array, size_t needed) {
+    size_t next_capacity;
+    unsigned char *next;
+
+    if (array == 0 || array->item_size == 0U) return -1;
+    if (needed <= array->capacity) return 0;
+    next_capacity = array->capacity != 0U ? array->capacity : 16U;
+    while (next_capacity < needed) {
+        if (next_capacity > ((size_t)-1) / 2U) {
+            next_capacity = needed;
+            break;
+        }
+        next_capacity *= 2U;
+    }
+    next = (unsigned char *)rt_realloc_array(array->data, next_capacity, array->item_size);
+    if (next == 0) return -1;
+    array->data = next;
+    array->capacity = next_capacity;
+    return 0;
+}
+
+void *tool_array_append(ToolArray *array) {
+    void *item;
+
+    if (array == 0 || array->count == (size_t)-1 || tool_array_reserve(array, array->count + 1U) != 0) return 0;
+    item = array->data + array->count * array->item_size;
+    rt_memset(item, 0, array->item_size);
+    array->count += 1U;
+    return item;
+}
+
+void *tool_array_get(ToolArray *array, size_t index) {
+    if (array == 0 || index >= array->count) return 0;
+    return array->data + index * array->item_size;
+}
+
+const void *tool_array_get_const(const ToolArray *array, size_t index) {
+    if (array == 0 || index >= array->count) return 0;
+    return array->data + index * array->item_size;
+}
+
 void tool_write_usage(const char *program_name, const char *usage_suffix) {
     if (tool_json_is_enabled()) {
         (void)tool_json_write_usage(program_name, usage_suffix);
@@ -464,6 +520,41 @@ void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter) {
     reader->chunk_len = 0;
     reader->chunk_pos = 0;
     reader->eof = 0;
+}
+
+int tool_record_reader_next_buffer(ToolRecordReader *reader, ToolByteBuffer *record, int *has_record_out) {
+    if (reader == 0 || record == 0 || has_record_out == 0) return -1;
+    record->size = 0U;
+    *has_record_out = 0;
+
+    while (!reader->eof) {
+        if (reader->chunk_pos >= reader->chunk_len) {
+            reader->chunk_len = platform_read(reader->fd, reader->chunk, sizeof(reader->chunk));
+            reader->chunk_pos = 0;
+            if (reader->chunk_len < 0) return -1;
+            if (reader->chunk_len == 0) {
+                reader->eof = 1;
+                break;
+            }
+        }
+
+        while (reader->chunk_pos < reader->chunk_len) {
+            char ch = reader->chunk[reader->chunk_pos++];
+
+            if (ch == reader->delimiter) {
+                if (tool_byte_buffer_terminate(record) != 0) return -1;
+                *has_record_out = 1;
+                return 0;
+            }
+            if (tool_byte_buffer_append_char(record, ch) != 0) return -1;
+        }
+    }
+
+    if (record->size != 0U) {
+        if (tool_byte_buffer_terminate(record) != 0) return -1;
+        *has_record_out = 1;
+    }
+    return 0;
 }
 
 int tool_record_reader_next(ToolRecordReader *reader, char *record, size_t record_size, int *has_record_out) {
@@ -1685,6 +1776,18 @@ int tool_text_find_next_match(const char *pattern,
                               size_t search_start,
                               size_t *start_out,
                               size_t *end_out) {
+    return tool_text_find_next_match_ex(pattern, text, ignore_case, fixed_string, whole_word, 1, search_start, start_out, end_out);
+}
+
+int tool_text_find_next_match_ex(const char *pattern,
+                                 const char *text,
+                                 int ignore_case,
+                                 int fixed_string,
+                                 int whole_word,
+                                 int extended,
+                                 size_t search_start,
+                                 size_t *start_out,
+                                 size_t *end_out) {
     size_t candidate_start = 0U;
     size_t candidate_end = 0U;
     size_t next_start = search_start;
@@ -1717,7 +1820,7 @@ int tool_text_find_next_match(const char *pattern,
                 }
             }
         } else {
-            found = tool_regex_search(pattern, text, ignore_case, next_start, &candidate_start, &candidate_end);
+            found = tool_regex_search_ex(pattern, text, ignore_case, extended, next_start, &candidate_start, &candidate_end);
         }
 
         if (!found) return 0;

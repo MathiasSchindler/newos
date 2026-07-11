@@ -2,17 +2,13 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-#define PASTE_MAX_FILES 64
-#define PASTE_LINE_CAPACITY 8192
 #define PASTE_DELIMITER_CAPACITY 64
-#define PASTE_IO_BUFFER_SIZE 4096
 
 typedef struct {
     int fd;
-    char chunk[PASTE_IO_BUFFER_SIZE];
-    long chunk_len;
-    long chunk_pos;
-    int eof;
+    int should_close;
+    ToolRecordReader records;
+    ToolByteBuffer line;
 } LineReader;
 
 typedef struct {
@@ -64,54 +60,16 @@ static int parse_delimiters(const char *text, PasteOptions *options) {
     return 0;
 }
 
-static void init_reader(LineReader *reader, int fd) {
+static void init_reader(LineReader *reader, int fd, int should_close, char terminator) {
     reader->fd = fd;
-    reader->chunk_len = 0;
-    reader->chunk_pos = 0;
-    reader->eof = 0;
+    reader->should_close = should_close;
+    tool_record_reader_init(&reader->records, fd, terminator);
+    tool_byte_buffer_init(&reader->line);
 }
 
-static int read_next_record(LineReader *reader, char *line, size_t line_size, char terminator, int *has_line_out) {
-    size_t line_len = 0;
-
-    while (!reader->eof) {
-        if (reader->chunk_pos >= reader->chunk_len) {
-            reader->chunk_len = platform_read(reader->fd, reader->chunk, sizeof(reader->chunk));
-            reader->chunk_pos = 0;
-
-            if (reader->chunk_len < 0) {
-                return -1;
-            }
-
-            if (reader->chunk_len == 0) {
-                reader->eof = 1;
-                break;
-            }
-        }
-
-        while (reader->chunk_pos < reader->chunk_len) {
-            char ch = reader->chunk[reader->chunk_pos++];
-
-            if (ch == terminator) {
-                line[line_len] = '\0';
-                *has_line_out = 1;
-                return 0;
-            }
-
-            if (line_len + 1U < line_size) {
-                line[line_len++] = ch;
-            }
-        }
-    }
-
-    if (line_len > 0U) {
-        line[line_len] = '\0';
-        *has_line_out = 1;
-        return 0;
-    }
-
-    *has_line_out = 0;
-    return 0;
+static void free_reader(LineReader *reader) {
+    tool_close_input(reader->fd, reader->should_close);
+    tool_byte_buffer_free(&reader->line);
 }
 
 static char delimiter_at(const PasteOptions *options, size_t index) {
@@ -132,24 +90,22 @@ static int write_delimiter(const PasteOptions *options, size_t index) {
     return rt_write_char(1, delimiter);
 }
 
-static int paste_parallel(LineReader *readers, int file_count, const PasteOptions *options) {
+static int paste_parallel(ToolArray *readers, const PasteOptions *options) {
     int still_active = 1;
     char output_terminator = options->zero_terminated ? '\0' : '\n';
 
     while (still_active) {
         int any_line = 0;
-        int i;
-        char lines[PASTE_MAX_FILES][PASTE_LINE_CAPACITY];
-        int has_line[PASTE_MAX_FILES];
+        size_t i;
 
         still_active = 0;
-        for (i = 0; i < file_count; ++i) {
-            has_line[i] = 0;
-            if (read_next_record(&readers[i], lines[i], sizeof(lines[i]), output_terminator, &has_line[i]) != 0) {
+        for (i = 0U; i < readers->count; ++i) {
+            LineReader *reader = (LineReader *)tool_array_get(readers, i);
+            int has_line = 0;
+            if (tool_record_reader_next_buffer(&reader->records, &reader->line, &has_line) != 0) {
                 return -1;
             }
-
-            if (has_line[i]) {
+            if (has_line) {
                 any_line = 1;
                 still_active = 1;
             }
@@ -159,14 +115,15 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
             break;
         }
 
-        for (i = 0; i < file_count; ++i) {
+        for (i = 0U; i < readers->count; ++i) {
+            LineReader *reader = (LineReader *)tool_array_get(readers, i);
             if (i > 0) {
                 if (write_delimiter(options, (size_t)(i - 1)) != 0) {
                     return -1;
                 }
             }
 
-            if (has_line[i] && rt_write_all(1, lines[i], rt_strlen(lines[i])) != 0) {
+            if (reader->line.size > 0U && rt_write_all(1, reader->line.data, reader->line.size) != 0) {
                 return -1;
             }
         }
@@ -179,19 +136,19 @@ static int paste_parallel(LineReader *readers, int file_count, const PasteOption
     return 0;
 }
 
-static int paste_serial(LineReader *readers, int file_count, const PasteOptions *options) {
-    int i;
+static int paste_serial(ToolArray *readers, const PasteOptions *options) {
+    size_t i;
     char output_terminator = options->zero_terminated ? '\0' : '\n';
 
-    for (i = 0; i < file_count; ++i) {
+    for (i = 0U; i < readers->count; ++i) {
+        LineReader *reader = (LineReader *)tool_array_get(readers, i);
         int field_index = 0;
         int has_any = 0;
 
         for (;;) {
-            char line[PASTE_LINE_CAPACITY];
             int has_line = 0;
 
-            if (read_next_record(&readers[i], line, sizeof(line), output_terminator, &has_line) != 0) {
+            if (tool_record_reader_next_buffer(&reader->records, &reader->line, &has_line) != 0) {
                 return -1;
             }
 
@@ -205,7 +162,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
                 }
             }
 
-            if (rt_write_all(1, line, rt_strlen(line)) != 0) {
+            if (reader->line.size > 0U && rt_write_all(1, reader->line.data, reader->line.size) != 0) {
                 return -1;
             }
 
@@ -213,7 +170,7 @@ static int paste_serial(LineReader *readers, int file_count, const PasteOptions 
             has_any = 1;
         }
 
-        if (has_any || file_count > 0) {
+        if (has_any || readers->count > 0U) {
             if (rt_write_char(1, output_terminator) != 0) {
                 return -1;
             }
@@ -227,16 +184,15 @@ int main(int argc, char **argv) {
     PasteOptions options;
     int argi = 1;
     int exit_code = 0;
-    LineReader readers[PASTE_MAX_FILES];
-    int fds[PASTE_MAX_FILES];
-    int should_close[PASTE_MAX_FILES];
-    int file_count = 0;
-    int i;
+    ToolArray readers;
+    size_t i;
+    char output_terminator;
 
     options.delimiters[0] = '\t';
     options.delimiter_count = 1U;
     options.serial_mode = 0;
     options.zero_terminated = 0;
+    tool_array_init(&readers, sizeof(LineReader));
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-s") == 0) {
@@ -266,44 +222,46 @@ int main(int argc, char **argv) {
         }
     }
 
+    output_terminator = options.zero_terminated ? '\0' : '\n';
+
     if (argi == argc) {
-        fds[0] = 0;
-        should_close[0] = 0;
-        file_count = 1;
+        LineReader *reader = (LineReader *)tool_array_append(&readers);
+        if (reader == 0) return 1;
+        init_reader(reader, 0, 0, output_terminator);
     } else {
         for (; argi < argc; ++argi) {
-            if (file_count >= PASTE_MAX_FILES) {
-                tool_write_error("paste", "too many input files", "");
-                exit_code = 1;
-                break;
-            }
+            int fd;
+            int should_close;
+            LineReader *reader;
 
-            if (tool_open_input(argv[argi], &fds[file_count], &should_close[file_count]) != 0) {
+            if (tool_open_input(argv[argi], &fd, &should_close) != 0) {
                 tool_write_error("paste", "cannot open ", argv[argi]);
                 exit_code = 1;
                 continue;
             }
-
-            file_count += 1;
+            reader = (LineReader *)tool_array_append(&readers);
+            if (reader == 0) {
+                tool_close_input(fd, should_close);
+                exit_code = 1;
+                break;
+            }
+            init_reader(reader, fd, should_close, output_terminator);
         }
     }
 
-    for (i = 0; i < file_count; ++i) {
-        init_reader(&readers[i], fds[i]);
-    }
-
-    if (file_count > 0) {
-        int result = options.serial_mode ? paste_serial(readers, file_count, &options)
-                                         : paste_parallel(readers, file_count, &options);
+    if (readers.count > 0U) {
+        int result = options.serial_mode ? paste_serial(&readers, &options)
+                                         : paste_parallel(&readers, &options);
         if (result != 0) {
             tool_write_error("paste", "read error", "");
             exit_code = 1;
         }
     }
 
-    for (i = 0; i < file_count; ++i) {
-        tool_close_input(fds[i], should_close[i]);
+    for (i = 0U; i < readers.count; ++i) {
+        free_reader((LineReader *)tool_array_get(&readers, i));
     }
+    tool_array_free(&readers);
 
     return exit_code;
 }

@@ -26,7 +26,7 @@ tsort accepts no flags.
 
 ## LIMITATIONS
 
-- maximum number of nodes is bounded by an internal static buffer (TSORT_MAX_NODES)
+- node names and sparse edge lists are retained in memory, so graph size depends on available memory
 - on a cycle, an error is reported but output for non-cyclic nodes may still be produced; the behaviour is not guaranteed to match GNU tsort exactly
 - no option to suppress diagnostic output
 

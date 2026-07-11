@@ -65,7 +65,7 @@ static unsigned int sql_count_database_table_rows(const char *cursor) {
         if (line[0] == 'E' && (line[1] == '\0' || line[1] == '\n')) {
             break;
         }
-        if (line[0] == 'R' && line[1] == ' ' && count < SQL_MAX_ROWS) {
+        if (line[0] == 'R' && line[1] == ' ') {
             count += 1U;
         }
         if (*cursor == '\n') {
@@ -79,7 +79,7 @@ static int sql_parse_database_row(SqlDatabase *db, char *line, SqlTable *table) 
     char *cursor = line + 2;
     unsigned int value_index;
 
-    if (table->row_count >= SQL_MAX_ROWS || sql_ensure_row_capacity(table, table->row_count + 1U) != 0) {
+    if (sql_ensure_row_capacity(table, table->row_count + 1U) != 0) {
         return -1;
     }
     for (value_index = 0U; value_index < table->column_count; ++value_index) {
@@ -158,12 +158,12 @@ static int sql_parse_database_text(SqlDatabase *db, char *buffer) {
             unsigned long long column_count;
             unsigned int i;
 
-            if (db->table_count >= SQL_MAX_TABLES || sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
+            if (sql_ensure_table_capacity(db, db->table_count + 1U) != 0) {
                 return -1;
             }
             name = sql_next_delimited_field(&field_cursor, ' ');
             column_count_text = sql_next_delimited_field(&field_cursor, ' ');
-            if (name[0] == '\0' || rt_parse_uint(column_count_text, &column_count) != 0 || column_count == 0ULL || column_count > SQL_MAX_COLUMNS) {
+            if (name[0] == '\0' || rt_parse_uint(column_count_text, &column_count) != 0 || column_count == 0ULL || column_count > (unsigned long long)SQL_COLLECTION_MAX) {
                 return -1;
             }
             current = &db->tables[db->table_count++];

@@ -125,7 +125,7 @@ MACOS_FREESTANDING_HTTPD_TOOLS := httpd
 MACOS_FREESTANDING_PING6_TOOLS := ping6
 MACOS_FREESTANDING_SHELL_TOOLS := sh
 MACOS_FREESTANDING_MAIL_TOOLS := mail
-MACOS_FREESTANDING_TUI_TOOLS := editor
+MACOS_FREESTANDING_TUI_TOOLS := editor less
 MACOS_FREESTANDING_MAKE_TOOLS := make
 MACOS_FREESTANDING_SERVICE_TOOLS := service
 MACOS_FREESTANDING_USB_TOOLS := lsusb
@@ -555,6 +555,12 @@ $(BUILD_DIR)/editor: src/tools/editor.c $(EDITOR_TOOL_SOURCES) $(TUI_SOURCES) $(
 
 $(TARGET_BUILD_DIR)/editor: src/tools/editor.c $(EDITOR_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(EDITOR_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+
+$(BUILD_DIR)/less: src/tools/less.c $(TUI_SOURCES) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(TUI_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/less: src/tools/less.c $(TARGET_TUI_INPUT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(TARGET_TUI_INPUT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@

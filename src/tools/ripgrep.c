@@ -404,14 +404,15 @@ static int find_next_match_for_pattern(const RgOptions *options,
                                        size_t search_start,
                                        size_t *start_out,
                                        size_t *end_out) {
-    return tool_text_find_next_match(pattern,
-                                     text,
-                                     options->ignore_case,
-                                     options->fixed_strings,
-                                     options->whole_word,
-                                     search_start,
-                                     start_out,
-                                     end_out);
+    return tool_text_find_next_match_ex(pattern,
+                                        text,
+                                        options->ignore_case,
+                                        options->fixed_strings,
+                                        options->whole_word,
+                                        1,
+                                        search_start,
+                                        start_out,
+                                        end_out);
 }
 
 static int find_next_match(const RgOptions *options,

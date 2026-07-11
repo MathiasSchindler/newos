@@ -16,6 +16,7 @@ typedef struct {
     int quiet;
     int list_files;
     int fixed_strings;
+    int extended_regex;
     int only_matching;
     int whole_word;
     unsigned long long before_context;
@@ -126,14 +127,15 @@ static int find_next_match(const GrepOptions *options,
                            size_t search_start,
                            size_t *start_out,
                            size_t *end_out) {
-    return tool_text_find_next_match(pattern,
-                                     text,
-                                     options->ignore_case,
-                                     options->fixed_strings,
-                                     options->whole_word,
-                                     search_start,
-                                     start_out,
-                                     end_out);
+    return tool_text_find_next_match_ex(pattern,
+                                        text,
+                                        options->ignore_case,
+                                        options->fixed_strings,
+                                        options->whole_word,
+                                        options->extended_regex,
+                                        search_start,
+                                        start_out,
+                                        end_out);
 }
 
 static int print_prefix(const char *label,
@@ -688,6 +690,7 @@ int main(int argc, char **argv) {
                 options.fixed_strings = 1;
             } else if (*flag == 'E') {
                 options.fixed_strings = 0;
+                options.extended_regex = 1;
             } else if (*flag == 'o') {
                 options.only_matching = 1;
             } else if (*flag == 'w') {

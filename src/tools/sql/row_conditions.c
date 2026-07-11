@@ -74,7 +74,16 @@ static int sql_parse_row_condition_leaf(SqlParser *parser, const SqlTable *table
             return -1;
         }
         for (;;) {
-            if (condition.value_count >= SQL_MAX_IN_VALUES || sql_read_condition_literal(parser, &condition.values[condition.value_count]) != 0) {
+            if (condition.value_count == condition.value_capacity) {
+                unsigned int capacity;
+                SqlConditionValue *values;
+                if (sql_next_capacity(condition.value_capacity, condition.value_count + 1U, SQL_COLLECTION_MAX, 8U, &capacity) != 0) return -1;
+                values = (SqlConditionValue *)sql_resize_array(condition.values, condition.value_capacity, capacity, sizeof(values[0]));
+                if (values == 0) return -1;
+                condition.values = values;
+                condition.value_capacity = capacity;
+            }
+            if (sql_read_condition_literal(parser, &condition.values[condition.value_count]) != 0) {
                 return -1;
             }
             condition.value_count += 1U;
@@ -202,8 +211,14 @@ static int sql_parse_where(SqlParser *parser, const SqlTable *table, SqlConditio
 
 static int sql_row_condition_list_matches(const SqlTable *table, unsigned int row_index, const SqlConditionList *where) {
     SqlResultRow result;
+    const SqlTable *tables[1];
+    const SqlRow *rows[1];
+    unsigned int row_indices[1];
 
     rt_memset(&result, 0, sizeof(result));
+    result.tables = tables;
+    result.rows = rows;
+    result.row_indices = row_indices;
     if (table != 0 && row_index < table->row_count) {
         result.tables[0] = table;
         result.rows[0] = &table->rows[row_index];

@@ -33,7 +33,6 @@ column reads lines from files or standard input and arranges them into a table. 
 
 ## LIMITATIONS
 
-- maximum number of rows and fields per row is bounded by internal static buffers
 - no support for right-alignment or per-column width overrides
 - no `-J` (JSON output) or `-R` (right-align) flags found in util-linux column
 - display width uses compact Unicode/default-width tables, not locale-specific width data; ambiguous-width characters and full grapheme clusters may not match every terminal

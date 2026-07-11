@@ -30,7 +30,6 @@ comm [-123] FILE1 FILE2
 
 - input must already be sorted in bytewise order
 - locale collation and order checking are not implemented
-- each file is held in a bounded internal static line buffer
 - at most one input should be read from standard input in ordinary use
 
 ## EXAMPLES

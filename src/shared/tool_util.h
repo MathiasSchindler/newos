@@ -65,6 +65,20 @@ int tool_byte_buffer_terminate(ToolByteBuffer *buffer);
 int tool_byte_buffer_append_text(ToolByteBuffer *buffer, const char *text, size_t length);
 
 typedef struct {
+    unsigned char *data;
+    size_t count;
+    size_t capacity;
+    size_t item_size;
+} ToolArray;
+
+void tool_array_init(ToolArray *array, size_t item_size);
+void tool_array_free(ToolArray *array);
+int tool_array_reserve(ToolArray *array, size_t needed);
+void *tool_array_append(ToolArray *array);
+void *tool_array_get(ToolArray *array, size_t index);
+const void *tool_array_get_const(const ToolArray *array, size_t index);
+
+typedef struct {
     int fd;
     size_t length;
     char buffer[TOOL_OUTPUT_BUFFER_SIZE];
@@ -89,6 +103,7 @@ typedef struct {
 
 void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter);
 int tool_record_reader_next(ToolRecordReader *reader, char *record, size_t record_size, int *has_record_out);
+int tool_record_reader_next_buffer(ToolRecordReader *reader, ToolByteBuffer *record, int *has_record_out);
 
 typedef enum {
     TOOL_XML_KEY_ATTR = 1,
@@ -250,6 +265,7 @@ int tool_utf8_is_continuation_byte(unsigned char byte);
 size_t tool_previous_utf8_codepoint_start(const char *text, size_t index);
 int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t end);
 int tool_text_find_next_match(const char *pattern, const char *text, int ignore_case, int fixed_string, int whole_word, size_t search_start, size_t *start_out, size_t *end_out);
+int tool_text_find_next_match_ex(const char *pattern, const char *text, int ignore_case, int fixed_string, int whole_word, int extended, size_t search_start, size_t *start_out, size_t *end_out);
 size_t tool_text_display_width_n(const char *text, size_t length);
 int tool_str_equal_ignore_case_ascii(const char *left, const char *right);
 int tool_name_equals_ignore_case_ascii_n(const char *text, size_t text_length, const char *name);

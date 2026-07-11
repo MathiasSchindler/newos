@@ -70,3 +70,16 @@ Alps
 tail
 EOF
 assert_files_equal "$WORK_DIR/advanced.expected" "$WORK_DIR/advanced.txt" "ed advanced editing commands did not write expected content"
+
+i=0
+: > "$WORK_DIR/large.txt"
+while [ "$i" -lt 4200 ]; do
+	printf 'line-%s\n' "$i" >> "$WORK_DIR/large.txt"
+	i=$((i + 1))
+done
+printf '$p\nq\n' | "${TEST_BIN_DIR}/ed" "$WORK_DIR/large.txt" > "$WORK_DIR/large.out"
+assert_file_contains "$WORK_DIR/large.out" '^line-4199$' "ed retained the old fixed document line limit"
+
+awk 'BEGIN { for (i = 0; i < 800; ++i) printf "x"; printf "\n"; }' > "$WORK_DIR/long.txt"
+printf '$p\nq\n' | "${TEST_BIN_DIR}/ed" "$WORK_DIR/long.txt" > "$WORK_DIR/long.out"
+[ "$(wc -c < "$WORK_DIR/long.out")" -eq 801 ] || fail "ed truncated a long document line"
