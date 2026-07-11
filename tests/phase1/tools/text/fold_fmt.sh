@@ -50,3 +50,13 @@ assert_text_equals "$byte_lines" '2' "fold -b did not count raw bytes"
 printf 'äö aa\n' > "$WORK_DIR/fmt_unicode.txt"
 "${TEST_BIN_DIR}/fmt" -w 5 "$WORK_DIR/fmt_unicode.txt" > "$WORK_DIR/fmt_unicode.out"
 assert_file_contains "$WORK_DIR/fmt_unicode.out" '^äö aa$' "fmt did not keep a Unicode-width-fitting line intact"
+
+printf 'Aé👩‍💻B\n' > "$WORK_DIR/fold_grapheme.txt"
+"${TEST_BIN_DIR}/fold" -c -w 2 "$WORK_DIR/fold_grapheme.txt" > "$WORK_DIR/fold_grapheme.out"
+printf 'Aé\n👩‍💻B\n' > "$WORK_DIR/fold_grapheme.expected"
+assert_files_equal "$WORK_DIR/fold_grapheme.expected" "$WORK_DIR/fold_grapheme.out" "fold -c split an extended grapheme cluster"
+
+printf '·x\n' > "$WORK_DIR/fold_ambiguous.txt"
+NEWOS_AMBIGUOUS_WIDTH=2 "${TEST_BIN_DIR}/fold" -w 2 "$WORK_DIR/fold_ambiguous.txt" > "$WORK_DIR/fold_ambiguous.out"
+printf '·\nx\n' > "$WORK_DIR/fold_ambiguous.expected"
+assert_files_equal "$WORK_DIR/fold_ambiguous.expected" "$WORK_DIR/fold_ambiguous.out" "fold did not honor wide East Asian Ambiguous characters"

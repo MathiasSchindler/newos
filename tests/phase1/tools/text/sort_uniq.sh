@@ -84,6 +84,11 @@ printf 'banana\nApple\ncarrot\n' > "$WORK_DIR/casefold.txt"
 printf 'Apple\nbanana\ncarrot\n' > "$WORK_DIR/casefold.expected"
 assert_files_equal "$WORK_DIR/casefold.expected" "$WORK_DIR/casefold.out" "sort -f did not ignore ASCII case"
 
+printf 'café\ncafé\n' > "$WORK_DIR/normalized.txt"
+"${TEST_BIN_DIR}/sort" --normalize -u "$WORK_DIR/normalized.txt" > "$WORK_DIR/normalized.out"
+printf 'café\n' > "$WORK_DIR/normalized.expected"
+assert_files_equal "$WORK_DIR/normalized.expected" "$WORK_DIR/normalized.out" "sort --normalize did not treat canonically equivalent text as equal"
+
 cat > "$WORK_DIR/key_fields.txt" <<'EOF'
 zeta:2:last
 alpha:10:middle

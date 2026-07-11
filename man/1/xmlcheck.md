@@ -22,6 +22,7 @@ The `xmlcheck` tool checks whether XML input is well-formed. It reads one or mor
 - detect duplicate attributes on the same element
 - detect malformed comments, CDATA sections, processing instructions, DOCTYPE declarations, and entity references
 - reject malformed UTF-8 byte sequences and XML-disallowed Unicode code points
+- buffered mode transcodes UTF-16 BOM input and declaration-selected ISO-8859-1 or Windows-1252 input to internal UTF-8
 - report line and column diagnostics
 - reject multiple document roots and non-whitespace text outside the document element
 - validate large files without loading the complete document into memory
@@ -37,7 +38,7 @@ The `xmlcheck` tool checks whether XML input is well-formed. It reads one or mor
 
 - No DTD, XSD, Relax NG, or namespace-aware validation is implemented.
 - External entities are not loaded or expanded.
-- Declared non-UTF-8 encodings are not transcoded before validation.
+- Streaming mode accepts UTF-8 only; focused transcoding is currently provided by the shared buffered reader used by buffered mode and the broader XML command family.
 - `--buffered` loads the complete document into memory.
 
 ## EXAMPLES

@@ -29,6 +29,11 @@ printf 'äö🙂\n' > "$WORK_DIR/unicode_rev.txt"
 "${TEST_BIN_DIR}/rev" "$WORK_DIR/unicode_rev.txt" > "$WORK_DIR/unicode_rev.out"
 assert_file_contains "$WORK_DIR/unicode_rev.out" '^🙂öä$' "rev did not preserve UTF-8 characters while reversing"
 
+printf 'AéB\nA👍🏽B\nA🇩🇪B\nA👩‍💻B\n' > "$WORK_DIR/grapheme_rev.txt"
+"${TEST_BIN_DIR}/rev" "$WORK_DIR/grapheme_rev.txt" > "$WORK_DIR/grapheme_rev.out"
+printf 'BéA\nB👍🏽A\nB🇩🇪A\nB👩‍💻A\n' > "$WORK_DIR/grapheme_rev.expected"
+assert_files_equal "$WORK_DIR/grapheme_rev.expected" "$WORK_DIR/grapheme_rev.out" "rev split an extended grapheme cluster"
+
 printf 'a\314\210b\n' > "$WORK_DIR/combining_rev.txt"
 "${TEST_BIN_DIR}/rev" "$WORK_DIR/combining_rev.txt" > "$WORK_DIR/combining_rev.out"
 printf 'ba\314\210\n' > "$WORK_DIR/combining_rev.expected"

@@ -35,7 +35,7 @@ column reads lines from files or standard input and arranges them into a table. 
 
 - no support for right-alignment or per-column width overrides
 - no `-J` (JSON output) or `-R` (right-align) flags found in util-linux column
-- display width uses compact Unicode/default-width tables, not locale-specific width data; ambiguous-width characters and full grapheme clusters may not match every terminal
+- display width uses compact Unicode tables, not locale data; East Asian Ambiguous characters default to width 1 and use width 2 when `NEWOS_AMBIGUOUS_WIDTH=2`
 
 ## EXAMPLES
 

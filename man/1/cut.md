@@ -17,7 +17,7 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 ## CURRENT CAPABILITIES
 
 - select byte or character ranges
-- select UTF-8 character positions with `-c`
+- select extended grapheme-cluster positions with `-c`
 - extract delimited fields with `-f`
 - use a custom delimiter with `-d`
 - process NUL-terminated records with `-z`
@@ -36,7 +36,7 @@ The cut tool extracts selected bytes, character positions, or delimited fields f
 
 ## LIMITATIONS
 
-- `-c` selects UTF-8 code points, not user-perceived grapheme clusters; a base letter plus combining mark counts as two character positions.
+- `-c` keeps common combining, emoji-modifier, flag, Hangul, and zero-width-joiner sequences together using the shared compact grapheme iterator.
 - `-b` remains byte-oriented and can split a UTF-8 sequence by design.
 - field delimiters are single bytes; multibyte delimiters and locale-specific character classes are not implemented.
 - no locale database or normalization-aware matching is used.

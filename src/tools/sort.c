@@ -30,6 +30,7 @@ typedef struct {
     int ignore_leading_blanks;
     int dictionary_order;
     int ignore_nonprinting;
+    int normalize;
     int sort_mode;
     int reverse;
     int unique;
@@ -117,7 +118,7 @@ static int flush_sort_run(SortCollection *collection, const SortOptions *options
 static void sort_collection_free(SortCollection *collection);
 
 static void write_usage(int fd) {
-    rt_write_line(fd, "Usage: sort [-bCcdfiMmnrsuV] [--human-numeric-sort] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
+    rt_write_line(fd, "Usage: sort [-bCcdfiMmnrsuV] [--normalize] [--human-numeric-sort] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]");
 }
 
 static int parse_key_spec(const char *text, SortOptions *options) {
@@ -521,6 +522,13 @@ static int compare_text_spans(const char *left,
     int ignore_case = options->ignore_case;
     int dictionary_order = options->dictionary_order;
     int ignore_nonprinting = options->ignore_nonprinting;
+
+    if (options->normalize && !dictionary_order && !ignore_nonprinting) {
+        int normalized_result;
+        if (rt_unicode_normalized_compare(left, left_len, right, right_len, ignore_case, &normalized_result) == 0) {
+            return normalized_result;
+        }
+    }
 
     if (!dictionary_order && !ignore_nonprinting) {
         if (!ignore_case) {
@@ -1095,7 +1103,7 @@ static int compare_lines(const SortLine *left, const SortLine *right, const Sort
     size_t right_len = right->length;
     int result = 0;
 
-    if (!options->have_key && !options->ignore_leading_blanks && !options->ignore_case &&
+    if (!options->have_key && !options->ignore_leading_blanks && !options->ignore_case && !options->normalize &&
         !options->dictionary_order && !options->ignore_nonprinting && options->sort_mode == SORT_MODE_TEXT) {
         result = compare_plain_spans(left_text, left_len, right_text, right_len);
         return options->reverse ? -result : result;
@@ -1916,6 +1924,11 @@ int main(int argc, char **argv) {
         }
         if (rt_strcmp(argv[argi], "--ignore-nonprinting") == 0) {
             options.ignore_nonprinting = 1;
+            argi += 1;
+            continue;
+        }
+        if (rt_strcmp(argv[argi], "--normalize") == 0) {
+            options.normalize = 1;
             argi += 1;
             continue;
         }

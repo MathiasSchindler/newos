@@ -40,3 +40,13 @@ printf '👍🏽x\n' > "$WORK_DIR/emoji_modifier_width.txt"
 "${TEST_BIN_DIR}/wc" -L "$WORK_DIR/emoji_modifier_width.txt" > "$WORK_DIR/emoji_modifier_width.out"
 emoji_modifier_width=$(awk '{print $1}' "$WORK_DIR/emoji_modifier_width.out" | tr -d '\r\n ')
 assert_text_equals "$emoji_modifier_width" '3' "wc counted an emoji skin-tone modifier as a separate display cell"
+
+printf '👩‍💻x\n' > "$WORK_DIR/zwj_width.txt"
+"${TEST_BIN_DIR}/wc" -L "$WORK_DIR/zwj_width.txt" > "$WORK_DIR/zwj_width.out"
+zwj_width=$(awk '{print $1}' "$WORK_DIR/zwj_width.out" | tr -d '\r\n ')
+assert_text_equals "$zwj_width" '3' "wc counted members of a ZWJ grapheme as separate display cells"
+
+printf '·x\n' > "$WORK_DIR/ambiguous_width.txt"
+NEWOS_AMBIGUOUS_WIDTH=2 "${TEST_BIN_DIR}/wc" -L "$WORK_DIR/ambiguous_width.txt" > "$WORK_DIR/ambiguous_width.out"
+ambiguous_width=$(awk '{print $1}' "$WORK_DIR/ambiguous_width.out" | tr -d '\r\n ')
+assert_text_equals "$ambiguous_width" '3' "wc did not honor wide East Asian Ambiguous characters"

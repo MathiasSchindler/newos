@@ -14,6 +14,7 @@ typedef struct {
     unsigned long long width;
     int break_spaces;
     FoldCountMode count_mode;
+    unsigned int ambiguous_width;
 } FoldOptions;
 
 static void print_usage(const char *program_name) {
@@ -33,6 +34,26 @@ static int flush_prefix(const char *buffer, size_t count) {
     return 0;
 }
 
+static int next_fold_segment(const char *buffer, size_t count, size_t index, const FoldOptions *options, RtTextSegment *segment) {
+    RtGraphemeCluster cluster;
+
+    if (options->count_mode == FOLD_COUNT_BYTES) {
+        segment->start = index;
+        segment->end = index + 1U;
+        segment->codepoint = (unsigned char)buffer[index];
+        segment->display_width = 1U;
+        segment->flags = 0U;
+        return 0;
+    }
+    if (rt_text_next_segment_width(buffer, count, index, options->ambiguous_width, segment) != 0) return -1;
+    if ((segment->flags & RT_TEXT_SEGMENT_ANSI) != 0U) return 0;
+    if (rt_grapheme_next_width(buffer, count, index, options->ambiguous_width, &cluster) == 0) {
+        segment->end = cluster.end;
+        segment->display_width = cluster.display_width;
+    }
+    return 0;
+}
+
 static unsigned long long measure_units(const char *buffer, size_t count, const FoldOptions *options) {
     if (options->count_mode == FOLD_COUNT_BYTES) {
         return (unsigned long long)count;
@@ -42,7 +63,7 @@ static unsigned long long measure_units(const char *buffer, size_t count, const 
         unsigned long long units = 0ULL;
         RtTextSegment segment;
 
-        while (rt_text_next_segment(buffer, count, index, &segment) == 0) {
+        while (next_fold_segment(buffer, count, index, options, &segment) == 0) {
             if ((segment.flags & RT_TEXT_SEGMENT_ANSI) == 0U) {
                 units += 1ULL;
             }
@@ -50,7 +71,7 @@ static unsigned long long measure_units(const char *buffer, size_t count, const 
         }
         return units;
     }
-    return rt_text_display_width_n(buffer, count, 0ULL);
+    return rt_text_display_width_n_mode(buffer, count, 0ULL, 8U, options->ambiguous_width);
 }
 
 static int line_has_incomplete_tail(const char *buffer, size_t count, const FoldOptions *options) {
@@ -84,13 +105,7 @@ static size_t find_split_point(const char *buffer, size_t count, const FoldOptio
         RtTextSegment segment;
         unsigned long long next_units;
 
-        if (options->count_mode == FOLD_COUNT_BYTES) {
-            segment.start = index;
-            segment.end = index + 1U;
-            segment.codepoint = (unsigned char)buffer[index];
-            segment.display_width = 1U;
-            segment.flags = 0U;
-        } else if (rt_text_next_segment(buffer, count, index, &segment) != 0) {
+        if (next_fold_segment(buffer, count, index, options, &segment) != 0) {
             break;
         }
 
@@ -124,13 +139,7 @@ static int line_starts_with_space(const char *buffer, size_t count, const FoldOp
     if (count == 0U) {
         return 0;
     }
-    if (options->count_mode == FOLD_COUNT_BYTES) {
-        segment.start = 0U;
-        segment.end = 1U;
-        segment.codepoint = (unsigned char)buffer[0];
-        segment.display_width = 1U;
-        segment.flags = 0U;
-    } else if (rt_text_next_segment(buffer, count, 0U, &segment) != 0) {
+    if (next_fold_segment(buffer, count, 0U, options, &segment) != 0) {
         return 0;
     }
     if (segment_is_space(buffer, count, &segment, options)) {
@@ -225,6 +234,7 @@ int main(int argc, char **argv) {
     options.width = 80ULL;
     options.break_spaces = 0;
     options.count_mode = FOLD_COUNT_COLUMNS;
+    options.ambiguous_width = tool_unicode_ambiguous_width();
 
     while (argi < argc && argv[argi][0] == '-') {
         if (rt_strcmp(argv[argi], "-b") == 0) {

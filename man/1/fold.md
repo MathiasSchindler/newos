@@ -19,7 +19,7 @@ fold reads files (or standard input) and wraps lines that exceed WIDTH display c
 - wrapping at a configurable display-column width
 - UTF-8 decoding with wide and zero-width character display widths
 - byte-based wrapping with `-b`
-- character-count wrapping with `-c`
+- grapheme-cluster-count wrapping with `-c`
 - breaking only at Unicode whitespace to avoid splitting words
 - ANSI CSI and OSC escape sequences are preserved and treated as display-width-neutral in character and column modes
 
@@ -33,8 +33,8 @@ fold reads files (or standard input) and wraps lines that exceed WIDTH display c
 ## LIMITATIONS
 
 - byte mode may split inside multi-byte UTF-8 characters because it deliberately counts raw bytes
-- locale-specific East Asian ambiguous-width handling is not implemented
-- full grapheme-cluster shaping is not implemented, though combining and zero-width code points do not advance display width
+- East Asian Ambiguous characters default to width 1; `NEWOS_AMBIGUOUS_WIDTH=2` selects width 2
+- compact grapheme segmentation covers combining marks, emoji modifiers, regional-indicator flags, Hangul sequences, and ZWJ sequences without a full Unicode property database
 - terminal control handling is limited to common ANSI CSI and OSC escape sequences plus basic carriage-return/backspace width effects
 
 ## EXAMPLES

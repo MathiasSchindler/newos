@@ -17,6 +17,11 @@ printf '界 a\nxx bb\n' > "$WORK_DIR/unicode.txt"
 assert_file_contains "$WORK_DIR/unicode.out" '^界  a$' "column did not align wide Unicode cells correctly"
 assert_file_contains "$WORK_DIR/unicode.out" '^xx  bb$' "column did not preserve aligned output for ASCII rows"
 
+printf '· a\nxx b\n' > "$WORK_DIR/ambiguous.txt"
+NEWOS_AMBIGUOUS_WIDTH=2 "${TEST_BIN_DIR}/column" -t "$WORK_DIR/ambiguous.txt" > "$WORK_DIR/ambiguous.out"
+assert_file_contains "$WORK_DIR/ambiguous.out" '^·  a$' "column did not honor wide East Asian Ambiguous characters"
+assert_file_contains "$WORK_DIR/ambiguous.out" '^xx  b$' "column wide ambiguous mode misaligned ASCII cells"
+
 printf 'é a\nxx bb\n' > "$WORK_DIR/combining.txt"
 "${TEST_BIN_DIR}/column" -t "$WORK_DIR/combining.txt" > "$WORK_DIR/combining.out"
 assert_file_contains "$WORK_DIR/combining.out" '^é   a$' "column counted a combining mark as visible width"

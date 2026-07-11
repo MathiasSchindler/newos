@@ -112,7 +112,55 @@ static const UnicodeRange unicode_wide_ranges[] = {
     {0x30000U, 0x3fffdU}
 };
 
-unsigned int rt_unicode_display_width(unsigned int codepoint) {
+static const UnicodeRange unicode_ambiguous_ranges[] = {
+    {0x00a1U, 0x00a1U}, {0x00a4U, 0x00a4U}, {0x00a7U, 0x00a8U}, {0x00aaU, 0x00aaU},
+    {0x00adU, 0x00aeU}, {0x00b0U, 0x00b4U}, {0x00b6U, 0x00baU}, {0x00bcU, 0x00bfU},
+    {0x00c6U, 0x00c6U}, {0x00d0U, 0x00d0U}, {0x00d7U, 0x00d8U}, {0x00deU, 0x00e1U},
+    {0x00e6U, 0x00e6U}, {0x00e8U, 0x00eaU}, {0x00ecU, 0x00edU}, {0x00f0U, 0x00f0U},
+    {0x00f2U, 0x00f3U}, {0x00f7U, 0x00faU}, {0x00fcU, 0x00fcU}, {0x00feU, 0x00feU},
+    {0x0101U, 0x0101U}, {0x0111U, 0x0111U}, {0x0113U, 0x0113U}, {0x011bU, 0x011bU},
+    {0x0126U, 0x0127U}, {0x012bU, 0x012bU}, {0x0131U, 0x0133U}, {0x0138U, 0x0138U},
+    {0x013fU, 0x0142U}, {0x0144U, 0x0144U}, {0x0148U, 0x014bU}, {0x014dU, 0x014dU},
+    {0x0152U, 0x0153U}, {0x0166U, 0x0167U}, {0x016bU, 0x016bU}, {0x01ceU, 0x01ceU},
+    {0x01d0U, 0x01d0U}, {0x01d2U, 0x01d2U}, {0x01d4U, 0x01d4U}, {0x01d6U, 0x01d6U},
+    {0x01d8U, 0x01d8U}, {0x01daU, 0x01daU}, {0x01dcU, 0x01dcU}, {0x0251U, 0x0251U},
+    {0x0261U, 0x0261U}, {0x02c4U, 0x02c4U}, {0x02c7U, 0x02c7U}, {0x02c9U, 0x02cbU},
+    {0x02cdU, 0x02cdU}, {0x02d0U, 0x02d0U}, {0x02d8U, 0x02dbU}, {0x02ddU, 0x02ddU},
+    {0x02dfU, 0x02dfU}, {0x0300U, 0x036fU}, {0x0391U, 0x03a1U}, {0x03a3U, 0x03a9U},
+    {0x03b1U, 0x03c1U}, {0x03c3U, 0x03c9U}, {0x0401U, 0x0401U}, {0x0410U, 0x044fU},
+    {0x0451U, 0x0451U}, {0x2010U, 0x2010U}, {0x2013U, 0x2016U}, {0x2018U, 0x2019U},
+    {0x201cU, 0x201dU}, {0x2020U, 0x2022U}, {0x2024U, 0x2027U}, {0x2030U, 0x2030U},
+    {0x2032U, 0x2033U}, {0x2035U, 0x2035U}, {0x203bU, 0x203bU}, {0x203eU, 0x203eU},
+    {0x2074U, 0x2074U}, {0x207fU, 0x207fU}, {0x2081U, 0x2084U}, {0x20acU, 0x20acU},
+    {0x2103U, 0x2103U}, {0x2105U, 0x2105U}, {0x2109U, 0x2109U}, {0x2113U, 0x2113U},
+    {0x2116U, 0x2116U}, {0x2121U, 0x2122U}, {0x2126U, 0x2126U}, {0x212bU, 0x212bU},
+    {0x2153U, 0x2154U}, {0x215bU, 0x215eU}, {0x2160U, 0x216bU}, {0x2170U, 0x2179U},
+    {0x2189U, 0x2189U}, {0x2190U, 0x2199U}, {0x21b8U, 0x21b9U}, {0x21d2U, 0x21d2U},
+    {0x21d4U, 0x21d4U}, {0x21e7U, 0x21e7U}, {0x2200U, 0x2200U}, {0x2202U, 0x2203U},
+    {0x2207U, 0x2208U}, {0x220bU, 0x220bU}, {0x220fU, 0x220fU}, {0x2211U, 0x2211U},
+    {0x2215U, 0x2215U}, {0x221aU, 0x221aU}, {0x221dU, 0x2220U}, {0x2223U, 0x2223U},
+    {0x2225U, 0x2225U}, {0x2227U, 0x222cU}, {0x222eU, 0x222eU}, {0x2234U, 0x2237U},
+    {0x223cU, 0x223dU}, {0x2248U, 0x2248U}, {0x224cU, 0x224cU}, {0x2252U, 0x2252U},
+    {0x2260U, 0x2261U}, {0x2264U, 0x2267U}, {0x226aU, 0x226bU}, {0x226eU, 0x226fU},
+    {0x2282U, 0x2283U}, {0x2286U, 0x2287U}, {0x2295U, 0x2295U}, {0x2299U, 0x2299U},
+    {0x22a5U, 0x22a5U}, {0x22bfU, 0x22bfU}, {0x2312U, 0x2312U}, {0x2460U, 0x24e9U},
+    {0x24ebU, 0x254bU}, {0x2550U, 0x2573U}, {0x2580U, 0x258fU}, {0x2592U, 0x2595U},
+    {0x25a0U, 0x25a1U}, {0x25a3U, 0x25a9U}, {0x25b2U, 0x25b3U}, {0x25b6U, 0x25b7U},
+    {0x25bcU, 0x25bdU}, {0x25c0U, 0x25c1U}, {0x25c6U, 0x25c8U}, {0x25cbU, 0x25cbU},
+    {0x25ceU, 0x25d1U}, {0x25e2U, 0x25e5U}, {0x25efU, 0x25efU}, {0x2605U, 0x2606U},
+    {0x2609U, 0x2609U}, {0x260eU, 0x260fU}, {0x261cU, 0x261cU}, {0x261eU, 0x261eU},
+    {0x2640U, 0x2640U}, {0x2642U, 0x2642U}, {0x2660U, 0x2661U}, {0x2663U, 0x2665U},
+    {0x2667U, 0x266aU}, {0x266cU, 0x266dU}, {0x266fU, 0x266fU}, {0x269eU, 0x269fU},
+    {0x26bfU, 0x26bfU}, {0x26c6U, 0x26cdU}, {0x26cfU, 0x26d3U}, {0x26d5U, 0x26e1U},
+    {0x26e3U, 0x26e3U}, {0x26e8U, 0x26e9U}, {0x26ebU, 0x26f1U}, {0x26f4U, 0x26f4U},
+    {0x26f6U, 0x26f9U}, {0x26fbU, 0x26fcU}, {0x26feU, 0x26ffU}, {0x273dU, 0x273dU},
+    {0x2776U, 0x277fU}, {0x2b56U, 0x2b59U}, {0x3248U, 0x324fU}, {0xe000U, 0xf8ffU},
+    {0xfe00U, 0xfe0fU}, {0xfffdU, 0xfffdU}, {0x1f100U, 0x1f10aU}, {0x1f110U, 0x1f12dU},
+    {0x1f130U, 0x1f169U}, {0x1f170U, 0x1f18dU}, {0x1f18fU, 0x1f190U}, {0x1f19bU, 0x1f1acU},
+    {0xe0100U, 0xe01efU}, {0xf0000U, 0xffffdU}, {0x100000U, 0x10fffdU}
+};
+
+unsigned int rt_unicode_display_width_mode(unsigned int codepoint, unsigned int ambiguous_width) {
     if (codepoint == 0U) {
         return 0U;
     }
@@ -128,8 +176,190 @@ unsigned int rt_unicode_display_width(unsigned int codepoint) {
     if (codepoint_in_ranges(codepoint, unicode_wide_ranges, sizeof(unicode_wide_ranges) / sizeof(unicode_wide_ranges[0]))) {
         return 2U;
     }
+    if (ambiguous_width == 2U &&
+        codepoint_in_ranges(codepoint, unicode_ambiguous_ranges, sizeof(unicode_ambiguous_ranges) / sizeof(unicode_ambiguous_ranges[0]))) {
+        return 2U;
+    }
 
     return 1U;
+}
+
+unsigned int rt_unicode_display_width(unsigned int codepoint) {
+    return rt_unicode_display_width_mode(codepoint, 1U);
+}
+
+static int rt_unicode_is_grapheme_extend(unsigned int codepoint) {
+    return codepoint == 0x200dU ||
+           codepoint_in_ranges(codepoint, unicode_emoji_modifier_ranges, sizeof(unicode_emoji_modifier_ranges) / sizeof(unicode_emoji_modifier_ranges[0])) ||
+           codepoint_in_ranges(codepoint, unicode_zero_width_ranges, sizeof(unicode_zero_width_ranges) / sizeof(unicode_zero_width_ranges[0]));
+}
+
+static int rt_unicode_is_regional_indicator(unsigned int codepoint) {
+    return codepoint >= 0x1f1e6U && codepoint <= 0x1f1ffU;
+}
+
+static int rt_unicode_is_control(unsigned int codepoint) {
+    return codepoint == '\r' || codepoint == '\n' || codepoint < 0x20U ||
+           (codepoint >= 0x7fU && codepoint < 0xa0U);
+}
+
+static int rt_unicode_is_hangul_l(unsigned int codepoint) {
+    return (codepoint >= 0x1100U && codepoint <= 0x115fU) || (codepoint >= 0xa960U && codepoint <= 0xa97cU);
+}
+
+static int rt_unicode_is_hangul_v(unsigned int codepoint) {
+    return (codepoint >= 0x1160U && codepoint <= 0x11a7U) || (codepoint >= 0xd7b0U && codepoint <= 0xd7c6U);
+}
+
+static int rt_unicode_is_hangul_t(unsigned int codepoint) {
+    return (codepoint >= 0x11a8U && codepoint <= 0x11ffU) || (codepoint >= 0xd7cbU && codepoint <= 0xd7fbU);
+}
+
+static int rt_unicode_hangul_no_break(unsigned int previous, unsigned int current) {
+    unsigned int syllable_index;
+    int previous_lv = 0;
+    int previous_lvt = 0;
+
+    if (previous >= 0xac00U && previous <= 0xd7a3U) {
+        syllable_index = previous - 0xac00U;
+        previous_lv = (syllable_index % 28U) == 0U;
+        previous_lvt = !previous_lv;
+    }
+    if (rt_unicode_is_hangul_l(previous)) {
+        return rt_unicode_is_hangul_l(current) || rt_unicode_is_hangul_v(current) ||
+               (current >= 0xac00U && current <= 0xd7a3U);
+    }
+    if (rt_unicode_is_hangul_v(previous) || previous_lv) {
+        return rt_unicode_is_hangul_v(current) || rt_unicode_is_hangul_t(current);
+    }
+    if (rt_unicode_is_hangul_t(previous) || previous_lvt) {
+        return rt_unicode_is_hangul_t(current);
+    }
+    return 0;
+}
+
+static int rt_grapheme_decode_at(const char *text, size_t text_length, size_t start, size_t *end_out, unsigned int *codepoint_out) {
+    size_t end = start;
+
+    if (rt_utf8_decode(text, text_length, &end, codepoint_out) != 0) {
+        *end_out = start + 1U;
+        *codepoint_out = (unsigned char)text[start];
+        return -1;
+    }
+    *end_out = end;
+    return 0;
+}
+
+void rt_grapheme_state_reset(RtGraphemeState *state) {
+    if (state != 0) rt_memset(state, 0, sizeof(*state));
+}
+
+int rt_grapheme_state_push(RtGraphemeState *state, unsigned int codepoint, unsigned int ambiguous_width, unsigned int *completed_width_out) {
+    int include = 0;
+    unsigned int width;
+
+    if (state == 0 || completed_width_out == 0) return -1;
+    *completed_width_out = 0U;
+    width = rt_unicode_display_width_mode(codepoint, ambiguous_width);
+    if (!state->active) {
+        state->previous_codepoint = codepoint;
+        state->display_width = width;
+        state->regional_count = rt_unicode_is_regional_indicator(codepoint) ? 1U : 0U;
+        state->after_joiner = codepoint == 0x200dU;
+        state->active = 1U;
+        return 0;
+    }
+    if (state->previous_codepoint == '\r' && codepoint == '\n') include = 1;
+    else if (rt_unicode_is_control(state->previous_codepoint) || rt_unicode_is_control(codepoint)) include = 0;
+    else if (rt_unicode_is_grapheme_extend(codepoint)) include = 1;
+    else if (state->after_joiner) include = 1;
+    else if (rt_unicode_hangul_no_break(state->previous_codepoint, codepoint)) include = 1;
+    else if (rt_unicode_is_regional_indicator(state->previous_codepoint) && rt_unicode_is_regional_indicator(codepoint) &&
+             (state->regional_count & 1U) != 0U) include = 1;
+
+    if (!include) {
+        *completed_width_out = state->display_width;
+        state->display_width = width;
+        state->regional_count = rt_unicode_is_regional_indicator(codepoint) ? 1U : 0U;
+    } else {
+        if (width > state->display_width) state->display_width = width;
+        if (rt_unicode_is_regional_indicator(codepoint)) state->regional_count += 1U;
+        else state->regional_count = 0U;
+    }
+    state->after_joiner = codepoint == 0x200dU;
+    state->previous_codepoint = codepoint;
+    return include ? 0 : 1;
+}
+
+unsigned int rt_grapheme_state_finish(RtGraphemeState *state) {
+    unsigned int width;
+    if (state == 0 || !state->active) return 0U;
+    width = state->display_width;
+    rt_grapheme_state_reset(state);
+    return width;
+}
+
+int rt_grapheme_next_width(const char *text, size_t text_length, size_t start, unsigned int ambiguous_width, RtGraphemeCluster *cluster_out) {
+    size_t end;
+    unsigned int first;
+    unsigned int previous;
+    unsigned int width;
+    unsigned int regional_count;
+    int after_joiner = 0;
+
+    if (text == 0 || cluster_out == 0 || start >= text_length) return -1;
+    (void)rt_grapheme_decode_at(text, text_length, start, &end, &first);
+    previous = first;
+    width = rt_unicode_display_width_mode(first, ambiguous_width);
+    regional_count = rt_unicode_is_regional_indicator(first) ? 1U : 0U;
+
+    while (end < text_length) {
+        size_t next_end;
+        unsigned int current;
+        int include = 0;
+
+        (void)rt_grapheme_decode_at(text, text_length, end, &next_end, &current);
+        if (previous == '\r' && current == '\n') include = 1;
+        else if (rt_unicode_is_control(previous) || rt_unicode_is_control(current)) include = 0;
+        else if (rt_unicode_is_grapheme_extend(current)) include = 1;
+        else if (after_joiner) include = 1;
+        else if (rt_unicode_hangul_no_break(previous, current)) include = 1;
+        else if (rt_unicode_is_regional_indicator(previous) && rt_unicode_is_regional_indicator(current) && (regional_count & 1U) != 0U) include = 1;
+
+        if (!include) break;
+        if (rt_unicode_is_regional_indicator(current)) regional_count += 1U;
+        else regional_count = 0U;
+        if (rt_unicode_display_width_mode(current, ambiguous_width) > width) width = rt_unicode_display_width_mode(current, ambiguous_width);
+        after_joiner = current == 0x200dU;
+        previous = current;
+        end = next_end;
+    }
+
+    cluster_out->start = start;
+    cluster_out->end = end;
+    cluster_out->first_codepoint = first;
+    cluster_out->display_width = width;
+    return 0;
+}
+
+int rt_grapheme_next(const char *text, size_t text_length, size_t start, RtGraphemeCluster *cluster_out) {
+    return rt_grapheme_next_width(text, text_length, start, 1U, cluster_out);
+}
+
+int rt_grapheme_previous(const char *text, size_t text_length, size_t end, RtGraphemeCluster *cluster_out) {
+    size_t index = 0U;
+    RtGraphemeCluster cluster;
+
+    if (text == 0 || cluster_out == 0 || end == 0U || end > text_length) return -1;
+    while (index < end) {
+        if (rt_grapheme_next(text, end, index, &cluster) != 0 || cluster.end <= index) return -1;
+        if (cluster.end >= end) {
+            *cluster_out = cluster;
+            return cluster.end == end ? 0 : -1;
+        }
+        index = cluster.end;
+    }
+    return -1;
 }
 
 static int rt_text_is_ansi_final_byte(unsigned char ch) {
@@ -204,7 +434,7 @@ static int rt_text_ansi_escape_end(const char *text, size_t text_length, size_t 
     return 1;
 }
 
-int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtTextSegment *segment_out) {
+int rt_text_next_segment_width(const char *text, size_t text_length, size_t start, unsigned int ambiguous_width, RtTextSegment *segment_out) {
     size_t end = start;
     int incomplete = 0;
     unsigned int codepoint = 0U;
@@ -257,9 +487,13 @@ int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtT
     } else if (codepoint == '\t') {
         segment_out->display_width = 0U;
     } else {
-        segment_out->display_width = rt_unicode_display_width(codepoint);
+        segment_out->display_width = rt_unicode_display_width_mode(codepoint, ambiguous_width);
     }
     return 0;
+}
+
+int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtTextSegment *segment_out) {
+    return rt_text_next_segment_width(text, text_length, start, 1U, segment_out);
 }
 
 int rt_text_has_incomplete_tail(const char *text, size_t text_length) {
@@ -301,7 +535,7 @@ unsigned long long rt_text_apply_segment_width(unsigned long long current_width,
     return rt_text_apply_segment_width_tabstop(current_width, segment, 8U);
 }
 
-unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width) {
+unsigned long long rt_text_display_width_n_mode(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width, unsigned int ambiguous_width) {
     size_t index = 0U;
     unsigned long long width = initial_width;
     RtTextSegment segment;
@@ -334,7 +568,7 @@ unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text
             index += 1U;
             continue;
         }
-        if (rt_text_next_segment(text, text_length, index, &segment) != 0) {
+        if (rt_text_next_segment_width(text, text_length, index, ambiguous_width, &segment) != 0) {
             break;
         }
         width = rt_text_apply_segment_width_tabstop(width, &segment, tab_width);
@@ -343,11 +577,15 @@ unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text
     return width;
 }
 
+unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width) {
+    return rt_text_display_width_n_mode(text, text_length, initial_width, tab_width, 1U);
+}
+
 unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width) {
     return rt_text_display_width_n_tabstop(text, text_length, initial_width, 8U);
 }
 
-size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width) {
+size_t rt_text_prefix_bytes_for_width_mode(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width, unsigned int ambiguous_width) {
     size_t index = 0U;
     size_t last_complete = 0U;
     unsigned long long width = initial_width;
@@ -367,7 +605,7 @@ size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsi
             index += 1U;
             continue;
         }
-        if (rt_text_next_segment(text, text_length, index, &segment) != 0) {
+        if (rt_text_next_segment_width(text, text_length, index, ambiguous_width, &segment) != 0) {
             break;
         }
         next_width = rt_text_apply_segment_width(width, &segment);
@@ -380,6 +618,10 @@ size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsi
         index = segment.end;
     }
     return last_complete;
+}
+
+size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width) {
+    return rt_text_prefix_bytes_for_width_mode(text, text_length, max_width, initial_width, 1U);
 }
 
 int rt_text_segment_is_space(const char *text, size_t text_length, const RtTextSegment *segment) {

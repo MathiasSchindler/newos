@@ -266,6 +266,7 @@ size_t tool_previous_utf8_codepoint_start(const char *text, size_t index);
 int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t end);
 int tool_text_find_next_match(const char *pattern, const char *text, int ignore_case, int fixed_string, int whole_word, size_t search_start, size_t *start_out, size_t *end_out);
 int tool_text_find_next_match_ex(const char *pattern, const char *text, int ignore_case, int fixed_string, int whole_word, int extended, size_t search_start, size_t *start_out, size_t *end_out);
+unsigned int tool_unicode_ambiguous_width(void);
 size_t tool_text_display_width_n(const char *text, size_t length);
 int tool_str_equal_ignore_case_ascii(const char *left, const char *right);
 int tool_name_equals_ignore_case_ascii_n(const char *text, size_t text_length, const char *name);

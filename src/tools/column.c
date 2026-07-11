@@ -45,7 +45,8 @@ static size_t utf8_display_width(const char *text) {
 
 static size_t utf8_prefix_bytes_for_width(const char *text, size_t max_width) {
     size_t length = rt_strlen(text);
-    return rt_text_prefix_bytes_for_width(text, length, (unsigned long long)max_width, 0ULL);
+    return rt_text_prefix_bytes_for_width_mode(text, length, (unsigned long long)max_width, 0ULL,
+                                               tool_unicode_ambiguous_width());
 }
 
 static ColumnCell *column_cell(ColumnRow *row, size_t index) {

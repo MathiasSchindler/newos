@@ -7,7 +7,7 @@ sort - sort text lines
 ## SYNOPSIS
 
 ```
-sort [-bCcdfiMmnrsuV] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]
+sort [-bCcdfiMmnrsuV] [--normalize] [-o FILE] [-t CHAR] [-k FIELD[,FIELD]] [file ...]
 sort --human-numeric-sort [-bCcfmnrsu] [-o FILE] [-t CHAR]
   [-k FIELD[,FIELD]] [file ...]
 sort -h
@@ -32,6 +32,7 @@ file, and memory-friendlier merge operation for already sorted inputs.
 - ignore leading blanks with `-b`, ASCII case with `-f`, non-dictionary
   characters with `-d`, and non-printing bytes with `-i`
 - preserve stable ordering for equal keys
+- compare canonically equivalent Latin-1 and Hangul text with `--normalize`
 - use blank-separated fields, or a custom field separator and key range
 - merge already sorted input sets with `-m` using streaming input
 - check whether input is already sorted with `-c` or quiet `-C`
@@ -63,6 +64,7 @@ file, and memory-friendlier merge operation for already sorted inputs.
 | `--human-numeric-sort` | Compare scaled values such as `950`, `1K`, `1.5M`, or `2GiB`. |
 | `--ignore-nonprinting` | Long form of `-i`. |
 | `--month-sort` | Long form of `-M`. |
+| `--normalize` | Compare text after compact canonical decomposition; combine with `-f` for folded comparison. |
 | `--version-sort` | Long form of `-V`. |
 | `-h`, `--help` | Print a short usage line. |
 
@@ -82,7 +84,7 @@ by their first three letters after leading blanks.
 
 ## LIMITATIONS
 
-- Comparisons are bytewise rather than locale-aware.
+- Default comparisons are bytewise rather than locale-aware. `--normalize` handles canonical equivalence, not locale collation.
 - `-u` removes duplicate output lines after sorting; it is not a replacement for `uniq` when you need adjacent-group counts.
 - Normal sorting uses bounded in-memory chunks of up to 131072 lines and 4 MiB of stored text, then spills additional sorted chunks to temporary files under `/tmp` and merges them back. Individual lines, the temporary-run registry, and merge input state grow through the runtime allocator.
 - External merging uses an eight-way internal fan-in to bound simultaneously open temporary files; it performs additional merge passes when needed rather than imposing an eight-input limit. If `-o FILE` names one of the input paths, sort buffers first so the input is not truncated before it is read.
@@ -97,6 +99,7 @@ sort -n scores.txt
 sort --human-numeric-sort sizes.txt
 sort -c already.sorted
 sort -f names.txt
+sort --normalize -u names.txt
 sort -d dictionary.txt
 sort -M months.txt
 sort -V releases.txt

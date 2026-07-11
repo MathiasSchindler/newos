@@ -34,6 +34,16 @@ assert_file_contains "$WORK_DIR/unicode_fixed.out" '^Äpfel$' "grep -i -F did no
 "${TEST_BIN_DIR}/grep" -iw 'öl' "$WORK_DIR/unicode.txt" > "$WORK_DIR/unicode_word.out"
 assert_file_contains "$WORK_DIR/unicode_word.out" '^Öl$' "grep -iw did not match a Unicode whole word"
 
+printf 'مرحبا،عالم\ncafé noir\ncan\047t stop\n' > "$WORK_DIR/unicode_boundaries.txt"
+"${TEST_BIN_DIR}/grep" -w 'مرحبا' "$WORK_DIR/unicode_boundaries.txt" > "$WORK_DIR/arabic_word.out"
+assert_file_contains "$WORK_DIR/arabic_word.out" '^مرحبا،عالم$' "grep -w did not recognize Unicode punctuation as a word boundary"
+if "${TEST_BIN_DIR}/grep" -w 'cafe' "$WORK_DIR/unicode_boundaries.txt" > /dev/null; then
+    fail "grep -w split a base letter from its combining mark"
+fi
+if "${TEST_BIN_DIR}/grep" -w 'can' "$WORK_DIR/unicode_boundaries.txt" > /dev/null; then
+    fail "grep -w split a word at an internal apostrophe"
+fi
+
 printf 'cat\nscatter\ncat_\n' > "$WORK_DIR/ascii_word.txt"
 "${TEST_BIN_DIR}/grep" -Fw 'cat' "$WORK_DIR/ascii_word.txt" > "$WORK_DIR/ascii_word.out"
 printf 'cat\n' > "$WORK_DIR/ascii_word.expected"

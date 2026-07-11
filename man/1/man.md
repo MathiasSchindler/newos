@@ -30,7 +30,7 @@ readable terminal layout.
 ## CURRENT CAPABILITIES
 
 - look up a page by topic name, optionally prefixed with a section number
-- case-insensitive keyword search across page names and page content
+- normalization-aware, case-insensitive keyword search across page names and page content
 - display an arbitrary Markdown file directly with `-l`
 - search repository-local manuals without requiring roff or a system database
 - render headings, quotes, fenced code blocks, and Markdown tables in a cleaner
@@ -55,6 +55,7 @@ readable terminal layout.
 - `MANPATH` — additional manual roots to search, separated by `:`
 - `LINES` — preferred interactive page height
 - `COLUMNS` — preferred output width for wrapping and table layout
+- `NEWOS_AMBIGUOUS_WIDTH` — set to `2` to treat East Asian Ambiguous characters as double-column
 - `NO_COLOR`, `CLICOLOR`, `CLICOLOR_FORCE`, `TERM` — influence shared color behavior
 
 ## LIMITATIONS
@@ -63,7 +64,7 @@ readable terminal layout.
 - the source format is Markdown, not traditional roff macros
 - table rendering is intentionally simple ASCII framing; complex spanning/layout features are not implemented
 - no roff macro compatibility, external pager handoff, hyperlink activation, or rich terminal widgets
-- wrapping uses compact Unicode/default-width tables, not a locale database; ambiguous-width characters and full grapheme clusters may not match every terminal
+- wrapping uses compact grapheme and width tables rather than a locale database; rare segmentation rules and terminal-specific emoji presentation may still differ
 
 ## EXAMPLES
 

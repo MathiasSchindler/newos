@@ -120,3 +120,13 @@ assert_file_contains "$WORK_DIR/man_deep_search.out" '^deep (1)$' "man -k only s
 
 "${TEST_BIN_DIR}/man" -k 'überblick' > "$WORK_DIR/man_unicode_search.out"
 assert_file_contains "$WORK_DIR/man_unicode_search.out" '^unicode (7)$' "man keyword search did not find the unicode design page"
+
+mkdir -p "$WORK_DIR/normalized-manroot/1"
+cat > "$WORK_DIR/normalized-manroot/1/cafe.md" <<'EOF'
+# CAFE
+
+café lookup page
+EOF
+printf 'café' > "$WORK_DIR/normalized_keyword.txt"
+MANPATH="$WORK_DIR/normalized-manroot" "${TEST_BIN_DIR}/man" -k "$(cat "$WORK_DIR/normalized_keyword.txt")" > "$WORK_DIR/man_normalized_search.out"
+assert_file_contains "$WORK_DIR/man_normalized_search.out" '^cafe (1)$' "man -k did not match canonically equivalent Unicode text"

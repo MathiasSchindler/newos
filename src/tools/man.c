@@ -454,7 +454,8 @@ static void trim_range(const char **start_io, const char **end_io) {
 }
 
 static unsigned int display_text_width(const char *text) {
-    return (unsigned int)rt_text_display_width_n_tabstop(text, rt_strlen(text), 0ULL, 4U);
+    return (unsigned int)rt_text_display_width_n_mode(text, rt_strlen(text), 0ULL, 4U,
+                                                     tool_unicode_ambiguous_width());
 }
 
 static int is_table_separator_line(const char *text) {
@@ -675,20 +676,19 @@ static int cell_text_next_segment(const char *text,
         unsigned int word_width = 0U;
 
         while (word_end < length) {
-            size_t next = word_end;
-            unsigned int codepoint = 0U;
+            RtGraphemeCluster cluster;
             unsigned int glyph_width;
 
-            if (rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= word_end) {
-                next = word_end + 1U;
-                codepoint = (unsigned char)text[word_end];
-            }
-            if (codepoint == ' ' || codepoint == '\t') {
+            if (text[word_end] == ' ' || text[word_end] == '\t') {
                 break;
             }
-            glyph_width = rt_unicode_display_width(codepoint);
+            if (rt_grapheme_next_width(text, length, word_end, tool_unicode_ambiguous_width(), &cluster) != 0) {
+                cluster.end = word_end + 1U;
+                cluster.display_width = 1U;
+            }
+            glyph_width = cluster.display_width;
             word_width += glyph_width;
-            word_end = next;
+            word_end = cluster.end;
         }
 
         if (!wrote_any) {
@@ -705,20 +705,19 @@ static int cell_text_next_segment(const char *text,
                 index = word_end;
             } else {
                 while (index < word_end) {
-                    size_t next = index;
-                    unsigned int codepoint = 0U;
+                    RtGraphemeCluster cluster;
                     unsigned int glyph_width;
                     size_t glyph_length;
 
-                    if (rt_utf8_decode(text, length, &next, &codepoint) != 0 || next <= index) {
-                        next = index + 1U;
-                        codepoint = (unsigned char)text[index];
+                    if (rt_grapheme_next_width(text, word_end, index, tool_unicode_ambiguous_width(), &cluster) != 0) {
+                        cluster.end = index + 1U;
+                        cluster.display_width = 1U;
                     }
-                    glyph_width = rt_unicode_display_width(codepoint);
+                    glyph_width = cluster.display_width;
                     if (width > 0U && width + glyph_width > max_width) {
                         break;
                     }
-                    glyph_length = next - index;
+                    glyph_length = cluster.end - index;
                     if (out + glyph_length + 1U >= buffer_size) {
                         return -1;
                     }
@@ -727,7 +726,7 @@ static int cell_text_next_segment(const char *text,
                     buffer[out] = '\0';
                     width += glyph_width;
                     wrote_any = 1;
-                    index = next;
+                    index = cluster.end;
                     if (width >= max_width) {
                         break;
                     }

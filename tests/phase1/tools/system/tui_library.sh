@@ -43,9 +43,9 @@ void rt_unsigned_to_string(unsigned long long value, char *buffer, size_t size) 
     while (index > 0U) { index -= 1U; buffer[index] = reversed[count - index - 1U]; }
 }
 int rt_write_all(int fd, const void *data, size_t count) { (void)fd; (void)data; (void)count; return 0; }
-unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t length, unsigned long long initial, unsigned int tab_width) {
+unsigned long long rt_text_display_width_n_mode(const char *text, size_t length, unsigned long long initial, unsigned int tab_width, unsigned int ambiguous_width) {
     (void)text;
-    return initial + length + tab_width;
+    return initial + length + tab_width + ambiguous_width;
 }
 int rt_utf8_decode(const char *text, size_t length, size_t *index, unsigned int *codepoint) {
     unsigned char first;
@@ -93,7 +93,9 @@ int main(void) {
 
     tui_width_policy_default(&policy);
     if (policy.tab_width != 8U || policy.ambiguous_width != 1U) return 9;
-    if (tui_text_width(&policy, "ab", 2U, 3U) != 13U) return 10;
+    if (tui_text_width(&policy, "ab", 2U, 3U) != 14U) return 10;
+    policy.ambiguous_width = 2U;
+    if (tui_text_width(&policy, "ab", 2U, 3U) != 15U) return 11;
     return 0;
 }
 EOF

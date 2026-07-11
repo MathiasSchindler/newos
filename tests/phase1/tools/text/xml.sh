@@ -40,3 +40,11 @@ if "${TEST_BIN_DIR}/xmlhead" -n nope item "$good_xml" > /dev/null 2> "$bad_count
     fail "xmlhead accepted a non-numeric count"
 fi
 assert_file_contains "$bad_count_err" "xmlhead: invalid count" "xmlhead reports invalid count values"
+
+printf '\377\376<\0r\0o\0o\0t\0>\0o\0k\0<\0/\0r\0o\0o\0t\0>\0' > "$work_dir/utf16le.xml"
+"${TEST_BIN_DIR}/xmltokens" "$work_dir/utf16le.xml" > "$work_dir/utf16le.out"
+assert_file_contains "$work_dir/utf16le.out" 'text depth=1 text="ok"' "XML tools did not transcode UTF-16LE input"
+
+printf '<?xml version="1.0" encoding="windows-1252"?><root>caf\351</root>\n' > "$work_dir/windows1252.xml"
+"${TEST_BIN_DIR}/xmltokens" "$work_dir/windows1252.xml" > "$work_dir/windows1252.out"
+assert_file_contains "$work_dir/windows1252.out" 'text depth=1 text="café"' "XML tools did not transcode Windows-1252 input"

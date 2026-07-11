@@ -1737,35 +1737,7 @@ int tool_text_match_has_word_boundaries(const char *text, size_t start, size_t e
     }
 
     length = rt_strlen(text);
-    if (start > 0U) {
-        size_t prev = tool_previous_utf8_codepoint_start(text, start);
-        size_t index = prev;
-        unsigned int codepoint = 0U;
-
-        if (((unsigned char)text[prev]) < 0x80U) {
-            if (tool_ascii_is_word_byte((unsigned char)text[prev])) {
-                return 0;
-            }
-
-        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
-            return 0;
-        }
-    }
-
-    if (end < length) {
-        size_t index = end;
-        unsigned int codepoint = 0U;
-
-        if (((unsigned char)text[end]) < 0x80U) {
-            if (tool_ascii_is_word_byte((unsigned char)text[end])) {
-                return 0;
-            }
-        } else if (rt_utf8_decode(text, length, &index, &codepoint) == 0 && rt_unicode_is_word(codepoint)) {
-            return 0;
-        }
-    }
-
-    return 1;
+    return rt_unicode_is_word_boundary(text, length, start) && rt_unicode_is_word_boundary(text, length, end);
 }
 
 int tool_text_find_next_match(const char *pattern,
@@ -1836,8 +1808,14 @@ int tool_text_find_next_match_ex(const char *pattern,
     return 0;
 }
 
+unsigned int tool_unicode_ambiguous_width(void) {
+    const char *value = platform_getenv("NEWOS_AMBIGUOUS_WIDTH");
+
+    return value != 0 && rt_strcmp(value, "2") == 0 ? 2U : 1U;
+}
+
 size_t tool_text_display_width_n(const char *text, size_t length) {
-    return (size_t)rt_text_display_width_n(text, length, 0ULL);
+    return (size_t)rt_text_display_width_n_mode(text, length, 0ULL, 8U, tool_unicode_ambiguous_width());
 }
 
 int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t *advance_out) {
@@ -1874,34 +1852,7 @@ int tool_unicode_space_at(const char *text, size_t length, size_t index, size_t 
 int tool_contains_case_insensitive(const char *text, const char *needle) {
     size_t text_len = rt_strlen(text);
     size_t needle_len = rt_strlen(needle);
-    size_t pos = 0U;
-
-    if (needle_len == 0U) return 1;
-    while (pos < text_len) {
-        size_t ti = pos;
-        size_t ni = 0U;
-        int matched = 1;
-
-        while (ni < needle_len) {
-            unsigned int lhs = 0U;
-            unsigned int rhs = 0U;
-
-            if (ti >= text_len || rt_utf8_decode(text, text_len, &ti, &lhs) != 0 || rt_utf8_decode(needle, needle_len, &ni, &rhs) != 0) {
-                matched = 0;
-                break;
-            }
-            if (rt_unicode_simple_fold(lhs) != rt_unicode_simple_fold(rhs)) {
-                matched = 0;
-                break;
-            }
-        }
-        if (matched) return 1;
-        {
-            unsigned int ignored = 0U;
-            if (rt_utf8_decode(text, text_len, &pos, &ignored) != 0) pos += 1U;
-        }
-    }
-    return 0;
+    return rt_unicode_normalized_contains(text, text_len, needle, needle_len, 1);
 }
 
 int tool_parse_pid_filter_list(const char *spec, int *pids_out, size_t max_count, size_t *count_out, const char *tool_name, int require_nonempty) {

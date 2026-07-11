@@ -221,22 +221,6 @@ static int selection_includes(unsigned long long position, const CutOptions *opt
     return options->complement ? !included : included;
 }
 
-static size_t utf8_expected_length(unsigned char ch) {
-    if (ch < 0x80U) {
-        return 1U;
-    }
-    if (ch >= 0xc2U && ch <= 0xdfU) {
-        return 2U;
-    }
-    if (ch >= 0xe0U && ch <= 0xefU) {
-        return 3U;
-    }
-    if (ch >= 0xf0U && ch <= 0xf4U) {
-        return 4U;
-    }
-    return 1U;
-}
-
 static void remove_pending_prefix(char *pending, size_t *pending_len, size_t count) {
     size_t i;
 
@@ -246,26 +230,26 @@ static void remove_pending_prefix(char *pending, size_t *pending_len, size_t cou
     *pending_len -= count;
 }
 
-static int consume_pending_codepoints(char *pending,
-                                      size_t *pending_len,
-                                      unsigned long long *position,
-                                      const CutOptions *options,
-                                      int force) {
-    while (*pending_len > 0U) {
-        size_t expected = utf8_expected_length((unsigned char)pending[0]);
-        size_t emit_len = 1U;
+static int consume_pending_graphemes(char *pending,
+                                     size_t *pending_len,
+                                     unsigned long long *position,
+                                     const CutOptions *options,
+                                     int force) {
+    if (!force && rt_text_has_incomplete_tail(pending, *pending_len)) {
+        return 0;
+    }
 
-        if (*pending_len < expected && !force) {
+    while (*pending_len > 0U) {
+        RtGraphemeCluster cluster;
+        size_t emit_len;
+
+        if (rt_grapheme_next(pending, *pending_len, 0U, &cluster) != 0) {
+            return -1;
+        }
+        if (cluster.end == *pending_len && !force) {
             return 0;
         }
-        if (*pending_len >= expected) {
-            size_t index = 0U;
-            unsigned int codepoint;
-
-            if (expected == 1U || (rt_utf8_decode(pending, expected, &index, &codepoint) == 0 && index == expected)) {
-                emit_len = expected;
-            }
-        }
+        emit_len = cluster.end;
 
         if (cut_position_matches(*position, options->selections, options->complement) && rt_write_all(1, pending, emit_len) != 0) {
             return -1;
@@ -279,8 +263,9 @@ static int consume_pending_codepoints(char *pending,
 
 static int cut_codepoint_stream(int fd, const CutOptions *options) {
     char chunk[CUT_IO_BUFFER_SIZE];
-    char pending[4];
+    char *pending = 0;
     size_t pending_len = 0U;
+    size_t pending_capacity = 0U;
     unsigned long long position = 1ULL;
     long bytes_read;
 
@@ -291,18 +276,28 @@ static int cut_codepoint_stream(int fd, const CutOptions *options) {
             char ch = chunk[i];
 
             if (ch == options->line_delimiter) {
-                if (consume_pending_codepoints(pending, &pending_len, &position, options, 1) != 0 ||
+                if (consume_pending_graphemes(pending, &pending_len, &position, options, 1) != 0 ||
                     rt_write_char(1, options->line_delimiter) != 0) {
+                    rt_free(pending);
                     return -1;
                 }
                 pending_len = 0U;
                 position = 1ULL;
             } else {
-                if (pending_len >= sizeof(pending) && consume_pending_codepoints(pending, &pending_len, &position, options, 1) != 0) {
-                    return -1;
+                if (pending_len == pending_capacity) {
+                    size_t new_capacity = pending_capacity == 0U ? 16U : pending_capacity * 2U;
+                    char *new_pending = (char *)rt_realloc(pending, new_capacity);
+
+                    if (new_pending == 0) {
+                        rt_free(pending);
+                        return -1;
+                    }
+                    pending = new_pending;
+                    pending_capacity = new_capacity;
                 }
                 pending[pending_len++] = ch;
-                if (consume_pending_codepoints(pending, &pending_len, &position, options, 0) != 0) {
+                if (consume_pending_graphemes(pending, &pending_len, &position, options, 0) != 0) {
+                    rt_free(pending);
                     return -1;
                 }
             }
@@ -310,10 +305,16 @@ static int cut_codepoint_stream(int fd, const CutOptions *options) {
     }
 
     if (bytes_read < 0) {
+        rt_free(pending);
         return -1;
     }
 
-    return consume_pending_codepoints(pending, &pending_len, &position, options, 1);
+    if (consume_pending_graphemes(pending, &pending_len, &position, options, 1) != 0) {
+        rt_free(pending);
+        return -1;
+    }
+    rt_free(pending);
+    return 0;
 }
 
 static int field_start_selected_output(int *wrote_field, int *field_output_started, const CutOptions *options) {

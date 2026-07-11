@@ -14,49 +14,6 @@ static void print_usage(const char *program_name) {
 }
 
 
-static int decode_previous_codepoint(const char *text, size_t end, size_t *start_out, unsigned int *codepoint_out) {
-    size_t start;
-    size_t index;
-    unsigned int codepoint = 0U;
-
-    if (end == 0U) {
-        return -1;
-    }
-
-    start = end - 1U;
-    while (start > 0U && tool_utf8_is_continuation_byte((unsigned char)text[start])) {
-        start -= 1U;
-    }
-
-    index = start;
-    if (rt_utf8_decode(text, end, &index, &codepoint) != 0 || index != end) {
-        start = end - 1U;
-        codepoint = (unsigned char)text[start];
-    }
-
-    *start_out = start;
-    *codepoint_out = codepoint;
-    return 0;
-}
-
-static int is_combining_codepoint(unsigned int codepoint) {
-    return (codepoint >= 0x0300U && codepoint <= 0x036fU) ||
-           (codepoint >= 0x1ab0U && codepoint <= 0x1affU) ||
-           (codepoint >= 0x1dc0U && codepoint <= 0x1dffU) ||
-           (codepoint >= 0x20d0U && codepoint <= 0x20ffU) ||
-           (codepoint >= 0xfe20U && codepoint <= 0xfe2fU);
-}
-
-static int is_variation_or_modifier(unsigned int codepoint) {
-    return (codepoint >= 0xfe00U && codepoint <= 0xfe0fU) ||
-           (codepoint >= 0xe0100U && codepoint <= 0xe01efU) ||
-           (codepoint >= 0x1f3fbU && codepoint <= 0x1f3ffU);
-}
-
-static int is_grapheme_extension(unsigned int codepoint) {
-    return is_combining_codepoint(codepoint) || is_variation_or_modifier(codepoint);
-}
-
 static int parse_escape_sequence(const char *text, size_t len, size_t start, size_t *end_out) {
     size_t index;
 
@@ -117,43 +74,6 @@ static int find_escape_ending_at(const char *text, size_t end, size_t *start_out
     return -1;
 }
 
-static size_t grapheme_cluster_start(const char *text, size_t end) {
-    size_t start = end;
-    unsigned int codepoint = 0U;
-
-    if (decode_previous_codepoint(text, end, &start, &codepoint) != 0) {
-        return end - 1U;
-    }
-
-    while (start > 0U) {
-        size_t previous_start;
-        unsigned int previous_codepoint;
-
-        if (decode_previous_codepoint(text, start, &previous_start, &previous_codepoint) != 0) {
-            break;
-        }
-
-        if (is_grapheme_extension(codepoint)) {
-            start = previous_start;
-            codepoint = previous_codepoint;
-            continue;
-        }
-
-        if (previous_codepoint == 0x200dU) {
-            start = previous_start;
-            if (start > 0U && decode_previous_codepoint(text, start, &previous_start, &previous_codepoint) == 0) {
-                start = previous_start;
-                codepoint = previous_codepoint;
-            }
-            continue;
-        }
-
-        break;
-    }
-
-    return start;
-}
-
 static int emit_reversed_record(const char *line, size_t len, int terminated, const RevOptions *options) {
     size_t end = len;
     char separator = options->zero_terminated ? '\0' : '\n';
@@ -162,7 +82,9 @@ static int emit_reversed_record(const char *line, size_t len, int terminated, co
         size_t start;
 
         if (find_escape_ending_at(line, end, &start) != 0) {
-            start = grapheme_cluster_start(line, end);
+            RtGraphemeCluster cluster;
+            if (rt_grapheme_previous(line, len, end, &cluster) == 0) start = cluster.start;
+            else start = end - 1U;
         }
 
         if (rt_write_all(1, line + start, end - start) != 0) {

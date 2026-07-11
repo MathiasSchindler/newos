@@ -45,10 +45,72 @@ int rt_utf8_decode(const char *text, size_t text_length, size_t *index_io, unsig
 int rt_utf8_validate(const char *text, size_t text_length);
 unsigned long long rt_utf8_codepoint_count(const char *text, size_t text_length);
 int rt_utf8_encode(unsigned int codepoint, char *buffer, size_t buffer_size, size_t *length_out);
+
+typedef enum {
+	RT_TEXT_ENCODING_UTF8 = 0,
+	RT_TEXT_ENCODING_UTF16,
+	RT_TEXT_ENCODING_UTF16LE,
+	RT_TEXT_ENCODING_UTF16BE,
+	RT_TEXT_ENCODING_ISO_8859_1,
+	RT_TEXT_ENCODING_WINDOWS_1252
+} RtTextEncoding;
+
+int rt_utf16_decode(const unsigned char *source, size_t source_length, size_t *index_io, int big_endian, unsigned int *codepoint_out);
+int rt_utf16_encode(unsigned int codepoint, int big_endian, unsigned char *buffer, size_t buffer_size, size_t *length_out);
+int rt_transcode_to_utf8(const unsigned char *source, size_t source_length, RtTextEncoding encoding, char **output_out, size_t *output_length_out);
+int rt_transcode_from_utf8(const char *source, size_t source_length, RtTextEncoding encoding, unsigned char **output_out, size_t *output_length_out);
 unsigned int rt_unicode_simple_fold(unsigned int codepoint);
 int rt_unicode_is_space(unsigned int codepoint);
 int rt_unicode_is_word(unsigned int codepoint);
+
+typedef enum {
+	RT_WORD_BREAK_OTHER = 0,
+	RT_WORD_BREAK_LETTER,
+	RT_WORD_BREAK_NUMERIC,
+	RT_WORD_BREAK_KATAKANA,
+	RT_WORD_BREAK_EXTEND,
+	RT_WORD_BREAK_MID_LETTER,
+	RT_WORD_BREAK_MID_NUMERIC,
+	RT_WORD_BREAK_EXTEND_NUMERIC_LETTER,
+	RT_WORD_BREAK_SPACE
+} RtWordBreakClass;
+
+typedef struct {
+	size_t start;
+	size_t end;
+	int is_word;
+} RtWordSpan;
+
+RtWordBreakClass rt_unicode_word_break_class(unsigned int codepoint);
+int rt_unicode_is_word_boundary(const char *text, size_t text_length, size_t index);
+int rt_word_next(const char *text, size_t text_length, size_t start, RtWordSpan *span_out);
+int rt_unicode_normalized_compare(const char *left, size_t left_length, const char *right, size_t right_length, int ignore_case, int *result_out);
+int rt_unicode_normalized_equal(const char *left, size_t left_length, const char *right, size_t right_length, int ignore_case);
+int rt_unicode_normalized_contains(const char *text, size_t text_length, const char *needle, size_t needle_length, int ignore_case);
 unsigned int rt_unicode_display_width(unsigned int codepoint);
+unsigned int rt_unicode_display_width_mode(unsigned int codepoint, unsigned int ambiguous_width);
+
+typedef struct {
+	size_t start;
+	size_t end;
+	unsigned int first_codepoint;
+	unsigned int display_width;
+} RtGraphemeCluster;
+
+typedef struct {
+	unsigned int previous_codepoint;
+	unsigned int display_width;
+	unsigned int regional_count;
+	unsigned int after_joiner;
+	unsigned int active;
+} RtGraphemeState;
+
+int rt_grapheme_next(const char *text, size_t text_length, size_t start, RtGraphemeCluster *cluster_out);
+int rt_grapheme_next_width(const char *text, size_t text_length, size_t start, unsigned int ambiguous_width, RtGraphemeCluster *cluster_out);
+int rt_grapheme_previous(const char *text, size_t text_length, size_t end, RtGraphemeCluster *cluster_out);
+void rt_grapheme_state_reset(RtGraphemeState *state);
+int rt_grapheme_state_push(RtGraphemeState *state, unsigned int codepoint, unsigned int ambiguous_width, unsigned int *completed_width_out);
+unsigned int rt_grapheme_state_finish(RtGraphemeState *state);
 
 #define RT_TEXT_SEGMENT_ANSI            (1U << 0)
 #define RT_TEXT_SEGMENT_INCOMPLETE      (1U << 1)
@@ -65,12 +127,15 @@ typedef struct {
 } RtTextSegment;
 
 int rt_text_next_segment(const char *text, size_t text_length, size_t start, RtTextSegment *segment_out);
+int rt_text_next_segment_width(const char *text, size_t text_length, size_t start, unsigned int ambiguous_width, RtTextSegment *segment_out);
 int rt_text_has_incomplete_tail(const char *text, size_t text_length);
 unsigned long long rt_text_apply_segment_width(unsigned long long current_width, const RtTextSegment *segment);
 unsigned long long rt_text_apply_segment_width_tabstop(unsigned long long current_width, const RtTextSegment *segment, unsigned int tab_width);
 unsigned long long rt_text_display_width_n(const char *text, size_t text_length, unsigned long long initial_width);
 unsigned long long rt_text_display_width_n_tabstop(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width);
+unsigned long long rt_text_display_width_n_mode(const char *text, size_t text_length, unsigned long long initial_width, unsigned int tab_width, unsigned int ambiguous_width);
 size_t rt_text_prefix_bytes_for_width(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width);
+size_t rt_text_prefix_bytes_for_width_mode(const char *text, size_t text_length, unsigned long long max_width, unsigned long long initial_width, unsigned int ambiguous_width);
 int rt_text_segment_is_space(const char *text, size_t text_length, const RtTextSegment *segment);
 
 int rt_write_all(int fd, const void *data, size_t count);

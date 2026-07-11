@@ -12,14 +12,13 @@ rev [-0] [file ...]
 
 ## DESCRIPTION
 
-rev reads lines from files or standard input and writes each line with its characters reversed. UTF-8 multi-byte characters are kept intact as units during reversal.
+rev reads lines from files or standard input and writes each line with its grapheme clusters reversed.
 
 ## CURRENT CAPABILITIES
 
 - reversing characters in each line of a file or standard input
-- UTF-8-aware reversal (multi-byte sequences are not split)
-- combining marks, variation selectors, and simple zero-width-joiner clusters
-  stay attached to their base characters during reversal
+- shared grapheme-aware reversal covering combining marks, variation selectors,
+  emoji modifiers, regional-indicator flags, Hangul, and zero-width-joiner sequences
 - ANSI escape/control sequences are preserved as atomic spans
 - NUL-delimited record mode
 
@@ -30,7 +29,7 @@ rev reads lines from files or standard input and writes each line with its chara
 ## LIMITATIONS
 
 - no support for right-to-left text aware reversal
-- full Unicode grapheme segmentation and locale-specific collation are not implemented
+- rare grapheme rules outside the compact in-tree property tables are not implemented
 
 ## EXAMPLES
 

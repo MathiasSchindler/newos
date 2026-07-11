@@ -874,6 +874,55 @@ const char *xml_token_type_name(XmlTokenType type) {
     }
 }
 
+static int xml_ascii_span_equal_ignore_case(const char *text, size_t length, const char *name) {
+    size_t index;
+
+    for (index = 0U; index < length && name[index] != '\0'; ++index) {
+        char left = text[index];
+        char right = name[index];
+        if (left >= 'A' && left <= 'Z') left = (char)(left + ('a' - 'A'));
+        if (right >= 'A' && right <= 'Z') right = (char)(right + ('a' - 'A'));
+        if (left != right) return 0;
+    }
+    return index == length && name[index] == '\0';
+}
+
+static RtTextEncoding xml_detect_legacy_encoding(const char *buffer, size_t length) {
+    size_t limit = length < 256U ? length : 256U;
+    size_t index;
+
+    if (limit < 5U || buffer[0] != '<' || buffer[1] != '?' || buffer[2] != 'x' || buffer[3] != 'm' || buffer[4] != 'l') {
+        return RT_TEXT_ENCODING_UTF8;
+    }
+    for (index = 5U; index + 8U < limit; ++index) {
+        size_t value_start;
+        size_t value_end;
+        char quote;
+
+        if (!xml_ascii_span_equal_ignore_case(buffer + index, 8U, "encoding")) continue;
+        index += 8U;
+        while (index < limit && (buffer[index] == ' ' || buffer[index] == '\t' || buffer[index] == '\r' || buffer[index] == '\n')) index += 1U;
+        if (index >= limit || buffer[index] != '=') return RT_TEXT_ENCODING_UTF8;
+        index += 1U;
+        while (index < limit && (buffer[index] == ' ' || buffer[index] == '\t' || buffer[index] == '\r' || buffer[index] == '\n')) index += 1U;
+        if (index >= limit || (buffer[index] != '\'' && buffer[index] != '"')) return RT_TEXT_ENCODING_UTF8;
+        quote = buffer[index++];
+        value_start = index;
+        while (index < limit && buffer[index] != quote) index += 1U;
+        value_end = index;
+        if (xml_ascii_span_equal_ignore_case(buffer + value_start, value_end - value_start, "windows-1252") ||
+            xml_ascii_span_equal_ignore_case(buffer + value_start, value_end - value_start, "cp1252")) {
+            return RT_TEXT_ENCODING_WINDOWS_1252;
+        }
+        if (xml_ascii_span_equal_ignore_case(buffer + value_start, value_end - value_start, "iso-8859-1") ||
+            xml_ascii_span_equal_ignore_case(buffer + value_start, value_end - value_start, "latin1")) {
+            return RT_TEXT_ENCODING_ISO_8859_1;
+        }
+        return RT_TEXT_ENCODING_UTF8;
+    }
+    return RT_TEXT_ENCODING_UTF8;
+}
+
 int xml_read_document(const char *path, char **buffer_out, size_t *length_out, const char *tool_name) {
     int fd;
     int should_close;
@@ -933,6 +982,38 @@ int xml_read_document(const char *path, char **buffer_out, size_t *length_out, c
         length += (size_t)count;
     }
     tool_close_input(fd, should_close);
+    if (length >= 3U && (unsigned char)buffer[0] == 0xefU && (unsigned char)buffer[1] == 0xbbU && (unsigned char)buffer[2] == 0xbfU) {
+        memmove(buffer, buffer + 3U, length - 3U);
+        length -= 3U;
+    } else if (length >= 2U && (((unsigned char)buffer[0] == 0xffU && (unsigned char)buffer[1] == 0xfeU) ||
+                               ((unsigned char)buffer[0] == 0xfeU && (unsigned char)buffer[1] == 0xffU))) {
+        char *transcoded = 0;
+        size_t transcoded_length = 0U;
+        if (rt_transcode_to_utf8((const unsigned char *)buffer, length, RT_TEXT_ENCODING_UTF16,
+                                 &transcoded, &transcoded_length) != 0) {
+            rt_free(buffer);
+            tool_write_error(tool_name, "invalid UTF-16 input: ", path == 0 ? "-" : path);
+            return -1;
+        }
+        rt_free(buffer);
+        buffer = transcoded;
+        length = transcoded_length;
+    } else {
+        RtTextEncoding encoding = xml_detect_legacy_encoding(buffer, length);
+        if (encoding != RT_TEXT_ENCODING_UTF8) {
+            char *transcoded = 0;
+            size_t transcoded_length = 0U;
+            if (rt_transcode_to_utf8((const unsigned char *)buffer, length, encoding,
+                                     &transcoded, &transcoded_length) != 0) {
+                rt_free(buffer);
+                tool_write_error(tool_name, "invalid encoded input: ", path == 0 ? "-" : path);
+                return -1;
+            }
+            rt_free(buffer);
+            buffer = transcoded;
+            length = transcoded_length;
+        }
+    }
     *buffer_out = buffer;
     *length_out = length;
     return 0;

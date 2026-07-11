@@ -27,6 +27,11 @@ printf 'ÄÖ🙂Z\n' > "$WORK_DIR/unicode.txt"
 "${TEST_BIN_DIR}/cut" -c 2-3 "$WORK_DIR/unicode.txt" > "$WORK_DIR/unicode.out"
 assert_file_contains "$WORK_DIR/unicode.out" '^Ö🙂$' "cut did not select Unicode character positions correctly"
 
+printf 'Aé👍🏽👩‍💻Z\n' > "$WORK_DIR/graphemes.txt"
+"${TEST_BIN_DIR}/cut" -c 2-4 "$WORK_DIR/graphemes.txt" > "$WORK_DIR/graphemes.out"
+printf 'é👍🏽👩‍💻\n' > "$WORK_DIR/graphemes.expected"
+assert_files_equal "$WORK_DIR/graphemes.expected" "$WORK_DIR/graphemes.out" "cut -c split an extended grapheme cluster"
+
 many_ranges=''
 i=1
 while [ "$i" -le 40 ]; do

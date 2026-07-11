@@ -39,7 +39,8 @@ void tui_width_policy_default(TuiWidthPolicy *policy) {
 
 unsigned long long tui_text_width(const TuiWidthPolicy *policy, const char *text, size_t length, unsigned long long initial_width) {
     unsigned int tab_width = policy != 0 && policy->tab_width != 0U ? policy->tab_width : 8U;
-    return rt_text_display_width_n_tabstop(text, length, initial_width, tab_width);
+    unsigned int ambiguous_width = policy != 0 && policy->ambiguous_width == 2U ? 2U : 1U;
+    return rt_text_display_width_n_mode(text, length, initial_width, tab_width, ambiguous_width);
 }
 
 static int tui_write_uint(TuiTerminal *terminal, unsigned int value) {

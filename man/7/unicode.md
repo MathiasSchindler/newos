@@ -17,26 +17,30 @@ The intended long-term model is:
 
 ## CURRENT STATE
 
-Stage 1 is now underway in the repository rather than being only a design goal.
+Stage 2 is implemented as a compact extension of the shared UTF-8 runtime. It remains dependency-free and does not load a system locale or full collation database.
 
-The shared runtime layer already provides UTF-8 decode, encode, validation, simple case folding, Unicode whitespace checks, word-character checks, and display-width helpers.
+The shared runtime provides UTF-8 decode, encode, validation, simple case folding, Unicode whitespace and word-break classes, grapheme-cluster iteration, normalization-aware comparison, configurable display width, and focused transcoding.
 
 Visible tool-level improvements already landed include:
 
-- `wc` counting Unicode code points and display width more accurately
-- `rev` preserving UTF-8 sequences while reversing text
+- `wc` counting Unicode code points while measuring grapheme-aware line width
+- `rev` reversing shared grapheme clusters instead of private UTF-8 groups
 - `grep` performing Stage 1 Unicode-aware ignore-case matching in both fixed-string and regex search paths
 - `man` performing Unicode-aware keyword lookup plus display-width-aware wrapping and table alignment
 - `column`, `fold`, `fmt`, `expand`, and `unexpand` using visual width instead of raw byte count for alignment, wrapping, and tab stops
-- `cut` selecting character positions by UTF-8 code point in character mode
+- `cut` selecting extended grapheme clusters in character mode
 - `join` matching keys with Unicode-aware ignore-case behavior and safer whitespace splitting
 - `awk` treating Unicode whitespace more consistently for default field splitting
 - `tr` translating, deleting, and squeezing literal Unicode characters as whole code points instead of raw bytes
 - the shell parser recognizing Unicode whitespace separators more consistently, with interactive input no longer restricted to plain ASCII bytes
 - `sed` benefiting from the shared Unicode-aware regex/search layer for pattern matching and substitution
+- `sort --normalize` comparing canonically equivalent keys and lines
+- the XML tool family transcoding UTF-16 BOM input and declaration-selected ISO-8859-1 or Windows-1252 input to internal UTF-8
 - `file` recognizing UTF-8 and UTF-16 text signatures
 
-Important limitations still remain. The current implementation is intentionally compact and does not yet provide full normalization, grapheme-cluster segmentation, locale-specific collation, or exhaustive case-fold coverage.
+`NEWOS_AMBIGUOUS_WIDTH=2` selects double-column treatment for assigned East Asian Ambiguous characters in shared tool and TUI width paths. The default is width 1.
+
+Important limitations remain. Canonical decomposition focuses on Latin-1 plus algorithmic Hangul and common combining classes. Grapheme and word segmentation implement the most useful extended rules without shipping the complete Unicode property database. Locale-specific collation and exhaustive case folding are intentionally out of scope.
 
 ## GOALS
 
@@ -66,17 +70,18 @@ So far, Stage 1 work has reached `wc`, `rev`, `grep`, `man`, `column`, `expand`,
 
 Remaining Stage 1 work is now mainly about broadening the same behavior across the rest of the text-processing layer and filling in a few remaining edge cases.
 
-## LATER STAGES
+## STAGE 2
 
-After the current Stage 1 rollout is broadened, the next major steps are:
+Stage 2 adds:
 
-- fuller case-fold coverage beyond the compact Stage 1 tables
-- Unicode-aware character classes and semantics across the broader regex and text-processing layer
-- broader shell expansion, editing, and quoting polish for Unicode-heavy interactive use
-- richer Unicode class and range semantics where current Stage 1 behavior is still intentionally compact
-- grapheme-cluster awareness for visibly single characters made of multiple code points
-- normalization-aware comparison where exact equivalence matters
-- policy decisions around compiler identifiers and source normalization
+- forward, backward, and streaming grapheme-cluster iteration
+- canonical-equivalence comparison and substring search
+- caller-selected East Asian Ambiguous width
+- UTF-16 LE/BE codecs with BOM and surrogate support
+- ISO-8859-1 and Windows-1252 transcoders
+- reusable word-break classification, boundary testing, and span iteration
+
+The internal representation remains UTF-8. Transcoding occurs only at explicit input/output boundaries.
 
 ## DESIGN RULES
 
