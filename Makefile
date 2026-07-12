@@ -74,6 +74,7 @@ LOCAL_MACOS_FREESTANDING := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter aarch
 DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
+SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 
 MACOS_BUILD_DIR ?= $(BUILD_ROOT)/macos-$(MACOS_FREESTANDING_ARCH)
 TEST_FREESTANDING_BUILD_DIR ?= $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR),$(TARGET_BUILD_DIR))
@@ -254,7 +255,7 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding test benchmark compiler-benchmark clean
+.PHONY: all host freestanding selfhost test benchmark compiler-benchmark clean
 
 TEST_RUNTIME_TARGETS := $(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest)
 
@@ -311,7 +312,10 @@ else
 endif
 endif
 
-$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(MACOS_BUILD_DIR) $(MACOS_BUILD_DIR)/.obj $(FREESTANDING_OBJECT_BUILD_DIR)):
+selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc
+	+@$(MAKE) --no-print-directory BUILD_DIR="$(SELFHOST_BUILD_DIR)" CC="$(abspath $(DEFAULT_HOST_BUILD_DIR)/ncc)" CFLAGS="$(CFLAGS) $(SELFHOST_SIZE_FLAGS)" HOST_PLATFORM_SOURCES="$(SELFHOST_PLATFORM_SOURCES)" NEWOS_NCC_LINKER="$${NEWOS_NCC_LINKER:-cc}" host
+
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(MACOS_BUILD_DIR) $(MACOS_BUILD_DIR)/.obj $(FREESTANDING_OBJECT_BUILD_DIR)):
 	mkdir -p $@
 
 $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
@@ -565,8 +569,8 @@ $(TARGET_BUILD_DIR)/less: src/tools/less.c $(TARGET_TUI_INPUT) $(TARGET_REUSABLE
 $(BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TUI_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES) $(HOST_TLS_PLATFORM_SOURCE) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb_descriptor.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_USB_PLATFORM_SOURCES) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(USB_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) $(HOST_USB_PLATFORM_SOURCES) -o $@
+$(BUILD_DIR)/lsusb: src/tools/lsusb.c $(USB_SOURCES) src/shared/usb_descriptor.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(filter-out $(HOST_PLATFORM_SOURCES),$(HOST_USB_PLATFORM_SOURCES)) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(USB_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) $(filter-out $(HOST_PLATFORM_SOURCES),$(HOST_USB_PLATFORM_SOURCES)) -o $@
 
 $(TARGET_BUILD_DIR)/mail: src/tools/mail.c $(MAIL_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_TLS_OBJECTS) $(TARGET_CRYPTO_OBJECTS) $(TARGET_TLS_PLATFORM_OBJECT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/tui.h $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(MAIL_TOOL_SOURCES) $(TARGET_TUI_INPUT) $(TARGET_TLS_OBJECTS) $(TARGET_CRYPTO_OBJECTS) $(TARGET_TLS_PLATFORM_OBJECT) $(TARGET_REUSABLE_OBJECTS) $(TARGET_UNICODE_OBJECT) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

@@ -65,6 +65,7 @@ typedef struct {
 typedef struct {
     char old_name[COMPILER_IR_NAME_CAPACITY];
     char new_name[COMPILER_IR_NAME_CAPACITY];
+    const char *replacement;
 } IrInlineMapping;
 
 typedef struct {
@@ -419,6 +420,7 @@ static int ir_add_inline_mapping(IrInlineMapping *mappings,
     }
     rt_copy_string(mappings[*mapping_count].old_name, sizeof(mappings[*mapping_count].old_name), old_name);
     mappings[*mapping_count].new_name[0] = '\0';
+    mappings[*mapping_count].replacement = 0;
     if (append_text(mappings[*mapping_count].new_name, sizeof(mappings[*mapping_count].new_name), &offset, prefix) != 0 ||
         append_text(mappings[*mapping_count].new_name, sizeof(mappings[*mapping_count].new_name), &offset, suffix) != 0) {
         return -1;
@@ -463,6 +465,7 @@ static int ir_rewrite_identifiers(const char *text,
             size_t start = i;
             size_t length = 0;
             int mapping;
+            size_t previous = start;
 
             while (ir_is_identifier_char(text[i])) {
                 if (length + 1U < sizeof(name)) {
@@ -471,9 +474,23 @@ static int ir_rewrite_identifiers(const char *text,
                 i += 1U;
             }
             name[length] = '\0';
-            mapping = ir_mapping_index(mappings, mapping_count, name);
+            while (previous > 0U && (text[previous - 1U] == ' ' || text[previous - 1U] == '\t')) {
+                previous -= 1U;
+            }
+            if ((previous > 0U && text[previous - 1U] == '.') ||
+                (previous > 1U && text[previous - 1U] == '>' && text[previous - 2U] == '-')) {
+                mapping = -1;
+            } else {
+                mapping = ir_mapping_index(mappings, mapping_count, name);
+            }
             if (mapping >= 0) {
-                if (append_text(buffer, buffer_size, &out, mappings[mapping].new_name) != 0) {
+                if (mappings[mapping].replacement != 0) {
+                    if (append_text(buffer, buffer_size, &out, "(") != 0 ||
+                        append_text(buffer, buffer_size, &out, mappings[mapping].replacement) != 0 ||
+                        append_text(buffer, buffer_size, &out, ")") != 0) {
+                        return -1;
+                    }
+                } else if (append_text(buffer, buffer_size, &out, mappings[mapping].new_name) != 0) {
                     return -1;
                 }
             } else {
@@ -495,6 +512,85 @@ static int ir_rewrite_identifiers(const char *text,
         i += 1U;
     }
     return 0;
+}
+
+static int ir_rewrite_inline_body_line(const char *line,
+                                       const IrInlineMapping *mappings,
+                                       size_t mapping_count,
+                                       char *buffer,
+                                       size_t buffer_size) {
+    const char *operand = line;
+    size_t prefix_size;
+    size_t i;
+
+    if (ir_starts_with(line, "brfalse ")) {
+        const char *expr_start = line + 8;
+        const char *arrow = ir_find_separator_outside_quotes(expr_start, " -> ");
+        char expr[COMPILER_IR_LINE_CAPACITY];
+        char rewritten_expr[COMPILER_IR_LINE_CAPACITY];
+        char label[COMPILER_IR_NAME_CAPACITY];
+        const char *rewritten_label = label;
+        size_t offset = 0;
+        int mapping;
+
+        if (arrow == 0 ||
+            ir_copy_text_range(expr, sizeof(expr), expr_start, arrow) != 0 ||
+            ir_copy_identifier(label, sizeof(label), arrow + 4, arrow + 4 + rt_strlen(arrow + 4)) != 0 ||
+            ir_rewrite_identifiers(expr, mappings, mapping_count, rewritten_expr, sizeof(rewritten_expr)) != 0) {
+            return -1;
+        }
+        mapping = ir_mapping_index(mappings, mapping_count, label);
+        if (mapping >= 0) {
+            rewritten_label = mappings[mapping].new_name;
+        }
+        buffer[0] = '\0';
+        return append_text(buffer, buffer_size, &offset, "brfalse ") == 0 &&
+                       append_text(buffer, buffer_size, &offset, rewritten_expr) == 0 &&
+                       append_text(buffer, buffer_size, &offset, " -> ") == 0 &&
+                       append_text(buffer, buffer_size, &offset, rewritten_label) == 0
+                   ? 0
+                   : -1;
+    }
+
+    if (ir_starts_with(line, "decl local obj ")) {
+        char type_text[128];
+        char name[COMPILER_IR_NAME_CAPACITY];
+        const char *rewritten_name = name;
+        size_t offset = 0;
+        int mapping;
+
+        if (ir_parse_decl_type_and_name(line, "decl local obj ", type_text, sizeof(type_text), name, sizeof(name)) != 0) {
+            return -1;
+        }
+        mapping = ir_mapping_index(mappings, mapping_count, name);
+        if (mapping >= 0) {
+            rewritten_name = mappings[mapping].new_name;
+        }
+        buffer[0] = '\0';
+        return append_text(buffer, buffer_size, &offset, "decl local obj ") == 0 &&
+                       append_text(buffer, buffer_size, &offset, type_text) == 0 &&
+                       append_text(buffer, buffer_size, &offset, " ") == 0 &&
+                       append_text(buffer, buffer_size, &offset, rewritten_name) == 0
+                   ? 0
+                   : -1;
+    }
+
+    while (*operand != '\0' && *operand != ' ') {
+        operand += 1;
+    }
+    if (*operand == '\0') {
+        rt_copy_string(buffer, buffer_size, line);
+        return 0;
+    }
+    operand += 1;
+    prefix_size = (size_t)(operand - line);
+    if (prefix_size >= buffer_size) {
+        return -1;
+    }
+    for (i = 0; i < prefix_size; ++i) {
+        buffer[i] = line[i];
+    }
+    return ir_rewrite_identifiers(operand, mappings, mapping_count, buffer + prefix_size, buffer_size - prefix_size);
 }
 
 static int ir_parse_function_name(const char *line, char *name, size_t name_size) {
@@ -556,6 +652,90 @@ static int ir_expr_is_scalar_inline_safe(const char *expr) {
         i += 1U;
     }
     return !in_string && !in_char;
+}
+
+static int ir_text_calls_function(const char *text, const char *function_name) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (text[i] != '\0') {
+        char ch = text[i];
+
+        if ((in_string || in_char) && ch == '\\' && text[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && ch == '"') {
+            in_string = !in_string;
+        } else if (!in_string && ch == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char &&
+                   ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_')) {
+            size_t start = i;
+            size_t name_length;
+
+            while (ir_is_identifier_char(text[i])) {
+                i += 1U;
+            }
+            name_length = i - start;
+            while (text[i] == ' ' || text[i] == '\t') {
+                i += 1U;
+            }
+            if (text[i] == '(' && rt_strlen(function_name) == name_length &&
+                rt_strncmp(text + start, function_name, name_length) == 0) {
+                return 1;
+            }
+            continue;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
+static void ir_filter_recursive_inline_functions(const CompilerIr *ir,
+                                                 IrInlineFunction *functions,
+                                                 size_t *function_count) {
+    unsigned char reaches[IR_INLINE_FUNCTION_CAPACITY][IR_INLINE_FUNCTION_CAPACITY];
+    size_t source;
+    size_t target;
+    size_t through;
+    size_t kept = 0;
+
+    rt_memset(reaches, 0, sizeof(reaches));
+    for (source = 0; source < *function_count; ++source) {
+        size_t line;
+
+        for (target = 0; target < *function_count; ++target) {
+            for (line = functions[source].body_start; line < functions[source].body_end; ++line) {
+                if (ir_text_calls_function(ir->lines[line], functions[target].name)) {
+                    reaches[source][target] = 1U;
+                    break;
+                }
+            }
+        }
+    }
+    for (through = 0; through < *function_count; ++through) {
+        for (source = 0; source < *function_count; ++source) {
+            if (!reaches[source][through]) {
+                continue;
+            }
+            for (target = 0; target < *function_count; ++target) {
+                if (reaches[through][target]) {
+                    reaches[source][target] = 1U;
+                }
+            }
+        }
+    }
+    for (source = 0; source < *function_count; ++source) {
+        if (!reaches[source][source]) {
+            if (kept != source) {
+                functions[kept] = functions[source];
+            }
+            kept += 1U;
+        }
+    }
+    *function_count = kept;
 }
 
 static int ir_collect_inline_functions(const CompilerIr *ir, IrInlineFunction *functions, size_t *function_count) {
@@ -629,13 +809,13 @@ static int ir_collect_inline_functions(const CompilerIr *ir, IrInlineFunction *f
             candidate.expression_only = 1;
             rt_copy_string(candidate.return_expr, sizeof(candidate.return_expr), ir->lines[body_start] + 4);
         }
-        if (*function_count >= IR_INLINE_FUNCTION_CAPACITY) {
-            return -1;
+        if (*function_count < IR_INLINE_FUNCTION_CAPACITY) {
+            functions[*function_count] = candidate;
+            *function_count += 1U;
         }
-        functions[*function_count] = candidate;
-        *function_count += 1U;
         i = end;
     }
+    ir_filter_recursive_inline_functions(ir, functions, function_count);
     return 0;
 }
 
@@ -755,7 +935,8 @@ static int ir_build_inline_expression(const IrInlineFunction *function,
     }
     for (i = 0; i < function->param_count; ++i) {
         rt_copy_string(mappings[mapping_count].old_name, sizeof(mappings[mapping_count].old_name), function->params[i].name);
-        rt_copy_string(mappings[mapping_count].new_name, sizeof(mappings[mapping_count].new_name), args[i]);
+        mappings[mapping_count].new_name[0] = '\0';
+        mappings[mapping_count].replacement = args[i];
         mapping_count += 1U;
     }
     if (ir_rewrite_identifiers(function->return_expr, mappings, mapping_count, rewritten, sizeof(rewritten)) != 0) {
@@ -960,6 +1141,55 @@ static int ir_collect_inline_body_mappings(const CompilerIr *ir,
     return 0;
 }
 
+static int ir_expr_mutates_identifier(const char *expr, const char *name) {
+    size_t name_length = rt_strlen(name);
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+            i += 1U;
+            continue;
+        }
+        if (!in_string && !in_char &&
+            (i == 0U || !ir_is_identifier_char(expr[i - 1U])) &&
+            rt_strncmp(expr + i, name, name_length) == 0 &&
+            !ir_is_identifier_char(expr[i + name_length])) {
+            size_t before = i;
+            size_t after = i + name_length;
+
+            while (before > 0U && (expr[before - 1U] == ' ' || expr[before - 1U] == '\t')) {
+                before -= 1U;
+            }
+            while (expr[after] == ' ' || expr[after] == '\t') {
+                after += 1U;
+            }
+            if ((before >= 2U &&
+                 ((expr[before - 2U] == '+' && expr[before - 1U] == '+') ||
+                  (expr[before - 2U] == '-' && expr[before - 1U] == '-'))) ||
+                ((expr[after] == '+' && expr[after + 1U] == '+') ||
+                 (expr[after] == '-' && expr[after + 1U] == '-'))) {
+                return 1;
+            }
+            i = after;
+            continue;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
 static int ir_inline_param_is_written(const CompilerIr *ir, const IrInlineFunction *function, const char *param_name) {
     size_t i;
 
@@ -980,8 +1210,7 @@ static int ir_inline_param_is_written(const CompilerIr *ir, const IrInlineFuncti
                 ir_text_equals(name, param_name)) {
                 return 1;
             }
-            if ((ir_starts_with(expr, "++") || ir_starts_with(expr, "--")) &&
-                ir_text_equals(ir_skip_spaces(expr + 2), param_name)) {
+            if (ir_expr_mutates_identifier(expr, param_name)) {
                 return 1;
             }
         }
@@ -1033,6 +1262,7 @@ static int ir_expand_exact_store_call(CompilerIr *ir,
     char end_label[COMPILER_IR_NAME_CAPACITY];
     char (*lines)[COMPILER_IR_LINE_CAPACITY];
     size_t line_count = 0;
+    size_t required_line_count = 2U;
     size_t i;
     int param_direct[IR_INLINE_PARAM_CAPACITY];
 
@@ -1051,20 +1281,26 @@ static int ir_expand_exact_store_call(CompilerIr *ir,
         param_direct[i] = ir_expr_is_trivial_value(args[i]) && !ir_inline_param_is_written(ir, function, function->params[i].name);
         if (param_direct[i]) {
             if (mapping_count >= IR_INLINE_MAPPING_CAPACITY) {
-                set_error(ir, "IR inline mapping capacity exceeded");
-                return -1;
+                return 0;
             }
             rt_copy_string(mappings[mapping_count].old_name, sizeof(mappings[mapping_count].old_name), function->params[i].name);
             rt_copy_string(mappings[mapping_count].new_name, sizeof(mappings[mapping_count].new_name), args[i]);
+            mappings[mapping_count].replacement = 0;
             mapping_count += 1U;
         } else if (ir_add_inline_mapping(mappings, &mapping_count, function->params[i].name, prefix, function->params[i].name) != 0) {
-            set_error(ir, "IR inline mapping capacity exceeded");
-            return -1;
+            return 0;
+        } else {
+            required_line_count += 2U;
         }
     }
     if (ir_collect_inline_body_mappings(ir, function, mappings, &mapping_count, prefix) != 0) {
-        set_error(ir, "IR inline mapping capacity exceeded");
-        return -1;
+        return 0;
+    }
+    for (i = function->body_start; i < function->body_end; ++i) {
+        required_line_count += ir_starts_with(ir->lines[i], "ret ") ? 2U : 1U;
+    }
+    if (required_line_count > IR_INLINE_EXPANSION_CAPACITY) {
+        return 0;
     }
     lines = (char (*)[COMPILER_IR_LINE_CAPACITY])rt_malloc(IR_INLINE_EXPANSION_CAPACITY * sizeof(lines[0]));
     if (lines == 0) {
@@ -1098,7 +1334,7 @@ static int ir_expand_exact_store_call(CompilerIr *ir,
             }
             continue;
         }
-        if (ir_rewrite_identifiers(ir->lines[i], mappings, mapping_count, rewritten, sizeof(rewritten)) != 0 ||
+        if (ir_rewrite_inline_body_line(ir->lines[i], mappings, mapping_count, rewritten, sizeof(rewritten)) != 0 ||
             ir_append_inline_line(lines, &line_count, rewritten) != 0) {
             goto fail;
         }
@@ -1116,8 +1352,7 @@ static int ir_expand_exact_store_call(CompilerIr *ir,
 
 fail:
     rt_free(lines);
-    set_error(ir, "IR inline expansion exceeded line capacity");
-    return -1;
+    return 0;
 }
 
 static int ir_rewrite_store_expr_line(CompilerIr *ir, size_t index, const char *name, const char *expr) {
@@ -1186,11 +1421,23 @@ static int ir_inline_calls(CompilerIr *ir) {
                 if (ir_parse_exact_call(expr, call_name, sizeof(call_name), args, &arg_count) == 0) {
                     function = ir_find_inline_function(functions, function_count, call_name);
                     if (function != 0 && !function->expression_only) {
+                        size_t old_line_count = ir->count;
                         int expanded = ir_expand_exact_store_call(ir, i, target, function, args, arg_count);
                         if (expanded < 0) {
                             return -1;
                         }
                         if (expanded > 0) {
+                            size_t added_lines = ir->count - old_line_count;
+                            size_t function_index;
+
+                            for (function_index = 0; function_index < function_count; ++function_index) {
+                                if (functions[function_index].body_start > i) {
+                                    functions[function_index].body_start += added_lines;
+                                }
+                                if (functions[function_index].body_end > i) {
+                                    functions[function_index].body_end += added_lines;
+                                }
+                            }
                             i += 1U;
                             continue;
                         }
@@ -2020,6 +2267,30 @@ static int ir_has_many_logical_operators(const char *expr) {
     return 0;
 }
 
+static int ir_expr_has_shift_operator(const char *expr) {
+    size_t i = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    while (expr[i] != '\0') {
+        if ((in_string || in_char) && expr[i] == '\\' && expr[i + 1U] != '\0') {
+            i += 2U;
+            continue;
+        }
+        if (!in_char && expr[i] == '"') {
+            in_string = !in_string;
+        } else if (!in_string && expr[i] == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char &&
+                   ((expr[i] == '<' && expr[i + 1U] == '<') ||
+                    (expr[i] == '>' && expr[i + 1U] == '>'))) {
+            return 1;
+        }
+        i += 1U;
+    }
+    return 0;
+}
+
 static int ir_optimize_expr_text(const char *expr,
                                  const IrOptimizerState *state,
                                  char *buffer,
@@ -2041,7 +2312,7 @@ static int ir_optimize_expr_text(const char *expr,
     }
 
     expr = ir_skip_spaces(expr != 0 ? expr : "");
-    if (state != 0 && ir_expr_has_side_effect_risk(expr)) {
+    if (state != 0 && (ir_expr_has_side_effect_risk(expr) || ir_expr_has_shift_operator(expr))) {
         cautious_state = *state;
         cautious_state.local_value_count = 0;
         effective_state = &cautious_state;

@@ -78,6 +78,222 @@ EOF
 
 compile_and_check_native "$WORK_DIR/long_expr.c" "$WORK_DIR/long_expr_bin" "64" "compiler failed on a repository-scale long expression"
 
+cat > "$WORK_DIR/inline_shifted_ranges.c" <<'EOF'
+typedef struct Node {
+    struct Node *next;
+    int value;
+} Node;
+
+static int adjust(int value) {
+    int result = value + 3;
+    if (result > 5) result -= 1;
+    return result;
+}
+
+static int sum_nodes(Node *node) {
+    int total = 0;
+    while (node != 0) {
+        total += node->value;
+        node = node->next;
+    }
+    return total;
+}
+
+int main(void) {
+    Node tail = {0, 4};
+    Node head = {&tail, 2};
+    int adjusted = adjust(4);
+    int total = sum_nodes(&head);
+    return adjusted == 6 && total == 6 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/inline_shifted_ranges.c" "$WORK_DIR/inline_shifted_ranges_bin" "0" "compiler used stale function-body ranges after an exact-call inline expansion"
+
+cat > "$WORK_DIR/inline_local_keyword.c" <<'EOF'
+static int copy_first(const char *text) {
+    char local[4];
+    char *dynamic = 0;
+    local[0] = text[0];
+    local[1] = '\0';
+    if (dynamic != 0) return 2;
+    return local[0] == 'x' ? 1 : 0;
+}
+
+int main(void) {
+    int result = copy_first("x");
+    return result == 1 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/inline_local_keyword.c" "$WORK_DIR/inline_local_keyword_bin" "0" "compiler rewrote the local keyword in an inlined IR declaration"
+
+cat > "$WORK_DIR/inline_member_name.c" <<'EOF'
+struct Signature {
+    unsigned int target_tag;
+    unsigned int target_index;
+};
+
+static int matches(const struct Signature *signature, unsigned int target_tag, unsigned int target_index) {
+    if (signature->target_tag != target_tag || signature->target_index != target_index) return 0;
+    return 1;
+}
+
+int main(void) {
+    struct Signature signature;
+    int result;
+    signature.target_tag = 14U;
+    signature.target_index = 3U;
+    result = matches(&signature, 14U, 3U);
+    return result == 1 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/inline_member_name.c" "$WORK_DIR/inline_member_name_bin" "0" "compiler rewrote a member name that matched an inline parameter"
+
+cat > "$WORK_DIR/inline_postfix_parameter.c" <<'EOF'
+static unsigned int hash_text(const char *text) {
+    unsigned int hash = 2166136261U;
+    while (text != 0 && *text != '\0') {
+        hash ^= (unsigned int)(unsigned char)*text++;
+        hash *= 16777619U;
+    }
+    return hash;
+}
+
+static int caller_pointer_is_preserved(const char *name) {
+    unsigned int hash = hash_text(name);
+    return hash != 0U && name[0] == 'm';
+}
+
+int main(void) {
+    return caller_pointer_is_preserved("main") ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/inline_postfix_parameter.c" "$WORK_DIR/inline_postfix_parameter_bin" "0" "compiler let an inlined postfix increment mutate the caller argument"
+
+cat > "$WORK_DIR/pointer_to_array_parameter.c" <<'EOF'
+static void set_row(char (*rows)[32], int index, char value) {
+    rows[index][0] = value;
+    rows[index][31] = (char)(value + 1);
+}
+
+int main(void) {
+    char rows[2][32];
+    rows[0][0] = 0;
+    set_row(rows, 1, 41);
+    return rows[0][0] == 0 && rows[1][0] == 41 && rows[1][31] == 42 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/pointer_to_array_parameter.c" "$WORK_DIR/pointer_to_array_parameter_bin" "0" "compiler lost pointer-to-array parameter stride metadata"
+
+cat > "$WORK_DIR/inline_long_argument.c" <<'EOF'
+static unsigned int rotate_left(unsigned int value, unsigned int count) {
+    return (value << count) | (value >> (32U - count));
+}
+
+int main(void) {
+    unsigned int words[20] = {0U};
+    unsigned int round = 16U;
+    words[round - 3U] = 1U;
+    words[round - 8U] = 2U;
+    words[round - 14U] = 4U;
+    words[round - 16U] = 8U;
+    words[round] = rotate_left(words[round - 3U] ^ words[round - 8U] ^
+                               words[round - 14U] ^ words[round - 16U], 1U);
+    return words[round] == 30U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/inline_long_argument.c" "$WORK_DIR/inline_long_argument_bin" "0" "compiler truncated a long argument during expression-only inlining"
+
+cat > "$WORK_DIR/grouped_rotate_xor.c" <<'EOF'
+#define ROTR32(value, count) (((value) >> (count)) | ((value) << (32U - (count))))
+
+int main(void) {
+    unsigned int value = 0x12345678U;
+    unsigned int result = value ^ ROTR32(value, 6U);
+    return result == 0xf27c8721U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/grouped_rotate_xor.c" "$WORK_DIR/grouped_rotate_xor_bin" "0" "compiler consumed the caller group delimiter while recognizing a rotate"
+
+cat > "$WORK_DIR/large_relational_fallback.c" <<'EOF'
+static int parse(const char *text, unsigned long long *value_out) {
+    *value_out = text[0] == 'x' ? 0x100000000ULL : 7ULL;
+    return 0;
+}
+
+int main(void) {
+    unsigned long long value = 0ULL;
+    int argi = 1;
+    int argc = 5;
+
+    if (argi + 4 != argc || parse("x", &value) != 0 || value > 0xffffffffULL) return 0;
+    return 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/large_relational_fallback.c" "$WORK_DIR/large_relational_fallback_bin" "0" "compiler advanced past a large relational immediate before register fallback"
+
+cat > "$WORK_DIR/ternary_array_bound.c" <<'EOF'
+#define LEFT_SIZE (16U * 8U)
+#define RIGHT_SIZE (32U * 4U)
+
+int main(void) {
+    char buffer[LEFT_SIZE < RIGHT_SIZE ? LEFT_SIZE : RIGHT_SIZE];
+    buffer[127] = 9;
+    return sizeof(buffer) == 128U && buffer[127] == 9 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/ternary_array_bound.c" "$WORK_DIR/ternary_array_bound_bin" "0" "compiler misparsed relational or ternary operators in an array bound"
+
+{
+    symbol_index=0
+    while [ "$symbol_index" -lt 1100 ]; do
+        printf 'static int generated_symbol_%s;\n' "$symbol_index"
+        symbol_index=$((symbol_index + 1))
+    done
+    printf 'int main(void) { return generated_symbol_1099; }\n'
+} > "$WORK_DIR/large_symbol_table.c"
+
+compile_and_check_native "$WORK_DIR/large_symbol_table.c" "$WORK_DIR/large_symbol_table_bin" "0" "compiler exhausted its semantic table on a large translation unit"
+
+cat > "$WORK_DIR/recursive_inline_candidate.c" <<'EOF'
+static unsigned int recursive_sum(unsigned int value) {
+    unsigned int tail;
+    if (value == 0U) return 0U;
+    tail = recursive_sum(value - 1U);
+    return value + tail;
+}
+
+static unsigned int is_odd(unsigned int value);
+
+static unsigned int is_even(unsigned int value) {
+    unsigned int result;
+    if (value == 0U) return 1U;
+    result = is_odd(value - 1U);
+    return result;
+}
+
+static unsigned int is_odd(unsigned int value) {
+    unsigned int result;
+    if (value == 0U) return 0U;
+    result = is_even(value - 1U);
+    return result;
+}
+
+int main(void) {
+    return recursive_sum(10U) == 55U && is_even(10U) && is_odd(9U) ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/recursive_inline_candidate.c" "$WORK_DIR/recursive_inline_candidate_bin" "0" "compiler repeatedly expanded a recursive static exact-call inline candidate"
+
 cat > "$WORK_DIR/static_local_string_array.c" <<'EOF'
 int main(void) {
     static const char punctuation[] = "{}[]()#";
@@ -1435,15 +1651,32 @@ compile_and_check_native "$WORK_DIR/int128_predefine.c" "$WORK_DIR/int128_predef
 cat > "$WORK_DIR/int128_runtime_arithmetic.c" <<'EOF'
 static unsigned long long high_product(unsigned long long value) {
     unsigned __int128 wide = value;
-    unsigned __int128 product = wide * wide;
+    unsigned __int128 product = wide;
+    product *= wide;
     unsigned long long high = (unsigned long long)(product >> 51);
     product &= ((unsigned long long)((1ULL << 51) - 1ULL));
     if ((unsigned long long)product != 1ULL) return 0ULL;
     return high;
 }
 
+static int scalar_cast_products(void) {
+    struct Fraction { long long num; long long den; } values[1];
+    unsigned long long aa = 84ULL;
+    unsigned long long gcd = 7ULL;
+    unsigned long long bb = 9ULL;
+    long long signed_aa = -84LL;
+    __int128 positive = (__int128)(aa / gcd) * bb;
+    __int128 negative = (__int128)(signed_aa / (long long)gcd) * (long long)bb;
+    long long lcm = 45LL;
+    __int128 member_product;
+    values[0].num = 7LL;
+    values[0].den = 5LL;
+    member_product = (__int128)values[0].num * (lcm / values[0].den);
+    return positive == 108 && negative == -108 && member_product == 63;
+}
+
 int main(void) {
-    return high_product(2251799813685247ULL) == 2251799813685246ULL ? 0 : 1;
+    return high_product(2251799813685247ULL) == 2251799813685246ULL && scalar_cast_products() ? 0 : 1;
 }
 EOF
 

@@ -230,7 +230,12 @@ int expr_match_punct(ExprParser *parser, const char *text) {
 
 int expr_expect_punct(ExprParser *parser, const char *text) {
     if (!expr_match_punct(parser, text)) {
-        backend_set_error(parser->state->backend, "unsupported expression syntax in backend");
+        char message[96];
+
+        rt_copy_string(message, sizeof(message), "expected `");
+        rt_copy_string(message + rt_strlen(message), sizeof(message) - rt_strlen(message), text);
+        rt_copy_string(message + rt_strlen(message), sizeof(message) - rt_strlen(message), "` in backend");
+        backend_set_error_with_line(parser->state->backend, message, parser->current.text);
         return -1;
     }
     return 0;

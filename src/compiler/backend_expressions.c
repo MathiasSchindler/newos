@@ -1988,7 +1988,6 @@ static int expr_try_parse_rotr32_identifier(ExprParser *parser) {
         return 0;
     }
     if (expr_try_match_punct(&snapshot, ")") != 0 ||
-        expr_try_match_punct(&snapshot, ")") != 0 ||
         expr_try_match_punct(&snapshot, ")") != 0) {
         return 0;
     }
@@ -2501,12 +2500,12 @@ static int expr_parse_relational(ExprParser *parser) {
         use_unsigned = lhs_unsigned || type_is_unsigned_like(lhs_type);
         if (expr_parse_constant_additive(&const_parser, &immediate) == 0) {
             int compared;
-            *parser = const_parser;
             compared = emit_compare_immediate(parser->state, op, immediate, use_unsigned);
             if (compared < 0) {
                 return -1;
             }
             if (compared > 0) {
+                *parser = const_parser;
                 rt_copy_string(lhs_type, sizeof(lhs_type), "int");
                 lhs_unsigned = 0;
                 continue;
@@ -3418,10 +3417,29 @@ static int u128_parse_primary(ExprParser *parser) {
                     expr_next(parser);
                 }
             }
+            if (depth == 0 && saw_int128 && !u128_parser_mentions_value(parser)) {
+                int operand_unsigned = expr_snapshot_looks_unsigned(parser);
+
+                if (expr_parse_unary(parser) != 0) {
+                    return -1;
+                }
+                return operand_unsigned ? emit_u128_zero_extend_rax(parser->state) :
+                                          emit_instruction(parser->state, "cqto");
+            }
             if (depth != 0 || u128_parse_primary(parser) != 0) {
                 return -1;
             }
             return saw_int128 ? 0 : emit_u128_zero_extend_rax(parser->state);
+        }
+
+        if (!u128_parser_mentions_value(parser)) {
+            int operand_unsigned = expr_snapshot_looks_unsigned(parser);
+
+            if (expr_parse_unary(parser) != 0) {
+                return -1;
+            }
+            return operand_unsigned ? emit_u128_zero_extend_rax(parser->state) :
+                                      emit_instruction(parser->state, "cqto");
         }
 
         expr_next(parser);
@@ -3645,6 +3663,10 @@ int emit_u128_eval_expression(BackendState *state, const char *expr) {
             }
         } else if (names_equal(op, "&=")) {
             if (emit_u128_and_lhs(state) != 0) {
+                return -1;
+            }
+        } else if (names_equal(op, "*=")) {
+            if (emit_u128_mul_lhs(state) != 0) {
                 return -1;
             }
         } else {

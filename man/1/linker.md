@@ -280,6 +280,15 @@ executable tail folding therefore remain deferred until measurements show a
 final-file or runtime win that justifies their address, relocation, and
 function-identity risk.
 
+A clean July 2026 comparison between the default hardened build and a build
+using both `--icf=all` and `--merge-constants` kept every one of the 214 final
+file sizes unchanged (4,465,238 aggregate bytes) and did not change aggregate
+mapped memory. The aggressive ICF mode reduced file-backed text by 271 bytes:
+160 in `git`, 15 in `solve`, and 32 in each of `xmlcheck`, `xmlsafe`, and
+`xmlvalidate`. Page padding absorbed every reduction. The freestanding smoke
+suite passed, but no runtime speedup has been established, so the mode remains
+explicit because it can also make distinct function addresses equal.
+
 On Linux x86-64, `make freestanding` is the default newlinker build. It runs
 `scripts/build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
 `build/freestanding-linux-x86_64`, and uses `TARGET_CC` as the object compiler
@@ -301,13 +310,14 @@ invocations; when unset, the script uses `PARALLEL_JOBS`, `nproc`, or the online
 processor count. Use `NEWLINKER_LINK_JOBS=1` for serial timing or easier log
 inspection. The build report records the selected link job count.
 
-Constant merging was measured on the complete 214-tool hardened Linux build on
-2026-07-11. It removed 464 bytes of file-backed section payload across three
-tools (`solve` 368, `printf` 64, and `git` 32), but page-separated segment
-layout absorbed all of that space: aggregate final output remained 4,448,854
-bytes and no individual file changed size. The full freestanding smoke suite
-passed with the option enabled. Consequently `--merge-constants` remains an
-available measured optimization rather than a default build flag.
+Constant merging was isolated on the complete 214-tool hardened Linux build on
+2026-07-12. It found 464 eligible bytes across three tools (`solve` 368,
+`printf` 64, and `git` 32), but all entries were already unique at their
+required alignment: the output pool remained 464 bytes and saved zero payload
+bytes. No individual or aggregate final file size changed, and aggregate mapped
+memory was unchanged. Consequently `--merge-constants` remains available for
+workloads with genuinely duplicate mergeable constants rather than being a
+default build flag.
 
 ## LIMITATIONS
 

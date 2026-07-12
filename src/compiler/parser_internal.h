@@ -86,6 +86,7 @@ int parse_statement(CompilerParser *parser);
 int parse_compound_statement(CompilerParser *parser);
 int parse_declaration_or_function(CompilerParser *parser, int allow_function_body, int emit_summary);
 int parse_declarator(CompilerParser *parser, CompilerDeclarator *declarator, int allow_abstract);
+int parse_integer_constant_expression(CompilerParser *parser, long long *value_out);
 int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, int *is_extern_out, int *is_static_out, CompilerType *type_out);
 int looks_like_type_name_after_lparen(const CompilerParser *parser);
 int looks_like_compound_literal_after_lparen(const CompilerParser *parser);

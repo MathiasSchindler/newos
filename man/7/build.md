@@ -162,11 +162,13 @@ is the usual Apple toolchain ABI library for launchable executables.
 
 ## SELF-HOSTED BUILD
 
-The self-hosted build reuses the in-tree `ncc` compiler for the hosted tool set.
+The self-hosted build reuses the in-tree `ncc` compiler for the complete hosted
+tool set, including `ncc` itself.
 
 - built with `make selfhost`
 - writes binaries to `build/selfhost-<os>-<arch>/`
-- uses the hosted `ncc` binary as `CC` while still relying on the system linker
+- uses the hosted `ncc` binary as `CC` while still relying on `/bin/sh`, the
+  system assembler, and the system linker
 - is the main bootstrap-progress check for Linux/x86-64 today
 
 This path matters especially for shared runtime changes, shell support code,
@@ -269,8 +271,10 @@ freestanding Linux builds are available.
 
 ## SELF-HOSTED HOST BUILD STATUS
 
-On Linux, the in-tree compiler is now capable enough to rebuild the hosted tool
-set in a separate self-host tree.
+On Linux/x86-64, the in-tree compiler rebuilds all 214 tools in the current
+canonical hosted tool set, including a fresh `ncc`, in a separate self-host
+tree. The native compiler regression suite also runs against that rebuilt
+compiler.
 
 A typical check looks like:
 
@@ -283,8 +287,9 @@ origin, common text functions, line continuations, pattern rules, and the
 manifest extraction pipeline built from `grep -oE` plus `tr`.
 
 This is an important self-hosting milestone, but it is not a full bootstrap
-closure yet. The project still relies on the host C compiler, assembler,
-linker, and `/bin/sh` to execute the actual compile and link steps.
+closure yet. A host-built `ncc` starts the self-host stage, and the build still
+relies on `/bin/sh`, the system assembler, and the system linker to execute the
+compile and link steps.
 
 ## CONTRIBUTOR NOTES
 

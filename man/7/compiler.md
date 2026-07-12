@@ -21,8 +21,9 @@ compiler.
 - assembly generation for `linux-x86_64`, `linux-aarch64`, and
   `macos-aarch64`
 - object emission for Linux/x86-64 ELF and macOS/AArch64 Mach-O
-- self-hosted hosted-tool rebuilds on Linux/x86-64, while still relying on the
-  host assembler, linker, and shell to run compile/link steps
+- self-hosted rebuilds of all 214 current hosted tools on Linux/x86-64,
+  including `ncc` itself, while still relying on the host assembler, linker,
+  and shell to run compile/link steps
 - native macOS/AArch64 object and executable validation for focused compiler
   frontend and backend coverage
 
@@ -66,6 +67,11 @@ The practical progression looks like this:
 2. compile the project's own runtime and userland reliably
 3. rebuild the hosted tool set with `ncc` in a separate self-host tree
 4. reduce dependence on the external host linker/toolchain where practical
+
+The current stage-3 check rebuilds the complete canonical hosted tool list and
+runs the native compiler regression suite through the resulting `ncc`. It does
+not yet remove the initial host-compiler bootstrap or the external shell,
+assembler, and linker.
 
 ## CONTRIBUTOR NOTES
 

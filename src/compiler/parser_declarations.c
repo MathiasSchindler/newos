@@ -81,6 +81,7 @@ static int parse_parameter_declaration(CompilerParser *parser, CompilerDeclarato
     }
     parameter_type.is_function = 0;
     parameter_type.is_array = declarator.is_array;
+    parameter_type.pointer_to_array = declarator.pointer_to_array;
     parameter_type.array_length = declarator.array_length;
     parameter_type.array_inner_length = declarator.array_inner_length;
     parameter_type.array_stride = declarator.array_stride;
@@ -456,7 +457,49 @@ static int parse_array_sizeof_value(CompilerParser *parser, long long *value_out
     return -1;
 }
 
+static int array_bound_has_conditional(const CompilerParser *parser) {
+    const char *cursor;
+    int bracket_depth = 0;
+    int in_string = 0;
+    int in_char = 0;
+
+    if (parser == 0 || parser->current.start == 0) {
+        return 0;
+    }
+    cursor = parser->current.start;
+    while (*cursor != '\0') {
+        if ((in_string || in_char) && *cursor == '\\' && cursor[1] != '\0') {
+            cursor += 2;
+            continue;
+        }
+        if (!in_char && *cursor == '"') {
+            in_string = !in_string;
+        } else if (!in_string && *cursor == '\'') {
+            in_char = !in_char;
+        } else if (!in_string && !in_char) {
+            if (*cursor == '[') {
+                bracket_depth += 1;
+            } else if (*cursor == ']') {
+                if (bracket_depth == 0) {
+                    return 0;
+                }
+                bracket_depth -= 1;
+            } else if (*cursor == '?') {
+                return 1;
+            }
+        }
+        cursor += 1;
+    }
+    return 0;
+}
+
 static int maybe_capture_array_length(CompilerParser *parser, unsigned long long *value_out) {
+    CompilerLexer saved_lexer;
+    CompilerToken saved_token;
+    char saved_error[COMPILER_ERROR_CAPACITY];
+    unsigned long long saved_error_line;
+    unsigned long long saved_error_column;
+    long long constant_value = 0;
     long long sum = 0;
     long long term = 0;
     char pending_op = '+';
@@ -469,6 +512,24 @@ static int maybe_capture_array_length(CompilerParser *parser, unsigned long long
 
     if (parser == 0) {
         return 0;
+    }
+
+    if (array_bound_has_conditional(parser)) {
+        saved_lexer = parser->lexer;
+        saved_token = parser->current;
+        rt_copy_string(saved_error, sizeof(saved_error), parser->error_message);
+        saved_error_line = parser->error_line;
+        saved_error_column = parser->error_column;
+        if (parse_integer_constant_expression(parser, &constant_value) == 0 &&
+            current_is_punct(parser, "]") && constant_value > 0) {
+            *value_out = (unsigned long long)constant_value;
+            return 0;
+        }
+        parser->lexer = saved_lexer;
+        parser->current = saved_token;
+        rt_copy_string(parser->error_message, sizeof(parser->error_message), saved_error);
+        parser->error_line = saved_error_line;
+        parser->error_column = saved_error_column;
     }
 
     while (parser->current.kind != COMPILER_TOKEN_EOF && !current_is_punct(parser, "]")) {

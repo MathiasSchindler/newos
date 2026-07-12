@@ -5,7 +5,7 @@
 #include <limits.h>
 
 /* Forward declarations for mutually-recursive static helpers. */
-static int parse_constant_expression(CompilerParser *parser, long long *value_out);
+int parse_integer_constant_expression(CompilerParser *parser, long long *value_out);
 static int parse_constant_unary(CompilerParser *parser, long long *value_out);
 static int parse_constant_multiplicative(CompilerParser *parser, long long *value_out);
 static int parse_constant_additive(CompilerParser *parser, long long *value_out);
@@ -946,7 +946,7 @@ static int parse_constant_primary(CompilerParser *parser, long long *value_out) 
     }
 
     if (current_is_punct(parser, "(")) {
-        if (advance(parser) != 0 || parse_constant_expression(parser, value_out) != 0 || expect_punct(parser, ")") != 0) {
+        if (advance(parser) != 0 || parse_integer_constant_expression(parser, value_out) != 0 || expect_punct(parser, ")") != 0) {
             return -1;
         }
         return 0;
@@ -1213,7 +1213,7 @@ static int parse_constant_logical_or(CompilerParser *parser, long long *value_ou
     return parse_constant_binary_chain(parser, 9, value_out);
 }
 
-static int parse_constant_expression(CompilerParser *parser, long long *value_out) {
+int parse_integer_constant_expression(CompilerParser *parser, long long *value_out) {
     if (parse_constant_logical_or(parser, value_out) != 0) {
         return -1;
     }
@@ -1223,9 +1223,9 @@ static int parse_constant_expression(CompilerParser *parser, long long *value_ou
         long long false_value;
 
         if (advance(parser) != 0 ||
-            parse_constant_expression(parser, &true_value) != 0 ||
+            parse_integer_constant_expression(parser, &true_value) != 0 ||
             expect_punct(parser, ":") != 0 ||
-            parse_constant_expression(parser, &false_value) != 0) {
+            parse_integer_constant_expression(parser, &false_value) != 0) {
             return -1;
         }
         *value_out = *value_out ? true_value : false_value;
@@ -1262,7 +1262,7 @@ int parse_enum_specifier(CompilerParser *parser) {
         }
 
         if (current_is_punct(parser, "=")) {
-            if (advance(parser) != 0 || parse_constant_expression(parser, &value) != 0) {
+            if (advance(parser) != 0 || parse_integer_constant_expression(parser, &value) != 0) {
                 return -1;
             }
         }
