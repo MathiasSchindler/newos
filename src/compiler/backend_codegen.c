@@ -490,7 +490,7 @@ static int parameter_can_use_cached_register(const BackendState *state,
     int reference_count = 0;
 
     if (backend_is_aarch64(state) || source_param_index < 0 || abi_param_index >= backend_register_arg_limit(state) ||
-        text_contains(type_text, "__int128") ||
+        text_contains(type_text, "__int128") || text_contains(type_text, "double") ||
         (decl_requires_object_storage(type_text) && !text_contains(type_text, "[")) ||
         local_name_declared_count_in_function(ir, decl_index, name) > 0) {
         return 0;
@@ -1168,6 +1168,8 @@ static int begin_function(BackendState *state, const char *name) {
     reset_local_index(state);
     state->local_scope_count = 0;
     state->param_count = returns_object ? 1 : 0;
+    state->gpr_param_count = returns_object ? 1 : 0;
+    state->xmm_param_count = 0;
     state->saw_return_in_function = 0;
     state->frameless_function = 0;
     state->stack_size = 0;
@@ -1326,6 +1328,8 @@ static int end_function(BackendState *state) {
     state->local_count = 0;
     state->local_scope_count = 0;
     state->param_count = 0;
+    state->gpr_param_count = 0;
+    state->xmm_param_count = 0;
     state->saw_return_in_function = 0;
     state->frameless_function = 0;
     state->stack_size = 0;
@@ -1557,14 +1561,50 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         const char x86_arg_regs[][5] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
         const char aarch64_arg_regs[][3] = {"x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7"};
         char asm_line[128];
-        int index = state->param_count;
+        int index = state->gpr_param_count;
         BackendFunctionName *function_info = lookup_function_info(state, state->current_function);
-        int source_param_index = function_returns_object(state, state->current_function) ? index - 1 : index;
+        int source_param_index = function_returns_object(state, state->current_function) ? state->param_count - 1 : state->param_count;
         int object_by_value_param = is_array && !text_contains(type_text, "[") && pointer_depth == 0;
+        int double_param = text_contains(type_text, "double") &&
+                   !text_contains(type_text, "*") && !text_contains(type_text, "[");
 
         if (function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
             (function_info->unused_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
             state->param_count += 1;
+            if (double_param) {
+                state->xmm_param_count += 1;
+            } else {
+                state->gpr_param_count += 1;
+            }
+            return 0;
+        }
+
+        if (double_param) {
+            int local_index;
+            char offset_text[32];
+
+            if (backend_is_aarch64(state) || state->xmm_param_count >= 8) {
+                backend_set_error(state->backend, "double parameters outside x86-64 XMM registers are not yet supported");
+                return -1;
+            }
+            if (allocate_local(state, name, type_text, slot_size, is_array, pointer_depth, char_based, prefers_word_index) != 0) {
+                return -1;
+            }
+            local_index = find_local(state, name);
+            rt_unsigned_to_string((unsigned long long)state->locals[local_index].offset, offset_text, sizeof(offset_text));
+            rt_copy_string(asm_line, sizeof(asm_line), "movq %xmm0, %rax");
+            asm_line[9] = (char)('0' + state->xmm_param_count);
+            if (emit_instruction(state, asm_line) != 0) {
+                return -1;
+            }
+            rt_copy_string(asm_line, sizeof(asm_line), "movq %rax, -");
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), offset_text);
+            rt_copy_string(asm_line + rt_strlen(asm_line), sizeof(asm_line) - rt_strlen(asm_line), "(%rbp)");
+            if (emit_instruction(state, asm_line) != 0) {
+                return -1;
+            }
+            state->param_count += 1;
+            state->xmm_param_count += 1;
             return 0;
         }
 
@@ -1587,6 +1627,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             }
             state->cached_param_count += 1;
             state->param_count += 1;
+            state->gpr_param_count += 1;
             return 0;
         }
 
@@ -1619,6 +1660,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
                 }
                 state->cached_param_count += 1;
                 state->param_count += 1;
+                state->gpr_param_count += 1;
                 return 0;
             }
 
@@ -1686,6 +1728,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
                     return -1;
                 }
                 state->param_count += 1;
+                state->gpr_param_count += 1;
                 return 0;
             }
         }
@@ -1760,6 +1803,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             }
         }
         state->param_count += 1;
+        state->gpr_param_count += 1;
         return 0;
     }
 
@@ -2020,6 +2064,11 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
             backend_invalidate_block_cache(&state);
             if (!function_returns_object(&state, state.current_function) &&
                 emit_normalize_integer_return(&state) != 0) {
+                return -1;
+            }
+            if (!function_returns_object(&state, state.current_function) &&
+                text_contains(function_return_type(&state, state.current_function), "double") &&
+                emit_instruction(&state, "movq %rax, %xmm0") != 0) {
                 return -1;
             }
             if (emit_function_return(&state) != 0) {

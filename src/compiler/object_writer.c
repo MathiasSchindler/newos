@@ -641,6 +641,25 @@ static int encode_setcc_al(ObjectAssembler *assembler, unsigned char opcode) {
            append_byte(assembler, OBJECT_SECTION_TEXT, 0xC0U) == 0 ? 0 : -1;
 }
 
+static int encode_fixed_instruction(ObjectAssembler *assembler, const unsigned char *bytes, size_t count) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (append_byte(assembler, OBJECT_SECTION_TEXT, bytes[index]) != 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int encode_mov_rax_xmm(ObjectAssembler *assembler, int xmm_register, int to_xmm) {
+    return append_byte(assembler, OBJECT_SECTION_TEXT, 0x66U) == 0 &&
+           append_rex(assembler, 1, xmm_register, 0, 0) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, 0x0fU) == 0 &&
+           append_byte(assembler, OBJECT_SECTION_TEXT, to_xmm ? 0x6eU : 0x7eU) == 0 &&
+           append_modrm(assembler, 3U, (unsigned int)xmm_register, 0U) == 0 ? 0 : -1;
+}
+
 static int encode_call_reg(ObjectAssembler *assembler, int reg) {
     return append_rex(assembler, 0, 0, 0, reg) == 0 &&
            append_byte(assembler, OBJECT_SECTION_TEXT, 0xFFU) == 0 &&
@@ -654,6 +673,46 @@ static int encode_jmp_reg(ObjectAssembler *assembler, int reg) {
 }
 
 static int assemble_instruction(ObjectAssembler *assembler, const char *line) {
+    static const unsigned char mov_rax_xmm0[] = {0x66U, 0x48U, 0x0fU, 0x6eU, 0xc0U};
+    static const unsigned char mov_rax_xmm1[] = {0x66U, 0x48U, 0x0fU, 0x6eU, 0xc8U};
+    static const unsigned char mov_xmm0_rax[] = {0x66U, 0x48U, 0x0fU, 0x7eU, 0xc0U};
+    static const unsigned char addsd_xmm1_xmm0[] = {0xf2U, 0x0fU, 0x58U, 0xc1U};
+    static const unsigned char subsd_xmm1_xmm0[] = {0xf2U, 0x0fU, 0x5cU, 0xc1U};
+    static const unsigned char mulsd_xmm1_xmm0[] = {0xf2U, 0x0fU, 0x59U, 0xc1U};
+    static const unsigned char divsd_xmm1_xmm0[] = {0xf2U, 0x0fU, 0x5eU, 0xc1U};
+    static const unsigned char ucomisd_xmm1_xmm0[] = {0x66U, 0x0fU, 0x2eU, 0xc1U};
+    static const unsigned char ucomisd_xmm0_xmm1[] = {0x66U, 0x0fU, 0x2eU, 0xc8U};
+    static const unsigned char setnp_dl[] = {0x0fU, 0x9bU, 0xc2U};
+    static const unsigned char setp_dl[] = {0x0fU, 0x9aU, 0xc2U};
+    static const unsigned char and_dl_al[] = {0x20U, 0xd0U};
+    static const unsigned char or_dl_al[] = {0x08U, 0xd0U};
+    static const unsigned char cvtsi2sdq_rax_xmm0[] = {0xf2U, 0x48U, 0x0fU, 0x2aU, 0xc0U};
+    static const unsigned char cvttsd2siq_xmm0_rax[] = {0xf2U, 0x48U, 0x0fU, 0x2cU, 0xc0U};
+    size_t line_length = rt_strlen(line);
+
+    if (starts_with(line, "movq %rax, %xmm") && line_length == 16U && line[15] >= '0' && line[15] <= '7') {
+        return encode_mov_rax_xmm(assembler, line[15] - '0', 1);
+    }
+    if (starts_with(line, "movq %xmm") && line_length == 16U && line[9] >= '0' && line[9] <= '7' &&
+        names_equal(line + 10, ", %rax")) {
+        return encode_mov_rax_xmm(assembler, line[9] - '0', 0);
+    }
+
+    if (names_equal(line, "movq %rax, %xmm0")) return encode_fixed_instruction(assembler, mov_rax_xmm0, sizeof(mov_rax_xmm0));
+    if (names_equal(line, "movq %rax, %xmm1")) return encode_fixed_instruction(assembler, mov_rax_xmm1, sizeof(mov_rax_xmm1));
+    if (names_equal(line, "movq %xmm0, %rax")) return encode_fixed_instruction(assembler, mov_xmm0_rax, sizeof(mov_xmm0_rax));
+    if (names_equal(line, "addsd %xmm1, %xmm0")) return encode_fixed_instruction(assembler, addsd_xmm1_xmm0, sizeof(addsd_xmm1_xmm0));
+    if (names_equal(line, "subsd %xmm1, %xmm0")) return encode_fixed_instruction(assembler, subsd_xmm1_xmm0, sizeof(subsd_xmm1_xmm0));
+    if (names_equal(line, "mulsd %xmm1, %xmm0")) return encode_fixed_instruction(assembler, mulsd_xmm1_xmm0, sizeof(mulsd_xmm1_xmm0));
+    if (names_equal(line, "divsd %xmm1, %xmm0")) return encode_fixed_instruction(assembler, divsd_xmm1_xmm0, sizeof(divsd_xmm1_xmm0));
+    if (names_equal(line, "ucomisd %xmm1, %xmm0")) return encode_fixed_instruction(assembler, ucomisd_xmm1_xmm0, sizeof(ucomisd_xmm1_xmm0));
+    if (names_equal(line, "ucomisd %xmm0, %xmm1")) return encode_fixed_instruction(assembler, ucomisd_xmm0_xmm1, sizeof(ucomisd_xmm0_xmm1));
+    if (names_equal(line, "setnp %dl")) return encode_fixed_instruction(assembler, setnp_dl, sizeof(setnp_dl));
+    if (names_equal(line, "setp %dl")) return encode_fixed_instruction(assembler, setp_dl, sizeof(setp_dl));
+    if (names_equal(line, "andb %dl, %al")) return encode_fixed_instruction(assembler, and_dl_al, sizeof(and_dl_al));
+    if (names_equal(line, "orb %dl, %al")) return encode_fixed_instruction(assembler, or_dl_al, sizeof(or_dl_al));
+    if (names_equal(line, "cvtsi2sdq %rax, %xmm0")) return encode_fixed_instruction(assembler, cvtsi2sdq_rax_xmm0, sizeof(cvtsi2sdq_rax_xmm0));
+    if (names_equal(line, "cvttsd2siq %xmm0, %rax")) return encode_fixed_instruction(assembler, cvttsd2siq_xmm0_rax, sizeof(cvttsd2siq_xmm0_rax));
     if (names_equal(line, "pushq %rbp")) return encode_push_reg(assembler, 5);
     if (names_equal(line, "pushq %rax")) return encode_push_reg(assembler, 0);
     if (names_equal(line, "popq %rax")) return encode_pop_reg(assembler, 0);

@@ -9,6 +9,54 @@ static int hex_digit_value(char ch) {
     return -1;
 }
 
+int backend_parse_double_literal_bits(const char *text, long long *bits_out) {
+    double value = 0.0;
+    double fraction = 0.1;
+    unsigned long long bits = 0ULL;
+    int exponent = 0;
+    int exponent_negative = 0;
+
+    if (text == 0 || bits_out == 0) {
+        return -1;
+    }
+    while (*text >= '0' && *text <= '9') {
+        value = value * 10.0 + (double)(*text - '0');
+        text += 1;
+    }
+    if (*text == '.') {
+        text += 1;
+        while (*text >= '0' && *text <= '9') {
+            value += (double)(*text - '0') * fraction;
+            fraction *= 0.1;
+            text += 1;
+        }
+    }
+    if (*text == 'e' || *text == 'E') {
+        text += 1;
+        if (*text == '+' || *text == '-') {
+            exponent_negative = *text == '-';
+            text += 1;
+        }
+        while (*text >= '0' && *text <= '9') {
+            exponent = exponent * 10 + (int)(*text - '0');
+            text += 1;
+        }
+        while (exponent > 0) {
+            value = exponent_negative ? value / 10.0 : value * 10.0;
+            exponent -= 1;
+        }
+    }
+    if (*text == 'f' || *text == 'F' || *text == 'l' || *text == 'L') {
+        text += 1;
+    }
+    if (*text != '\0') {
+        return -1;
+    }
+    memcpy(&bits, &value, sizeof(bits));
+    *bits_out = (long long)bits;
+    return 0;
+}
+
 char backend_decode_escaped_char(const char **cursor_inout) {
     const char *cursor = *cursor_inout;
     unsigned int value = 0U;

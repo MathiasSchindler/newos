@@ -135,6 +135,8 @@ typedef struct {
     char current_function[COMPILER_IR_NAME_CAPACITY];
     int in_function;
     int param_count;
+    int gpr_param_count;
+    int xmm_param_count;
     int saw_return_in_function;
     int frameless_function;
     int stack_size;
@@ -163,6 +165,7 @@ typedef struct {
     size_t text_length;
     long long number_value;
     int number_is_unsigned;
+    int number_is_floating;
 } ExprToken;
 
 typedef struct {
@@ -235,6 +238,7 @@ int backend_seed_block_cache_from_register(BackendState *state, int local_index,
 int emit_store_to_address_register(BackendState *state, const char *reg, int byte_value);
 int emit_pop_address_and_store(BackendState *state, int byte_value);
 int backend_type_access_size(const char *type_text, int word_index);
+int backend_parse_double_literal_bits(const char *text, long long *bits_out);
 char backend_decode_escaped_char(const char **cursor_inout);
 int backend_member_prefers_word_index(const char *name, const char *type_text);
 int backend_member_result_decays_to_address(const char *type_text);

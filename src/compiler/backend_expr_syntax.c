@@ -75,6 +75,7 @@ void expr_next(ExprParser *parser) {
     parser->current.text[0] = '\0';
     parser->current.number_value = 0;
     parser->current.number_is_unsigned = 0;
+    parser->current.number_is_floating = 0;
     parser->current.text_length = 0U;
 
     if (*cursor == '\0') {
@@ -116,17 +117,34 @@ void expr_next(ExprParser *parser) {
                 parser->current.text[length++] = *cursor++;
             }
             if (*cursor == '.') {
+                parser->current.number_is_floating = 1;
+                if (length + 1 < sizeof(parser->current.text)) {
+                    parser->current.text[length++] = *cursor;
+                }
                 cursor += 1;
                 while (*cursor >= '0' && *cursor <= '9') {
+                    if (length + 1 < sizeof(parser->current.text)) {
+                        parser->current.text[length++] = *cursor;
+                    }
                     cursor += 1;
                 }
             }
             if (*cursor == 'e' || *cursor == 'E') {
+                parser->current.number_is_floating = 1;
+                if (length + 1 < sizeof(parser->current.text)) {
+                    parser->current.text[length++] = *cursor;
+                }
                 cursor += 1;
                 if (*cursor == '+' || *cursor == '-') {
+                    if (length + 1 < sizeof(parser->current.text)) {
+                        parser->current.text[length++] = *cursor;
+                    }
                     cursor += 1;
                 }
                 while (*cursor >= '0' && *cursor <= '9') {
+                    if (length + 1 < sizeof(parser->current.text)) {
+                        parser->current.text[length++] = *cursor;
+                    }
                     cursor += 1;
                 }
             }
@@ -136,6 +154,9 @@ void expr_next(ExprParser *parser) {
                *cursor == 'f' || *cursor == 'F') {
             if (*cursor == 'u' || *cursor == 'U') {
                 parser->current.number_is_unsigned = 1;
+            }
+            if (*cursor == 'f' || *cursor == 'F') {
+                parser->current.number_is_floating = 1;
             }
             if (length + 1 < sizeof(parser->current.text)) {
                 parser->current.text[length++] = *cursor;

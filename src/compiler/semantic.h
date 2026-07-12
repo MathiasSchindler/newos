@@ -16,7 +16,8 @@ typedef enum {
     COMPILER_BASE_INT,
     COMPILER_BASE_STRUCT,
     COMPILER_BASE_UNION,
-    COMPILER_BASE_ENUM
+    COMPILER_BASE_ENUM,
+    COMPILER_BASE_DOUBLE
 } CompilerBaseType;
 
 typedef struct {

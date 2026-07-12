@@ -236,6 +236,18 @@ static int branch_expr_is_zero_literal(const char *expr) {
     return *cursor == '\0';
 }
 
+static int branch_expr_is_double(BackendState *state, const char *expr) {
+    ExprParser parser;
+    char type_text[128];
+
+    parser.cursor = expr;
+    parser.state = state;
+    expr_next(&parser);
+    expr_infer_result_type(&parser, type_text, sizeof(type_text));
+    return text_contains(type_text, "double") &&
+           !text_contains(type_text, "*") && !text_contains(type_text, "[");
+}
+
 typedef enum {
     BRANCH_COMPARE_OPERAND_NONE = 0,
     BRANCH_COMPARE_OPERAND_IMMEDIATE,
@@ -414,6 +426,21 @@ static const char *branch_false_jump_for_compare(BackendState *state, const char
 static int emit_branch_false_fallback(BackendState *state, const char *expr, const char *label) {
     const char *mnemonic = backend_is_aarch64(state) ? "b.eq" : "je";
 
+    if (branch_expr_is_double(state, expr)) {
+        char truth_expr[COMPILER_IR_LINE_CAPACITY];
+
+        if (rt_strlen(expr) + 10U >= sizeof(truth_expr)) {
+            backend_set_error(state->backend, "branch condition too large for double truthiness");
+            return -1;
+        }
+        rt_copy_string(truth_expr, sizeof(truth_expr), "(");
+        rt_copy_string(truth_expr + rt_strlen(truth_expr), sizeof(truth_expr) - rt_strlen(truth_expr), expr);
+        rt_copy_string(truth_expr + rt_strlen(truth_expr), sizeof(truth_expr) - rt_strlen(truth_expr), ") != 0.0");
+        return emit_expression(state, truth_expr) == 0 &&
+               emit_cmp_zero(state) == 0 &&
+               emit_jump_to_label(state, mnemonic, label) == 0 ? 0 : -1;
+    }
+
     return emit_expression(state, expr) == 0 &&
            emit_cmp_zero(state) == 0 &&
            emit_jump_to_label(state, mnemonic, label) == 0 ? 0 : -1;
@@ -440,6 +467,9 @@ static int emit_branch_false_compare(BackendState *state, const char *expr, cons
         return -1;
     }
     if (lhs[0] == '\0' || rhs[0] == '\0') {
+        return emit_branch_false_fallback(state, expr, label);
+    }
+    if (branch_expr_is_double(state, lhs) || branch_expr_is_double(state, rhs)) {
         return emit_branch_false_fallback(state, expr, label);
     }
     {

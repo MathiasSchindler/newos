@@ -44,6 +44,148 @@ EOF
 
 compile_and_check_native "$WORK_DIR/flow.c" "$WORK_DIR/flow_native_bin" "4" "compiler linker did not preserve control-flow semantics"
 
+cat > "$WORK_DIR/double_local_arithmetic.c" <<'EOF'
+int main(void) {
+    double value = 1.5;
+    value = value + 2.25;
+    return value > 3.74 && value < 3.76 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/double_local_arithmetic.c" "$WORK_DIR/double_local_arithmetic_bin" "0" "compiler did not preserve local binary64 literal, addition, and comparison semantics"
+
+cat > "$WORK_DIR/double_operator_semantics.c" <<'EOF'
+int main(void) {
+    double product = 6.0 * 1.5;
+    double quotient = product / 4.0;
+    double negative = -quotient;
+    double negative_zero = -0.0;
+    return quotient > 2.24 && quotient < 2.26 &&
+           negative < -2.24 && negative > -2.26 &&
+           negative == -2.25 && negative != -2.0 &&
+           -0.0 == 0.0 && 1.0 / negative_zero < 0.0 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/double_operator_semantics.c" "$WORK_DIR/double_operator_semantics_bin" "0" "compiler did not preserve binary64 multiply, divide, unary sign, and equality semantics"
+
+cat > "$WORK_DIR/double_branch_semantics.c" <<'EOF'
+static int classify(double value) {
+    if (value < 0.0) return 1;
+    if (value >= 0.0) return 2;
+    return 3;
+}
+
+int main(void) {
+    double negative_zero = -0.0;
+    double nan = 0.0 / 0.0;
+    if (negative_zero) return 1;
+    return classify(negative_zero) == 2 && classify(nan) == 3 ? 0 : 2;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/double_branch_semantics.c" "$WORK_DIR/double_branch_semantics_bin" "0" "compiler did not preserve binary64 branch truthiness and ordered comparison semantics"
+
+cat > "$WORK_DIR/double_scalar_casts.c" <<'EOF'
+int main(void) {
+    int positive = 7;
+    long long negative = -3;
+    double positive_value = (double)positive;
+    double negative_value = (double)negative;
+    int truncated_positive = (int)3.75;
+    long long truncated_negative = (long long)-8.5;
+    return positive_value == 7.0 && negative_value == -3.0 &&
+           truncated_positive == 3 && truncated_negative == -8 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/double_scalar_casts.c" "$WORK_DIR/double_scalar_casts_bin" "0" "compiler did not preserve signed integer and binary64 cast semantics"
+
+cat > "$WORK_DIR/double_call_abi.c" <<'EOF'
+static double affine(double value, int scale, double offset) {
+    return value * (double)scale + offset;
+}
+
+static double twice(double value) {
+    return value + value;
+}
+
+int main(void) {
+    double result = twice(affine(1.25, 2, 0.5));
+    return result == 6.0 ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/double_call_abi.c" "$WORK_DIR/double_call_abi_bin" "0" "compiler did not preserve mixed SysV binary64 parameters and return values"
+
+if [ "$RUN_TARGET" = "linux-x86_64" ]; then
+    cat > "$WORK_DIR/double_abi_external_caller.c" <<'EOF'
+extern double abi_affine(double value, int scale, double offset);
+
+int main(void) {
+    double result = abi_affine(1.25, 2, 0.5);
+    return result == 3.0 ? 0 : 1;
+}
+EOF
+
+    cat > "$WORK_DIR/double_abi_external_callee.s" <<'EOF'
+.text
+.globl abi_affine
+abi_affine:
+    cvtsi2sdl %edi, %xmm2
+    mulsd %xmm2, %xmm0
+    addsd %xmm1, %xmm0
+    ret
+EOF
+
+    cc -c "$WORK_DIR/double_abi_external_callee.s" -o "$WORK_DIR/double_abi_external_callee.o"
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" "$WORK_DIR/double_abi_external_caller.c" "$WORK_DIR/double_abi_external_callee.o" -o "$WORK_DIR/double_abi_external_caller_bin"
+    actual_status=0
+    "$WORK_DIR/double_abi_external_caller_bin" || actual_status=$?
+    assert_text_equals "$actual_status" "0" "compiler caller did not use the SysV binary64 argument and return ABI"
+
+    cat > "$WORK_DIR/double_abi_ncc_callee.c" <<'EOF'
+double ncc_affine(double value, int scale, double offset) {
+    return value * (double)scale + offset;
+}
+EOF
+
+    cat > "$WORK_DIR/double_abi_host_caller.c" <<'EOF'
+extern double ncc_affine(double value, int scale, double offset);
+
+int main(void) {
+    double result = ncc_affine(1.25, 2, 0.5);
+    return result == 3.0 ? 0 : 1;
+}
+EOF
+
+    "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -c "$WORK_DIR/double_abi_ncc_callee.c" -o "$WORK_DIR/double_abi_ncc_callee.o"
+    cc "$WORK_DIR/double_abi_host_caller.c" "$WORK_DIR/double_abi_ncc_callee.o" -o "$WORK_DIR/double_abi_host_caller_bin"
+    actual_status=0
+    "$WORK_DIR/double_abi_host_caller_bin" || actual_status=$?
+    assert_text_equals "$actual_status" "0" "compiler callee did not use the SysV binary64 argument and return ABI"
+fi
+
+cat > "$WORK_DIR/double_shared_math.c" <<'EOF'
+#include "math.h"
+
+int main(void) {
+    double root = math_sqrt(9.0);
+    double power = math_pow(2.0, 5.0);
+    double sine = math_sin(MATH_PI / 2.0);
+    if (!(root > 2.999 && root < 3.001)) return 1;
+    if (!(power > 31.999 && power < 32.001)) return 2;
+    if (!(sine > 0.999 && sine < 1.001)) return 3;
+    return 0;
+}
+EOF
+
+"${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -Isrc/shared \
+    "$WORK_DIR/double_shared_math.c" src/shared/math.c -o "$WORK_DIR/double_shared_math_bin"
+actual_status=0
+"$WORK_DIR/double_shared_math_bin" || actual_status=$?
+assert_text_equals "$actual_status" "0" "compiler did not execute the shared binary64 math implementation correctly"
+
 cat > "$WORK_DIR/backend_expr.c" <<'EOF'
 int main(void) {
     char buffer[16];

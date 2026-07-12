@@ -248,6 +248,8 @@ static void format_layout_type(const CompilerType *type, char *buffer, size_t bu
         base = "void";
     } else if (type->base == COMPILER_BASE_CHAR) {
         base = "char";
+    } else if (type->base == COMPILER_BASE_DOUBLE) {
+        base = "double";
     } else if (type->base == COMPILER_BASE_STRUCT) {
         base = "struct";
     } else if (type->base == COMPILER_BASE_UNION) {
@@ -549,13 +551,16 @@ int parse_declaration_specifiers(CompilerParser *parser, int *is_typedef_out, in
                 type_out->base = COMPILER_BASE_CHAR;
                 type_out->scalar_bytes = 1U;
                 saw_explicit_base = 1;
+            } else if (current_is_keyword(parser, "double")) {
+                type_out->base = COMPILER_BASE_DOUBLE;
+                type_out->scalar_bytes = 8U;
+                saw_explicit_base = 1;
             } else if (current_is_int_family_keyword(parser) ||
                        (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
                 type_out->base = COMPILER_BASE_INT;
                 if (current_is_keyword(parser, "short")) {
                     type_out->scalar_bytes = 2U;
                 } else if (current_is_keyword(parser, "long") ||
-                           current_is_keyword(parser, "double") ||
                            (current_is_identifier(parser) && token_text_equals(&parser->current, "__int128"))) {
                     type_out->scalar_bytes = token_text_equals(&parser->current, "__int128") ? 16U : 8U;
                 } else {

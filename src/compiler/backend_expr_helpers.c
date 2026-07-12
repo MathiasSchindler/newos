@@ -435,7 +435,9 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
         rt_copy_string(buffer, buffer_size, "char*");
         expr_next(parser);
     } else if (parser->current.kind == EXPR_TOKEN_NUMBER || parser->current.kind == EXPR_TOKEN_CHAR) {
-        if (parser->current.number_is_unsigned) {
+        if (parser->current.number_is_floating) {
+            rt_copy_string(buffer, buffer_size, "double");
+        } else if (parser->current.number_is_unsigned) {
             if (!text_contains(parser->current.text, "l") &&
                 !text_contains(parser->current.text, "L") &&
                 parser->current.number_value >= 0 &&
@@ -447,6 +449,14 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
         } else {
             rt_copy_string(buffer, buffer_size, "int");
         }
+        expr_next(parser);
+    } else if (parser->current.kind == EXPR_TOKEN_PUNCT &&
+               (names_equal(parser->current.text, "+") || names_equal(parser->current.text, "-") ||
+                names_equal(parser->current.text, "~"))) {
+        expr_next(parser);
+        expr_infer_result_type(parser, buffer, buffer_size);
+    } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "!")) {
+        rt_copy_string(buffer, buffer_size, "int");
         expr_next(parser);
     } else if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "&")) {
         expr_next(parser);

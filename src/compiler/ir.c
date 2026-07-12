@@ -1522,6 +1522,8 @@ static void format_type(const CompilerType *type, char *buffer, size_t buffer_si
         base = "void";
     } else if (type->base == COMPILER_BASE_CHAR) {
         base = "char";
+    } else if (type->base == COMPILER_BASE_DOUBLE) {
+        base = "double";
     } else if (type->base == COMPILER_BASE_STRUCT) {
         base = "struct";
     } else if (type->base == COMPILER_BASE_UNION) {
