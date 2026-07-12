@@ -35,8 +35,13 @@
 #define solve_abs math_abs
 #define solve_sqrt math_sqrt
 #define solve_exp math_exp
+#define solve_exp2 math_exp2
 #define solve_log math_log
+#define solve_log2 math_log2
+#define solve_log10 math_log10
 #define solve_atan math_atan
+#define solve_atan2 math_atan2
+#define solve_hypot math_hypot
 #define solve_sin math_sin
 #define solve_cos math_cos
 #define solve_tan math_tan
@@ -45,6 +50,8 @@
 #define solve_sinh math_sinh
 #define solve_cosh math_cosh
 #define solve_tanh math_tanh
+#define solve_trunc math_trunc
+#define solve_fmod math_fmod
 #define solve_floor math_floor
 #define solve_ceil math_ceil
 #define solve_round math_round
@@ -373,7 +380,7 @@ static int solve_sp_uint(int fd, unsigned long long value) {
 }
 
 static int solve_is_bad(double value) {
-    return value != value || value > SOLVE_HUGE || value < -SOLVE_HUGE;
+    return !math_is_finite(value) || math_abs(value) > SOLVE_HUGE;
 }
 
 static int solve_append_char(char *buffer, size_t buffer_size, size_t *length_io, char ch) {

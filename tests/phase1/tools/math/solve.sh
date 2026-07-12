@@ -8,6 +8,13 @@ phase1_math_setup solve
 solve_sqrt=$("${TEST_BIN_DIR}/solve" --quiet --lo 1 --hi 2 'x^2 - 2 = 0' | tr -d '\r\n')
 assert_text_equals "$solve_sqrt" '1.4142135624' "solve bisection sqrt(2) root mismatch"
 
+solve_hypot=$("${TEST_BIN_DIR}/solve" --quiet --lo 4 --hi 6 'x - hypot(3,4) = 0' | tr -d '\r\n')
+assert_text_equals "$solve_hypot" '5' "solve hypot function mismatch"
+solve_atan2=$("${TEST_BIN_DIR}/solve" --quiet --scale 9 --lo 2 --hi 3 'x - atan2(1,-1) = 0' | tr -d '\r\n')
+assert_text_equals "$solve_atan2" '2.356194490' "solve atan2 function mismatch"
+solve_log2=$("${TEST_BIN_DIR}/solve" --quiet --lo 2 --hi 4 'x - log2(8) = 0' | tr -d '\r\n')
+assert_text_equals "$solve_log2" '3' "solve log2 function mismatch"
+
 "${TEST_BIN_DIR}/solve" --scan -10:10:200 --all 'x^2 - 5*x + 6 = 0' > "$WORK_DIR/quadratic.out"
 assert_file_contains "$WORK_DIR/quadratic.out" '^x = 2$' "solve did not find the first quadratic root"
 assert_file_contains "$WORK_DIR/quadratic.out" '^x = 3$' "solve did not find the second quadratic root"

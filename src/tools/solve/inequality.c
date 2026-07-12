@@ -25,9 +25,10 @@ static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, doubl
         int j;
         for (j = i + 1; j < count; ++j) {
             if (points[j].value < points[i].value) {
-                SolveBreakpoint temp = points[i];
-                points[i] = points[j];
-                points[j] = temp;
+                SolveBreakpoint temp;
+                memmove(&temp, &points[i], sizeof(temp));
+                memmove(&points[i], &points[j], sizeof(points[i]));
+                memmove(&points[j], &temp, sizeof(points[j]));
             }
         }
     }
@@ -45,7 +46,11 @@ static void solve_sort_breakpoints(SolveBreakpoint *points, int *count_io, doubl
 static void solve_write_interval_endpoint(const char *label, double value, int has_endpoint) {
     char text[96];
     if (!has_endpoint) {
-        solve_sp_cstr(1, value < 0.0 ? "-inf" : "inf");
+        if (value < 0.0) {
+            solve_sp_cstr(1, "-inf");
+        } else {
+            solve_sp_cstr(1, "inf");
+        }
     } else if (label[0] != '\0') {
         solve_sp_cstr(1, label);
     } else {

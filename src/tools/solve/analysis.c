@@ -125,7 +125,7 @@ static int solve_format_symbolic_antiderivative(const char *expr, const SolveOpt
 }
 
 static int solve_format_fraction_hint(double value, char *buffer, size_t buffer_size) {
-    double absolute = value < 0.0 ? -value : value;
+    double absolute = math_abs(value);
     unsigned int den;
     unsigned long long best_num = 0ULL;
     unsigned long long best_den = 1ULL;

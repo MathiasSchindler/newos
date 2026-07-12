@@ -115,9 +115,12 @@ static int solve_is_known_function(const char *name) {
            rt_strcmp(name, "asin") == 0 || rt_strcmp(name, "acos") == 0 ||
            rt_strcmp(name, "sinh") == 0 || rt_strcmp(name, "cosh") == 0 || rt_strcmp(name, "tanh") == 0 ||
            rt_strcmp(name, "floor") == 0 || rt_strcmp(name, "ceil") == 0 || rt_strcmp(name, "round") == 0 ||
-           rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0 ||
+           rt_strcmp(name, "trunc") == 0 || rt_strcmp(name, "fmod") == 0 ||
+           rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0 || rt_strcmp(name, "atan2") == 0 ||
+           rt_strcmp(name, "hypot") == 0 ||
            rt_strcmp(name, "log") == 0 || rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0 ||
-           rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0 ||
+           rt_strcmp(name, "log2") == 0 || rt_strcmp(name, "log10") == 0 ||
+           rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0 || rt_strcmp(name, "exp2") == 0 ||
            rt_strcmp(name, "min") == 0 || rt_strcmp(name, "max") == 0;
 }
 
@@ -194,11 +197,18 @@ static double solve_call_function(SolveExprParser *parser, const char *name) {
     if (rt_strcmp(name, "floor") == 0 && !have_second) return solve_floor(first);
     if (rt_strcmp(name, "ceil") == 0 && !have_second) return solve_ceil(first);
     if (rt_strcmp(name, "round") == 0 && !have_second) return solve_round(first);
+    if (rt_strcmp(name, "trunc") == 0 && !have_second) return solve_trunc(first);
+    if (rt_strcmp(name, "fmod") == 0 && have_second) return solve_fmod(first, second);
     if ((rt_strcmp(name, "atan") == 0 || rt_strcmp(name, "a") == 0) && !have_second) return solve_atan(first);
+    if (rt_strcmp(name, "atan2") == 0 && have_second) return solve_atan2(first, second);
+    if (rt_strcmp(name, "hypot") == 0 && have_second) return solve_hypot(first, second);
     if ((rt_strcmp(name, "log") == 0 || rt_strcmp(name, "ln") == 0 || rt_strcmp(name, "l") == 0) && !have_second) return solve_log(first);
+    if (rt_strcmp(name, "log2") == 0 && !have_second) return solve_log2(first);
+    if (rt_strcmp(name, "log10") == 0 && !have_second) return solve_log10(first);
     if ((rt_strcmp(name, "exp") == 0 || rt_strcmp(name, "e") == 0) && !have_second) return solve_exp(first);
-    if (rt_strcmp(name, "min") == 0 && have_second) return first <= second ? first : second;
-    if (rt_strcmp(name, "max") == 0 && have_second) return first >= second ? first : second;
+    if (rt_strcmp(name, "exp2") == 0 && !have_second) return solve_exp2(first);
+    if (rt_strcmp(name, "min") == 0 && have_second) return math_min(first, second);
+    if (rt_strcmp(name, "max") == 0 && have_second) return math_max(first, second);
 
     solve_set_expr_error(parser, have_second ? "unknown function" : "wrong function arity");
     return 0.0;

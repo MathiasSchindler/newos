@@ -36,3 +36,6 @@ assert_text_equals "$printf_q" "'can'\''t stop'" "printf %q shell quoting failed
 
 printf_float=$("${TEST_BIN_DIR}/printf" '%.3f|%.2e|%.4g' 12.5 12.5 12.5 | tr -d '\r\n')
 assert_text_equals "$printf_float" '12.500|1.25e+01|12.5' "printf floating formatting changed unexpectedly"
+
+printf_special=$("${TEST_BIN_DIR}/printf" '%.1f|%e|%G|%f' -0 inf nan -infinity | tr -d '\r\n')
+assert_text_equals "$printf_special" '-0.0|inf|NAN|-inf' "printf special floating formatting mismatch"

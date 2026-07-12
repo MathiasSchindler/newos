@@ -173,9 +173,16 @@ int main(void) {
     double root = math_sqrt(9.0);
     double power = math_pow(2.0, 5.0);
     double sine = math_sin(MATH_PI / 2.0);
+    double coefficient_a = 1.0;
+    double coefficient_b = -1.0;
+    double square_root = math_sqrt(5.0);
+    double root_low = (-coefficient_b - square_root) / (2.0 * coefficient_a);
+    double root_high = (-coefficient_b + square_root) / (2.0 * coefficient_a);
     if (!(root > 2.999 && root < 3.001)) return 1;
     if (!(power > 31.999 && power < 32.001)) return 2;
     if (!(sine > 0.999 && sine < 1.001)) return 3;
+    if (!(root_low > -0.619 && root_low < -0.617)) return 4;
+    if (!(root_high > 1.617 && root_high < 1.619)) return 5;
     return 0;
 }
 EOF

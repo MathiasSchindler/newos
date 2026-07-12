@@ -84,6 +84,21 @@ static int parse_float_value(const char *text, double *value_out) {
         text += 1;
     }
 
+    if (tool_ascii_tolower(text[0]) == 'n' && tool_ascii_tolower(text[1]) == 'a' &&
+        tool_ascii_tolower(text[2]) == 'n' && text[3] == '\0') {
+        *value_out = math_copy_sign(math_nan(), (double)sign);
+        return 0;
+    }
+    if (tool_ascii_tolower(text[0]) == 'i' && tool_ascii_tolower(text[1]) == 'n' &&
+        tool_ascii_tolower(text[2]) == 'f' &&
+        (text[3] == '\0' ||
+         (tool_ascii_tolower(text[3]) == 'i' && tool_ascii_tolower(text[4]) == 'n' &&
+          tool_ascii_tolower(text[5]) == 'i' && tool_ascii_tolower(text[6]) == 't' &&
+          tool_ascii_tolower(text[7]) == 'y' && text[8] == '\0'))) {
+        *value_out = math_copy_sign(math_infinity(), (double)sign);
+        return 0;
+    }
+
     while (tool_ascii_is_digit(*text)) {
         value = (value * 10.0) + (double)(*text - '0');
         text += 1;
@@ -364,7 +379,7 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
     unsigned long long scale = 1ULL;
     unsigned long long whole;
     unsigned long long fraction;
-    int negative = value < 0.0;
+    int negative = math_sign_bit(value);
     int i;
 
     if (buffer_size == 0U) {
@@ -449,7 +464,7 @@ static int format_exponential_double(double value, int precision, int uppercase,
     }
 
     if (value == 0.0) {
-        if (format_fixed_double(0.0, precision, mantissa, sizeof(mantissa)) != 0) {
+        if (format_fixed_double(value, precision, mantissa, sizeof(mantissa)) != 0) {
             return -1;
         }
     } else {
@@ -463,7 +478,7 @@ static int format_exponential_double(double value, int precision, int uppercase,
             exponent -= 1;
         }
 
-        if (value < 0.0) {
+        if (math_sign_bit(value)) {
             normalized = -normalized;
         }
 
@@ -472,7 +487,7 @@ static int format_exponential_double(double value, int precision, int uppercase,
         }
 
         if (mantissa[0] == '1' && mantissa[1] == '0' && mantissa[2] == '.') {
-            if (format_fixed_double((value < 0.0) ? -1.0 : 1.0, precision, mantissa, sizeof(mantissa)) != 0) {
+            if (format_fixed_double(math_sign_bit(value) ? -1.0 : 1.0, precision, mantissa, sizeof(mantissa)) != 0) {
                 return -1;
             }
             exponent += 1;
@@ -557,6 +572,24 @@ static int format_general_double(double value, int precision, int uppercase, cha
     }
 
     return 0;
+}
+
+static int format_special_double(double value, int uppercase, char *buffer, size_t buffer_size) {
+    size_t length = 0U;
+    const char *name;
+
+    if (math_is_finite(value)) {
+        return 0;
+    }
+    name = math_is_nan(value) ? (uppercase ? "NAN" : "nan") : (uppercase ? "INF" : "inf");
+    buffer[0] = '\0';
+    if (math_sign_bit(value) && tool_buffer_append_char_checked(buffer, buffer_size, &length, '-') != 0) {
+        return -1;
+    }
+    if (tool_buffer_append_text_checked(buffer, buffer_size, &length, name) != 0) {
+        return -1;
+    }
+    return 1;
 }
 
 int main(int argc, char **argv) {
@@ -762,19 +795,26 @@ int main(int argc, char **argv) {
                 } else if (spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') {
                     char float_buffer[256];
                     double value = 0.0;
+                    int special;
 
                     parse_float_value(arg, &value);
-                    if (spec == 'f' || spec == 'F') {
-                        if (format_fixed_double(value, precision, float_buffer, sizeof(float_buffer)) != 0) {
-                            return 1;
-                        }
-                    } else if (spec == 'e' || spec == 'E') {
-                        if (format_exponential_double(value, precision, spec == 'E', float_buffer, sizeof(float_buffer)) != 0) {
-                            return 1;
-                        }
-                    } else {
-                        if (format_general_double(value, precision, spec == 'G', float_buffer, sizeof(float_buffer)) != 0) {
-                            return 1;
+                    special = format_special_double(value, spec == 'F' || spec == 'E' || spec == 'G', float_buffer, sizeof(float_buffer));
+                    if (special < 0) {
+                        return 1;
+                    }
+                    if (special == 0) {
+                        if (spec == 'f' || spec == 'F') {
+                            if (format_fixed_double(value, precision, float_buffer, sizeof(float_buffer)) != 0) {
+                                return 1;
+                            }
+                        } else if (spec == 'e' || spec == 'E') {
+                            if (format_exponential_double(value, precision, spec == 'E', float_buffer, sizeof(float_buffer)) != 0) {
+                                return 1;
+                            }
+                        } else {
+                            if (format_general_double(value, precision, spec == 'G', float_buffer, sizeof(float_buffer)) != 0) {
+                                return 1;
+                            }
                         }
                     }
 
