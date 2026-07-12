@@ -37,9 +37,12 @@ cat > "$WORK_DIR/aliases.syms" <<'EOF'
 0x5000 inner
 EOF
 
-assert_command_succeeds "${TEST_BIN_DIR}/profiler" --csv --sort addr -m "$WORK_DIR/aliases.syms" "$WORK_DIR/aliases.nprof" > "$WORK_DIR/aliases.csv" 2> "$WORK_DIR/aliases.err"
+assert_command_succeeds "${TEST_BIN_DIR}/profiler" --csv --sort addr -m "$WORK_DIR/aliases.syms" --write-call-graph-profile "$WORK_DIR/aliases.cgprofile" "$WORK_DIR/aliases.nprof" > "$WORK_DIR/aliases.csv" 2> "$WORK_DIR/aliases.err"
 assert_file_contains "$WORK_DIR/aliases.csv" '^1,1,7,10,10,70\.00,100\.00,7,10,0x4000,outer$' "profiler did not parse + and - trace aliases"
 assert_file_contains "$WORK_DIR/aliases.csv" '^2,1,3,3,3,30\.00,30\.00,3,3,0x5000,inner$' "profiler did not parse e and x trace aliases"
+assert_file_contains "$WORK_DIR/aliases.cgprofile" '^node 10 outer$' "profiler call graph profile omitted outer node weight"
+assert_file_contains "$WORK_DIR/aliases.cgprofile" '^node 3 inner$' "profiler call graph profile omitted inner node weight"
+assert_file_contains "$WORK_DIR/aliases.cgprofile" '^edge 1 outer inner$' "profiler call graph profile omitted caller/callee weight"
 
 if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev/null || echo unknown)" = x86_64 ]; then
 	PROFILE_BUILD_DIR="$WORK_DIR/profile-build"
@@ -49,7 +52,7 @@ if [ "$(uname -s 2>/dev/null || echo unknown)" = Linux ] && [ "$(uname -m 2>/dev
 	fi
 	assert_command_succeeds env NEWOS_PROFILE="$WORK_DIR/cat.nprof" "$PROFILE_BUILD_DIR/cat" "$ROOT_DIR/README.md" > "$WORK_DIR/profile-cat.stdout" 2> "$WORK_DIR/profile-cat.stderr"
 	assert_command_succeeds "$PROFILE_BUILD_DIR/profiler" --csv --sort total -m "$PROFILE_BUILD_DIR/.maps/cat.map" "$WORK_DIR/cat.nprof" > "$WORK_DIR/profile-cat.csv" 2> "$WORK_DIR/profile-cat.err"
-	assert_file_contains "$WORK_DIR/cat.nprof" '^enter [0-9][0-9]* 0x[0-9a-f][0-9a-f]*$' "Linux PROFILE=1 runtime did not emit enter events"
+	assert_file_contains "$WORK_DIR/cat.nprof" '^enter [0-9][0-9]* [0-9][0-9]* 0x[0-9a-f][0-9a-f]*$' "Linux PROFILE=1 runtime did not emit enter events"
 	assert_file_contains "$WORK_DIR/profile-cat.csv" ',main$' "profiler did not symbolize Linux newlinker map main"
 	assert_file_contains "$WORK_DIR/profile-cat.csv" ',cat_' "profiler did not symbolize Linux newlinker text-section functions"
 fi

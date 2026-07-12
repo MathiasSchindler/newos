@@ -149,7 +149,19 @@ static int link_elf64_x86_64_static_options(const char *const *object_paths,
         fold_identical_sections(linker_objects, object_count, options->icf_all);
     }
 
-    layout_objects(linker_objects, object_count, entry_symbol, options != 0 && options->call_graph_order, &text_size, &data_size, &bss_size);
+    if (layout_objects(linker_objects,
+                       object_count,
+                       entry_symbol,
+                       options != 0 && options->call_graph_order,
+                       options != 0 ? options->symbol_ordering_file : 0,
+                       options != 0 ? options->call_graph_profile : 0,
+                       &text_size,
+                       &data_size,
+                       &bss_size,
+                       error_out,
+                       error_size) != 0) {
+        return -1;
+    }
     has_writable_segment = data_size != 0 || bss_size != 0;
     header_size = ELF64_EHDR_SIZE + ((uint64_t)((tiny || !has_writable_segment) ? 1U : 2U) * ELF64_PHDR_SIZE);
     if (tiny) {
@@ -272,9 +284,13 @@ static int link_elf64_x86_64_static_options(const char *const *object_paths,
                              memory_size,
                              header_size,
                              padding_size,
+                             text_file_offset,
+                             data_file_offset,
                              tiny,
                              gc_sections,
                              options->call_graph_order,
+                             options->symbol_ordering_file != 0 && options->symbol_ordering_file[0] != '\0',
+                             options->call_graph_profile != 0 && options->call_graph_profile[0] != '\0',
                              has_writable_segment) != 0) {
             set_link_error(error_out, error_size, "failed to write linker stats", output_path);
             return -1;

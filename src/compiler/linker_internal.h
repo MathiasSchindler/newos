@@ -201,6 +201,12 @@ extern int               linker_merge_string_pool_active;
 extern size_t            linker_merge_master_object_index;
 extern size_t            linker_merge_master_section_index;
 extern uint64_t          linker_merge_master_input_size;
+extern uint64_t          linker_profile_nodes_total;
+extern uint64_t          linker_profile_nodes_matched;
+extern uint64_t          linker_profile_edges_total;
+extern uint64_t          linker_profile_edges_matched;
+extern uint64_t          linker_profile_sections_ordered;
+extern uint64_t          linker_profile_bytes_ordered;
 #if COMPILER_LINKER_ENABLE_CONST_MERGE
 extern unsigned char    *linker_merge_const_pool;
 extern uint64_t          linker_merge_const_pool_size;
@@ -311,20 +317,22 @@ int      merge_const_sections(LinkObject *objects, size_t object_count, char *er
 
 /* ── linker_icf.c ────────────────────────────────────────────────────────── */
 void fold_identical_sections(LinkObject *objects, size_t object_count, int equivalence_classes);
+void count_executable_suffix_fold_candidates(LinkObject *objects, size_t object_count, uint64_t *sections_out, uint64_t *bytes_out);
 
 /* ── linker_reloc.c ──────────────────────────────────────────────────────── */
 int collect_globals(LinkObject *objects, size_t object_count, char *error_out, size_t error_size);
 int apply_relocations(LinkObject *objects, size_t object_count, unsigned char *output, char *error_out, size_t error_size);
+void count_short_jump_relaxation_candidates(LinkObject *objects, size_t object_count, uint64_t *sites_out, uint64_t *bytes_out);
 
 /* ── linker_layout.c ─────────────────────────────────────────────────────── */
-void     layout_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, int call_graph_order, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out);
+int      layout_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, int call_graph_order, const char *symbol_ordering_file, const char *call_graph_profile, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out, char *error_out, size_t error_size);
 uint64_t max_live_section_alignment(const LinkObject *objects, size_t object_count, LinkSectionKind kind);
 void     copy_sections(LinkObject *objects, size_t object_count, unsigned char *output);
 void     write_elf_header(unsigned char *output, uint64_t entry, uint64_t text_file_offset, uint64_t text_size, uint64_t data_file_offset, uint64_t data_size, uint64_t bss_size, uint64_t file_size, uint64_t memory_size, int tiny);
 
 /* ── linker_report.c ─────────────────────────────────────────────────────── */
 #if COMPILER_LINKER_ENABLE_REPORTING
-int write_link_stats(int fd, const LinkObject *objects, size_t object_count, uint64_t text_size, uint64_t data_size, uint64_t bss_size, uint64_t file_size, uint64_t memory_size, uint64_t header_size, uint64_t padding_size, int tiny, int gc_sections, int call_graph_order, int has_writable_segment);
+int write_link_stats(int fd, LinkObject *objects, size_t object_count, uint64_t text_size, uint64_t data_size, uint64_t bss_size, uint64_t file_size, uint64_t memory_size, uint64_t header_size, uint64_t padding_size, uint64_t text_file_offset, uint64_t data_file_offset, int tiny, int gc_sections, int call_graph_order, int symbol_ordering, int profile_ordering, int has_writable_segment);
 int write_link_map(const char *path, const LinkObject *objects, size_t object_count, const char *output_path, const char *entry_symbol, uint64_t entry, uint64_t text_size, uint64_t data_size, uint64_t bss_size, uint64_t file_size, uint64_t memory_size, int tiny, int gc_sections, char *error_out, size_t error_size);
 int write_gc_sections(int fd, const LinkObject *objects, size_t object_count);
 int write_why_live(int fd, const LinkObject *objects, size_t object_count, const char *query);

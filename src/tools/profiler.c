@@ -11,6 +11,8 @@
 #define PROFILER_LINE_CAPACITY 1024U
 #define PROFILER_NAME_CAPACITY 256U
 #define PROFILER_FUNCTION_HASH_SIZE 32768U
+#define PROFILER_MAX_EDGES 32768U
+#define PROFILER_EDGE_HASH_SIZE 65536U
 #define PROFILER_TRACE_READ_BUFFER_SIZE 65536U
 
 typedef struct {
@@ -48,6 +50,12 @@ typedef struct {
 } ProfileRow;
 
 typedef struct {
+    size_t caller_index;
+    size_t callee_index;
+    unsigned long long calls;
+} ProfileEdge;
+
+typedef struct {
     unsigned long long events;
     unsigned long long unmatched_exits;
     unsigned long long stack_overflows;
@@ -55,6 +63,7 @@ typedef struct {
     unsigned long long open_frames;
     unsigned long long event_limit;
     unsigned long long thread_overflows;
+    unsigned long long edge_overflows;
     int trace_limited;
 } ProfileStats;
 
@@ -75,18 +84,22 @@ static ProfileSymbol profiler_symbols[PROFILER_MAX_SYMBOLS];
 static ProfileThread profiler_threads[PROFILER_MAX_THREADS];
 static ProfileStackEntry profiler_thread_stacks[PROFILER_MAX_THREADS][PROFILER_MAX_THREAD_STACK];
 static ProfileRow profiler_rows[PROFILER_MAX_FUNCTIONS];
+static ProfileEdge profiler_edges[PROFILER_MAX_EDGES];
 static ProfileSlideCandidate profiler_slide_candidates[PROFILER_MAX_SLIDE_CANDIDATES];
 static int profiler_function_hash[PROFILER_FUNCTION_HASH_SIZE];
+static int profiler_edge_hash[PROFILER_EDGE_HASH_SIZE];
 static int profiler_function_hash_initialized;
+static int profiler_edge_hash_initialized;
 static size_t profiler_function_count;
 static size_t profiler_symbol_count;
+static size_t profiler_edge_count;
 static ProfileSortKey profiler_sort_key = PROFILE_SORT_SELF;
 static unsigned long long profiler_min_self_ns;
 static unsigned long long profiler_min_total_ns;
 static int profiler_thread_summary;
 
 static void print_usage(void) {
-    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--csv] TRACE");
+    tool_write_usage("profiler", "[-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--write-call-graph-profile FILE] [--csv] TRACE");
 }
 
 static void print_instrumentation_help(void) {
@@ -101,6 +114,7 @@ static void print_instrumentation_help(void) {
     rt_write_cstr(1, "  NEWOS_PROFILE_SKIP_EVENTS=100000 skips early instrumentation records before writing.\n");
     rt_write_cstr(1, "  NEWOS_PROFILE_WORKER_ONLY=1 records only non-initial thread events.\n");
     rt_write_cstr(1, "  build/freestanding-linux-x86_64/profiler -m build/freestanding-linux-x86_64/.maps/tool.map tool.nprof\n");
+    rt_write_cstr(1, "  profiler -m tool.map --write-call-graph-profile tool.cgprofile tool.nprof\n");
     rt_write_cstr(1, "  MACOS_NEWLINKER_MAP_DIR=build/profile-maps make freestanding PROFILE=1\n");
     rt_write_cstr(1, "  NEWOS_PROFILE=tool.nprof build/newlinker-macos-aarch64/tool ...\n");
     rt_write_cstr(1, "\nTrace lines accepted by profiler:\n");
@@ -175,6 +189,51 @@ static void add_function_hash_entry(unsigned long long address, size_t function_
         slot = (slot + 1U) & (PROFILER_FUNCTION_HASH_SIZE - 1U);
     }
     profiler_function_hash[slot] = (int)function_index;
+}
+
+static void profiler_edge_hash_init(void) {
+    size_t index;
+
+    if (profiler_edge_hash_initialized) {
+        return;
+    }
+    for (index = 0U; index < PROFILER_EDGE_HASH_SIZE; ++index) {
+        profiler_edge_hash[index] = -1;
+    }
+    profiler_edge_hash_initialized = 1;
+}
+
+static size_t profiler_edge_hash_slot(size_t caller_index, size_t callee_index) {
+    unsigned long long mixed = (unsigned long long)caller_index * 0x9e3779b97f4a7c15ULL;
+
+    mixed ^= (unsigned long long)callee_index + 0x517cc1b727220a95ULL + (mixed << 6U) + (mixed >> 2U);
+    mixed ^= mixed >> 33U;
+    return (size_t)(mixed & (PROFILER_EDGE_HASH_SIZE - 1U));
+}
+
+static void record_profile_edge(size_t caller_index, size_t callee_index, ProfileStats *stats) {
+    size_t slot;
+
+    profiler_edge_hash_init();
+    slot = profiler_edge_hash_slot(caller_index, callee_index);
+    while (profiler_edge_hash[slot] >= 0) {
+        ProfileEdge *edge = &profiler_edges[(size_t)profiler_edge_hash[slot]];
+
+        if (edge->caller_index == caller_index && edge->callee_index == callee_index) {
+            edge->calls += 1ULL;
+            return;
+        }
+        slot = (slot + 1U) & (PROFILER_EDGE_HASH_SIZE - 1U);
+    }
+    if (profiler_edge_count >= PROFILER_MAX_EDGES) {
+        stats->edge_overflows += 1ULL;
+        return;
+    }
+    profiler_edges[profiler_edge_count].caller_index = caller_index;
+    profiler_edges[profiler_edge_count].callee_index = callee_index;
+    profiler_edges[profiler_edge_count].calls = 1ULL;
+    profiler_edge_hash[slot] = (int)profiler_edge_count;
+    profiler_edge_count += 1U;
 }
 
 static int find_or_add_function(unsigned long long address, size_t *index_out) {
@@ -505,6 +564,9 @@ static int process_enter(unsigned long long timestamp_ns, unsigned long long thr
         return 0;
     }
     profiler_functions[function_index].calls += 1ULL;
+    if (depth > 0U) {
+        record_profile_edge(stack[depth - 1U].function_index, function_index, stats);
+    }
     if (depth >= PROFILER_MAX_THREAD_STACK) {
         stats->stack_overflows += 1ULL;
         return 0;
@@ -1080,12 +1142,61 @@ static void write_report(unsigned long long limit, int csv, const ProfileStats *
             rt_write_cstr(2, " thread_overflows=");
             rt_write_uint(2, stats->thread_overflows);
         }
+        if (stats->edge_overflows != 0ULL) {
+            rt_write_cstr(2, " edge_overflows=");
+            rt_write_uint(2, stats->edge_overflows);
+        }
         rt_write_char(2, '\n');
         if (stats->unmatched_exits != 0ULL || stats->open_frames != 0ULL) {
             rt_write_cstr(2, "profiler: warning: unmatched/open frames can indicate truncated traces or missing begin/end records\n");
         }
         write_thread_summary();
     }
+}
+
+static int write_call_graph_profile(const char *path) {
+    int fd = platform_open_write(path, 0644U);
+    size_t index;
+
+    if (fd < 0) {
+        tool_write_error("profiler", "failed to open call graph profile: ", path);
+        return -1;
+    }
+    if (rt_write_cstr(fd, "# newos call graph profile v1\n# node TOTAL_NS SYMBOL\n# edge CALLS CALLER CALLEE\n") != 0) {
+        (void)platform_close(fd);
+        return -1;
+    }
+    for (index = 0U; index < profiler_function_count; ++index) {
+        const char *symbol = symbol_for_address(profiler_functions[index].address);
+
+        if (symbol == 0 || symbol[0] == '\0') {
+            continue;
+        }
+        if (rt_write_cstr(fd, "node ") != 0 || rt_write_uint(fd, profiler_functions[index].total_ns) != 0 ||
+            rt_write_char(fd, ' ') != 0 || rt_write_cstr(fd, symbol) != 0 || rt_write_char(fd, '\n') != 0) {
+            (void)platform_close(fd);
+            return -1;
+        }
+    }
+    for (index = 0U; index < profiler_edge_count; ++index) {
+        const ProfileEdge *edge = &profiler_edges[index];
+        const char *caller = symbol_for_address(profiler_functions[edge->caller_index].address);
+        const char *callee = symbol_for_address(profiler_functions[edge->callee_index].address);
+
+        if (caller == 0 || callee == 0 || caller[0] == '\0' || callee[0] == '\0' || rt_strcmp(caller, callee) == 0) {
+            continue;
+        }
+        if (rt_write_cstr(fd, "edge ") != 0 || rt_write_uint(fd, edge->calls) != 0 || rt_write_char(fd, ' ') != 0 ||
+            rt_write_cstr(fd, caller) != 0 || rt_write_char(fd, ' ') != 0 || rt_write_cstr(fd, callee) != 0 || rt_write_char(fd, '\n') != 0) {
+            (void)platform_close(fd);
+            return -1;
+        }
+    }
+    if (platform_close(fd) != 0) {
+        tool_write_error("profiler", "failed to close call graph profile: ", path);
+        return -1;
+    }
+    return 0;
 }
 
 static int parse_milliseconds_to_ns(const char *text, unsigned long long *ns_out, const char *what) {
@@ -1115,6 +1226,7 @@ static int parse_sort_key(const char *text, ProfileSortKey *sort_key_out) {
 int main(int argc, char **argv) {
     const char *trace_path = 0;
     const char *symbols_path = 0;
+    const char *call_graph_profile_path = 0;
     unsigned long long limit = 30ULL;
     int csv = 0;
     int argi;
@@ -1144,6 +1256,14 @@ int main(int argc, char **argv) {
             symbols_path = arg + 6;
         } else if (tool_starts_with(arg, "--symbols=")) {
             symbols_path = arg + 10;
+        } else if (rt_strcmp(arg, "--write-call-graph-profile") == 0) {
+            if (argi + 1 >= argc) {
+                tool_write_error("profiler", "missing option value: ", arg);
+                return 1;
+            }
+            call_graph_profile_path = argv[++argi];
+        } else if (tool_starts_with(arg, "--write-call-graph-profile=")) {
+            call_graph_profile_path = arg + 27;
         } else if (rt_strcmp(arg, "-n") == 0 || rt_strcmp(arg, "--limit") == 0) {
             if (argi + 1 >= argc || tool_parse_uint_arg(argv[argi + 1], &limit, "profiler", "limit") != 0) {
                 return 1;
@@ -1212,6 +1332,9 @@ int main(int argc, char **argv) {
         return 1;
     }
     infer_symbol_slide();
+    if (call_graph_profile_path != 0 && write_call_graph_profile(call_graph_profile_path) != 0) {
+        return 1;
+    }
     write_report(limit, csv, &stats);
     return 0;
 }

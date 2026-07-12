@@ -23,6 +23,8 @@ typedef struct {
 	int print_gc_sections;
 	const char *map_path;
 	const char *why_live;
+	const char *symbol_ordering_file;
+	const char *call_graph_profile;
 	const char *entry_symbol;
 	const char *lto_cc;
 } CompilerLinkerOptions;

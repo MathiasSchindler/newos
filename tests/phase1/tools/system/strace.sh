@@ -33,7 +33,7 @@ fi
 
 assert_command_succeeds "${TEST_BIN_DIR}/strace" -c "${TEST_BIN_DIR}/echo" hello > "$WORK_DIR/summary.stdout" 2> "$WORK_DIR/summary.stderr"
 assert_file_contains "$WORK_DIR/summary.stdout" '^hello$' "Linux strace -c should preserve target stdout"
-assert_file_contains "$WORK_DIR/summary.stderr" '^syscall calls errors bytes total_ms$' "Linux strace -c did not print summary header"
+assert_file_contains "$WORK_DIR/summary.stderr" '^syscall calls errors bytes avg_bytes total_ms avg_ms max_ms$' "Linux strace -c did not print summary header"
 assert_file_contains "$WORK_DIR/summary.stderr" '^write 1 0 6 ' "Linux strace -c did not summarize write byte counts"
 
 if command -v "${CC:-cc}" >/dev/null 2>&1; then

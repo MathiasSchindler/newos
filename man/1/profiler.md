@@ -7,7 +7,7 @@ profiler - summarize instrumentation profiler traces
 ## SYNOPSIS
 
 ```
-profiler [-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--csv] TRACE
+profiler [-m SYMBOLS] [-n COUNT] [--sort self|total|calls|addr] [--min-self-ms N] [--min-total-ms N] [--max-events N] [--thread-summary] [--write-call-graph-profile FILE] [--csv] TRACE
 profiler --help-instrumentation
 ```
 
@@ -36,6 +36,9 @@ make freestanding PROFILE=1 LINKER_REPORTS=1
 NEWOS_PROFILE=cat.nprof build/freestanding-linux-x86_64/cat README.md >/dev/null
 build/freestanding-linux-x86_64/profiler \
   -m build/freestanding-linux-x86_64/.maps/cat.map cat.nprof
+build/freestanding-linux-x86_64/profiler \
+  -m build/freestanding-linux-x86_64/.maps/cat.map \
+  --write-call-graph-profile cat.cgprofile cat.nprof
 ```
 
 `LINKER_REPORTS=1` asks the Linux newlinker path to write maps under
@@ -117,6 +120,11 @@ understand these environment variables:
   report `trace_limited_at=N` when this limit is reached.
 - `--thread-summary`, `--threads` - write per-thread event counts, root time,
   maximum stack depth, open frames, and unmatched exits to standard error.
+- `--write-call-graph-profile FILE` - write stable symbol-based weights for
+  `linker --call-graph-profile FILE`. Node records use inclusive nanoseconds;
+  edge records use observed caller-to-callee call counts. Unsymbolized
+  addresses are omitted, so use a linker map from the exact instrumented
+  binary.
 - `--csv` - write machine-readable CSV with nanosecond values.
 - `--help-instrumentation` - print the expected GCC/Clang instrumentation flags
   and trace format.
@@ -175,6 +183,22 @@ EOF
 profiler -m symbols.txt trace.nprof
 profiler --sort total -n 10 -m symbols.txt trace.nprof
 profiler --csv -m symbols.txt trace.nprof
+profiler -m symbols.txt --write-call-graph-profile trace.cgprofile trace.nprof
+```
+
+The generated profile is line-oriented and independent of final addresses:
+
+```text
+# newos call graph profile v1
+node 50 main
+node 20 parse
+edge 1 main parse
+```
+
+Apply it to a normal optimized link with:
+
+```sh
+linker --call-graph-profile trace.cgprofile --call-graph-order -o app @objects.rsp
 ```
 
 Threaded trace lines can be mixed safely when they include thread ids:
@@ -209,6 +233,7 @@ matching `DIR/TOOL.map` file to `profiler -m`.
 - resolves exact or nearest-lower function addresses through simple symbol files
   or `nm -n` output; non-function `nm` symbols are ignored
 - writes text or CSV reports
+- writes stable weighted node/edge profiles for linker-guided function layout
 - includes buffered Linux and macOS/aarch64 trace runtimes for `PROFILE=1`
   builds; the macOS runtime uses the arm64 virtual counter for timestamps so the
   instrumentation hot path does not issue timing syscalls
@@ -244,8 +269,9 @@ matching `DIR/TOOL.map` file to `profiler -m`.
 - capped traces can end with open frames because the limit may cut through live
   stacks; use `--thread-summary` to distinguish expected truncation from
   unmatched exits
-- async signal profiling, statistical sampling, call graph arc percentages, and
-  DWARF source-line attribution are outside the initial scope
+- async signal profiling, statistical sampling, call graph arc percentages in
+  the human-readable report, and DWARF source-line attribution are outside the
+  initial scope
 
 ## JSON Output
 

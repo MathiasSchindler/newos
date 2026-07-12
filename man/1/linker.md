@@ -95,6 +95,18 @@ aliases.
   through relocation edges before applying the deterministic alignment/size
   fallback. Edges to folded functions follow their canonical ICF master. This
   keeps entry-path callers and callees close without requiring profile data.
+- `--symbol-ordering-file FILE` - place live executable sections named by FILE
+  first, one symbol or section name per line. Blank lines and `#` comments are
+  ignored. Earlier names win, names absent from the current link are ignored,
+  and the normal call-graph/alignment policy orders everything not named.
+- `--call-graph-profile FILE` - apply weighted profile-guided function ordering.
+  The stable text format contains `node TOTAL_NS SYMBOL` and
+  `edge CALLS CALLER CALLEE` records. The linker starts with the hottest
+  unplaced node, follows its hottest unplaced outgoing edge, and repeats. Use
+  `profiler --write-call-graph-profile` to generate the file. Explicit symbol
+  ordering has first priority, the weighted profile follows, and
+  `--call-graph-order` supplies the deterministic fallback. Unknown symbols are
+  ignored so profiles tolerate source changes; malformed records are errors.
 - `--merge-constants` - coalesce duplicate entries in eligible non-string ELF
   `SHF_MERGE` sections. Input-section alignment and output-pool alignment are
   tracked separately, and unsupported relocation patterns leave a section on
@@ -181,8 +193,10 @@ overall size result, and `-fno-partial-inlining` made the total output larger.
   live object and section counts, relocation count, folded/discarded bytes,
   GC bytes by section class, exact/suffix/equivalence ICF counts and bytes,
   string and constant pool input/output/savings, text/data/BSS sizes, file size,
-  memory size, header and padding bytes, call-graph ordered-section count,
-  segment permissions, and active policy. The Mach-O backend reports input object/section counts,
+  memory size, header and padding bytes, ordered-section count, profile
+  node/edge coverage and ordered payload, RX page slack and bytes needed to
+  remove the next W^X page, executable-suffix candidates, relaxable x86
+  cross-section jumps, segment permissions, and active policy. The Mach-O backend reports input object/section counts,
   file-backed section payloads, BSS bytes, header bytes, segment file and VM
   sizes, signature offset/code limit/signature bytes, final file size, and the
   active page-aligned or compact policy.
@@ -202,6 +216,8 @@ linker --tiny --gc-sections --stats -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --print-gc-sections -o true crt0.o true.o runtime.o
 linker --tiny --gc-sections --map app.map --why-live main -o app @objects.rsp
 linker --separate-code --gc-sections --icf=safe --call-graph-order -o app @objects.rsp
+linker --separate-code --gc-sections --symbol-ordering-file hot.order -o app @objects.rsp
+linker --separate-code --gc-sections --call-graph-profile app.cgprofile --call-graph-order -o app @objects.rsp
 linker --tiny --gc-sections --icf=all --merge-constants --stats -o app @objects.rsp
 linker --target=mach-o-arm64 --macho-compact --gc-sections --lto-cc=clang -o app start.o app.o runtime.o
 ```
@@ -248,10 +264,21 @@ is overridden.
 
 `tests/suites/newlinker_optimizations.sh` runs standalone fixtures for
 relocation-aware safe ICF, mutually recursive equivalence-class ICF, entry-rooted
-call-graph ordering, mergeable string and constant pooling, detailed reporting,
-tiny layout, and LTO. The freestanding smoke suite checks every produced ELF for
+call-graph, explicit-symbol, and weighted-profile ordering, mergeable string and
+constant pooling, detailed reporting, optimization candidate censuses, tiny
+layout, and LTO. The freestanding smoke suite checks every produced ELF for
 writable-executable load segments and verifies distinct RX/RW mappings on a tool
 with writable state.
+
+The candidate counters are intentionally diagnostic rather than rewriting
+passes. A July 2026 report-enabled build of all 214 canonical Linux tools found
+307 short-jump sites worth 921 payload bytes across 165 tools and 49
+relocation-aware executable-suffix candidates worth 114 payload bytes across
+39 tools. Neither class, alone or combined, crossed the reported W^X page
+threshold for a single output. Variable-length instruction rewriting and
+executable tail folding therefore remain deferred until measurements show a
+final-file or runtime win that justifies their address, relocation, and
+function-identity risk.
 
 On Linux x86-64, `make freestanding` is the default newlinker build. It runs
 `scripts/build-freestanding-newlinker.sh`, writes the canonical freestanding tree under
@@ -307,10 +334,12 @@ available measured optimization rather than a default build flag.
   entry sizes are available through `--merge-constants` when their symbols and
   relocation references are entry-aligned and translatable. Relocation-bearing
   merge sections and unsupported reference patterns remain on the normal path.
-- x86-64 size-changing instruction relaxation is not implemented yet. The
-  current freestanding `ncc` inputs do not expose common same-size GOT relaxation
-  relocations; real byte savings would require rewriting section contents,
-  symbol values, relocation offsets, and layout-dependent references.
+- x86-64 size-changing instruction relaxation is not implemented. `--stats`
+  counts cross-section `jmp rel32` sites whose final displacement fits `rel8`,
+  and also reports relocation-aware executable suffix-fold candidates. Current
+  corpus measurements do not recover a W^X page from either transformation;
+  implementing them would require rewriting section contents, symbol values,
+  relocation offsets, and layout-dependent references for no final-file win.
 - Archives are parsed by this linker directly; archive symbol indexes are not
   required.
 - LTO bitcode inputs are not parsed directly as native object sections. For GCC

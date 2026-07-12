@@ -292,3 +292,57 @@ int apply_relocations(LinkObject *objects, size_t object_count, unsigned char *o
     }
     return 0;
 }
+
+void count_short_jump_relaxation_candidates(LinkObject *objects, size_t object_count, uint64_t *sites_out, uint64_t *bytes_out) {
+    size_t object_index;
+
+    *sites_out = 0ULL;
+    *bytes_out = 0ULL;
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        LinkObject *object = &objects[object_index];
+        size_t rela_index;
+
+        if (!object->live) {
+            continue;
+        }
+        for (rela_index = 0U; rela_index < object->rela_section_count; ++rela_index) {
+            const LinkRelaSection *rela = &object->rela_sections[rela_index];
+            const LinkSection *target = find_link_section_const(object, rela->target_index);
+            uint64_t relocation_count;
+            uint64_t relocation_index;
+
+            if (target == 0 || !target->live || target->folded || (target->flags & SHF_EXECINSTR) == 0ULL || rela->entsize == 0ULL) {
+                continue;
+            }
+            relocation_count = rela->size / rela->entsize;
+            for (relocation_index = 0ULL; relocation_index < relocation_count; ++relocation_index) {
+                const unsigned char *relocation = object->file + rela->offset + relocation_index * rela->entsize;
+                uint64_t offset = read_u64(relocation);
+                uint64_t info = read_u64(relocation + 8);
+                uint32_t type = (uint32_t)info;
+                const unsigned char *symbol;
+                uint64_t symbol_addr;
+                int64_t relocation_addend;
+                int64_t patched;
+                int64_t short_displacement;
+                char ignored_error[64];
+
+                if ((type != R_X86_64_PC32 && type != R_X86_64_PLT32) || offset == 0ULL || offset + 4ULL > target->size ||
+                    object->file[target->offset + offset - 1ULL] != 0xe9U) {
+                    continue;
+                }
+                symbol = symbol_entry(object, (uint32_t)(info >> 32U));
+                if (symbol == 0 || relocation_symbol_value(object, symbol, type, read_i64(relocation + 16), &symbol_addr,
+                                                           &relocation_addend, ignored_error, sizeof(ignored_error)) != 0) {
+                    continue;
+                }
+                patched = (int64_t)symbol_addr + relocation_addend - (int64_t)(LINKER_BASE_VADDR + target->out_offset + offset);
+                short_displacement = patched + 3LL;
+                if (short_displacement >= -128LL && short_displacement <= 127LL) {
+                    *sites_out += 1ULL;
+                    *bytes_out += 3ULL;
+                }
+            }
+        }
+    }
+}

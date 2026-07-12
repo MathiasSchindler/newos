@@ -11,7 +11,7 @@
 #define LINKER_TOOL_MANIFEST_CAPACITY (4U * 1024U * 1024U)
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--icf=safe|all] [--call-graph-order] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--icf=safe|all] [--call-graph-order] [--symbol-ordering-file FILE] [--call-graph-profile FILE] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
 
@@ -476,6 +476,30 @@ int main(int argc, char **argv) {
         }
         if (parsing_options && rt_strcmp(arg, "--call-graph-order") == 0) {
             options.call_graph_order = 1;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--symbol-ordering-file") == 0) {
+            if (i + 1 >= expanded_argc) {
+                tool_write_error(expanded_args[0], "missing path after ", arg);
+                return 1;
+            }
+            options.symbol_ordering_file = expanded_args[++i];
+            continue;
+        }
+        if (parsing_options && tool_starts_with(arg, "--symbol-ordering-file=")) {
+            options.symbol_ordering_file = arg + 23;
+            continue;
+        }
+        if (parsing_options && rt_strcmp(arg, "--call-graph-profile") == 0) {
+            if (i + 1 >= expanded_argc) {
+                tool_write_error(expanded_args[0], "missing path after ", arg);
+                return 1;
+            }
+            options.call_graph_profile = expanded_args[++i];
+            continue;
+        }
+        if (parsing_options && tool_starts_with(arg, "--call-graph-profile=")) {
+            options.call_graph_profile = arg + 21;
             continue;
         }
         if (parsing_options && rt_strcmp(arg, "--merge-constants") == 0) {

@@ -136,11 +136,61 @@ if ! grep -q '^icf equivalence sections/bytes: 2/' "$WORK_DIR/icf_recursive.stat
     exit 1
 fi
 
+cat > "$WORK_DIR/candidate_report.s" <<'ASM'
+.globl _start
+.section .text.start,"ax",@progbits
+_start:
+    mov state(%rip), %ecx
+    lea short_tail(%rip), %rax
+    lea long_tail(%rip), %rbx
+    jmp near_target
+.section .text.near_target,"ax",@progbits
+near_target:
+    xor %rdi, %rdi
+    mov $60, %rax
+    syscall
+.section .text.short_tail,"ax",@progbits
+short_tail:
+    call helper
+    ret
+.section .text.long_tail,"ax",@progbits
+long_tail:
+    nop
+    call helper
+    ret
+.section .text.helper,"ax",@progbits
+helper:
+    ret
+.section .data.state,"aw",@progbits
+state:
+    .long 0
+ASM
+cc -x assembler -c "$WORK_DIR/candidate_report.s" -o "$WORK_DIR/candidate_report.o"
+"$LINKER" --tiny --gc-sections --stats -m x86_64-linux \
+    -o "$WORK_DIR/candidate_report.bin" "$WORK_DIR/candidate_report.o" > "$WORK_DIR/candidate_report.stats"
+"$WORK_DIR/candidate_report.bin"
+if ! grep -q '^x86 short-jump candidates/bytes: 1/3$' "$WORK_DIR/candidate_report.stats"; then
+    echo "linker stats did not report the relaxable cross-section jump" >&2
+    exit 1
+fi
+if ! grep -q '^executable suffix candidates/bytes: 1/6$' "$WORK_DIR/candidate_report.stats"; then
+    echo "linker stats did not report the relocation-aware executable suffix" >&2
+    exit 1
+fi
+"$LINKER" --separate-code --gc-sections --stats -m x86_64-linux \
+    -o "$WORK_DIR/page_threshold.bin" "$WORK_DIR/candidate_report.o" > "$WORK_DIR/page_threshold.stats"
+"$WORK_DIR/page_threshold.bin"
+if ! grep -q '^rx page slack/bytes-to-smaller-file: [1-9][0-9]*/0$' "$WORK_DIR/page_threshold.stats"; then
+    echo "linker stats did not report the first-page W^X layout threshold" >&2
+    exit 1
+fi
+
 cat > "$WORK_DIR/call_graph_order.s" <<'ASM'
 .globl _start
 .section .text.start,"ax",@progbits
 _start:
     call first
+    lea unrelated(%rip), %r10
     xor %rdi, %rdi
     mov $60, %rax
     syscall
@@ -167,6 +217,48 @@ first_address=$(awk '$3 == ".text.first" { print $1 }' "$WORK_DIR/call_graph_ord
 second_address=$(awk '$3 == ".text.second" { print $1 }' "$WORK_DIR/call_graph_order.map")
 if ! (( start_address < first_address && first_address < second_address )); then
     echo "call-graph ordering did not place the entry path contiguously" >&2
+    exit 1
+fi
+
+cat > "$WORK_DIR/symbol_order.txt" <<'EOF'
+# Explicit hot order; unknown names remain harmless across source changes.
+unrelated
+second
+missing_after_profile_change
+_start
+EOF
+"$LINKER" --tiny --gc-sections --call-graph-order --symbol-ordering-file "$WORK_DIR/symbol_order.txt" \
+    --map "$WORK_DIR/symbol_order.map" -m x86_64-linux -o "$WORK_DIR/symbol_order.bin" "$WORK_DIR/call_graph_order.o"
+"$WORK_DIR/symbol_order.bin"
+unrelated_address=$(awk '$3 == ".text.unrelated" { print $1 }' "$WORK_DIR/symbol_order.map")
+ordered_second_address=$(awk '$3 == ".text.second" { print $1 }' "$WORK_DIR/symbol_order.map")
+ordered_start_address=$(awk '$3 == ".text.start" { print $1 }' "$WORK_DIR/symbol_order.map")
+if ! (( unrelated_address < ordered_second_address && ordered_second_address < ordered_start_address )); then
+    echo "symbol ordering file did not override call-graph discovery order" >&2
+    exit 1
+fi
+
+cat > "$WORK_DIR/call_graph.profile" <<'EOF'
+# node weights are nanoseconds; edge weights are observed call counts.
+node 100 unrelated
+node 90 second
+node 1 _start
+edge 80 unrelated second
+EOF
+"$LINKER" --tiny --gc-sections --call-graph-order --call-graph-profile "$WORK_DIR/call_graph.profile" --stats \
+    --map "$WORK_DIR/profile_order.map" -m x86_64-linux -o "$WORK_DIR/profile_order.bin" "$WORK_DIR/call_graph_order.o" > "$WORK_DIR/profile_order.stats"
+"$WORK_DIR/profile_order.bin"
+profile_unrelated_address=$(awk '$3 == ".text.unrelated" { print $1 }' "$WORK_DIR/profile_order.map")
+profile_second_address=$(awk '$3 == ".text.second" { print $1 }' "$WORK_DIR/profile_order.map")
+profile_start_address=$(awk '$3 == ".text.start" { print $1 }' "$WORK_DIR/profile_order.map")
+if ! (( profile_unrelated_address < profile_second_address && profile_second_address < profile_start_address )); then
+    echo "weighted call-graph profile did not place the hot caller/callee chain first" >&2
+    exit 1
+fi
+if ! grep -q '^profile nodes matched/total: 3/3$' "$WORK_DIR/profile_order.stats" ||
+   ! grep -q '^profile edges matched/total: 1/1$' "$WORK_DIR/profile_order.stats" ||
+   ! grep -q '^ordering: profile+call-graph ' "$WORK_DIR/profile_order.stats"; then
+    echo "linker stats did not report weighted profile coverage" >&2
     exit 1
 fi
 

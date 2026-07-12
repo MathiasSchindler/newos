@@ -58,6 +58,11 @@ The Linux freestanding build is the primary Linux target without libc.
 - links with the minimal `crt0.S` entry path and direct syscalls
 - defaults to static ELF output with section garbage collection, safe ICF,
   entry-rooted call-graph ordering, and page-separated RX/RW load segments
+- supports opt-in profile-guided final layout: build once with `PROFILE=1
+  LINKER_REPORTS=1`, use `profiler --write-call-graph-profile` with the generated
+  map and trace, then pass `--call-graph-profile=FILE` in `LINKER_FLAGS` for a
+  targeted normal build. Profiles remain opt-in because their quality depends
+  on a representative workload.
 - omits section headers from final project-linker output; explicit `--tiny`
   builds additionally overlap the final six ELF-header bytes with the first
   program header and may use one RWX segment when writable state is present

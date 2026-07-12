@@ -143,6 +143,10 @@ static void apply_native_linker_option_token(CompilerLinkerOptions *link_options
                                              size_t entry_buffer_size,
                                              char *lto_cc_buffer,
                                              size_t lto_cc_buffer_size,
+                                             char *symbol_order_buffer,
+                                             size_t symbol_order_buffer_size,
+                                             char *call_graph_profile_buffer,
+                                             size_t call_graph_profile_buffer_size,
                                              const char *token) {
     if (text_equals(token, "--tiny") || text_equals(token, "--pack-segments")) {
         link_options->tiny = 1;
@@ -178,6 +182,14 @@ static void apply_native_linker_option_token(CompilerLinkerOptions *link_options
         link_options->call_graph_order = 1;
         return;
     }
+    if (starts_with(token, "--symbol-ordering-file=")) {
+        set_native_linker_string(&link_options->symbol_ordering_file, symbol_order_buffer, symbol_order_buffer_size, token + 23);
+        return;
+    }
+    if (starts_with(token, "--call-graph-profile=")) {
+        set_native_linker_string(&link_options->call_graph_profile, call_graph_profile_buffer, call_graph_profile_buffer_size, token + 21);
+        return;
+    }
     if (text_equals(token, "--merge-constants")) {
         link_options->merge_constants = 1;
         return;
@@ -197,6 +209,10 @@ static void apply_native_wl_arg(CompilerLinkerOptions *link_options,
                                 size_t entry_buffer_size,
                                 char *lto_cc_buffer,
                                 size_t lto_cc_buffer_size,
+                                char *symbol_order_buffer,
+                                size_t symbol_order_buffer_size,
+                                char *call_graph_profile_buffer,
+                                size_t call_graph_profile_buffer_size,
                                 const char *arg) {
     const char *cursor;
     int expect_entry = 0;
@@ -236,7 +252,9 @@ static void apply_native_wl_arg(CompilerLinkerOptions *link_options,
                 expect_entry = 1;
             }
         } else {
-            apply_native_linker_option_token(link_options, entry_buffer, entry_buffer_size, lto_cc_buffer, lto_cc_buffer_size, token);
+            apply_native_linker_option_token(link_options, entry_buffer, entry_buffer_size, lto_cc_buffer, lto_cc_buffer_size,
+                                             symbol_order_buffer, symbol_order_buffer_size,
+                                             call_graph_profile_buffer, call_graph_profile_buffer_size, token);
         }
 
         cursor += length;
@@ -251,14 +269,20 @@ static void configure_native_linker_options(const CompilerOptions *options,
                                             char *entry_buffer,
                                             size_t entry_buffer_size,
                                             char *lto_cc_buffer,
-                                            size_t lto_cc_buffer_size) {
+                                            size_t lto_cc_buffer_size,
+                                            char *symbol_order_buffer,
+                                            size_t symbol_order_buffer_size,
+                                            char *call_graph_profile_buffer,
+                                            size_t call_graph_profile_buffer_size) {
     size_t i;
 
     rt_memset(link_options, 0, sizeof(*link_options));
     link_options->target = COMPILER_LINKER_TARGET_ELF64_X86_64;
 
     for (i = 0; i < options->extra_link_arg_count; ++i) {
-        apply_native_wl_arg(link_options, entry_buffer, entry_buffer_size, lto_cc_buffer, lto_cc_buffer_size, options->extra_link_args[i]);
+        apply_native_wl_arg(link_options, entry_buffer, entry_buffer_size, lto_cc_buffer, lto_cc_buffer_size,
+                    symbol_order_buffer, symbol_order_buffer_size,
+                    call_graph_profile_buffer, call_graph_profile_buffer_size, options->extra_link_args[i]);
     }
 }
 
@@ -1244,6 +1268,8 @@ static int link_executable_output_native(const CompilerOptions *options) {
     CompilerLinkerOptions link_options;
     char native_entry_symbol[COMPILER_IR_NAME_CAPACITY];
     char native_lto_cc[COMPILER_PATH_CAPACITY];
+    char native_symbol_order[COMPILER_PATH_CAPACITY];
+    char native_call_graph_profile[COMPILER_PATH_CAPACITY];
     size_t object_count = 0;
     size_t temp_count = 0;
     size_t i;
@@ -1254,7 +1280,13 @@ static int link_executable_output_native(const CompilerOptions *options) {
     rt_memset(temp_paths, 0, sizeof(temp_paths));
     native_entry_symbol[0] = '\0';
     native_lto_cc[0] = '\0';
-    configure_native_linker_options(options, &link_options, native_entry_symbol, sizeof(native_entry_symbol), native_lto_cc, sizeof(native_lto_cc));
+    native_symbol_order[0] = '\0';
+    native_call_graph_profile[0] = '\0';
+    configure_native_linker_options(options, &link_options,
+                                    native_entry_symbol, sizeof(native_entry_symbol),
+                                    native_lto_cc, sizeof(native_lto_cc),
+                                    native_symbol_order, sizeof(native_symbol_order),
+                                    native_call_graph_profile, sizeof(native_call_graph_profile));
 
     if (options->lto && count_c_inputs(options) > 1U) {
         CompilerLtoBuildStatus lto_status = compile_c_inputs_to_lto_object(options, temp_paths[temp_count], sizeof(temp_paths[temp_count]));

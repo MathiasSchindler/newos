@@ -42,8 +42,31 @@ typedef struct {
     uint64_t zero_tail;
 } LinkLayoutEntry;
 
+#define LINKER_ORDER_FILE_CAPACITY (1024U * 1024U)
+#define LINKER_PROFILE_NAME_CAPACITY 256U
+#define LINKER_PROFILE_MAX_NODES 8192U
+#define LINKER_PROFILE_MAX_EDGES 32768U
+
+typedef struct {
+    char name[LINKER_PROFILE_NAME_CAPACITY];
+    uint64_t weight;
+    LinkSection *section;
+} LinkProfileNode;
+
+typedef struct {
+    size_t caller;
+    size_t callee;
+    uint64_t weight;
+} LinkProfileEdge;
+
 static LinkSectionKind layout_sort_kind;
 static int layout_sort_call_graph;
+uint64_t linker_profile_nodes_total;
+uint64_t linker_profile_nodes_matched;
+uint64_t linker_profile_edges_total;
+uint64_t linker_profile_edges_matched;
+uint64_t linker_profile_sections_ordered;
+uint64_t linker_profile_bytes_ordered;
 
 static int compare_layout_entries(const void *left_ptr, const void *right_ptr) {
     const LinkLayoutEntry *left = (const LinkLayoutEntry *)left_ptr;
@@ -235,19 +258,344 @@ static LinkSection *layout_resolve_symbol_section(LinkObject *objects,
     return find_link_section(object, shndx);
 }
 
+static int layout_queue_contains(LinkSection *const *queue, size_t count, const LinkSection *section) {
+    size_t index;
+
+    for (index = 0U; index < count; ++index) {
+        if (queue[index] == section) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static uint64_t next_layout_rank(const LinkObject *objects, size_t object_count) {
+    uint64_t rank = 0ULL;
+    size_t object_index;
+
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        size_t section_index;
+        for (section_index = 0U; section_index < objects[object_index].section_count; ++section_index) {
+            uint64_t section_rank = objects[object_index].sections[section_index].layout_rank;
+            if (section_rank != LINKER_UNPLACED_OFFSET && section_rank >= rank) {
+                rank = section_rank + 1ULL;
+            }
+        }
+    }
+    return rank;
+}
+
+static void rank_named_sections(LinkObject *objects, size_t object_count, const char *name, uint64_t *rank) {
+    size_t object_index;
+
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        LinkObject *object = &objects[object_index];
+        uint32_t symbol_count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        uint32_t symbol_index;
+        size_t section_index;
+
+        for (section_index = 0U; section_index < object->section_count; ++section_index) {
+            LinkSection *section = &object->sections[section_index];
+            if (section->live && !section->folded && (section->flags & SHF_EXECINSTR) != 0ULL &&
+                section->layout_rank == LINKER_UNPLACED_OFFSET && rt_strcmp(section_name(object, section->index), name) == 0) {
+                section->layout_rank = (*rank)++;
+            }
+        }
+        for (symbol_index = 0U; symbol_index < symbol_count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(object, symbol_index);
+            uint16_t shndx;
+            LinkSection *section;
+
+            if (symbol == 0 || rt_strcmp(symbol_name(object, symbol), name) != 0) {
+                continue;
+            }
+            shndx = read_u16(symbol + 6);
+            if (shndx == SHN_UNDEF || shndx == SHN_ABS) {
+                continue;
+            }
+            section = find_link_section(object, shndx);
+            if (section != 0 && section->folded) {
+                section = &objects[section->fold_object_index].sections[section->fold_section_index];
+            }
+            if (section != 0 && section->live && (section->flags & SHF_EXECINSTR) != 0ULL && section->layout_rank == LINKER_UNPLACED_OFFSET) {
+                section->layout_rank = (*rank)++;
+            }
+        }
+    }
+}
+
+static LinkSection *find_named_executable_section(LinkObject *objects, size_t object_count, const char *name) {
+    size_t object_index;
+
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        LinkObject *object = &objects[object_index];
+        uint32_t symbol_count = (uint32_t)(object->symtab_size / object->symtab_entsize);
+        uint32_t symbol_index;
+        size_t section_index;
+
+        for (section_index = 0U; section_index < object->section_count; ++section_index) {
+            LinkSection *section = &object->sections[section_index];
+            if (section->live && (section->flags & SHF_EXECINSTR) != 0ULL && rt_strcmp(section_name(object, section->index), name) == 0) {
+                return section->folded ? &objects[section->fold_object_index].sections[section->fold_section_index] : section;
+            }
+        }
+        for (symbol_index = 0U; symbol_index < symbol_count; ++symbol_index) {
+            const unsigned char *symbol = symbol_entry(object, symbol_index);
+            uint16_t shndx;
+            LinkSection *section;
+
+            if (symbol == 0 || rt_strcmp(symbol_name(object, symbol), name) != 0) {
+                continue;
+            }
+            shndx = read_u16(symbol + 6);
+            if (shndx == SHN_UNDEF || shndx == SHN_ABS) {
+                continue;
+            }
+            section = find_link_section(object, shndx);
+            if (section != 0 && section->folded) {
+                section = &objects[section->fold_object_index].sections[section->fold_section_index];
+            }
+            if (section != 0 && section->live && (section->flags & SHF_EXECINSTR) != 0ULL) {
+                return section;
+            }
+        }
+    }
+    return 0;
+}
+
+static int profile_find_or_add_node(LinkProfileNode *nodes, size_t *count, const char *name, size_t *index_out) {
+    size_t index;
+
+    for (index = 0U; index < *count; ++index) {
+        if (rt_strcmp(nodes[index].name, name) == 0) {
+            *index_out = index;
+            return 0;
+        }
+    }
+    if (*count >= LINKER_PROFILE_MAX_NODES) {
+        return -1;
+    }
+    rt_copy_string(nodes[*count].name, sizeof(nodes[*count].name), name);
+    nodes[*count].weight = 0ULL;
+    nodes[*count].section = 0;
+    *index_out = (*count)++;
+    return 0;
+}
+
+static char *layout_next_token(char **cursor_io) {
+    char *cursor = *cursor_io;
+    char *token;
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor += 1;
+    }
+    if (*cursor == '\0' || *cursor == '#') {
+        *cursor_io = cursor;
+        return 0;
+    }
+    token = cursor;
+    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' && *cursor != '#') {
+        cursor += 1;
+    }
+    if (*cursor != '\0') {
+        *cursor++ = '\0';
+    }
+    *cursor_io = cursor;
+    return token;
+}
+
+static int rank_call_graph_profile(LinkObject *objects, size_t object_count, const char *path, char *error_out, size_t error_size) {
+    unsigned char *file = 0;
+    LinkProfileNode *nodes = 0;
+    LinkProfileEdge *edges = 0;
+    size_t size = 0U;
+    size_t offset = 0U;
+    size_t node_count = 0U;
+    size_t edge_count = 0U;
+    uint64_t rank = next_layout_rank(objects, object_count);
+    int result = -1;
+
+    nodes = (LinkProfileNode *)rt_malloc_array(LINKER_PROFILE_MAX_NODES, sizeof(*nodes));
+    edges = (LinkProfileEdge *)rt_malloc_array(LINKER_PROFILE_MAX_EDGES, sizeof(*edges));
+    if (nodes == 0 || edges == 0) {
+        set_link_error(error_out, error_size, "failed to allocate call graph profile", path);
+        goto done;
+    }
+    rt_memset(nodes, 0, LINKER_PROFILE_MAX_NODES * sizeof(*nodes));
+    rt_memset(edges, 0, LINKER_PROFILE_MAX_EDGES * sizeof(*edges));
+    if (read_file_alloc(path, LINKER_ORDER_FILE_CAPACITY, &file, &size, error_out, error_size) != 0) {
+        goto done;
+    }
+    file[size] = '\0';
+    while (offset < size) {
+        char *line = (char *)file + offset;
+        char *cursor;
+        char *kind;
+        char *weight_text;
+        char *first_name;
+        char *second_name;
+        unsigned long long parsed_weight;
+        size_t first_index;
+        size_t second_index;
+
+        while (offset < size && file[offset] != '\n' && file[offset] != '\r') {
+            offset += 1U;
+        }
+        while (offset < size && (file[offset] == '\n' || file[offset] == '\r')) {
+            file[offset++] = '\0';
+        }
+        cursor = line;
+        kind = layout_next_token(&cursor);
+        if (kind == 0) {
+            continue;
+        }
+        weight_text = layout_next_token(&cursor);
+        first_name = layout_next_token(&cursor);
+        second_name = rt_strcmp(kind, "edge") == 0 ? layout_next_token(&cursor) : 0;
+        if (weight_text == 0 || first_name == 0 || rt_parse_uint(weight_text, &parsed_weight) != 0 ||
+            (rt_strcmp(kind, "node") != 0 && rt_strcmp(kind, "edge") != 0) ||
+            (rt_strcmp(kind, "edge") == 0 && second_name == 0)) {
+            set_link_error(error_out, error_size, "malformed call graph profile", path);
+            goto done;
+        }
+        if (profile_find_or_add_node(nodes, &node_count, first_name, &first_index) != 0) {
+            set_link_error(error_out, error_size, "too many call graph profile nodes", path);
+            goto done;
+        }
+        if (rt_strcmp(kind, "node") == 0) {
+            nodes[first_index].weight += (uint64_t)parsed_weight;
+            continue;
+        }
+        if (profile_find_or_add_node(nodes, &node_count, second_name, &second_index) != 0 || edge_count >= LINKER_PROFILE_MAX_EDGES) {
+            set_link_error(error_out, error_size, "too many call graph profile edges", path);
+            goto done;
+        }
+        edges[edge_count].caller = first_index;
+        edges[edge_count].callee = second_index;
+        edges[edge_count].weight = (uint64_t)parsed_weight;
+        edge_count += 1U;
+    }
+    {
+        size_t index;
+        for (index = 0U; index < node_count; ++index) {
+            nodes[index].section = find_named_executable_section(objects, object_count, nodes[index].name);
+            if (nodes[index].section != 0) {
+                linker_profile_nodes_matched += 1ULL;
+            }
+        }
+        for (index = 0U; index < edge_count; ++index) {
+            if (nodes[edges[index].caller].section != 0 && nodes[edges[index].callee].section != 0) {
+                linker_profile_edges_matched += 1ULL;
+            }
+        }
+    }
+    linker_profile_nodes_total = (uint64_t)node_count;
+    linker_profile_edges_total = (uint64_t)edge_count;
+    for (;;) {
+        size_t root = node_count;
+        size_t index;
+        size_t current;
+
+        for (index = 0U; index < node_count; ++index) {
+            if (nodes[index].section == 0 || nodes[index].section->layout_rank != LINKER_UNPLACED_OFFSET) {
+                continue;
+            }
+            if (root == node_count || nodes[index].weight > nodes[root].weight ||
+                (nodes[index].weight == nodes[root].weight && rt_strcmp(nodes[index].name, nodes[root].name) < 0)) {
+                root = index;
+            }
+        }
+        if (root == node_count) {
+            break;
+        }
+        nodes[root].section->layout_rank = rank++;
+        linker_profile_sections_ordered += 1ULL;
+        linker_profile_bytes_ordered += nodes[root].section->size;
+        current = root;
+        for (;;) {
+            size_t best_edge = edge_count;
+
+            for (index = 0U; index < edge_count; ++index) {
+                LinkProfileNode *callee;
+                if (edges[index].caller != current) {
+                    continue;
+                }
+                callee = &nodes[edges[index].callee];
+                if (callee->section == 0 || callee->section->layout_rank != LINKER_UNPLACED_OFFSET) {
+                    continue;
+                }
+                if (best_edge == edge_count || edges[index].weight > edges[best_edge].weight ||
+                    (edges[index].weight == edges[best_edge].weight && rt_strcmp(callee->name, nodes[edges[best_edge].callee].name) < 0)) {
+                    best_edge = index;
+                }
+            }
+            if (best_edge == edge_count) {
+                break;
+            }
+            current = edges[best_edge].callee;
+            nodes[current].section->layout_rank = rank++;
+            linker_profile_sections_ordered += 1ULL;
+            linker_profile_bytes_ordered += nodes[current].section->size;
+        }
+    }
+    result = 0;
+done:
+    rt_free(file);
+    rt_free(edges);
+    rt_free(nodes);
+    return result;
+}
+
+static int rank_symbol_ordering_file(LinkObject *objects, size_t object_count, const char *path, char *error_out, size_t error_size) {
+    unsigned char *file = 0;
+    size_t size = 0U;
+    size_t offset = 0U;
+    uint64_t rank = 0ULL;
+
+    if (read_file_alloc(path, LINKER_ORDER_FILE_CAPACITY, &file, &size, error_out, error_size) != 0) {
+        return -1;
+    }
+    file[size] = '\0';
+    while (offset < size) {
+        char *line = (char *)file + offset;
+        char *end;
+        char *cursor;
+
+        while (offset < size && file[offset] != '\n' && file[offset] != '\r') {
+            offset += 1U;
+        }
+        end = (char *)file + offset;
+        while (offset < size && (file[offset] == '\n' || file[offset] == '\r')) {
+            file[offset++] = '\0';
+        }
+        while (line < end && (*line == ' ' || *line == '\t')) {
+            line += 1;
+        }
+        cursor = line;
+        while (cursor < end && *cursor != ' ' && *cursor != '\t' && *cursor != '#') {
+            cursor += 1;
+        }
+        *cursor = '\0';
+        if (*line != '\0' && *line != '#') {
+            rank_named_sections(objects, object_count, line, &rank);
+        }
+    }
+    rt_free(file);
+    return 0;
+}
+
 static void rank_call_graph_sections(LinkObject *objects, size_t object_count, const char *entry_symbol) {
     LinkSection **queue;
     LinkObject **queue_objects;
     size_t capacity = 0U;
     size_t head = 0U;
     size_t tail = 0U;
-    uint64_t rank = 0ULL;
+    uint64_t rank = next_layout_rank(objects, object_count);
     size_t object_index;
 
     for (object_index = 0; object_index < object_count; ++object_index) {
         size_t section_index;
         for (section_index = 0; section_index < objects[object_index].section_count; ++section_index) {
-            objects[object_index].sections[section_index].layout_rank = LINKER_UNPLACED_OFFSET;
             capacity += 1U;
         }
     }
@@ -272,7 +620,9 @@ static void rank_call_graph_sections(LinkObject *objects, size_t object_count, c
             }
             section = find_link_section(object, read_u16(symbol + 6));
             if (section != 0 && section->live && !section->folded && (section->flags & SHF_EXECINSTR) != 0ULL) {
-                section->layout_rank = rank++;
+                if (section->layout_rank == LINKER_UNPLACED_OFFSET) {
+                    section->layout_rank = rank++;
+                }
                 queue[tail] = section;
                 queue_objects[tail++] = object;
             }
@@ -304,10 +654,12 @@ static void rank_call_graph_sections(LinkObject *objects, size_t object_count, c
                 target_object = &objects[target->fold_object_index];
                 target = &target_object->sections[target->fold_section_index];
             }
-            if (target == 0 || !target->live || (target->flags & SHF_EXECINSTR) == 0ULL || target->layout_rank != LINKER_UNPLACED_OFFSET) {
+            if (target == 0 || !target->live || (target->flags & SHF_EXECINSTR) == 0ULL || layout_queue_contains(queue, tail, target)) {
                 continue;
             }
-            target->layout_rank = rank++;
+            if (target->layout_rank == LINKER_UNPLACED_OFFSET) {
+                target->layout_rank = rank++;
+            }
             queue[tail] = target;
             queue_objects[tail++] = target_object;
         }
@@ -316,13 +668,39 @@ static void rank_call_graph_sections(LinkObject *objects, size_t object_count, c
     rt_free(queue_objects);
 }
 
-void layout_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, int call_graph_order, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out) {
+int layout_objects(LinkObject *objects, size_t object_count, const char *entry_symbol, int call_graph_order, const char *symbol_ordering_file, const char *call_graph_profile, uint64_t *text_size_out, uint64_t *data_size_out, uint64_t *bss_size_out, char *error_out, size_t error_size) {
+    size_t object_index;
+
+    linker_profile_nodes_total = 0ULL;
+    linker_profile_nodes_matched = 0ULL;
+    linker_profile_edges_total = 0ULL;
+    linker_profile_edges_matched = 0ULL;
+    linker_profile_sections_ordered = 0ULL;
+    linker_profile_bytes_ordered = 0ULL;
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        size_t section_index;
+        for (section_index = 0U; section_index < objects[object_index].section_count; ++section_index) {
+            objects[object_index].sections[section_index].layout_rank = LINKER_UNPLACED_OFFSET;
+        }
+    }
+    if (symbol_ordering_file != 0 && symbol_ordering_file[0] != '\0' &&
+        rank_symbol_ordering_file(objects, object_count, symbol_ordering_file, error_out, error_size) != 0) {
+        return -1;
+    }
+    if (call_graph_profile != 0 && call_graph_profile[0] != '\0' &&
+        rank_call_graph_profile(objects, object_count, call_graph_profile, error_out, error_size) != 0) {
+        return -1;
+    }
     if (call_graph_order) {
         rank_call_graph_sections(objects, object_count, entry_symbol);
     }
-    *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT, call_graph_order);
+    *text_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_TEXT,
+                                             call_graph_order ||
+                                             (symbol_ordering_file != 0 && symbol_ordering_file[0] != '\0') ||
+                                             (call_graph_profile != 0 && call_graph_profile[0] != '\0'));
     *data_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_DATA, 0);
     *bss_size_out = layout_sections_of_kind(objects, object_count, LINK_SECTION_BSS, 0);
+    return 0;
 }
 
 uint64_t max_live_section_alignment(const LinkObject *objects, size_t object_count, LinkSectionKind kind) {

@@ -394,6 +394,112 @@ static int sections_have_suffix_bytes(const LinkObject *folded_object,
     return 1;
 }
 
+static int executable_sections_have_suffix_shape(LinkObject *objects,
+                                                  size_t object_count,
+                                                  LinkObject *folded_object,
+                                                  LinkSection *folded,
+                                                  LinkObject *master_object,
+                                                  LinkSection *master) {
+    const LinkRelaSection *folded_rela;
+    const LinkRelaSection *master_rela;
+    uint64_t folded_count;
+    uint64_t master_count;
+    uint64_t relocation_index;
+    uint64_t addend;
+
+    if ((folded->flags & SHF_EXECINSTR) == 0ULL || (master->flags & SHF_EXECINSTR) == 0ULL ||
+        folded->type != SHT_PROGBITS || master->type != SHT_PROGBITS || folded->size == 0ULL || folded->size >= master->size) {
+        return 0;
+    }
+    addend = master->size - folded->size;
+    if (!section_alignment_satisfies(master->align, folded->align, addend) ||
+        memcmp(folded_object->file + folded->offset, master_object->file + master->offset + addend, (size_t)folded->size) != 0) {
+        return 0;
+    }
+    folded_rela = find_rela_section_const(folded_object, folded->index);
+    master_rela = find_rela_section_const(master_object, master->index);
+    folded_count = folded_rela != 0 && folded_rela->entsize != 0ULL ? folded_rela->size / folded_rela->entsize : 0ULL;
+    master_count = master_rela != 0 && master_rela->entsize != 0ULL ? master_rela->size / master_rela->entsize : 0ULL;
+    if (folded_count != master_count) {
+        return 0;
+    }
+    for (relocation_index = 0ULL; relocation_index < folded_count; ++relocation_index) {
+        const unsigned char *folded_relocation = folded_object->file + folded_rela->offset + relocation_index * folded_rela->entsize;
+        const unsigned char *master_relocation = master_object->file + master_rela->offset + relocation_index * master_rela->entsize;
+        uint64_t folded_info = read_u64(folded_relocation + 8);
+        uint64_t master_info = read_u64(master_relocation + 8);
+        const unsigned char *folded_symbol = symbol_entry(folded_object, (uint32_t)(folded_info >> 32U));
+        const unsigned char *master_symbol = symbol_entry(master_object, (uint32_t)(master_info >> 32U));
+        IcfRelocationTarget folded_target;
+        IcfRelocationTarget master_target;
+        int targets_match = 0;
+
+        if (folded_symbol != 0 && master_symbol != 0) {
+            resolve_icf_target(objects, object_count, folded_object, folded_symbol, &folded_target);
+            resolve_icf_target(objects, object_count, master_object, master_symbol, &master_target);
+            if (folded_target.kind == master_target.kind) {
+                if (folded_target.kind == 1) {
+                    targets_match = folded_target.value == master_target.value;
+                } else if (folded_target.kind == 2) {
+                    if (folded_target.section == folded && master_target.section == master) {
+                        targets_match = folded_target.value + addend == master_target.value;
+                    } else {
+                        targets_match = folded_target.object == master_target.object &&
+                                        folded_target.section == master_target.section &&
+                                        folded_target.value == master_target.value;
+                    }
+                } else if (folded_target.kind == 3) {
+                    targets_match = rt_strcmp(folded_target.name, master_target.name) == 0;
+                }
+            }
+        }
+
+        if (read_u64(folded_relocation) + addend != read_u64(master_relocation) ||
+            (uint32_t)folded_info != (uint32_t)master_info ||
+            read_i64(folded_relocation + 16) != read_i64(master_relocation + 16) ||
+            !targets_match) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+void count_executable_suffix_fold_candidates(LinkObject *objects, size_t object_count, uint64_t *sections_out, uint64_t *bytes_out) {
+    size_t object_index;
+
+    *sections_out = 0ULL;
+    *bytes_out = 0ULL;
+    for (object_index = 0U; object_index < object_count; ++object_index) {
+        size_t section_index;
+        for (section_index = 0U; section_index < objects[object_index].section_count; ++section_index) {
+            LinkSection *section = &objects[object_index].sections[section_index];
+            size_t master_object_index;
+            int found = 0;
+
+            if (!section->live || section->folded || (section->flags & SHF_EXECINSTR) == 0ULL) {
+                continue;
+            }
+            for (master_object_index = 0U; master_object_index < object_count && !found; ++master_object_index) {
+                size_t master_section_index;
+                for (master_section_index = 0U; master_section_index < objects[master_object_index].section_count; ++master_section_index) {
+                    LinkSection *master = &objects[master_object_index].sections[master_section_index];
+
+                    if (master == section || !master->live || master->folded || master->size <= section->size) {
+                        continue;
+                    }
+                    if (executable_sections_have_suffix_shape(objects, object_count, &objects[object_index], section,
+                                                              &objects[master_object_index], master)) {
+                        *sections_out += 1ULL;
+                        *bytes_out += section->size;
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void fold_identical_sections(LinkObject *objects, size_t object_count, int equivalence_classes) {
     size_t i;
 
