@@ -162,14 +162,22 @@ is the usual Apple toolchain ABI library for launchable executables.
 
 ## SELF-HOSTED BUILD
 
-The self-hosted build reuses the in-tree `ncc` compiler for the complete hosted
-tool set, including `ncc` itself.
+On Linux/x86-64, the self-hosted build uses the hosted `ncc` bootstrap compiler
+and the hosted in-tree linker to rebuild the complete tool set as static,
+no-libc Linux binaries, including `ncc` and the linker themselves.
 
 - built with `make selfhost`
 - writes binaries to `build/selfhost-<os>-<arch>/`
-- uses the hosted `ncc` binary as `CC` while still relying on `/bin/sh`, the
-  system assembler, and the system linker
+- uses `ncc` for C compilation and the in-tree linker for final executable links
+- uses the system assembler for `.S` sources because `ncc` does not yet assemble
+  the project startup and syscall files
+- starts from host-built `ncc` and linker binaries and uses Bash to orchestrate
+  the build
 - is the main bootstrap-progress check for Linux/x86-64 today
+
+`make selfhost-hosted` retains the older hosted POSIX rebuild for comparison. It
+writes to `build/selfhost-hosted-<os>-<arch>/` and uses the system linker and C
+runtime.
 
 This path matters especially for shared runtime changes, shell support code,
 and anything that adds new low-level dependencies.
@@ -181,7 +189,9 @@ and anything that adds new low-level dependencies.
     make freestanding  — normal native path: on Linux build the static syscall-only target under build/freestanding-linux-$(TARGET_ARCH)/; on local macOS/aarch64 build the project-linked Mach-O target under build/macos-aarch64/
     make freestanding-macos — build the older Apple-ld/libSystem comparison target under build/freestanding-macos-aarch64/
     make run-userland  — on Linux build the freestanding tree and start an isolated shell using only those tools
-    make selfhost      — rebuild the hosted binaries with the in-tree ncc under build/selfhost-<os>-<arch>/
+    make selfhost      — rebuild static no-libc Linux/x86-64 binaries with ncc and the in-tree linker under build/selfhost-<os>-<arch>/
+    make selfhost-hosted — rebuild hosted POSIX binaries with ncc and the system linker under build/selfhost-hosted-<os>-<arch>/
+    make test-selfhost — rebuild and smoke-test the static selfhost tree, then run native compiler regressions through its ncc
     make test          — build host binaries, run smoke/Phase 1 checks, and on Linux run the freestanding and isolated userland smoke suites
     make benchmark     — build host binaries and run tests/benchmarks/run_benchmarks.sh
     make clean         — remove build output
@@ -269,27 +279,22 @@ Use the hosted build for quick iteration. `make test` is the broad regression
 gate; it now includes the freestanding smoke suite on platforms where
 freestanding Linux builds are available.
 
-## SELF-HOSTED HOST BUILD STATUS
+## SELF-HOSTED FREESTANDING BUILD STATUS
 
-On Linux/x86-64, the in-tree compiler rebuilds all 214 tools in the current
-canonical hosted tool set, including a fresh `ncc`, in a separate self-host
-tree. The native compiler regression suite also runs against that rebuilt
-compiler.
+On Linux/x86-64, the in-tree compiler and linker rebuild all 214 tools in the
+current canonical tool set as static no-libc executables, including fresh `ncc`
+and linker binaries, in a separate self-host tree. `make test-selfhost` runs the
+no-libc smoke suite and native compiler regression suite against that tree.
 
 A typical check looks like:
 
     make host
     make selfhost
 
-That path now covers the GNU-style Makefile features used by the repository's
-normal host build, including includes, conditionals, command-line variable
-origin, common text functions, line continuations, pattern rules, and the
-manifest extraction pipeline built from `grep -oE` plus `tr`.
-
 This is an important self-hosting milestone, but it is not a full bootstrap
-closure yet. A host-built `ncc` starts the self-host stage, and the build still
-relies on `/bin/sh`, the system assembler, and the system linker to execute the
-compile and link steps.
+closure yet. Host-built `ncc` and linker binaries start the self-host stage, and
+the build still relies on Bash and the system assembler. The produced tool
+binaries do not depend on the system C library or system linker.
 
 ## CONTRIBUTOR NOTES
 

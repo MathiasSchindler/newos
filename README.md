@@ -20,7 +20,7 @@ The repository currently focuses on:
 
 The normal local workflow on macOS and Linux is now `make freestanding`. The hosted POSIX build remains active for verification, fast iteration, and early platform bring-up. Windows is a new contributor environment for the project; the current practical route is MSYS2 while native Windows platform support is developed.
 
-The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. Linux freestanding builds exercise the libc-free syscall path where available, macOS freestanding builds now use the project Mach-O linker and Darwin runtime path, hosted POSIX remains a useful comparison build, and the self-hosted build path through ncc is now a regular bootstrap-progress check.
+The userland has expanded substantially across filesystem, text, process, network, archive, build, math, and system-reporting tools. Linux freestanding builds exercise the libc-free syscall path where available, macOS freestanding builds now use the project Mach-O linker and Darwin runtime path, hosted POSIX remains a useful comparison build, and the Linux/x86-64 self-hosted path rebuilds the static no-libc tool tree with ncc and the in-tree linker.
 
 The repository also includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
 

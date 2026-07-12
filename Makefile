@@ -75,6 +75,7 @@ DEFAULT_HOST_BUILD_DIR := $(BUILD_ROOT)/host-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 BUILD_DIR ?= $(DEFAULT_HOST_BUILD_DIR)
 TARGET_BUILD_DIR ?= $(BUILD_ROOT)/freestanding-linux-$(TARGET_ARCH)
 SELFHOST_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
+SELFHOST_HOSTED_BUILD_DIR ?= $(BUILD_ROOT)/selfhost-hosted-$(HOST_OS_NAME)-$(HOST_ARCH_NAME)
 
 MACOS_BUILD_DIR ?= $(BUILD_ROOT)/macos-$(MACOS_FREESTANDING_ARCH)
 TEST_FREESTANDING_BUILD_DIR ?= $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR),$(TARGET_BUILD_DIR))
@@ -89,7 +90,7 @@ else
 endif
 HOST_CFLAGS ?= $(filter-out -Isrc/shared,$(CFLAGS)) $(HOST_SIZE_FLAGS) $(HOST_SHARED_INC_FLAG)
 HOST_CFLAGS += $(PROFILE_CFLAGS)
-SELFHOST_CC_DEP := $(if $(filter $(BUILD_DIR),$(SELFHOST_BUILD_DIR)),$(DEFAULT_HOST_BUILD_DIR)/ncc)
+SELFHOST_CC_DEP := $(if $(filter $(BUILD_DIR),$(SELFHOST_HOSTED_BUILD_DIR)),$(DEFAULT_HOST_BUILD_DIR)/ncc)
 ifeq ($(TARGET_ARCH),x86_64)
 TARGET_TRIPLE ?= x86_64-linux-none
 else ifeq ($(TARGET_ARCH),aarch64)
@@ -255,13 +256,17 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .DEFAULT_GOAL := all
 .SECONDEXPANSION:
 
-.PHONY: all host freestanding selfhost test benchmark compiler-benchmark clean
+.PHONY: all host freestanding selfhost selfhost-hosted test test-selfhost benchmark compiler-benchmark clean
 
 TEST_RUNTIME_TARGETS := $(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest)
 
 test: $(DEFAULT_ALL_TARGETS) $(TEST_RUNTIME_TARGETS)
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
+
+test-selfhost: selfhost
+	NEWOS_INCEPTION_BUILD_DIR="$(abspath $(SELFHOST_BUILD_DIR))" sh ./tests/suites/inception.sh
+	NEWOS_TEST_BUILD_DIR="$(abspath $(SELFHOST_BUILD_DIR))" PHASE1_JOBS=1 sh ./tests/phase1/run_phase1_tests.sh tools/compiler/native
 
 benchmark: host compiler-benchmark
 	sh ./tests/benchmarks/run_benchmarks.sh
@@ -312,10 +317,14 @@ else
 endif
 endif
 
-selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc
-	+@$(MAKE) --no-print-directory BUILD_DIR="$(SELFHOST_BUILD_DIR)" CC="$(abspath $(DEFAULT_HOST_BUILD_DIR)/ncc)" CFLAGS="$(CFLAGS) $(SELFHOST_SIZE_FLAGS)" HOST_PLATFORM_SOURCES="$(SELFHOST_PLATFORM_SOURCES)" NEWOS_NCC_LINKER="$${NEWOS_NCC_LINKER:-cc}" host
+selfhost: $(DEFAULT_HOST_BUILD_DIR)/ncc $(DEFAULT_HOST_BUILD_DIR)/linker
+	@if [ "$(HOST_OS_NAME)-$(HOST_ARCH_NAME)" != "linux-x86_64" ]; then echo "selfhost: static no-libc self-hosting currently requires Linux/x86-64" >&2; exit 1; fi
+	@WORK="$(abspath $(SELFHOST_BUILD_DIR))" LINKER="$(abspath $(DEFAULT_HOST_BUILD_DIR)/linker)" NEWLINKER_CC="$(abspath $(DEFAULT_HOST_BUILD_DIR)/ncc)" NEWLINKER_AS="$${NEWLINKER_AS:-cc}" PARALLEL_JOBS="$(PARALLEL_JOBS)" TOOLS="$(TOOLS)" bash scripts/build-freestanding-newlinker.sh
 
-$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(MACOS_BUILD_DIR) $(MACOS_BUILD_DIR)/.obj $(FREESTANDING_OBJECT_BUILD_DIR)):
+selfhost-hosted: $(DEFAULT_HOST_BUILD_DIR)/ncc
+	+@$(MAKE) --no-print-directory BUILD_DIR="$(SELFHOST_HOSTED_BUILD_DIR)" CC="$(abspath $(DEFAULT_HOST_BUILD_DIR)/ncc)" CFLAGS="$(CFLAGS) $(SELFHOST_SIZE_FLAGS)" HOST_PLATFORM_SOURCES="$(SELFHOST_PLATFORM_SOURCES)" NEWOS_NCC_LINKER="$${NEWOS_NCC_LINKER:-cc}" host
+
+$(sort $(BUILD_ROOT) $(BUILD_DIR) $(TARGET_BUILD_DIR) $(SELFHOST_BUILD_DIR) $(SELFHOST_HOSTED_BUILD_DIR) $(MACOS_BUILD_DIR) $(MACOS_BUILD_DIR)/.obj $(FREESTANDING_OBJECT_BUILD_DIR)):
 	mkdir -p $@
 
 $(BUILD_ROOT)/.ssh_core_check: $(BUILD_DIR)/.ssh_core_check | $(BUILD_ROOT)
