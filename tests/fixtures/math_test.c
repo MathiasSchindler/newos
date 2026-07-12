@@ -22,7 +22,11 @@ int main(void) {
 
     if (math_abs(-2.5) != 2.5 || math_abs(2.5) != 2.5) return 6;
     if (!close_to(math_sqrt(2.0), 1.4142135623730951, 1.0e-12)) return 7;
+    if (!close_to(math_sqrt(1.0e300) / 1.0e150, 1.0, 1.0e-12)) return 45;
+    if (!close_to(math_sqrt(1.0e-300) / 1.0e-150, 1.0, 1.0e-12)) return 46;
     if (!close_to(math_exp(1.0), MATH_E, 1.0e-12)) return 8;
+    if (!close_to(math_exp(math_log(1.0e200)) / 1.0e200, 1.0, 1.0e-12)) return 47;
+    if (!close_to(math_exp(math_log(1.0e-200)) / 1.0e-200, 1.0, 1.0e-12)) return 48;
     if (!close_to(math_exp2(3.0), 8.0, 1.0e-12)) return 9;
     if (!close_to(math_log(MATH_E), 1.0, 1.0e-12)) return 10;
     if (!close_to(math_log2(8.0), 3.0, 1.0e-12)) return 11;

@@ -63,7 +63,9 @@ double math_abs(double value) {
 }
 
 double math_sqrt(double value) {
+    double fraction;
     double guess;
+    int exponent;
     int i;
 
     if (math_is_nan(value) || value < 0.0) {
@@ -75,18 +77,24 @@ double math_sqrt(double value) {
     if (value == 0.0) {
         return value;
     }
-    guess = value >= 1.0 ? value : 1.0;
-    for (i = 0; i < 40; ++i) {
-        guess = 0.5 * (guess + value / guess);
+    fraction = math_frexp(value, &exponent);
+    if (exponent % 2 != 0) {
+        fraction *= 2.0;
+        exponent -= 1;
     }
-    return guess;
+    guess = 0.5 * (fraction + 1.0);
+    for (i = 0; i < 6; ++i) {
+        guess = 0.5 * (guess + fraction / guess);
+    }
+    return math_scalbn(guess, exponent / 2);
 }
 
 double math_exp(double value) {
+    int exponent;
+    double reduced;
     double term = 1.0;
     double sum = 1.0;
     int negative = value < 0.0;
-    int halvings = 0;
     int n;
 
     if (math_is_nan(value)) {
@@ -95,25 +103,22 @@ double math_exp(double value) {
     if (math_is_infinite(value)) {
         return negative ? 0.0 : value;
     }
-    if (negative) {
-        value = -value;
+    if (value > 709.782712893384) {
+        return math_infinity();
     }
-    while (value > 1.0 && halvings < 32) {
-        value *= 0.5;
-        halvings += 1;
+    if (value < -745.133219101941) {
+        return 0.0;
     }
-    for (n = 1; n <= 80; ++n) {
-        term = term * value / (double)n;
+    exponent = (int)(value / MATH_LN2 + (negative ? -0.5 : 0.5));
+    reduced = value - (double)exponent * MATH_LN2;
+    for (n = 1; n <= 24; ++n) {
+        term = term * reduced / (double)n;
         sum += term;
         if (math_abs(term) < 1.0e-18) {
             break;
         }
     }
-    while (halvings > 0) {
-        sum *= sum;
-        halvings -= 1;
-    }
-    return negative ? 1.0 / sum : sum;
+    return math_scalbn(sum, exponent);
 }
 
 double math_exp2(double value) {
@@ -121,13 +126,12 @@ double math_exp2(double value) {
 }
 
 double math_log(double value) {
-    double lower;
-    double upper;
+    double fraction;
     double y;
     double y2;
     double term;
     double sum;
-    int multiplier = 1;
+    int exponent;
     int n;
 
     if (math_is_nan(value) || value <= 0.0) {
@@ -136,24 +140,23 @@ double math_log(double value) {
     if (math_is_infinite(value)) {
         return value;
     }
-    lower = 0.75;
-    upper = 1.5;
-    while ((value < lower || value > upper) && multiplier < 1024) {
-        value = math_sqrt(value);
-        multiplier *= 2;
+    fraction = math_frexp(value, &exponent);
+    if (fraction < 0.70710678118654752440) {
+        fraction *= 2.0;
+        exponent -= 1;
     }
-    y = (value - 1.0) / (value + 1.0);
+    y = (fraction - 1.0) / (fraction + 1.0);
     y2 = y * y;
     term = y;
     sum = y;
-    for (n = 3; n <= 399; n += 2) {
+    for (n = 3; n <= 49; n += 2) {
         term *= y2;
         if (math_abs(term) < 1.0e-20) {
             break;
         }
         sum += term / (double)n;
     }
-    return 2.0 * sum * (double)multiplier;
+    return 2.0 * sum + (double)exponent * MATH_LN2;
 }
 
 double math_log2(double value) {
