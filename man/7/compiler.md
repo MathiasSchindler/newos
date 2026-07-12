@@ -85,9 +85,10 @@ Bash orchestration, or the external assembler used for `.S` sources.
 ## LIMITATIONS
 
 - `ncc` targets the project's C subset, not full ISO C11 compatibility
+- floating-point types, literals, arithmetic, conversions, and ABI classification are not implemented; declarations using `double` currently lower as 8-byte integers and cannot execute the shared math API correctly
 - `linux-aarch64` assembly generation exists, but direct object emission is not finished yet
 - Optimization, debug-info emission, and linker sophistication are still modest
 
 ## SEE ALSO
 
-man, ncc, project-layout, build, runtime
+man, ncc, project-layout, build, runtime, math

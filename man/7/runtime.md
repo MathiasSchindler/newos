@@ -46,6 +46,7 @@ hosted and freestanding builds.
 - `image/` — metadata probing and structural validation for common image containers and C2PA-related tooling
 - `xml.*`, `xml_stream.*`, and `xml_dtd.*` — reusable XML parsing, streaming, safety, and DTD support for the XML tool family
 - `bignum.*` — fixed-capacity arbitrary-precision arithmetic used by math-oriented tools
+- `math.*` — dependency-free binary64 elementary, trigonometric, hyperbolic, rounding, and power helpers; see [math](math.md) for the supported numerical profile
 
 ## CONTRIBUTOR BOUNDARIES
 
@@ -69,4 +70,4 @@ hosted and freestanding builds.
 
 ## SEE ALSO
 
-man, project-layout, platform, memory, threading, shell, compiler
+man, project-layout, platform, memory, math, threading, shell, compiler

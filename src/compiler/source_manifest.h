@@ -77,6 +77,7 @@
     X("src/shared/runtime/io_loop.c") \
     X("src/shared/runtime/unicode_utf8.c") \
     X("src/shared/runtime/unicode.c") \
+    X("src/shared/math.c") \
     X("src/shared/tool_json.c") \
     X("src/shared/tool_io.c") \
     X("src/shared/tool_file.c") \

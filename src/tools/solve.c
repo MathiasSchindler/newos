@@ -1,3 +1,4 @@
+#include "../shared/math.h"
 #include "runtime.h"
 #include "tool_util.h"
 
@@ -27,9 +28,28 @@
 #define SOLVE_RAT_DIVISOR_LIMIT 1000000ULL
 #define SOLVE_RAT_MAX_DIVISORS 512
 #define SOLVE_MAX_PARAMS 8
-#define SOLVE_PI 3.14159265358979323846264338327950288419716939937510
-#define SOLVE_E 2.71828182845904523536028747135266249775724709369995
+#define SOLVE_PI MATH_PI
+#define SOLVE_E MATH_E
 #define SOLVE_HUGE 1.0e290
+
+#define solve_abs math_abs
+#define solve_sqrt math_sqrt
+#define solve_exp math_exp
+#define solve_log math_log
+#define solve_atan math_atan
+#define solve_sin math_sin
+#define solve_cos math_cos
+#define solve_tan math_tan
+#define solve_asin math_asin
+#define solve_acos math_acos
+#define solve_sinh math_sinh
+#define solve_cosh math_cosh
+#define solve_tanh math_tanh
+#define solve_floor math_floor
+#define solve_ceil math_ceil
+#define solve_round math_round
+#define solve_pow_int math_pow_int
+#define solve_pow math_pow
 
 typedef enum {
     SOLVE_STATUS_ROOT = 0,
@@ -239,10 +259,6 @@ static int solve_find_param_index(const SolveOptions *options, const char *name)
         if (rt_strcmp(options->param_names[i], name) == 0) return i;
     }
     return -1;
-}
-
-static double solve_abs(double value) {
-    return value < 0.0 ? -value : value;
 }
 
 static void solve_emit_kv(const char *key, const char *value) {

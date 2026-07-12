@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <stddef.h>
 
+#include "../math.h"
 #include "fr_platform_internal.h"
 
 #if !defined(FR_RASTER_DISABLE_SIMD)
@@ -117,24 +118,6 @@ static int fr_fixed_ceil_to_int(int32_t value) {
     int frac = value % FR_OUTLINE_ONE;
 
     if (value > 0 && frac != 0) {
-        whole += 1;
-    }
-    return whole;
-}
-
-static int32_t fr_double_floor_to_i32(double value) {
-    int32_t whole = (int32_t)value;
-
-    if ((double)whole > value) {
-        whole -= 1;
-    }
-    return whole;
-}
-
-static int32_t fr_double_ceil_to_i32(double value) {
-    int32_t whole = (int32_t)value;
-
-    if ((double)whole < value) {
         whole += 1;
     }
     return whole;
@@ -441,10 +424,10 @@ static int fr_build_edges(const FrOutline *outline, FrEdgeList *edges, int32_t *
         *max_x = 0;
         *max_y = 0;
     } else {
-        *min_x = fr_double_floor_to_i32(bounds_min_x);
-        *min_y = fr_double_floor_to_i32(bounds_min_y);
-        *max_x = fr_double_ceil_to_i32(bounds_max_x);
-        *max_y = fr_double_ceil_to_i32(bounds_max_y);
+        *min_x = (int32_t)math_floor(bounds_min_x);
+        *min_y = (int32_t)math_floor(bounds_min_y);
+        *max_x = (int32_t)math_ceil(bounds_max_x);
+        *max_y = (int32_t)math_ceil(bounds_max_y);
     }
 
     return 0;

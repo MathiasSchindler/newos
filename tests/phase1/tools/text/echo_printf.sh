@@ -33,3 +33,6 @@ assert_text_equals "$printf_stop" 'stop' "printf %b \\c did not stop output"
 
 printf_q=$("${TEST_BIN_DIR}/printf" '%q' "can't stop" | tr -d '\r\n')
 assert_text_equals "$printf_q" "'can'\''t stop'" "printf %q shell quoting failed"
+
+printf_float=$("${TEST_BIN_DIR}/printf" '%.3f|%.2e|%.4g' 12.5 12.5 12.5 | tr -d '\r\n')
+assert_text_equals "$printf_float" '12.500|1.25e+01|12.5' "printf floating formatting changed unexpectedly"

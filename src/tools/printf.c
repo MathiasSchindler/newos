@@ -1,3 +1,4 @@
+#include "../shared/math.h"
 #include "runtime.h"
 #include "tool_util.h"
 
@@ -61,27 +62,6 @@ static int parse_unsigned_value(const char *text, unsigned long long *value_out)
     return 0;
 }
 
-static double absolute_double(double value) {
-    return value < 0.0 ? -value : value;
-}
-
-static double power_of_ten(int exponent) {
-    double result = 1.0;
-    int i;
-
-    if (exponent >= 0) {
-        for (i = 0; i < exponent; ++i) {
-            result *= 10.0;
-        }
-    } else {
-        for (i = 0; i < -exponent; ++i) {
-            result /= 10.0;
-        }
-    }
-
-    return result;
-}
-
 static int parse_float_value(const char *text, double *value_out) {
     double value = 0.0;
     double fraction_scale = 0.1;
@@ -132,7 +112,7 @@ static int parse_float_value(const char *text, double *value_out) {
         }
     }
 
-    *value_out = (double)sign * value * power_of_ten(exponent_sign * exponent);
+    *value_out = (double)sign * value * math_pow_int(10.0, exponent_sign * exponent);
     return 0;
 }
 
@@ -398,7 +378,7 @@ static int format_fixed_double(double value, int precision, char *buffer, size_t
         precision = 18;
     }
 
-    value = absolute_double(value);
+    value = math_abs(value);
     for (i = 0; i < precision; ++i) {
         scale *= 10ULL;
     }
@@ -473,7 +453,7 @@ static int format_exponential_double(double value, int precision, int uppercase,
             return -1;
         }
     } else {
-        normalized = absolute_double(value);
+        normalized = math_abs(value);
         while (normalized >= 10.0) {
             normalized /= 10.0;
             exponent += 1;
@@ -524,7 +504,7 @@ static int format_exponential_double(double value, int precision, int uppercase,
 }
 
 static int format_general_double(double value, int precision, int uppercase, char *buffer, size_t buffer_size) {
-    double normalized = absolute_double(value);
+    double normalized = math_abs(value);
     int exponent = 0;
 
     if (precision == 0) {
