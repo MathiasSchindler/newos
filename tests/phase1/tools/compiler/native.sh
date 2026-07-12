@@ -56,6 +56,60 @@ EOF
 
 compile_and_check_native "$WORK_DIR/backend_expr.c" "$WORK_DIR/backend_expr_bin" "0" "compiler backend did not preserve string/index expression semantics"
 
+cat > "$WORK_DIR/call_result_member.c" <<'EOF'
+typedef struct {
+    char *first;
+    char *second;
+} Pair;
+
+Pair *select_pair(Pair *pair) {
+    return pair;
+}
+
+int main(void) {
+    Pair pair;
+    char first = 'a';
+    char second = 'b';
+    pair.first = &first;
+    pair.second = &second;
+    return select_pair(&pair)->second == &second ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/call_result_member.c" "$WORK_DIR/call_result_member_bin" "0" "compiler lost the return type before member access on a function-call result"
+
+cat > "$WORK_DIR/call_result_deref.c" <<'EOF'
+char *skip_one(char *text) {
+    return text + 1;
+}
+
+int main(void) {
+    char text[] = " [";
+    return *skip_one(text) == '[' ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/call_result_deref.c" "$WORK_DIR/call_result_deref_bin" "0" "compiler lost the return type before dereferencing a function-call result"
+
+cat > "$WORK_DIR/prefix_pointer_deref_width.c" <<'EOF'
+int main(void) {
+    unsigned char source[16];
+    unsigned char destination[16];
+    unsigned char *source_cursor = source + 8;
+    unsigned char *destination_cursor = destination + 8;
+    int i;
+
+    for (i = 0; i < 16; i += 1) {
+        source[i] = (unsigned char)(i + 1);
+        destination[i] = 0xa5U;
+    }
+    *--destination_cursor = *--source_cursor;
+    return destination[7] == 8U && destination[8] == 0xa5U && destination[14] == 0xa5U ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/prefix_pointer_deref_width.c" "$WORK_DIR/prefix_pointer_deref_width_bin" "0" "compiler used the wrong width when dereferencing a prefix-decremented byte pointer"
+
 cat > "$WORK_DIR/add_sub_chain.c" <<'EOF'
 static int base64_like(int ch) {
     if (ch >= 'a' && ch <= 'z') return ch - 'a' + 26;
@@ -1501,6 +1555,38 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/loop_continue.c" "$WORK_DIR/loop_continue_bin" "0" "compiler miscompiled continue control flow in a for-loop"
+
+cat > "$WORK_DIR/prefix_increment_width.c" <<'EOF'
+static void keep_on_stack(unsigned int *value) {
+    if (*value == 123U) {
+        *value = 456U;
+    }
+}
+
+unsigned long long poison_stack(void) {
+    unsigned long long words[4];
+
+    words[0] = 0xffffffffffffffffULL;
+    words[1] = 0xffffffffffffffffULL;
+    words[2] = 0xffffffffffffffffULL;
+    words[3] = 0xffffffffffffffffULL;
+    return words[0];
+}
+
+static int increment_local(void) {
+    unsigned int value = 0U;
+
+    keep_on_stack(&value);
+    return ++value == 1U;
+}
+
+int main(void) {
+    unsigned long long poison = poison_stack();
+    return poison != 0ULL && increment_local() ? 0 : 1;
+}
+EOF
+
+compile_and_check_native "$WORK_DIR/prefix_increment_width.c" "$WORK_DIR/prefix_increment_width_bin" "0" "compiler used the wrong storage width for prefix increment on an unsigned int local"
 
 cat > "$WORK_DIR/second_pipeline_command.c" <<'EOF'
 #include <string.h>

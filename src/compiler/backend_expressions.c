@@ -1248,7 +1248,7 @@ static int emit_named_call(ExprParser *parser, const char *name, const char *obj
         return expr_parse_postfix_suffixes(parser, 0, 1, 0, return_type);
     }
 
-    return expr_parse_postfix_suffixes(parser, 0, 0, 0, 0);
+    return expr_parse_postfix_suffixes(parser, 0, 0, 0, return_type);
 }
 
 static int emit_named_object_call_to_pushed_address(ExprParser *parser, const char *name) {
@@ -2854,6 +2854,7 @@ static int expr_parse_lvalue_address(ExprParser *parser, int *byte_sized) {
         rt_copy_string(name, sizeof(name), parser->current.text);
         expr_next(parser);
         word_index = name_prefers_word_index(parser->state, name);
+        *byte_sized = type_access_size(lookup_name_type_text(parser->state, name), word_index);
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "[")) {
             char element_type[128];

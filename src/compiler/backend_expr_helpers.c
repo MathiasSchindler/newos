@@ -21,8 +21,16 @@ int expr_operand_prefers_byte_load(ExprParser *parser) {
         }
     }
 
+    while (snapshot.current.kind == EXPR_TOKEN_PUNCT &&
+           (names_equal(snapshot.current.text, "++") || names_equal(snapshot.current.text, "--"))) {
+        expr_next(&snapshot);
+    }
+
     if (snapshot.current.kind == EXPR_TOKEN_IDENTIFIER) {
         const char *known_type = lookup_name_type_text(snapshot.state, snapshot.current.text);
+        if (known_type == 0 || known_type[0] == '\0') {
+            known_type = function_return_type(snapshot.state, snapshot.current.text);
+        }
         if (known_type != 0 && known_type[0] != '\0') {
             rt_copy_string(type_text, sizeof(type_text), known_type);
             expr_next(&snapshot);
@@ -480,15 +488,17 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
     } else if (parser->current.kind == EXPR_TOKEN_IDENTIFIER) {
         char name[COMPILER_IR_NAME_CAPACITY];
         const char *known_type;
+        const char *call_return_type;
 
         rt_copy_string(name, sizeof(name), parser->current.text);
         known_type = lookup_name_type_text(parser->state, name);
+        call_return_type = function_return_type(parser->state, name);
         if (known_type != 0 && known_type[0] != '\0') {
             rt_copy_string(buffer, buffer_size, known_type);
         } else if (find_constant(parser->state, name) >= 0 && name_looks_like_macro_constant(name)) {
             rt_copy_string(buffer, buffer_size, "unsigned long");
-        } else if (function_returns_object(parser->state, name)) {
-            rt_copy_string(buffer, buffer_size, function_return_type(parser->state, name));
+        } else if (call_return_type[0] != '\0') {
+            rt_copy_string(buffer, buffer_size, call_return_type);
         } else {
             rt_copy_string(buffer, buffer_size, "int");
         }
@@ -496,7 +506,7 @@ void expr_infer_result_type(ExprParser *parser, char *buffer, size_t buffer_size
 
         if (parser->current.kind == EXPR_TOKEN_PUNCT && names_equal(parser->current.text, "(")) {
             int depth = 1;
-            if (!function_returns_object(parser->state, name)) {
+            if (call_return_type[0] == '\0') {
                 rt_copy_string(buffer, buffer_size, "int");
             }
             expr_next(parser);
