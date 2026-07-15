@@ -1571,7 +1571,7 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
         if (function_info != 0 && source_param_index >= 0 && source_param_index < 64 &&
             (function_info->unused_param_mask & (1ULL << (unsigned int)source_param_index)) != 0ULL) {
             state->param_count += 1;
-            if (double_param) {
+            if (double_param && !backend_is_aarch64(state)) {
                 state->xmm_param_count += 1;
             } else {
                 state->gpr_param_count += 1;
@@ -1579,11 +1579,11 @@ static int emit_decl_instruction(BackendState *state, const char *line) {
             return 0;
         }
 
-        if (double_param) {
+        if (double_param && !backend_is_aarch64(state)) {
             int local_index;
             char offset_text[32];
 
-            if (backend_is_aarch64(state) || state->xmm_param_count >= 8) {
+            if (state->xmm_param_count >= 8) {
                 backend_set_error(state->backend, "double parameters outside x86-64 XMM registers are not yet supported");
                 return -1;
             }
@@ -2067,6 +2067,7 @@ int compiler_backend_emit_assembly(CompilerBackend *backend, const CompilerIr *i
                 return -1;
             }
             if (!function_returns_object(&state, state.current_function) &&
+                !backend_is_aarch64(&state) &&
                 text_contains(function_return_type(&state, state.current_function), "double") &&
                 emit_instruction(&state, "movq %rax, %xmm0") != 0) {
                 return -1;

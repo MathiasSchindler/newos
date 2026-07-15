@@ -1619,23 +1619,30 @@ static int expr_parse_unary(ExprParser *parser) {
             }
             if (!saw_pointer && saw_double && !source_is_double) {
                 if (backend_is_aarch64(parser->state)) {
-                    backend_set_error(parser->state->backend, "double casts are not yet supported on AArch64");
-                    return -1;
+                    return emit_instruction(parser->state, "scvtf d0, x0") == 0 &&
+                           emit_instruction(parser->state, "fmov x0, d0") == 0 ? 0 : -1;
                 }
                 return emit_instruction(parser->state, "cvtsi2sdq %rax, %xmm0") == 0 &&
                        emit_instruction(parser->state, "movq %xmm0, %rax") == 0 ? 0 : -1;
             }
             if (!saw_pointer && !saw_double && source_is_double) {
                 if (backend_is_aarch64(parser->state)) {
-                    backend_set_error(parser->state->backend, "double casts are not yet supported on AArch64");
-                    return -1;
+                    if (emit_instruction(parser->state, "fmov d0, x0") != 0 ||
+                        emit_instruction(parser->state, "fcvtzs x0, d0") != 0) {
+                        return -1;
+                    }
+                    if (!saw_long && (saw_int || (!saw_char && !saw_short))) {
+                        return emit_instruction(parser->state, saw_unsigned ? "uxtw x0, w0" : "sxtw x0, w0");
+                    }
                 }
-                if (emit_instruction(parser->state, "movq %rax, %xmm0") != 0 ||
-                    emit_instruction(parser->state, "cvttsd2siq %xmm0, %rax") != 0) {
-                    return -1;
-                }
-                if (!saw_long && (saw_int || (!saw_char && !saw_short))) {
-                    return emit_instruction(parser->state, saw_unsigned ? "movl %eax, %eax" : "movslq %eax, %rax");
+                else {
+                    if (emit_instruction(parser->state, "movq %rax, %xmm0") != 0 ||
+                        emit_instruction(parser->state, "cvttsd2siq %xmm0, %rax") != 0) {
+                        return -1;
+                    }
+                    if (!saw_long && (saw_int || (!saw_char && !saw_short))) {
+                        return emit_instruction(parser->state, saw_unsigned ? "movl %eax, %eax" : "movslq %eax, %rax");
+                    }
                 }
             }
         }
@@ -1702,6 +1709,10 @@ static int expr_parse_unary(ExprParser *parser) {
 
         if (names_equal(op, "-")) {
             if (type_is_double_scalar(operand_type)) {
+                if (backend_is_aarch64(parser->state)) {
+                    return emit_load_immediate_register(parser->state, "x1", (long long)0x8000000000000000ULL) == 0 &&
+                           emit_instruction(parser->state, "eor x0, x0, x1") == 0 ? 0 : -1;
+                }
                 return emit_load_immediate_register(parser->state, "%rcx", (long long)0x8000000000000000ULL) == 0 &&
                        emit_instruction(parser->state, "xorq %rcx, %rax") == 0 ? 0 : -1;
             }
@@ -1814,7 +1825,43 @@ static int emit_double_binary_op(BackendState *state, const char *op) {
     int reverse_compare = names_equal(op, "<") || names_equal(op, "<=");
 
     if (backend_is_aarch64(state)) {
-        backend_set_error(state->backend, "double expressions are not yet supported on AArch64");
+        if (emit_instruction(state, "mov x2, x0") != 0 ||
+            emit_instruction(state, "ldr x1, [sp]") != 0 ||
+            emit_instruction(state, "add sp, sp, #16") != 0 ||
+            emit_instruction(state, "fmov d0, x1") != 0 ||
+            emit_instruction(state, "fmov d1, x2") != 0) {
+            return -1;
+        }
+        if (names_equal(op, "+")) {
+            return emit_instruction(state, "fadd d0, d0, d1") == 0 &&
+                   emit_instruction(state, "fmov x0, d0") == 0 ? 0 : -1;
+        }
+        if (names_equal(op, "-")) {
+            return emit_instruction(state, "fsub d0, d0, d1") == 0 &&
+                   emit_instruction(state, "fmov x0, d0") == 0 ? 0 : -1;
+        }
+        if (names_equal(op, "*")) {
+            return emit_instruction(state, "fmul d0, d0, d1") == 0 &&
+                   emit_instruction(state, "fmov x0, d0") == 0 ? 0 : -1;
+        }
+        if (names_equal(op, "/")) {
+            return emit_instruction(state, "fdiv d0, d0, d1") == 0 &&
+                   emit_instruction(state, "fmov x0, d0") == 0 ? 0 : -1;
+        }
+        if (names_equal(op, "%")) {
+            backend_set_error(state->backend, "remainder is not defined for double expressions");
+            return -1;
+        }
+        if (emit_instruction(state, "fcmp d0, d1") != 0) {
+            return -1;
+        }
+        if (names_equal(op, "<")) return emit_set_condition(state, "mi");
+        if (names_equal(op, "<=")) return emit_set_condition(state, "ls");
+        if (names_equal(op, ">")) return emit_set_condition(state, "gt");
+        if (names_equal(op, ">=")) return emit_set_condition(state, "ge");
+        if (names_equal(op, "==")) return emit_set_condition(state, "eq");
+        if (names_equal(op, "!=")) return emit_set_condition(state, "ne");
+        backend_set_error(state->backend, "unsupported double operation in backend");
         return -1;
     }
     if (emit_instruction(state, "movq %rax, %xmm1") != 0 ||

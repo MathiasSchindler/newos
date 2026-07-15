@@ -464,6 +464,9 @@ RtWordBreakClass rt_unicode_word_break_class(unsigned int codepoint) {
     if ((codepoint >= 0x30a0U && codepoint <= 0x30ffU) || (codepoint >= 0x31f0U && codepoint <= 0x31ffU) ||
         (codepoint >= 0xff66U && codepoint <= 0xff9fU)) return RT_WORD_BREAK_KATAKANA;
     if (codepoint < 0x80U ||
+        (codepoint >= 0x0609U && codepoint <= 0x060dU) ||
+        codepoint == 0x061bU || (codepoint >= 0x061dU && codepoint <= 0x061fU) ||
+        (codepoint >= 0x066aU && codepoint <= 0x066dU) ||
         (codepoint >= 0x2000U && codepoint <= 0x206fU) ||
         (codepoint >= 0x20a0U && codepoint <= 0x20cfU) ||
         (codepoint >= 0x2190U && codepoint <= 0x2bffU) ||

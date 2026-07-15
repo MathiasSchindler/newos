@@ -63,8 +63,9 @@ assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/archive_util.c"$' "g
 printf 'abc123\nplain\n' > "$WORK_DIR/posix-ere.txt"
 "${TEST_BIN_DIR}/grep" -E '^[[:alpha:]]+[[:digit:]]+$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/posix-ere.out"
 assert_file_contains "$WORK_DIR/posix-ere.out" '^abc123$' "grep -E did not support POSIX named classes"
-"${TEST_BIN_DIR}/grep" '^abc(123)$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/bre-literal.out"
-[ ! -s "$WORK_DIR/bre-literal.out" ] || fail "basic grep treated unescaped parentheses as a capture group"
+if "${TEST_BIN_DIR}/grep" '^abc(123)$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/bre-literal.out"; then
+    fail "basic grep treated unescaped parentheses as a capture group"
+fi
 "${TEST_BIN_DIR}/grep" '^abc\(123\)$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/bre-group.out"
 assert_file_contains "$WORK_DIR/bre-group.out" '^abc123$' "basic grep did not support escaped capture groups"
 

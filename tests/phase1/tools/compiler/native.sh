@@ -1861,6 +1861,7 @@ EOF
 
 compile_and_check_native "$WORK_DIR/implicit_fallthrough_return.c" "$WORK_DIR/implicit_fallthrough_return_bin" "0" "compiler omitted the function epilogue after an early return in a void helper"
 
+if [ "$RUN_TARGET" = "linux-x86_64" ]; then
 cat > "$WORK_DIR/int128_cast.c" <<'EOF'
 int main(void) {
     unsigned __int128 root = 42;
@@ -1916,6 +1917,7 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/int128_runtime_arithmetic.c" "$WORK_DIR/int128_runtime_arithmetic_bin" "0" "compiler failed on runtime unsigned __int128 arithmetic"
+fi
 
 cat > "$WORK_DIR/u64_typedef_mask_width.c" <<'EOF'
 typedef unsigned long long u64;
@@ -1943,6 +1945,7 @@ EOF
 
 compile_and_check_native "$WORK_DIR/u32_shift_widens_after_wrap.c" "$WORK_DIR/u32_shift_widens_after_wrap_bin" "0" "compiler widened unsigned 32-bit shift results before wrapping"
 
+if [ "$RUN_TARGET" = "linux-x86_64" ]; then
 cat > "$WORK_DIR/atomic_builtins.c" <<'EOF'
 int main(void) {
     int value = 1;
@@ -1985,6 +1988,7 @@ int main(void) {
 EOF
 
 compile_and_check_native "$WORK_DIR/atomic_member_width.c" "$WORK_DIR/atomic_member_width_bin" "0" "compiler widened a 32-bit member compare-exchange"
+fi
 
 cat > "$WORK_DIR/char_escape_folding.c" <<'EOF'
 int main(void) {

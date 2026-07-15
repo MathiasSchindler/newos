@@ -2518,8 +2518,15 @@ static const char *ir_find_separator_outside_quotes(const char *text, const char
 }
 
 static void ir_remove_unreachable_after_terminator(CompilerIr *ir, size_t index) {
-    while (index + 1U < ir->count && !ir_starts_block_boundary(ir->lines[index + 1U])) {
-        ir_remove_line(ir, index + 1U);
+    size_t cursor = index + 1U;
+
+    while (cursor < ir->count && !ir_starts_block_boundary(ir->lines[cursor])) {
+        if (ir_starts_with(ir->lines[cursor], "scope-enter") ||
+            ir_starts_with(ir->lines[cursor], "scope-exit")) {
+            cursor += 1U;
+        } else {
+            ir_remove_line(ir, cursor);
+        }
     }
 }
 
@@ -2657,11 +2664,16 @@ int compiler_ir_optimize(CompilerIr *ir) {
                                        line + 6,
                                        ir_trim_trailing_spaces(line + 6, line + rt_strlen(line))) == 0 &&
                     !ir_label_is_referenced(ir, label, i)) {
+                    size_t previous = i;
+
                     ir_remove_line(ir, i);
-                    while (i > 0U && i < ir->count &&
-                           ir_is_terminator_line(ir->lines[i - 1U]) &&
-                           !ir_starts_block_boundary(ir->lines[i])) {
-                        ir_remove_line(ir, i);
+                    while (previous > 0U &&
+                           (ir_starts_with(ir->lines[previous - 1U], "scope-enter") ||
+                            ir_starts_with(ir->lines[previous - 1U], "scope-exit"))) {
+                        previous -= 1U;
+                    }
+                    if (previous > 0U && ir_is_terminator_line(ir->lines[previous - 1U])) {
+                        ir_remove_unreachable_after_terminator(ir, previous - 1U);
                     }
                     continue;
                 }
