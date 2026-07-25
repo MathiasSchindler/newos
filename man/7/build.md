@@ -377,4 +377,4 @@ binaries do not depend on the system C library or system linker.
 
 ## SEE ALSO
 
-man, project-layout, foundry, compiler, platform, macos, testing
+man, project-layout, foundry, compiler, platform, macos, windows, testing

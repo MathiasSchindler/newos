@@ -108,4 +108,4 @@ on a Linux host, invoking `ncc` with an explicit backend target, running
 
 ## SEE ALSO
 
-man, build, platform, compiler, project-layout, userland
+man, build, platform, compiler, project-layout, windows, userland
