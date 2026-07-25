@@ -25,9 +25,9 @@ try {
     & .\tests\windows\build-windows-freestanding.ps1 -Compiler $Compiler -TargetTriple aarch64-w64-windows-gnu -Tools linker,true,false
     if (-not $?) { throw "Failed to build the Windows ARM64 linker" }
 
-    $linker = "build\freestanding-windows-aarch64\linker.exe"
-    $minimalTrue = "build\freestanding-windows-aarch64\true.exe"
-    $minimalFalse = "build\freestanding-windows-aarch64\false.exe"
+    $linker = "build\normal\linker.exe"
+    $minimalTrue = "build\normal\true.exe"
+    $minimalFalse = "build\normal\false.exe"
     $scratch = "tests\tmp\windows-pe-arm64-linker"
     New-Item -ItemType Directory -Force $scratch | Out-Null
 
@@ -288,7 +288,7 @@ associative_parent:
     & (Join-Path $scratch "stack-own.exe")
     if ($LASTEXITCODE -ne 0) { throw "PE ARM64 stack-probe executable returned $LASTEXITCODE" }
 
-    $importLibraryDir = "build\freestanding-windows-aarch64\.imports"
+    $importLibraryDir = "build\normal\.imports"
     $lldFlags = @(
         "--target=aarch64-w64-windows-gnu", "-nostdlib", "-fuse-ld=lld",
         "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",

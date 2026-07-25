@@ -2,7 +2,7 @@ param(
     [string]$Compiler = "C:\Program Files\LLVM\bin\clang.exe",
     [string]$Source = "src/compiler/pe_pack_stub_aarch64.c",
     [string]$OutputInclude = "src/compiler/pe_pack_stub_aarch64.inc",
-    [string]$BuildDir = "build/pe-pack-stub-aarch64"
+    [string]$BuildDir = "build/normal/.generated/pe-pack-stub-aarch64"
 )
 
 $ErrorActionPreference = "Stop"

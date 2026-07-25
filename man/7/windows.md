@@ -34,10 +34,11 @@ The native entry point is:
 .\tests\windows\build-windows-freestanding.ps1
 ```
 
-The script selects `aarch64-w64-windows-gnu` on an ARM64 host and
-`x86_64-w64-windows-gnu` otherwise. Outputs are written to
-`build/freestanding-windows-aarch64/` or
-`build/freestanding-windows-x86_64/` unless `-BuildDir` is supplied.
+The dual-output script currently requires `aarch64-w64-windows-gnu`, selected
+automatically on an ARM64 host. Production lld/LTO binaries are written to
+`build/normal/`; the same source plans are also compiled as ordinary COFF and
+linked with `--pack` into `build/packed/`. Use `-BuildDir` and `-PackedDir` to
+select other locations.
 
 The normal native build has the following properties:
 
@@ -54,8 +55,11 @@ The normal native build has the following properties:
 - it runs independent compilation jobs in parallel using the logical processor
   count by default, while limiting the more memory-intensive LTO links to four
   concurrent jobs by default
-- it uses Clang and lld as the reference production path for both ARM64 and
-  x86-64 PE output
+- it uses Clang and lld as the reference production path for normal ARM64 PE
+  output
+- on ARM64 it also builds every selected tool through the in-tree PE linker;
+  the packed directory contains a real `.boot`/`.load` image when that is
+  smaller and an exact normal in-tree image otherwise
 
 The root `Makefile` remains the registry for tool names and special Windows
 source groups. Shared subsystem source lists come from
@@ -262,17 +266,20 @@ The current Windows strategy is intentional.
 Useful native-builder options include:
 
 ```
-.\tests\windows\build-windows-freestanding.ps1 -TargetTriple aarch64-w64-windows-gnu -Tools true,false,echo -Jobs 8 -LinkJobs 2
+.\tests\windows\build-windows-freestanding.ps1 -TargetTriple aarch64-w64-windows-gnu -Tools linker,true,false,echo -Jobs 8 -LinkJobs 2
 ```
 
 - `-Compiler PATH` selects a specific `clang.exe`
-- `-TargetTriple` selects ARM64 or x86-64 Windows GNU ABI output
+- `-TargetTriple` selects the ARM64 Windows GNU ABI output; other targets are
+  rejected while the packed linker remains ARM64-only
 - `-BuildDir PATH` selects another output and cache tree
-- `-Tools NAME[,NAME...]` builds only the selected tools; use `-Tools ncc` for
-  the compiler bring-up target excluded from the default set
+- `-PackedDir PATH` selects the packed output and cache tree
+- `-Tools NAME[,NAME...]` builds only the selected tools; include `linker` so
+  the packed phase can run. Add `ncc` for the compiler bring-up target excluded
+  from the default set
 - `-Jobs N` controls parallel compilation
 - `-LinkJobs N` independently controls concurrent LTO links
-- `-Clean` removes the selected output tree, including object and import caches
+- `-Clean` removes both selected output trees, including object and import caches
 - `-VerboseCommands` prints full compiler and linker commands
 
 PowerShell execution policy can be bypassed for one invocation without changing
@@ -299,10 +306,11 @@ On native ARM64 Windows this verifies execution and layout for lld and the
 in-tree linker, including the 1024-byte minimum image, live-import selection,
 dead-section removal, weak and associative COMDAT handling, writable-data
 separation, and retention or collection of stack probes. The script skips on
-non-ARM64 hosts.
+non-ARM64 hosts. It also verifies exact fallback plus real packed text and
+initialized-data/BSS execution without a temporary file.
 
 The main builder verifies that the complete selected source surface compiles
-and links for ARM64 or x86-64. Its cache summary makes incremental behavior
+and links for ARM64 in both forms. Its cache summary makes incremental behavior
 visible; an unchanged second invocation should report zero compiled objects and
 zero linked tools. There is not yet a native Windows equivalent of the complete
 Phase 1 or isolated-userland smoke suite, so broad command behavior still needs

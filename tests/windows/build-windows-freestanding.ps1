@@ -2,6 +2,7 @@ param(
     [string]$Compiler = "clang",
     [string]$TargetTriple = "",
     [string]$BuildDir = "",
+    [string]$PackedDir = "",
     [string]$MsysRoot = "C:\msys64",
     [string[]]$Tools = @(),
     [int]$Jobs = 0,
@@ -265,8 +266,12 @@ if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
 }
 $targetArchitecture = Get-WindowsTargetArchitecture $TargetTriple
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = "build/freestanding-windows-$targetArchitecture"
+    $BuildDir = "build/normal"
 }
+if ([string]::IsNullOrWhiteSpace($PackedDir)) {
+    $PackedDir = "build/packed"
+}
+if ($targetArchitecture -ne "aarch64") { throw "Packed Windows output currently requires the aarch64 target" }
 if ($Jobs -le 0) { $Jobs = [Environment]::ProcessorCount }
 if ($LinkJobs -le 0) { $LinkJobs = [Math]::Min($Jobs, 4) }
 if ($Jobs -lt 1 -or $LinkJobs -lt 1) { throw "Jobs and LinkJobs must be positive" }
@@ -280,9 +285,11 @@ $makefileText = Get-Content "Makefile" -Raw
 $manifestText = Get-Content "src/compiler/source_manifest.h" -Raw
 
 $allTools = Read-MakeVariable $makefileText "TOOLS"
-$selectedTools = if ($Tools.Count -gt 0) { $Tools } else { Remove-Tools $allTools @("ncc") }
+$requestedTools = @($Tools | ForEach-Object { $_ -split ',' } | Where-Object { $_ -ne "" })
+$selectedTools = if ($requestedTools.Count -gt 0) { $requestedTools } else { Remove-Tools $allTools @("ncc") }
 $unknownTools = @($selectedTools | Where-Object { $allTools -notcontains $_ })
 if ($unknownTools.Count -gt 0) { throw "Unknown tool(s): $($unknownTools -join ', ')" }
+if ($selectedTools -notcontains "linker") { throw "Packed output requires 'linker' in -Tools" }
 
 $compilerSources = @(Read-ManifestSources $manifestText "FOREACH_COMPILER_SOURCE")
 $sharedSources = @(Read-ManifestSources $manifestText "FOREACH_SHARED_SOURCE")
@@ -404,10 +411,12 @@ foreach ($tool in $gitTools) { $toolKinds[$tool] = "git" }
 foreach ($tool in $usbTools) { $toolKinds[$tool] = "usb" }
 foreach ($tool in $aliasTools) { $toolKinds[$tool] = "alias" }
 
-if ($Clean -and (Test-Path -LiteralPath $BuildDir)) {
-    Remove-Item -LiteralPath $BuildDir -Recurse -Force
+if ($Clean) {
+    foreach ($directory in @($BuildDir, $PackedDir)) {
+        if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
+    }
 }
-New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+New-Item -ItemType Directory -Force -Path $BuildDir, $PackedDir | Out-Null
 $importLibraryDir = Join-Path $BuildDir ".imports"
 New-WindowsImportLibraries $compilerDir $targetArchitecture $importLibraryDir
 
@@ -418,12 +427,15 @@ $script:WindowsCFlags = @(
     "-ffunction-sections", "-fdata-sections", "-flto",
     "-Isrc/shared", "-Isrc/platform/windows"
 )
+$packedCFlags = @($script:WindowsCFlags | Where-Object { $_ -ne "-flto" })
 $windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text", "-Wl,--stack,8388608", "-L$importLibraryDir", "-lkernel32", "-lws2_32")
 $windowsTlsLdFlags = $windowsLdFlags + @("-lbcrypt")
 
 $objectRoot = Join-Path $BuildDir ".objects"
 $commandRoot = Join-Path $BuildDir ".commands"
-New-Item -ItemType Directory -Force $objectRoot, $commandRoot | Out-Null
+$packedObjectRoot = Join-Path $PackedDir ".objects"
+$packedCommandRoot = Join-Path $PackedDir ".commands"
+New-Item -ItemType Directory -Force $objectRoot, $commandRoot, $packedObjectRoot, $packedCommandRoot | Out-Null
 $compilerFile = Get-Item -LiteralPath $compilerPath
 $compilerIdentity = "$($compilerFile.FullName)|$($compilerFile.Length)|$($compilerFile.LastWriteTimeUtc.Ticks)"
 $compileCommands = New-Object System.Collections.Generic.List[object]
@@ -434,6 +446,7 @@ $reusedObjectCount = 0
 Write-Output "Compiler: $compilerPath"
 Write-Output "Target:   $TargetTriple"
 Write-Output "Output:   $BuildDir"
+Write-Output "Packed:   $PackedDir"
 Write-Output "Tools:    $($selectedTools.Count)"
 Write-Output "Jobs:     $Jobs compile, $LinkJobs link"
 
@@ -495,10 +508,12 @@ foreach ($tool in $selectedTools) {
     $sources = Add-Unique $sources
     Assert-SourceFilesExist $sources
     $compileFlags = @("--target=$TargetTriple") + $script:WindowsCFlags + $extraCFlags
+    $packedCompileFlags = @("--target=$TargetTriple") + $packedCFlags + $extraCFlags
     $profileHash = (Get-TextHash ($compilerIdentity + "`n" + ($compileFlags -join "`n"))).Substring(0, 16)
     $profileDirectory = Join-Path $objectRoot $profileHash
     New-Item -ItemType Directory -Force $profileDirectory | Out-Null
     $objects = New-Object System.Collections.Generic.List[string]
+    $packedObjects = New-Object System.Collections.Generic.List[string]
     foreach ($source in $sources) {
         $sourceKey = "$profileHash|$($source.ToLowerInvariant())"
         if (-not $objectRecords.ContainsKey($sourceKey)) {
@@ -525,11 +540,41 @@ foreach ($tool in $selectedTools) {
             }
         }
         $objects.Add($objectRecords[$sourceKey].Path)
+
+        $packedProfileHash = (Get-TextHash ($compilerIdentity + "`n" + ($packedCompileFlags -join "`n"))).Substring(0, 16)
+        $packedProfileDirectory = Join-Path $packedObjectRoot $packedProfileHash
+        New-Item -ItemType Directory -Force $packedProfileDirectory | Out-Null
+        $packedSourceKey = "packed|$packedProfileHash|$($source.ToLowerInvariant())"
+        if (-not $objectRecords.ContainsKey($packedSourceKey)) {
+            $sourceHash = (Get-TextHash $source).Substring(0, 12)
+            $baseName = [IO.Path]::GetFileNameWithoutExtension($source) -replace '[^A-Za-z0-9_.-]', '_'
+            $objectPath = Join-Path $packedProfileDirectory "$baseName-$sourceHash.obj"
+            $dependencyPath = "$objectPath.d"
+            $signaturePath = "$objectPath.cmd"
+            $arguments = $packedCompileFlags + @("-c", $source, "-MMD", "-MF", $dependencyPath, "-MT", "__object__", "-o", $objectPath)
+            $signature = $compilerIdentity + "`n" + ($arguments -join "`n")
+            $objectRecord = [pscustomobject]@{ Path = $objectPath; DependencyPath = $dependencyPath; SignaturePath = $signaturePath }
+            $objectRecords[$packedSourceKey] = $objectRecord
+            if (Test-ObjectCache $objectPath $dependencyPath $signaturePath $signature) {
+                $reusedObjectCount += 1
+            } else {
+                $compileCommands.Add([pscustomobject]@{
+                    Label = "packed/$source"
+                    Arguments = $arguments
+                    ResponsePath = Join-Path $packedCommandRoot "compile-$packedProfileHash-$sourceHash.rsp"
+                    SignaturePath = $signaturePath
+                    Signature = $signature
+                    Cost = (Get-Item -LiteralPath $source).Length
+                })
+            }
+        }
+        $packedObjects.Add($objectRecords[$packedSourceKey].Path)
     }
     $toolPlans.Add([pscustomobject]@{
         Tool = $tool
         Output = $output
         Objects = @($objects | ForEach-Object { $_ })
+        PackedObjects = @($packedObjects | ForEach-Object { $_ })
         LinkFlags = @($linkFlags)
     })
 }
@@ -542,7 +587,7 @@ $linkCommands = New-Object System.Collections.Generic.List[object]
 $reusedLinkCount = 0
 foreach ($plan in $toolPlans) {
     $arguments = @("--target=$TargetTriple") + @($plan.Objects) + @($plan.LinkFlags) + @("-o", $plan.Output)
-    $signaturePath = "$($plan.Output).cmd"
+    $signaturePath = Join-Path $commandRoot "link-$($plan.Tool -replace '[^A-Za-z0-9_.-]', '_').cmd"
     $signature = $compilerIdentity + "`n" + ($arguments -join "`n")
     if (Test-LinkCache $plan.Output (@($plan.Objects) + $importInputs) $signaturePath $signature) {
         $reusedLinkCount += 1
@@ -560,15 +605,49 @@ foreach ($plan in $toolPlans) {
 $linkCommandArray = @($linkCommands | ForEach-Object { $_ })
 Invoke-ParallelCompilerCommands $linkCommandArray $LinkJobs $compilerPath $repoRoot "link" -ShowCommands:$VerboseCommands
 
+$projectLinker = Join-Path $BuildDir "linker.exe"
+if (-not (Test-Path -LiteralPath $projectLinker)) { throw "Packed output requires linker.exe in the selected tool set" }
+$projectLinkerFile = Get-Item -LiteralPath $projectLinker
+$projectLinkerIdentity = "$($projectLinkerFile.FullName)|$($projectLinkerFile.Length)|$($projectLinkerFile.LastWriteTimeUtc.Ticks)"
+$definitionInputs = @("src/platform/windows/imports/kernel32.def", "src/platform/windows/imports/ws2_32.def", "src/platform/windows/imports/bcrypt.def")
+$packedLinkCommands = New-Object System.Collections.Generic.List[object]
+$reusedPackedLinkCount = 0
+foreach ($plan in $toolPlans) {
+    $packedOutput = Join-Path $PackedDir "$($plan.Tool).exe"
+    $arguments = @("--target=pe-arm64", "--gc-sections", "--pack", "-o", $packedOutput) + @($plan.PackedObjects) + $definitionInputs
+    $signaturePath = Join-Path $packedCommandRoot "link-$($plan.Tool -replace '[^A-Za-z0-9_.-]', '_').cmd"
+    $signature = $projectLinkerIdentity + "`n" + ($arguments -join "`n")
+    if (Test-LinkCache $packedOutput (@($plan.PackedObjects) + $definitionInputs + $projectLinker) $signaturePath $signature) {
+        $reusedPackedLinkCount += 1
+    } else {
+        $packedLinkCommands.Add([pscustomobject]@{
+            Label = $plan.Tool
+            Arguments = $arguments
+            ResponsePath = Join-Path $packedCommandRoot "link-$($plan.Tool -replace '[^A-Za-z0-9_.-]', '_').rsp"
+            SignaturePath = $signaturePath
+            Signature = $signature
+            Cost = $plan.PackedObjects.Count
+        })
+    }
+}
+$packedLinkCommandArray = @($packedLinkCommands | ForEach-Object { $_ })
+Invoke-ParallelCompilerCommands $packedLinkCommandArray $LinkJobs $projectLinker $repoRoot "pack" -ShowCommands:$VerboseCommands
+
 foreach ($alias in $aliasPlans) {
     if (-not (Test-Path -LiteralPath $alias.Source)) { throw "Cannot create $($alias.Tool) before $($alias.Source) exists" }
     if (-not (Test-Path -LiteralPath $alias.Output) -or (Get-Item -LiteralPath $alias.Source).LastWriteTimeUtc -gt (Get-Item -LiteralPath $alias.Output).LastWriteTimeUtc) {
         Copy-Item -LiteralPath $alias.Source -Destination $alias.Output -Force
     }
+    $packedSource = Join-Path $PackedDir ([IO.Path]::GetFileName($alias.Source))
+    $packedOutput = Join-Path $PackedDir ([IO.Path]::GetFileName($alias.Output))
+    if (-not (Test-Path -LiteralPath $packedSource)) { throw "Cannot create packed $($alias.Tool) before $packedSource exists" }
+    if (-not (Test-Path -LiteralPath $packedOutput) -or (Get-Item -LiteralPath $packedSource).LastWriteTimeUtc -gt (Get-Item -LiteralPath $packedOutput).LastWriteTimeUtc) {
+        Copy-Item -LiteralPath $packedSource -Destination $packedOutput -Force
+    }
 }
 
-Write-Output "Built $($selectedTools.Count) Windows freestanding tool(s) in $BuildDir"
-Write-Output "Objects: $($compileCommands.Count) compiled, $reusedObjectCount reused; links: $($linkCommands.Count) linked, $reusedLinkCount reused"
+Write-Output "Built $($selectedTools.Count) normal and packed Windows freestanding tool(s)"
+Write-Output "Objects: $($compileCommands.Count) compiled, $reusedObjectCount reused; normal links: $($linkCommands.Count) linked, $reusedLinkCount reused; packed links: $($packedLinkCommands.Count) linked, $reusedPackedLinkCount reused"
 } finally {
     Pop-Location
 }

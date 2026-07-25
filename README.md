@@ -39,8 +39,8 @@ On Linux, `make test` also exercises representative freestanding binaries. On ma
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
 runtime, the Windows SDK, or the Microsoft C runtime. The important build-time
 tools are LLVM/Clang, lld, and llvm-dlltool. The PowerShell builder selects
-`aarch64-w64-windows-gnu` on native ARM64 hosts and
-`x86_64-w64-windows-gnu` otherwise. It does not invoke `make`, `sh`, or MSYS2:
+`aarch64-w64-windows-gnu` on native ARM64 hosts. The current dual normal/packed
+build requires ARM64. It does not invoke `make`, `sh`, or MSYS2:
 
 ```
 .\tests\windows\build-windows-freestanding.ps1
@@ -51,7 +51,11 @@ reuses objects, dependency files, import archives, and unchanged linked tools
 across runs. It defaults to one compile job per logical processor and caps the
 more memory-intensive LTO links at four concurrent jobs. Use `-Jobs N` and
 `-LinkJobs N` to tune those limits. `-Clean` removes the selected build tree,
-including its `.objects` cache, before rebuilding.
+including its `.objects` cache, before rebuilding. On ARM64 the default output
+is exactly two top-level build trees: production lld/LTO tools in
+`build/normal/` and in-tree linker-packed tools in `build/packed/`. Small tools
+for which packing cannot save a complete 512-byte file block fall back to a
+normal in-tree image inside the packed tree.
 
 That script prefers `clang` on `PATH`, then common LLVM/MSYS2 Clang install
 locations. It generates target-specific import archives from the definitions

@@ -75,9 +75,10 @@ The Windows freestanding build is the native PE target without the MSYS POSIX
 runtime or the Microsoft C runtime.
 
 - built from PowerShell with `./tests/windows/build-windows-freestanding.ps1`
-- selects native AArch64 or x86-64 from the host by default
-- writes binaries to `build/freestanding-windows-aarch64/` or
-  `build/freestanding-windows-x86_64/`
+- selects native AArch64 from an ARM64 host; the dual packed build currently
+  requires this target
+- writes production lld/LTO binaries to `build/normal/` and in-tree
+  linker-packed binaries to `build/packed/`
 - compiles independent source/profile combinations in parallel, reuses cached
   objects and dependency files across tools and later invocations, and skips
   unchanged final links
@@ -97,6 +98,9 @@ runtime or the Microsoft C runtime.
   explicit `ExitProcess` import
 - builds every tool declared in `TOOLS` except `ncc` by default; pass
   `-Tools ncc` to build that compiler bring-up target explicitly
+- compiles a second cacheable non-LTO COFF object profile for ARM64 and links
+  every selected tool with `--pack`; tools too small to benefit are normal
+  in-tree images in the packed directory by design
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
 The in-tree linker also has a direct `--target=pe-arm64` bring-up path. It
@@ -111,13 +115,13 @@ alignment while allowing a loader-valid 1024-byte floor for one-section tools.
 For example:
 
 ```
-build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections -o build\tool.exe tool.obj src\platform\windows\imports\kernel32.def
+build\normal\linker.exe --target=pe-arm64 --gc-sections -o build\normal\tool.exe tool.obj src\platform\windows\imports\kernel32.def
 ```
 
 Add `--pack` to ask the linker for a self-decompressing ARM64 image:
 
 ```
-build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections --pack -o build\tool-packed.exe tool.obj src\platform\windows\imports\kernel32.def
+build\normal\linker.exe --target=pe-arm64 --gc-sections --pack -o build\packed\tool.exe tool.obj src\platform\windows\imports\kernel32.def
 ```
 
 This mode compresses linked text and initialized data into an RX `.boot`
@@ -289,8 +293,8 @@ For the Windows freestanding path, the PE binaries do not link against the MSYS
 POSIX runtime or a C standard library. A regular LLVM installation is enough:
 the PowerShell builder drives clang, lld, and llvm-dlltool directly and does not
 require `make`, a Windows SDK, or a POSIX-style shell. It defaults to
-`aarch64-w64-windows-gnu` on ARM64 Windows and `x86_64-w64-windows-gnu` on
-x86-64 Windows. From PowerShell, use:
+`aarch64-w64-windows-gnu` on ARM64 Windows; the current dual normal/packed
+output requires that target. From PowerShell, use:
 
   .\tests\windows\build-windows-freestanding.ps1
 

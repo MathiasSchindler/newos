@@ -8,7 +8,7 @@
 #define PE_COFF_SECTION_SIZE 40U
 #define PE_COFF_SYMBOL_SIZE 18U
 #define PE_COFF_RELOCATION_SIZE 10U
-#define PE_MAX_INPUT_OBJECTS 64U
+#define PE_MAX_INPUT_OBJECTS 1024U
 #define PE_MAX_IMPORT_DEFINITIONS 512U
 #define PE_MAX_IMPORTS 256U
 #define PE_MAX_IMPORT_GROUPS 16U
@@ -34,6 +34,7 @@
 #define PE_SYM_UNDEFINED 0
 #define PE_SYM_ABSOLUTE (-1)
 #define PE_WEAK_SEARCH_ALIAS 3U
+#define PE_COMDAT_SELECT_ANY 2U
 #define PE_COMDAT_SELECT_ASSOCIATIVE 5U
 #define PE_REL_ARM64_ADDR32 0x0001U
 #define PE_REL_ARM64_ADDR32NB 0x0002U
@@ -77,6 +78,7 @@ typedef struct {
     uint64_t output_rva;
     uint64_t output_file_offset;
     uint32_t associative_ordinal;
+    unsigned int comdat_selection;
     PeSectionClass section_class;
     int live;
 } PeInputSection;
@@ -333,14 +335,16 @@ static int pe_read_comdat_associations(PeInputObject *object, char *error_out, s
         if (storage_class == PE_SYM_CLASS_STATIC && section_number > 0 && aux_count != 0U) {
             PeInputSection *section = pe_section_by_ordinal(object, (uint32_t)section_number);
             const unsigned char *aux = symbol + PE_COFF_SYMBOL_SIZE;
-            if (section != 0 && (section->characteristics & PE_SCN_LNK_COMDAT) != 0U &&
-                aux[14] == PE_COMDAT_SELECT_ASSOCIATIVE) {
-                uint32_t ordinal = read_u16(aux + 12U) | ((uint32_t)read_u16(aux + 16U) << 16U);
-                if (ordinal == 0U || pe_section_by_ordinal(object, ordinal) == 0) {
-                    set_link_error(error_out, error_size, "invalid associative ARM64 COFF COMDAT", section->name);
-                    return -1;
+            if (section != 0 && (section->characteristics & PE_SCN_LNK_COMDAT) != 0U) {
+                section->comdat_selection = aux[14];
+                if (section->comdat_selection == PE_COMDAT_SELECT_ASSOCIATIVE) {
+                    uint32_t ordinal = read_u16(aux + 12U) | ((uint32_t)read_u16(aux + 16U) << 16U);
+                    if (ordinal == 0U || pe_section_by_ordinal(object, ordinal) == 0) {
+                        set_link_error(error_out, error_size, "invalid associative ARM64 COFF COMDAT", section->name);
+                        return -1;
+                    }
+                    section->associative_ordinal = ordinal;
                 }
-                section->associative_ordinal = ordinal;
             }
         }
         symbol_index += 1U + aux_count;
@@ -687,6 +691,10 @@ static int pe_collect_globals(PeLinkImage *link, char *error_out, size_t error_s
                     return -1;
                 }
                 if (pe_find_global(link, name, &existing_value, 0) == 0) {
+                    if (section->comdat_selection == PE_COMDAT_SELECT_ANY) {
+                        symbol_index += 1U + aux_count;
+                        continue;
+                    }
                     set_link_error(error_out, error_size, "duplicate ARM64 COFF symbol", name);
                     return -1;
                 }
