@@ -185,7 +185,9 @@ __declspec(dllimport) int __stdcall send(WinSocket s, const char *buffer, int le
 __declspec(dllimport) int __stdcall select(int nfds, WinFdSet *readfds, WinFdSet *writefds, WinFdSet *exceptfds, WinTimeval *timeout);
 __declspec(dllimport) int __stdcall WSAPoll(WinPollFd *fds, unsigned long fd_count, int timeout_milliseconds);
 
+#if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
 unsigned long __stack_chk_guard;
+#endif
 
 void __main(void) {
 }
@@ -1827,6 +1829,7 @@ int platform_get_uname(
     return 0;
 }
 
+#if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
 __attribute__((noreturn, no_stack_protector))
 void __stack_chk_fail(void) {
     static const char message[] = "newos: stack check failure\r\n";
@@ -1847,6 +1850,7 @@ void __newos_stack_guard_init(long argc, char **argv) {
     guard &= ~0xffUL;
     __stack_chk_guard = guard == 0 ? 0xf00dfeedUL : guard;
 }
+#endif
 
 int main(int argc, char **argv);
 
@@ -1856,7 +1860,9 @@ void mainCRTStartup(void) {
     int argc = windows_startup_args(&argv);
     int status;
 
+#if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
     __newos_stack_guard_init(argc, argv);
+#endif
     status = main(argc, argv);
     ExitProcess((unsigned int)status);
     for (;;) {

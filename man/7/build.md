@@ -81,6 +81,13 @@ runtime or the Microsoft C runtime.
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
 - generates architecture-specific import archives with llvm-dlltool, without a
   Windows SDK or MinGW runtime
+- links read-only data and imports into the RX text section, applies safe
+  identical-code folding, keeps writable data/BSS separate, omits PE
+  timestamps, and places architecture stack probes in collectible COMDAT
+  sections so they are retained only when referenced
+- gives argument-independent `true` and `false` a dedicated startup; their
+  AArch64 and x86-64 outputs are 1024-byte, one-section PE files with an
+  explicit `ExitProcess` import
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
@@ -89,7 +96,11 @@ accepts raw AArch64 COFF objects and project-owned `.def` files, emits PE32+
 imports without an import archive, and supports `--gc-sections`. Section GC
 starts at `mainCRTStartup`, follows COFF relocations and associative COMDAT
 edges, resolves weak aliases in input order, and emits only imports referenced
-by live sections. For example:
+by live sections. Import descriptors and the IAT share the RX text output
+section, while initialized writable data and BSS remain in a separate RW
+section. This keeps the normal 4096-byte section alignment and 512-byte file
+alignment while allowing a loader-valid 1024-byte floor for one-section tools.
+For example:
 
 ```
 build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections -o build\tool.exe tool.obj src\platform\windows\imports\kernel32.def

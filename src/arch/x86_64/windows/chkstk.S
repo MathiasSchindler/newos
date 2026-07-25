@@ -1,4 +1,4 @@
-    .text
+    .section .text$___chkstk_ms,"xr",one_only,___chkstk_ms
     .globl ___chkstk_ms
     .p2align 4
 ___chkstk_ms:

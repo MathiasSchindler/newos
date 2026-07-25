@@ -191,7 +191,8 @@ $variables["TUI_SOURCES"] = $tuiSources
 $variables["SSH_CLIENT_SOURCES"] = $sshClientSources
 $variables["SSHD_TOOL_SOURCES"] = $sshdToolSources
 
-$runtimeSources = Add-Unique (@(Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES") + @("src/arch/$targetArchitecture/windows/chkstk.S"))
+$runtimeSources = Add-Unique (Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES")
+$stackProbeSource = "src/arch/$targetArchitecture/windows/chkstk.S"
 $imageSources = Add-Unique (@($imageManifestSources) + @("src/shared/compression/crc32.c", "src/shared/compression/zlib.c"))
 $pgpSources = @($pgpManifestSources)
 $pgpquerySources = Add-Unique (@($pgpManifestSources) + @($tlsSources) + @($cryptoSources) + @("src/platform/windows/tls.c"))
@@ -202,7 +203,7 @@ $awkSources = @("src/tools/awk/awk_parse.c", "src/tools/awk/awk_exec.c")
 $xmlSources = @("src/shared/xml.c", "src/shared/xml_stream.c", "src/shared/xml_dtd.c", "src/shared/tool_xml.c")
 $editorSources = Add-Unique (@($variables["EDITOR_TOOL_SOURCES"]) + @($tuiSources))
 $mailSources = Add-Unique (@($variables["MAIL_TOOL_SOURCES"]) + @($tuiSources) + @($tlsSources) + @($cryptoSources) + @("src/platform/windows/tls.c"))
-$nccSources = Add-Unique (@($compilerSources) + @($sharedSources))
+$nccSources = Add-Unique (@($compilerSources) + @($sharedSources) + @("src/shared/crypto/sha256.c"))
 $linkerSources = Add-Unique (@($compilerSources | Where-Object { $_ -match 'src/compiler/linker[^/]*\.c$' }) + @("src/shared/crypto/sha256.c"))
 $shellToolSources = Add-Unique (@($shellSources) + @($sharedSources))
 $makeToolSources = Add-Unique (@($variables["MAKE_TOOL_SOURCES"]) + @($sharedSources))
@@ -226,6 +227,7 @@ $xmlTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_XML_TOOLS"
 $tuiTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_TUI_TOOLS"
 $mailTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MAIL_TOOLS"
 $wgetTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_WGET_TOOLS"
+$minimalTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MINIMAL_TOOLS"
 $nccTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_NCC_TOOLS"
 $linkerTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_LINKER_TOOLS"
 $shellTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SHELL_TOOLS"
@@ -236,7 +238,7 @@ $sshTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSH_TOOLS"
 $sshdTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSHD_TOOLS"
 $aliasTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_ALIAS_TOOLS"
 
-$specialTools = Add-Unique (@("wtf") + $imageTools + $pgpTools + $pgpqueryTools + $pdfTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $linkerTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
+$specialTools = Add-Unique (@("wtf") + $imageTools + $pgpTools + $pgpqueryTools + $pdfTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $minimalTools + $nccTools + $linkerTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
 $genericTools = Remove-Tools $allTools $specialTools
 
 $toolKinds = @{}
@@ -254,6 +256,7 @@ foreach ($tool in $xmlTools) { $toolKinds[$tool] = "xml" }
 foreach ($tool in $tuiTools) { $toolKinds[$tool] = "editor" }
 foreach ($tool in $mailTools) { $toolKinds[$tool] = "mail" }
 foreach ($tool in $wgetTools) { $toolKinds[$tool] = "wget" }
+foreach ($tool in $minimalTools) { $toolKinds[$tool] = "minimal" }
 foreach ($tool in $nccTools) { $toolKinds[$tool] = "ncc" }
 foreach ($tool in $linkerTools) { $toolKinds[$tool] = "linker" }
 foreach ($tool in $shellTools) { $toolKinds[$tool] = "shell" }
@@ -279,7 +282,7 @@ $script:WindowsCFlags = @(
     "-ffunction-sections", "-fdata-sections", "-flto",
     "-Isrc/shared", "-Isrc/platform/windows"
 )
-$windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--stack,8388608", "-L$importLibraryDir", "-lkernel32", "-lws2_32")
+$windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text", "-Wl,--stack,8388608", "-L$importLibraryDir", "-lkernel32", "-lws2_32")
 $windowsTlsLdFlags = $windowsLdFlags + @("-lbcrypt")
 
 $script:BuiltCount = 0
@@ -334,6 +337,7 @@ foreach ($tool in $selectedTools) {
         "editor" { $sources += $editorSources + $runtimeSources }
         "mail" { $sources += $mailSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "wget" { $sources += $runtimeSources + $tlsSources + $cryptoSources + @("src/platform/windows/tls.c"); $linkFlags = $windowsTlsLdFlags }
+        "minimal" { $sources += "src/platform/windows/minimal_start.c" }
         "ncc" { $extraCFlags += "-Isrc/compiler"; $sources += $nccSources + @("src/platform/windows/core.c") }
         "linker" { $extraCFlags += "-Isrc/compiler"; $sources += $linkerSources + $runtimeSources }
         "shell" { $sources += $shellToolSources + @("src/platform/windows/core.c") }
@@ -343,6 +347,10 @@ foreach ($tool in $selectedTools) {
         "ssh" { $sources += $sshSources + @("src/platform/windows/core.c"); $linkFlags = $windowsTlsLdFlags }
         "sshd" { $sources += $sshdSources + @("src/platform/windows/core.c"); $linkFlags = $windowsTlsLdFlags }
         default { throw "Unhandled build kind '$kind' for $tool" }
+    }
+
+    if ($kind -ne "minimal") {
+        $sources += $stackProbeSource
     }
 
     Invoke-CompileTool $compilerPath $TargetTriple $tool (Add-Unique $sources) $extraCFlags $linkFlags $output -ShowCommand:$VerboseCommands

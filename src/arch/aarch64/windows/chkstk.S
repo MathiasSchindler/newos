@@ -1,4 +1,4 @@
-    .text
+    .section .text$__chkstk,"xr",one_only,__chkstk
     .globl __chkstk
     .p2align 2
 __chkstk:

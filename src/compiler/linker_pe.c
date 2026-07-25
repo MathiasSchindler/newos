@@ -756,8 +756,7 @@ static size_t pe_import_group_for(PeLinkImage *link, const char *dll, char *erro
 static int pe_layout_imports(PeLinkImage *link, char *error_out, size_t error_size) {
     uint64_t offset;
     uint64_t iat_start;
-    uint64_t image_end;
-    uint64_t file_end;
+    uint64_t idata_offset;
     size_t index;
 
     if (link->import_count == 0U) return 0;
@@ -794,14 +793,44 @@ static int pe_layout_imports(PeLinkImage *link, char *error_out, size_t error_si
         offset = align_u64(offset, 2ULL);
     }
     link->idata_size = offset;
-    image_end = link->data_virtual_size != 0ULL
-        ? (uint64_t)link->data_rva + link->data_virtual_size
-        : (uint64_t)link->text_rva + link->text_size;
-    file_end = link->data_raw_size != 0ULL
-        ? (uint64_t)link->data_file_offset + align_u64(link->data_raw_size, PE_FILE_ALIGNMENT)
-        : (uint64_t)link->text_file_offset + align_u64(link->text_size, PE_FILE_ALIGNMENT);
-    link->idata_rva = (uint32_t)align_u64(image_end, PE_SECTION_ALIGNMENT);
-    link->idata_file_offset = (uint32_t)align_u64(file_end, PE_FILE_ALIGNMENT);
+    idata_offset = align_u64(link->text_size, 8ULL);
+    if (idata_offset + link->idata_size > 0xffffffffULL) {
+        set_link_error(error_out, error_size, "PE32+ ARM64 text and imports are too large", "");
+        return -1;
+    }
+    link->idata_rva = link->text_rva + (uint32_t)idata_offset;
+    link->idata_file_offset = link->text_file_offset + (uint32_t)idata_offset;
+    link->text_size = idata_offset + link->idata_size;
+    if (link->data_virtual_size != 0ULL) {
+        size_t object_index;
+        uint64_t data_rva = align_u64((uint64_t)link->text_rva + link->text_size, PE_SECTION_ALIGNMENT);
+        uint64_t data_file_offset = align_u64((uint64_t)link->text_file_offset + link->text_size, PE_FILE_ALIGNMENT);
+        if (data_rva > 0xffffffffULL || data_file_offset > 0xffffffffULL) {
+            set_link_error(error_out, error_size, "PE32+ ARM64 data layout is too large", "");
+            return -1;
+        }
+        link->data_rva = (uint32_t)data_rva;
+        link->data_file_offset = (uint32_t)data_file_offset;
+        for (object_index = 0U; object_index < link->object_count; ++object_index) {
+            PeInputObject *object = &link->objects[object_index];
+            size_t section_index;
+            for (section_index = 0U; section_index < object->section_count; ++section_index) {
+                PeInputSection *section = &object->sections[section_index];
+                if (!section->live) continue;
+                if (section->section_class == PE_SECTION_DATA) {
+                    section->output_rva = (uint64_t)link->data_rva + section->class_offset;
+                    section->output_file_offset = (uint64_t)link->data_file_offset + section->class_offset;
+                } else if (section->section_class == PE_SECTION_BSS) {
+                    section->output_rva = (uint64_t)link->data_rva + section->class_offset;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int pe_collect_import_globals(PeLinkImage *link, char *error_out, size_t error_size) {
+    size_t index;
     for (index = 0U; index < link->import_count; ++index) {
         char symbol_name[PE_IMPORT_NAME_CAPACITY + 8U];
         PeImport *import = &link->imports[index];
@@ -1011,16 +1040,13 @@ static void pe_write_import_data(const PeLinkImage *link, unsigned char *output)
 static int pe_write_image(PeLinkImage *link, const char *output_path, char *error_out, size_t error_size) {
     uint32_t text_raw_size = (uint32_t)align_u64(link->text_size, PE_FILE_ALIGNMENT);
     uint32_t data_raw_size = (uint32_t)align_u64(link->data_raw_size, PE_FILE_ALIGNMENT);
-    uint32_t idata_raw_size = (uint32_t)align_u64(link->idata_size, PE_FILE_ALIGNMENT);
-    uint16_t output_section_count = 1U + (link->data_virtual_size != 0ULL ? 1U : 0U) + (link->idata_size != 0ULL ? 1U : 0U);
-    uint32_t file_size = link->idata_size != 0ULL
-        ? link->idata_file_offset + idata_raw_size
-        : link->text_file_offset + text_raw_size + data_raw_size;
-    uint32_t image_size = link->idata_size != 0ULL
-        ? (uint32_t)align_u64((uint64_t)link->idata_rva + link->idata_size, PE_SECTION_ALIGNMENT)
-        : (link->data_virtual_size != 0ULL
-            ? (uint32_t)align_u64((uint64_t)link->data_rva + link->data_virtual_size, PE_SECTION_ALIGNMENT)
-            : (uint32_t)align_u64((uint64_t)link->text_rva + link->text_size, PE_SECTION_ALIGNMENT));
+    uint16_t output_section_count = 1U + (link->data_virtual_size != 0ULL ? 1U : 0U);
+    uint32_t file_size = link->data_raw_size != 0ULL
+        ? link->data_file_offset + data_raw_size
+        : link->text_file_offset + text_raw_size;
+    uint32_t image_size = link->data_virtual_size != 0ULL
+        ? (uint32_t)align_u64((uint64_t)link->data_rva + link->data_virtual_size, PE_SECTION_ALIGNMENT)
+        : (uint32_t)align_u64((uint64_t)link->text_rva + link->text_size, PE_SECTION_ALIGNMENT);
     unsigned char *output;
     unsigned char *coff;
     unsigned char *optional;
@@ -1058,7 +1084,7 @@ static int pe_write_image(PeLinkImage *link, const char *output_path, char *erro
     write_u16(optional, 0x020bU);
     optional[2] = 1U;
     write_u32(optional + 4U, text_raw_size);
-    write_u32(optional + 8U, data_raw_size + idata_raw_size);
+    write_u32(optional + 8U, data_raw_size);
     write_u32(optional + 12U, (uint32_t)(link->data_virtual_size - link->data_raw_size));
     write_u32(optional + 16U, link->entry_rva);
     write_u32(optional + 20U, link->text_rva);
@@ -1090,12 +1116,6 @@ static int pe_write_image(PeLinkImage *link, const char *output_path, char *erro
         pe_write_section_header(section_headers + PE_COFF_SECTION_SIZE, ".data", (uint32_t)link->data_virtual_size,
                                 link->data_rva, data_raw_size, link->data_file_offset,
                                 link->data_virtual_size > link->data_raw_size ? 0xc00000c0U : 0xc0000040U);
-    }
-    if (link->idata_size != 0ULL) {
-        size_t idata_section_index = 1U + (link->data_virtual_size != 0ULL ? 1U : 0U);
-        pe_write_section_header(section_headers + idata_section_index * PE_COFF_SECTION_SIZE, ".idata",
-                                (uint32_t)link->idata_size, link->idata_rva, idata_raw_size,
-                                link->idata_file_offset, 0xc0000040U);
     }
     for (object_index = 0U; object_index < link->object_count; ++object_index) {
         PeInputObject *object = &link->objects[object_index];
@@ -1165,6 +1185,9 @@ int compiler_link_pe32plus_aarch64_static_options(const char *const *object_path
         pe_layout_sections(link, error_out, error_size) != 0 ||
         pe_collect_globals(link, error_out, error_size) != 0 || pe_collect_imports(link, error_out, error_size) != 0 ||
         pe_layout_imports(link, error_out, error_size) != 0) goto cleanup;
+    link->global_count = 0U;
+    if (pe_collect_globals(link, error_out, error_size) != 0 ||
+        pe_collect_import_globals(link, error_out, error_size) != 0) goto cleanup;
     if (pe_find_global(link, entry_symbol, &entry_value, &link->entry_rva) != 0) {
         set_link_error(error_out, error_size, "missing PE32+ ARM64 entry symbol", entry_symbol);
         goto cleanup;

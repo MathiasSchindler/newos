@@ -54,8 +54,13 @@ produced binaries are no-CRT PE files.
 
 The optional ARM64 project-linker path accepts Clang COFF objects plus the
 project `.def` files with `linker --target=pe-arm64 --gc-sections`. It performs
-entry-rooted section and COMDAT GC and writes imports only for live code. Run
-`.\tests\windows\test-pe-arm64-linker.ps1` for its native regression test.
+entry-rooted section and COMDAT GC and writes imports only for live code. Both
+the lld and project-linker paths fold import data into the RX text section while
+keeping writable data/BSS separate. Architecture stack probes are collectible
+COMDATs, and argument-independent `true.exe` and `false.exe` use a dedicated
+startup to reach the loader-valid 1024-byte PE floor on ARM64 and x86-64. Run
+`.\tests\windows\test-pe-arm64-linker.ps1` for the native compact-layout,
+stack-probe, writable-data, and linker regression tests.
 
 The first useful native/freestanding and POSIX-hosted checks are:
 
