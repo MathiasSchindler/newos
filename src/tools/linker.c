@@ -11,7 +11,7 @@
 #define LINKER_TOOL_MANIFEST_CAPACITY (4U * 1024U * 1024U)
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64] [--tiny] [--macho-compact] [--gc-sections] [--icf=safe|all] [--call-graph-order] [--symbol-ordering-file FILE] [--call-graph-profile FILE] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
+    tool_write_usage(program_name, "[-o output] [-m elf_x86_64] [--target=elf64-x86_64|mach-o-arm64|pe-arm64] [--tiny] [--macho-compact] [--gc-sections] [--icf=safe|all] [--call-graph-order] [--symbol-ordering-file FILE] [--call-graph-profile FILE] [--stats] [--map FILE] [--print-gc-sections] [--lto-cc=<cc>] object-or-archive ...");
 }
 
 

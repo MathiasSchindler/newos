@@ -108,6 +108,29 @@ FREESTANDING_USE_NEWLINKER ?= $(if $(filter Linux,$(HOST_OS)),$(if $(filter x86_
 DEFAULT_ALL_TARGETS := freestanding
 TOOLS := sh ls cat clear echo pwd mkdir mount umount rm rmdir cp mv ln chmod chown chgrp mknod uname hostname init getty login dmesg logger stty touch gzip gunzip bzip2 bunzip2 xz unxz zip unzip tar cpio base64 md5sum sha1sum sha256sum sha512sum sleep env kill pgrep pkill shutdown wc head tail ps top sort cut tr grep ripgrep rg ping ping6 ip ss host id whoami find sed awk date tee xargs dd od hexdump basename dirname realpath cmp diff file strings ar nm size readelf readapk objdump strip strace linker expack printf which readlink stat du df tree netcat portscan dhcp nslookup dig ssh scp sshd traceroute whois lsof lsusb usbmon sql jq git ncc man test [ true false expr uniq seq mktemp yes less more watch wget wtf mail editor patch make tac nl paste join comm split csplit shuf fold fmt tsort sync truncate timeout time profiler perf expand unexpand printenv ed bc solve pstree free uptime who users groups column rev httpd service imginfo imgcheck imgmeta c2pa pgpkey pgpmsg pgpquery pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
 
+WINDOWS_FREESTANDING_BIGNUM_TOOLS := bc expr seq solve
+WINDOWS_FREESTANDING_HASH_TOOLS := md5sum sha1sum sha256sum sha512sum
+WINDOWS_FREESTANDING_IMAGE_TOOLS := imgmeta imginfo imgcheck c2pa
+WINDOWS_FREESTANDING_PGP_TOOLS := pgpkey pgpmsg
+WINDOWS_FREESTANDING_PGPQUERY_TOOLS := pgpquery
+WINDOWS_FREESTANDING_PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
+WINDOWS_FREESTANDING_REGEX_TOOLS := grep ripgrep sed csplit ed
+WINDOWS_FREESTANDING_ARCHIVE_TOOLS := ar readelf readapk objdump strip expack gzip gunzip bzip2 bunzip2 xz unxz zip unzip tar
+WINDOWS_FREESTANDING_AWK_TOOLS := awk
+WINDOWS_FREESTANDING_XML_TOOLS := xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo
+WINDOWS_FREESTANDING_TUI_TOOLS := editor less
+WINDOWS_FREESTANDING_MAIL_TOOLS := mail
+WINDOWS_FREESTANDING_WGET_TOOLS := wget
+WINDOWS_FREESTANDING_NCC_TOOLS := ncc
+WINDOWS_FREESTANDING_LINKER_TOOLS := linker
+WINDOWS_FREESTANDING_SHELL_TOOLS := sh
+WINDOWS_FREESTANDING_MAKE_TOOLS := make
+WINDOWS_FREESTANDING_HTTPD_TOOLS := httpd
+WINDOWS_FREESTANDING_SERVICE_TOOLS := service
+WINDOWS_FREESTANDING_SSH_TOOLS := ssh scp
+WINDOWS_FREESTANDING_SSHD_TOOLS := sshd
+WINDOWS_FREESTANDING_ALIAS_TOOLS := ping6 rg
+
 MACOS_FREESTANDING_TOOLS ?= true false echo printf basename dirname yes rev seq expr test [ nl tac expand unexpand fold wc head tail cat cut tr uniq cmp comm join paste printenv pwd mkdir rmdir tee which readlink realpath sleep file strings hexdump od base64 md5sum sha1sum sha256sum sha512sum dd touch truncate sync bc solve split shuf fmt column tsort mktemp clear date uname hostname whoami id groups ls du stat df rm cp mv ln chmod chown chgrp free kill csplit sort env time timeout profiler watch find ps pgrep pkill stty more less xargs grep sed ed patch diff logger wtf awk gzip gunzip bzip2 bunzip2 xz unxz zip unzip tar cpio ar nm size readelf readapk objdump strip strace expack imgmeta imginfo imgcheck c2pa pgpkey pgpmsg pgpquery pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck xmltokens xmlcheck xmlfmt xmlmin xmlget xmlcut xmlgrep xmlcount xmlsafe xmlstrip xml2lines xmlcanon xmlnscheck xmlvalidate xmlrename xmldel xmlset xml2json xml2yaml xml2csv xmldiff xmlstats xmluniq xmlsort xmljoin xmlsplit xmltail xmlhead xmlquery xmlrecode xmldtdapply xmldtdinfo wget sql jq git man pstree ncc tree netcat portscan nslookup dig host ssh scp sshd traceroute whois lsof lsusb usbmon httpd ip ss ping ping6 sh mail editor make dhcp dmesg getty init login mknod mount rg ripgrep service shutdown top umount uptime users who
 MACOS_FREESTANDING_HASH_TOOLS := md5sum sha1sum sha256sum sha512sum
 MACOS_FREESTANDING_GIT_TOOLS := git
@@ -202,6 +225,7 @@ SSH_CRYPTO_SOURCES := \
 SSH_CRYPTO_SOURCES := $(sort $(SSH_CRYPTO_SOURCES))
 SHELL_SOURCES := $(shell grep -oE '"src/tools/sh/shell_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
+WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/bignum.c src/platform/windows/core.c
 MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/bignum.c src/platform/macos/freestanding.c
 MACOS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 MACOS_FREESTANDING_GIT_SOURCES := $(TLS_SOURCES) $(SSH_CLIENT_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c src/platform/macos/tls.c
@@ -403,7 +427,8 @@ LINKER_TOOL_SOURCES := src/compiler/linker.c \
     src/compiler/linker_layout.c \
     src/compiler/linker_report.c \
 	src/compiler/linker_lto.c \
-	src/compiler/linker_macho.c
+	src/compiler/linker_macho.c \
+	src/compiler/linker_pe.c
 HOST_LINKER_CFLAGS = $(filter-out -Isrc/shared,$(CFLAGS) $(HOST_SIZE_FLAGS) $(PROFILE_CFLAGS)) $(HOST_SHARED_INC_FLAG)
 HOST_EXPACK_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) $(HOST_SHARED_INC_FLAG)
 HOST_NCC_CFLAGS = $(filter-out -Isrc/shared,$(HOST_CFLAGS)) -DCOMPILER_LINKER_ENABLE_REPORTING=0 $(HOST_SHARED_INC_FLAG)

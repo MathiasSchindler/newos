@@ -75,10 +75,35 @@ The Windows freestanding build is the native PE target without the MSYS POSIX
 runtime or the Microsoft C runtime.
 
 - built from PowerShell with `./tests/windows/build-windows-freestanding.ps1`
-- writes binaries to `build/freestanding-windows-$(WINDOWS_TARGET_ARCH)/`
+- selects native AArch64 or x86-64 from the host by default
+- writes binaries to `build/freestanding-windows-aarch64/` or
+  `build/freestanding-windows-x86_64/`
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
+- generates architecture-specific import archives with llvm-dlltool, without a
+  Windows SDK or MinGW runtime
 - currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
+
+The in-tree linker also has a direct `--target=pe-arm64` bring-up path. It
+accepts raw AArch64 COFF objects and project-owned `.def` files, emits PE32+
+imports without an import archive, and supports `--gc-sections`. Section GC
+starts at `mainCRTStartup`, follows COFF relocations and associative COMDAT
+edges, resolves weak aliases in input order, and emits only imports referenced
+by live sections. For example:
+
+```
+build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections -o build\tool.exe tool.obj src\platform\windows\imports\kernel32.def
+```
+
+Run the native ARM64 regression with:
+
+```
+.\tests\windows\test-pe-arm64-linker.ps1
+```
+
+The direct PE backend does not yet consume archives or LTO objects and does not
+emit base-relocation tables. Clang/lld remains the reference path for general
+Windows builds while those input and loader features are completed.
 
 ## MACOS FREESTANDING BUILD
 
@@ -211,8 +236,9 @@ Typical examples:
 
 Windows support is currently a contributor-environment path, not a native
 Windows userland target. For hosted POSIX builds, install the MSYS GCC package.
-For freestanding Windows PE output, use LLVM/Clang with lld from a regular LLVM
-install or from the UCRT64 packages:
+For freestanding Windows PE output, use LLVM/Clang with lld and llvm-dlltool
+from a regular LLVM install. MSYS2 is not required for this path. It remains an
+option for the secondary hosted build or as a packaged x86-64 toolchain:
 
   pacman -Syuu
   pacman -S --needed base-devel gcc mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
@@ -224,12 +250,12 @@ use Clang for the Linux freestanding path:
   make host CC=gcc
   make freestanding TARGET_ARCH=x86_64 TARGET_CC=clang
 
-For the Windows freestanding path, MSYS2 is a build convenience rather than a
-runtime requirement. The PE binaries do not link against the MSYS POSIX runtime
-or a C standard library. A regular LLVM/Clang installation is enough for the
-compiler/linker side as long as it can target `x86_64-w64-windows-gnu`; the
-PowerShell builder drives `clang.exe` directly and does not require `make` or a
-POSIX-style shell as build drivers. From PowerShell, use:
+For the Windows freestanding path, the PE binaries do not link against the MSYS
+POSIX runtime or a C standard library. A regular LLVM installation is enough:
+the PowerShell builder drives clang, lld, and llvm-dlltool directly and does not
+require `make`, a Windows SDK, or a POSIX-style shell. It defaults to
+`aarch64-w64-windows-gnu` on ARM64 Windows and `x86_64-w64-windows-gnu` on
+x86-64 Windows. From PowerShell, use:
 
   .\tests\windows\build-windows-freestanding.ps1
 

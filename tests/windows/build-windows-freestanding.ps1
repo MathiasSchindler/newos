@@ -1,7 +1,7 @@
 param(
     [string]$Compiler = "clang",
-    [string]$TargetTriple = "x86_64-w64-windows-gnu",
-    [string]$BuildDir = "build/freestanding-windows-x86_64",
+    [string]$TargetTriple = "",
+    [string]$BuildDir = "",
     [string]$MsysRoot = "C:\msys64",
     [string[]]$Tools = @(),
     [switch]$Clean,
@@ -79,6 +79,35 @@ function Remove-Tools([string[]]$InputTools, [string[]]$RemovedTools) {
     return @($InputTools | Where-Object { -not $removed.Contains($_) })
 }
 
+function Get-WindowsTargetArchitecture([string]$Triple) {
+    if ($Triple -match '^(aarch64|arm64)-') { return "aarch64" }
+    if ($Triple -match '^(x86_64|amd64)-') { return "x86_64" }
+    throw "Unsupported Windows target triple '$Triple'; expected an aarch64/arm64 or x86_64/amd64 target"
+}
+
+function New-WindowsImportLibraries(
+    [string]$CompilerDirectory,
+    [string]$Architecture,
+    [string]$OutputDirectory
+) {
+    $dllTool = Join-Path $CompilerDirectory "llvm-dlltool.exe"
+    if (-not (Test-Path $dllTool)) {
+        $dllTool = Find-CommandPath "llvm-dlltool"
+    }
+    if (-not $dllTool) {
+        throw "Could not find llvm-dlltool beside clang or on PATH"
+    }
+
+    $machine = if ($Architecture -eq "aarch64") { "arm64" } else { "i386:x86-64" }
+    New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+    foreach ($library in @("kernel32", "ws2_32", "bcrypt")) {
+        $definition = "src/platform/windows/imports/$library.def"
+        $archive = Join-Path $OutputDirectory "lib$library.a"
+        & $dllTool -m $machine -d $definition -l $archive
+        if ($LASTEXITCODE -ne 0) { throw "llvm-dlltool failed while creating $archive" }
+    }
+}
+
 function Assert-SourceFilesExist([string[]]$Sources) {
     foreach ($source in $Sources) {
         if (-not (Test-Path -LiteralPath $source)) { throw "Missing source file: $source" }
@@ -106,12 +135,21 @@ function Invoke-CompileTool(
     if ($LASTEXITCODE -ne 0) { throw "clang failed while building $ToolName" }
 }
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $repoRoot
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+Push-Location $repoRoot
+try {
 
 $compilerPath = Find-Clang $Compiler $MsysRoot
 if (-not $compilerPath) {
     throw "Could not find '$Compiler'. Install LLVM/Clang for Windows or pass -Compiler <path-to-clang.exe>."
+}
+
+if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
+    $TargetTriple = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "aarch64-w64-windows-gnu" } else { "x86_64-w64-windows-gnu" }
+}
+$targetArchitecture = Get-WindowsTargetArchitecture $TargetTriple
+if ([string]::IsNullOrWhiteSpace($BuildDir)) {
+    $BuildDir = "build/freestanding-windows-$targetArchitecture"
 }
 
 $compilerDir = Split-Path -Parent $compilerPath
@@ -123,7 +161,7 @@ $makefileText = Get-Content "Makefile" -Raw
 $manifestText = Get-Content "src/compiler/source_manifest.h" -Raw
 
 $allTools = Read-MakeVariable $makefileText "TOOLS"
-$selectedTools = if ($Tools.Count -gt 0) { $Tools } else { $allTools }
+$selectedTools = if ($Tools.Count -gt 0) { $Tools } else { Remove-Tools $allTools @("ncc") }
 $unknownTools = @($selectedTools | Where-Object { $allTools -notcontains $_ })
 if ($unknownTools.Count -gt 0) { throw "Unknown tool(s): $($unknownTools -join ', ')" }
 
@@ -153,7 +191,7 @@ $variables["TUI_SOURCES"] = $tuiSources
 $variables["SSH_CLIENT_SOURCES"] = $sshClientSources
 $variables["SSHD_TOOL_SOURCES"] = $sshdToolSources
 
-$runtimeSources = @(Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES")
+$runtimeSources = Add-Unique (@(Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES") + @("src/arch/$targetArchitecture/windows/chkstk.S"))
 $imageSources = Add-Unique (@($imageManifestSources) + @("src/shared/compression/crc32.c", "src/shared/compression/zlib.c"))
 $pgpSources = @($pgpManifestSources)
 $pgpquerySources = Add-Unique (@($pgpManifestSources) + @($tlsSources) + @($cryptoSources) + @("src/platform/windows/tls.c"))
@@ -165,6 +203,7 @@ $xmlSources = @("src/shared/xml.c", "src/shared/xml_stream.c", "src/shared/xml_d
 $editorSources = Add-Unique (@($variables["EDITOR_TOOL_SOURCES"]) + @($tuiSources))
 $mailSources = Add-Unique (@($variables["MAIL_TOOL_SOURCES"]) + @($tuiSources) + @($tlsSources) + @($cryptoSources) + @("src/platform/windows/tls.c"))
 $nccSources = Add-Unique (@($compilerSources) + @($sharedSources))
+$linkerSources = Add-Unique (@($compilerSources | Where-Object { $_ -match 'src/compiler/linker[^/]*\.c$' }) + @("src/shared/crypto/sha256.c"))
 $shellToolSources = Add-Unique (@($shellSources) + @($sharedSources))
 $makeToolSources = Add-Unique (@($variables["MAKE_TOOL_SOURCES"]) + @($sharedSources))
 $httpdSources = Add-Unique (@($variables["HTTPD_TOOL_SOURCES"]) + @($sharedSources))
@@ -188,6 +227,7 @@ $tuiTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_TUI_TOOLS"
 $mailTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MAIL_TOOLS"
 $wgetTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_WGET_TOOLS"
 $nccTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_NCC_TOOLS"
+$linkerTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_LINKER_TOOLS"
 $shellTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SHELL_TOOLS"
 $makeTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_MAKE_TOOLS"
 $httpdTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_HTTPD_TOOLS"
@@ -196,7 +236,7 @@ $sshTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSH_TOOLS"
 $sshdTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_SSHD_TOOLS"
 $aliasTools = Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_ALIAS_TOOLS"
 
-$specialTools = Add-Unique (@("wtf") + $imageTools + $pgpTools + $pgpqueryTools + $pdfTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
+$specialTools = Add-Unique (@("wtf") + $imageTools + $pgpTools + $pgpqueryTools + $pdfTools + $bignumTools + $hashTools + $regexTools + $archiveTools + $awkTools + $xmlTools + $tuiTools + $mailTools + $wgetTools + $nccTools + $linkerTools + $shellTools + $makeTools + $httpdTools + $serviceTools + $sshTools + $sshdTools + $aliasTools)
 $genericTools = Remove-Tools $allTools $specialTools
 
 $toolKinds = @{}
@@ -215,6 +255,7 @@ foreach ($tool in $tuiTools) { $toolKinds[$tool] = "editor" }
 foreach ($tool in $mailTools) { $toolKinds[$tool] = "mail" }
 foreach ($tool in $wgetTools) { $toolKinds[$tool] = "wget" }
 foreach ($tool in $nccTools) { $toolKinds[$tool] = "ncc" }
+foreach ($tool in $linkerTools) { $toolKinds[$tool] = "linker" }
 foreach ($tool in $shellTools) { $toolKinds[$tool] = "shell" }
 foreach ($tool in $makeTools) { $toolKinds[$tool] = "make" }
 foreach ($tool in $httpdTools) { $toolKinds[$tool] = "httpd" }
@@ -228,15 +269,17 @@ if ($Clean -and (Test-Path $BuildDir)) {
     Remove-Item -Recurse -Force $BuildDir
 }
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+$importLibraryDir = Join-Path $BuildDir ".imports"
+New-WindowsImportLibraries $compilerDir $targetArchitecture $importLibraryDir
 
 $script:WindowsCFlags = @(
     "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Oz",
     "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
     "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
-    "-ffunction-sections", "-fdata-sections",
+    "-ffunction-sections", "-fdata-sections", "-flto",
     "-Isrc/shared", "-Isrc/platform/windows"
 )
-$windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--stack,8388608", "-lkernel32", "-lws2_32")
+$windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--stack,8388608", "-L$importLibraryDir", "-lkernel32", "-lws2_32")
 $windowsTlsLdFlags = $windowsLdFlags + @("-lbcrypt")
 
 $script:BuiltCount = 0
@@ -292,6 +335,7 @@ foreach ($tool in $selectedTools) {
         "mail" { $sources += $mailSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "wget" { $sources += $runtimeSources + $tlsSources + $cryptoSources + @("src/platform/windows/tls.c"); $linkFlags = $windowsTlsLdFlags }
         "ncc" { $extraCFlags += "-Isrc/compiler"; $sources += $nccSources + @("src/platform/windows/core.c") }
+        "linker" { $extraCFlags += "-Isrc/compiler"; $sources += $linkerSources + $runtimeSources }
         "shell" { $sources += $shellToolSources + @("src/platform/windows/core.c") }
         "make" { $sources += $makeToolSources + @("src/platform/windows/core.c") }
         "httpd" { $sources += $httpdSources + @("src/platform/windows/core.c") }
@@ -305,3 +349,6 @@ foreach ($tool in $selectedTools) {
 }
 
 Write-Output "Built $($selectedTools.Count) Windows freestanding tool(s) in $BuildDir"
+} finally {
+    Pop-Location
+}

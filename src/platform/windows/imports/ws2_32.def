@@ -1,0 +1,12 @@
+LIBRARY WS2_32.dll
+EXPORTS
+    WSAStartup
+    WSAPoll
+    closesocket
+    connect
+    freeaddrinfo
+    getaddrinfo
+    recv
+    select
+    send
+    socket

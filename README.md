@@ -37,19 +37,25 @@ The repository includes a structured shell-based test suite under [tests](tests)
 On Linux, `make test` also exercises representative freestanding binaries. On macOS, freestanding Linux tests are skipped by default, but the normal local build path is still `make freestanding`: on local macOS/aarch64 it builds the project-linked Mach-O target under `build/newlinker-macos-aarch64/`. That path compiles with Clang, links final executables with the in-tree linker, uses the project runtime and `_start`, and is intended to produce no-standard-library, no-dylib-import tools. The current Darwin project-linked surface covers the declared macOS tool set: small core, text, metadata, checksum, math, identity, process, terminal, reporting, networking/TLS, filesystem/admin, archive/compression including ZIP, image and PDF metadata, PDF rewriting, object inspection, USB inspection, SQL, manual, compiler, HTTP, SSH/SCP, DNS, netcat/portscan, DHCP probing, ping/traceroute, WHOIS, read-only IP inspection, shell, editor, mail, service supervision, make, and XML tools. Use `make host` when you specifically want the hosted POSIX comparison build or a quicker bring-up loop for a platform feature that is not native yet. Use `make freestanding-macos` for the older Apple-ld/libSystem comparison build.
 
 On Windows, the freestanding PE output does not depend on MSYS2, a POSIX
-runtime, or the Microsoft C runtime. The important build-time tool is a C
-compiler/linker that can emit `x86_64-w64-windows-gnu` PE files; LLVM/Clang with
-lld is the preferred path. The native PowerShell build path does not invoke
-`make`, `sh`, or MSYS2 as build drivers:
+runtime, the Windows SDK, or the Microsoft C runtime. The important build-time
+tools are LLVM/Clang, lld, and llvm-dlltool. The PowerShell builder selects
+`aarch64-w64-windows-gnu` on native ARM64 hosts and
+`x86_64-w64-windows-gnu` otherwise. It does not invoke `make`, `sh`, or MSYS2:
 
 ```
 .\tests\windows\build-windows-freestanding.ps1
 ```
 
 That script prefers `clang` on `PATH`, then common LLVM/MSYS2 Clang install
-locations. MSYS2 can still be used as a convenient way to obtain a packaged
-Clang/lld toolchain, but the produced binaries are no-CRT PE files and the build
-script drives `clang.exe` directly from PowerShell.
+locations. It generates target-specific import archives from the definitions
+under `src/platform/windows/imports/` with llvm-dlltool. MSYS2 can still provide
+a packaged toolchain, but a regular LLVM installation is sufficient and the
+produced binaries are no-CRT PE files.
+
+The optional ARM64 project-linker path accepts Clang COFF objects plus the
+project `.def` files with `linker --target=pe-arm64 --gc-sections`. It performs
+entry-rooted section and COMDAT GC and writes imports only for live code. Run
+`.\tests\windows\test-pe-arm64-linker.ps1` for its native regression test.
 
 The first useful native/freestanding and POSIX-hosted checks are:
 

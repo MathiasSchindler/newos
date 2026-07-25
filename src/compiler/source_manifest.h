@@ -53,6 +53,7 @@
     X("src/compiler/linker_report.c") \
     X("src/compiler/linker_lto.c") \
     X("src/compiler/linker_macho.c") \
+    X("src/compiler/linker_pe.c") \
     X("src/compiler/object_writer.c") \
     X("src/compiler/object_writer_symbols.c") \
     X("src/compiler/parser.c") \

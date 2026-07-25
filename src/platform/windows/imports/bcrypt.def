@@ -1,0 +1,3 @@
+LIBRARY BCRYPT.dll
+EXPORTS
+    BCryptGenRandom

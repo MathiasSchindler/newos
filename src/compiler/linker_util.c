@@ -6,6 +6,8 @@ const char *compiler_linker_target_name(CompilerLinkerTarget target) {
             return "elf64-x86_64";
         case COMPILER_LINKER_TARGET_MACHO64_AARCH64:
             return "macho64-aarch64";
+        case COMPILER_LINKER_TARGET_PE32PLUS_AARCH64:
+            return "pe32plus-aarch64";
     }
     return "unknown";
 }
@@ -27,6 +29,12 @@ int compiler_linker_target_parse(const char *text, CompilerLinkerTarget *target_
                rt_strcmp(text, "macos-aarch64") == 0 ||
                rt_strcmp(text, "macos-arm64") == 0) {
         target = COMPILER_LINKER_TARGET_MACHO64_AARCH64;
+        } else if (rt_strcmp(text, "pe32plus-aarch64") == 0 ||
+             rt_strcmp(text, "pe32+-aarch64") == 0 ||
+             rt_strcmp(text, "pe-arm64") == 0 ||
+             rt_strcmp(text, "windows-aarch64") == 0 ||
+             rt_strcmp(text, "windows-arm64") == 0) {
+         target = COMPILER_LINKER_TARGET_PE32PLUS_AARCH64;
     } else {
         return -1;
     }

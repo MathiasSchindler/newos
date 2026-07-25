@@ -27,6 +27,7 @@
 #define WIN_INVALID_FILE_ATTRIBUTES 0xffffffffUL
 #define WIN_MOVEFILE_REPLACE_EXISTING 0x00000001UL
 #define WIN_FILE_TYPE_CHAR 0x0002UL
+#define WIN_ERROR_BROKEN_PIPE 109UL
 #define WIN_MEM_RELEASE 0x8000UL
 #define WIN_ENABLE_ECHO_INPUT 0x0004UL
 #define WIN_ENABLE_LINE_INPUT 0x0002UL
@@ -135,6 +136,7 @@ __declspec(dllimport) void *__stdcall GetStdHandle(unsigned long handle_id);
 __declspec(dllimport) unsigned long __stdcall GetCurrentDirectoryA(unsigned long buffer_length, char *buffer);
 __declspec(dllimport) int __stdcall GetComputerNameA(char *buffer, unsigned long *size_io);
 __declspec(dllimport) unsigned long __stdcall GetCurrentProcessId(void);
+__declspec(dllimport) unsigned long __stdcall GetLastError(void);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buffer, unsigned long size);
 __declspec(dllimport) int __stdcall SetEnvironmentVariableA(const char *name, const char *value);
 __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
@@ -186,31 +188,6 @@ __declspec(dllimport) int __stdcall WSAPoll(WinPollFd *fds, unsigned long fd_cou
 unsigned long __stack_chk_guard;
 
 void __main(void) {
-}
-
-__attribute__((naked))
-void ___chkstk_ms(void) {
-    __asm__(
-        "pushq %rcx\n"
-        "pushq %r10\n"
-        "movq %rax, %r10\n"
-        "leaq 24(%rsp), %rcx\n"
-        "cmpq $0x1000, %rax\n"
-        "jb 2f\n"
-        "1:\n"
-        "subq $0x1000, %rcx\n"
-        "testq %rax, (%rcx)\n"
-        "subq $0x1000, %rax\n"
-        "cmpq $0x1000, %rax\n"
-        "jae 1b\n"
-        "2:\n"
-        "subq %rax, %rcx\n"
-        "testq %rax, (%rcx)\n"
-        "movq %r10, %rax\n"
-        "popq %r10\n"
-        "popq %rcx\n"
-        "ret\n"
-    );
 }
 
 static char windows_command_line[4096];
@@ -512,7 +489,9 @@ long platform_read(int fd, void *buffer, size_t count) {
 
     if (handle == 0) return -1;
     chunk = count > 0xffffffffUL ? 0xffffffffUL : (unsigned long)count;
-    if (!ReadFile(handle, buffer, chunk, &bytes_read, 0)) return -1;
+    if (!ReadFile(handle, buffer, chunk, &bytes_read, 0)) {
+        return GetLastError() == WIN_ERROR_BROKEN_PIPE ? 0 : -1;
+    }
     return (long)bytes_read;
 }
 
@@ -1095,6 +1074,36 @@ int platform_connect_tcp(const char *host, unsigned int port, int *socket_fd_out
 
     *socket_fd_out = fd;
     return 0;
+}
+
+__attribute__((weak))
+int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds) {
+    (void)client;
+    (void)host;
+    (void)port;
+    (void)timeout_milliseconds;
+    return -1;
+}
+
+__attribute__((weak))
+long platform_tls_read(PlatformTlsClient *client, void *buffer, size_t count) {
+    (void)client;
+    (void)buffer;
+    (void)count;
+    return -1;
+}
+
+__attribute__((weak))
+long platform_tls_write(PlatformTlsClient *client, const void *buffer, size_t count) {
+    (void)client;
+    (void)buffer;
+    (void)count;
+    return -1;
+}
+
+__attribute__((weak))
+void platform_tls_close(PlatformTlsClient *client) {
+    (void)client;
 }
 
 int platform_open_tcp_listener(const char *host, unsigned int port, int *socket_fd_out) {
@@ -1810,7 +1819,11 @@ int platform_get_uname(
     if (platform_get_hostname(nodename, nodename_size) != 0) return -1;
     if (windows_copy_string(release, release_size, "NT") != 0) return -1;
     if (windows_copy_string(version, version_size, "freestanding") != 0) return -1;
+#if defined(__aarch64__) || defined(_M_ARM64)
+    if (windows_copy_string(machine, machine_size, "aarch64") != 0) return -1;
+#else
     if (windows_copy_string(machine, machine_size, "x86_64") != 0) return -1;
+#endif
     return 0;
 }
 

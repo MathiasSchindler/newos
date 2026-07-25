@@ -348,4 +348,7 @@ int run_clang_lto_prelink_macho64_aarch64(const char *const *paths, size_t count
 /* ── linker_macho.c ─────────────────────────────────────────────────────── */
 int compiler_link_macho64_aarch64_static_options(const char *const *object_paths, size_t object_count, const char *output_path, const CompilerLinkerOptions *options, char *error_out, size_t error_size);
 
+/* ── linker_pe.c ────────────────────────────────────────────────────────── */
+int compiler_link_pe32plus_aarch64_static_options(const char *const *object_paths, size_t object_count, const char *output_path, const CompilerLinkerOptions *options, char *error_out, size_t error_size);
+
 #endif /* NEWOS_LINKER_INTERNAL_H */
