@@ -1,4 +1,7 @@
 #include "linker_internal.h"
+#include "compression/lzss.h"
+
+#include "pe_pack_stub_aarch64.inc"
 
 #define PE_COFF_MACHINE_ARM64 0xaa64U
 #define PE_COFF_HEADER_SIZE 20U
@@ -41,6 +44,17 @@
 #define PE_REL_ARM64_PAGEOFFSET_12L 0x0007U
 #define PE_REL_ARM64_ADDR64 0x000eU
 #define PE_REL_ARM64_REL32 0x0011U
+#define PE_PACK_METADATA_SIZE 88U
+#define PE_PACK_METADATA_RVA_OFFSET 8U
+#define PE_PACK_TEXT_RVA_OFFSET 16U
+#define PE_PACK_TEXT_SIZE_OFFSET 24U
+#define PE_PACK_TEXT_PAYLOAD_RVA_OFFSET 32U
+#define PE_PACK_TEXT_PAYLOAD_SIZE_OFFSET 40U
+#define PE_PACK_DATA_RVA_OFFSET 48U
+#define PE_PACK_DATA_SIZE_OFFSET 56U
+#define PE_PACK_DATA_PAYLOAD_RVA_OFFSET 64U
+#define PE_PACK_DATA_PAYLOAD_SIZE_OFFSET 72U
+#define PE_PACK_ENTRY_RVA_OFFSET 80U
 
 typedef enum {
     PE_SECTION_NONE = 0,
@@ -77,6 +91,7 @@ typedef struct {
     uint32_t symbol_count;
     uint32_t string_offset;
     uint32_t string_size;
+    int pack_stub;
 } PeInputObject;
 
 typedef struct {
@@ -131,6 +146,12 @@ typedef struct {
     uint64_t idata_size;
     uint64_t iat_size;
     uint32_t entry_rva;
+    uint64_t boot_size;
+    uint32_t boot_rva;
+    uint32_t boot_file_offset;
+    uint32_t pack_entry_rva;
+    size_t pack_original_import_count;
+    int pack;
 } PeLinkImage;
 
 static int pe_text_starts_with(const char *text, const char *prefix) {
@@ -327,7 +348,8 @@ static int pe_read_comdat_associations(PeInputObject *object, char *error_out, s
     return 0;
 }
 
-static int pe_load_object(PeInputObject *object, const char *path, char *error_out, size_t error_size) {
+static int pe_parse_object(PeInputObject *object, const char *path, unsigned char *file, size_t file_size,
+                           char *error_out, size_t error_size) {
     uint16_t section_count;
     uint16_t optional_size;
     uint64_t section_table_offset;
@@ -337,7 +359,8 @@ static int pe_load_object(PeInputObject *object, const char *path, char *error_o
 
     memset(object, 0, sizeof(*object));
     rt_copy_string(object->path, sizeof(object->path), path);
-    if (read_file_alloc(path, LINKER_MAX_OBJECT_SIZE, &object->file, &object->size, error_out, error_size) != 0) return -1;
+    object->file = file;
+    object->size = file_size;
     if (object->size < PE_COFF_HEADER_SIZE || read_u16(object->file) != PE_COFF_MACHINE_ARM64) {
         set_link_error(error_out, error_size, "unsupported ARM64 COFF object", path);
         return -1;
@@ -397,6 +420,26 @@ static int pe_load_object(PeInputObject *object, const char *path, char *error_o
         }
     }
     return pe_read_comdat_associations(object, error_out, error_size);
+}
+
+static int pe_load_object(PeInputObject *object, const char *path, char *error_out, size_t error_size) {
+    unsigned char *file = 0;
+    size_t file_size = 0U;
+    if (read_file_alloc(path, LINKER_MAX_OBJECT_SIZE, &file, &file_size, error_out, error_size) != 0) return -1;
+    return pe_parse_object(object, path, file, file_size, error_out, error_size);
+}
+
+static int pe_load_pack_stub(PeInputObject *object, char *error_out, size_t error_size) {
+    unsigned char *file = (unsigned char *)rt_malloc(PE_PACK_STUB_AARCH64_OBJECT_SIZE);
+    if (file == 0) {
+        set_link_error(error_out, error_size, "out of memory for ARM64 PE pack stub", "");
+        return -1;
+    }
+    memcpy(file, pe_pack_stub_aarch64_object, PE_PACK_STUB_AARCH64_OBJECT_SIZE);
+    if (pe_parse_object(object, "<pe-pack-stub-aarch64>", file, PE_PACK_STUB_AARCH64_OBJECT_SIZE,
+                        error_out, error_size) != 0) return -1;
+    object->pack_stub = 1;
+    return 0;
 }
 
 static PeInputSection *pe_find_defined_symbol_section(PeLinkImage *link, const char *name) {
@@ -502,6 +545,7 @@ static int pe_mark_live_sections(PeLinkImage *link, const char *entry_symbol, ch
 static int pe_layout_sections(PeLinkImage *link, char *error_out, size_t error_size) {
     uint64_t text_size = 0ULL;
     uint64_t data_size = 0ULL;
+    uint64_t boot_size = 0ULL;
     uint64_t bss_size;
     size_t object_index;
     size_t section_index;
@@ -511,6 +555,17 @@ static int pe_layout_sections(PeLinkImage *link, char *error_out, size_t error_s
         for (section_index = 0U; section_index < object->section_count; ++section_index) {
             PeInputSection *section = &object->sections[section_index];
             if (!section->live) continue;
+            if (link->pack && object->pack_stub) {
+                if (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA) {
+                    boot_size = align_u64(boot_size, section->alignment);
+                    section->class_offset = boot_size;
+                    boot_size += section->raw_size;
+                } else if (section->section_class != PE_SECTION_NONE && section->raw_size != 0U) {
+                    set_link_error(error_out, error_size, "unsupported writable ARM64 PE pack stub section", section->name);
+                    return -1;
+                }
+                continue;
+            }
             if (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA) {
                 text_size = align_u64(text_size, section->alignment);
                 section->class_offset = text_size;
@@ -535,25 +590,44 @@ static int pe_layout_sections(PeLinkImage *link, char *error_out, size_t error_s
             }
         }
     }
-    if (text_size == 0ULL || text_size > 0xffffffffULL || data_size > 0xffffffffULL || bss_size > 0xffffffffULL) {
+    if (text_size == 0ULL || text_size > 0xffffffffULL || data_size > 0xffffffffULL ||
+        bss_size > 0xffffffffULL || boot_size > 0xffffffffULL) {
         set_link_error(error_out, error_size, "PE32+ ARM64 image sections are too large", "");
         return -1;
     }
     link->text_size = text_size;
     link->data_raw_size = data_size;
     link->data_virtual_size = bss_size;
-    link->text_rva = PE_TEXT_RVA;
-    link->text_file_offset = PE_HEADERS_SIZE;
+    link->boot_rva = PE_TEXT_RVA;
+    link->text_rva = link->pack
+        ? (uint32_t)align_u64((uint64_t)link->boot_rva + boot_size +
+                              compression_lzss_bound((size_t)text_size) +
+                              compression_lzss_bound((size_t)data_size), PE_SECTION_ALIGNMENT)
+        : PE_TEXT_RVA;
+    link->text_file_offset = link->pack ? 0U : PE_HEADERS_SIZE;
     if (bss_size != 0ULL) {
         link->data_rva = (uint32_t)align_u64((uint64_t)link->text_rva + text_size, PE_SECTION_ALIGNMENT);
-        link->data_file_offset = (uint32_t)align_u64((uint64_t)link->text_file_offset + text_size, PE_FILE_ALIGNMENT);
+        link->data_file_offset = link->pack
+            ? (uint32_t)align_u64(text_size, 8ULL)
+            : (uint32_t)align_u64((uint64_t)link->text_file_offset + text_size, PE_FILE_ALIGNMENT);
+    }
+    if (link->pack) {
+        uint64_t scratch_end = data_size != 0ULL
+            ? (uint64_t)link->data_file_offset + data_size
+            : text_size;
+        link->boot_file_offset = (uint32_t)align_u64(scratch_end, 8ULL);
+        link->boot_size = boot_size;
     }
     for (object_index = 0U; object_index < link->object_count; ++object_index) {
         PeInputObject *object = &link->objects[object_index];
         for (section_index = 0U; section_index < object->section_count; ++section_index) {
             PeInputSection *section = &object->sections[section_index];
             if (!section->live) continue;
-            if (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA) {
+            if (link->pack && object->pack_stub &&
+                (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA)) {
+                section->output_rva = (uint64_t)link->boot_rva + section->class_offset;
+                section->output_file_offset = (uint64_t)link->boot_file_offset + section->class_offset;
+            } else if (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA) {
                 section->output_rva = (uint64_t)link->text_rva + section->class_offset;
                 section->output_file_offset = (uint64_t)link->text_file_offset + section->class_offset;
             } else if (section->section_class == PE_SECTION_DATA) {
@@ -694,6 +768,7 @@ static int pe_collect_imports(PeLinkImage *link, char *error_out, size_t error_s
     for (object_index = 0U; object_index < link->object_count; ++object_index) {
         PeInputObject *object = &link->objects[object_index];
         size_t section_index;
+        if (link->pack && object->pack_stub) link->pack_original_import_count = link->import_count;
         for (section_index = 0U; section_index < object->section_count; ++section_index) {
             PeInputSection *section = &object->sections[section_index];
             uint16_t reloc_index;
@@ -793,13 +868,44 @@ static int pe_layout_imports(PeLinkImage *link, char *error_out, size_t error_si
         offset = align_u64(offset, 2ULL);
     }
     link->idata_size = offset;
-    idata_offset = align_u64(link->text_size, 8ULL);
+    idata_offset = align_u64(link->pack ? link->boot_size : link->text_size, 8ULL);
     if (idata_offset + link->idata_size > 0xffffffffULL) {
         set_link_error(error_out, error_size, "PE32+ ARM64 text and imports are too large", "");
         return -1;
     }
-    link->idata_rva = link->text_rva + (uint32_t)idata_offset;
-    link->idata_file_offset = link->text_file_offset + (uint32_t)idata_offset;
+    link->idata_rva = (link->pack ? link->boot_rva : link->text_rva) + (uint32_t)idata_offset;
+    link->idata_file_offset = (link->pack ? link->boot_file_offset : link->text_file_offset) + (uint32_t)idata_offset;
+    if (link->pack) {
+        link->boot_size = idata_offset + link->idata_size;
+        uint64_t target_text_rva = align_u64((uint64_t)link->boot_rva + link->boot_size +
+                                             compression_lzss_bound((size_t)link->text_size) +
+                                             compression_lzss_bound((size_t)link->data_raw_size),
+                                             PE_SECTION_ALIGNMENT);
+        size_t object_index;
+        if (target_text_rva > 0xffffffffULL) {
+            set_link_error(error_out, error_size, "ARM64 packed PE virtual layout is too large", "");
+            return -1;
+        }
+        link->text_rva = (uint32_t)target_text_rva;
+        link->data_rva = link->data_virtual_size != 0ULL
+            ? (uint32_t)align_u64((uint64_t)link->text_rva + link->text_size, PE_SECTION_ALIGNMENT)
+            : 0U;
+        for (object_index = 0U; object_index < link->object_count; ++object_index) {
+            PeInputObject *object = &link->objects[object_index];
+            size_t section_index;
+            if (object->pack_stub) continue;
+            for (section_index = 0U; section_index < object->section_count; ++section_index) {
+                PeInputSection *section = &object->sections[section_index];
+                if (!section->live) continue;
+                if (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA) {
+                    section->output_rva = (uint64_t)link->text_rva + section->class_offset;
+                } else if (section->section_class == PE_SECTION_DATA || section->section_class == PE_SECTION_BSS) {
+                    section->output_rva = (uint64_t)link->data_rva + section->class_offset;
+                }
+            }
+        }
+        return 0;
+    }
     link->text_size = idata_offset + link->idata_size;
     if (link->data_virtual_size != 0ULL) {
         size_t object_index;
@@ -927,51 +1033,65 @@ static int pe_apply_relocations(PeLinkImage *link, unsigned char *output, size_t
                     instruction = read_u32(patch);
                     write_u32(patch, (instruction & 0xfc000000U) | ((uint32_t)immediate & 0x03ffffffU));
                 } else if (type == PE_REL_ARM64_PAGEBASE_REL21) {
-                    int64_t delta = (int64_t)(target & ~0xfffULL) - (int64_t)(place & ~0xfffULL);
-                    int64_t immediate = delta >> 12;
-                    if ((delta & 0xfffLL) != 0LL || immediate < -(1LL << 20) || immediate >= (1LL << 20)) {
+                    int64_t addend;
+                    int64_t immediate;
+                    instruction = read_u32(patch);
+                    addend = (int64_t)(((instruction >> 29U) & 3U) | ((instruction >> 3U) & 0x1ffffcU));
+                    if ((addend & (1LL << 20)) != 0LL) addend -= 1LL << 21;
+                    immediate = ((int64_t)target + addend) / 4096LL - (int64_t)place / 4096LL;
+                    if (immediate < -(1LL << 20) || immediate >= (1LL << 20)) {
                         set_link_error(error_out, error_size, "ARM64 COFF page relocation is out of range", section->name);
                         return -1;
                     }
-                    instruction = read_u32(patch);
                     instruction = (instruction & ~0x60ffffe0U) |
                                   (((uint32_t)immediate & 3U) << 29U) |
                                   ((((uint32_t)immediate >> 2U) & 0x7ffffU) << 5U);
                     write_u32(patch, instruction);
                 } else if (type == PE_REL_ARM64_REL21) {
-                    int64_t delta = (int64_t)target - (int64_t)place;
-                    if (delta < -(1LL << 20) || delta >= (1LL << 20)) {
+                    int64_t addend;
+                    int64_t immediate;
+                    instruction = read_u32(patch);
+                    addend = (int64_t)(((instruction >> 29U) & 3U) | ((instruction >> 3U) & 0x1ffffcU));
+                    if ((addend & (1LL << 20)) != 0LL) addend -= 1LL << 21;
+                    immediate = (int64_t)target + addend - (int64_t)place;
+                    if (immediate < -(1LL << 20) || immediate >= (1LL << 20)) {
                         set_link_error(error_out, error_size, "ARM64 COFF relative relocation is out of range", section->name);
                         return -1;
                     }
-                    instruction = read_u32(patch);
                     instruction = (instruction & ~0x60ffffe0U) |
-                                  (((uint32_t)delta & 3U) << 29U) |
-                                  ((((uint32_t)delta >> 2U) & 0x7ffffU) << 5U);
+                                  (((uint32_t)immediate & 3U) << 29U) |
+                                  ((((uint32_t)immediate >> 2U) & 0x7ffffU) << 5U);
                     write_u32(patch, instruction);
                 } else if (type == PE_REL_ARM64_PAGEOFFSET_12A) {
                     uint32_t page_offset = (uint32_t)(target & 0xfffULL);
+                    uint32_t addend;
                     instruction = read_u32(patch);
                     if ((instruction & 0x1f000000U) != 0x11000000U || (instruction & 0x00400000U) != 0U) {
                         set_link_error(error_out, error_size, "unsupported ARM64 COFF add page-offset instruction", section->name);
                         return -1;
                     }
-                    write_u32(patch, (instruction & ~0x003ffc00U) | (page_offset << 10U));
+                    addend = (instruction >> 10U) & 0xfffU;
+                    write_u32(patch, (instruction & ~0x003ffc00U) | (((page_offset + addend) & 0xfffU) << 10U));
                 } else if (type == PE_REL_ARM64_PAGEOFFSET_12L) {
                     uint32_t page_offset = (uint32_t)(target & 0xfffULL);
                     uint32_t scale;
+                    uint32_t addend;
+                    uint32_t value;
                     instruction = read_u32(patch);
                     if ((instruction & 0x3b000000U) != 0x39000000U) {
                         set_link_error(error_out, error_size, "unsupported ARM64 COFF load/store page-offset instruction", section->name);
                         return -1;
                     }
                     scale = (instruction >> 30U) & 3U;
-                    if ((instruction & 0x04000000U) != 0U && ((instruction >> 22U) & 3U) == 3U) scale = 4U;
+                    if ((instruction & 0x04800000U) == 0x04800000U) scale += 4U;
                     if ((page_offset & ((1U << scale) - 1U)) != 0U) {
                         set_link_error(error_out, error_size, "unaligned ARM64 COFF load/store relocation", section->name);
                         return -1;
                     }
-                    write_u32(patch, (instruction & ~0x003ffc00U) | ((page_offset >> scale) << 10U));
+                    addend = (instruction >> 10U) & 0xfffU;
+                    value = addend + (page_offset >> scale);
+                    write_u32(patch, (instruction & ~0x003ffc00U) |
+                                     ((value & (0xfffU >> scale)) << 10U));
                 } else if (type == PE_REL_ARM64_ADDR64) {
                     if (offset + 8U > section->raw_size || !range_valid(section->output_file_offset + offset, 8U, output_size)) {
                         set_link_error(error_out, error_size, "invalid ARM64 COFF 64-bit relocation", section->name);
@@ -1037,6 +1157,263 @@ static void pe_write_import_data(const PeLinkImage *link, unsigned char *output)
     }
 }
 
+static int pe_build_linked_contents(PeLinkImage *link, unsigned char *output, size_t output_size,
+                                    char *error_out, size_t error_size) {
+    size_t object_index;
+    for (object_index = 0U; object_index < link->object_count; ++object_index) {
+        PeInputObject *object = &link->objects[object_index];
+        size_t section_index;
+        for (section_index = 0U; section_index < object->section_count; ++section_index) {
+            PeInputSection *section = &object->sections[section_index];
+            if (section->live && section->section_class != PE_SECTION_NONE &&
+                section->section_class != PE_SECTION_BSS && section->raw_size != 0U) {
+                if (!range_valid(section->output_file_offset, section->raw_size, output_size)) {
+                    set_link_error(error_out, error_size, "ARM64 PE section lies outside output", section->name);
+                    return -1;
+                }
+                memcpy(output + section->output_file_offset, object->file + section->raw_offset, section->raw_size);
+            }
+        }
+    }
+    if (link->idata_size != 0ULL) pe_write_import_data(link, output);
+    return pe_apply_relocations(link, output, output_size, error_out, error_size);
+}
+
+static uint32_t pe_normal_file_size_for_packed_layout(const PeLinkImage *link) {
+    uint64_t import_size = 0ULL;
+    uint64_t offset;
+    size_t group_count = 0U;
+    size_t group_import_counts[PE_MAX_IMPORT_GROUPS];
+    char group_names[PE_MAX_IMPORT_GROUPS][PE_IMPORT_NAME_CAPACITY];
+    size_t index;
+    memset(group_import_counts, 0, sizeof(group_import_counts));
+    for (index = 0U; index < link->pack_original_import_count; ++index) {
+        size_t group_index;
+        for (group_index = 0U; group_index < group_count; ++group_index) {
+            if (rt_strcmp(group_names[group_index], link->imports[index].dll) == 0) break;
+        }
+        if (group_index == group_count) {
+            rt_copy_string(group_names[group_count], sizeof(group_names[group_count]), link->imports[index].dll);
+            group_count += 1U;
+        }
+        group_import_counts[group_index] += 1U;
+    }
+    if (group_count != 0U) {
+        offset = ((uint64_t)group_count + 1ULL) * 20ULL;
+        offset = align_u64(offset, 8ULL);
+        for (index = 0U; index < group_count; ++index) offset += ((uint64_t)group_import_counts[index] + 1ULL) * 8ULL;
+        for (index = 0U; index < group_count; ++index) offset += ((uint64_t)group_import_counts[index] + 1ULL) * 8ULL;
+        for (index = 0U; index < group_count; ++index) offset += rt_strlen(group_names[index]) + 1U;
+        offset = align_u64(offset, 2ULL);
+        for (index = 0U; index < link->pack_original_import_count; ++index) {
+            offset += 2ULL + rt_strlen(link->imports[index].name) + 1ULL;
+            offset = align_u64(offset, 2ULL);
+        }
+        import_size = offset;
+    }
+    {
+        uint64_t normal_text_size = align_u64(link->text_size, 8ULL) + import_size;
+        uint64_t normal_text_raw_size = align_u64(normal_text_size, PE_FILE_ALIGNMENT);
+    if (link->data_raw_size != 0ULL) {
+        uint64_t data_offset = align_u64((uint64_t)PE_HEADERS_SIZE + normal_text_size, PE_FILE_ALIGNMENT);
+        return (uint32_t)(data_offset + align_u64(link->data_raw_size, PE_FILE_ALIGNMENT));
+    }
+        return (uint32_t)((uint64_t)PE_HEADERS_SIZE + normal_text_raw_size);
+    }
+}
+
+static int pe_write_packed_image(PeLinkImage *link, const char *output_path, char *error_out, size_t error_size) {
+    uint64_t scratch_size_u64 = (uint64_t)link->boot_file_offset + link->boot_size;
+    size_t scratch_size;
+    unsigned char *scratch = 0;
+    unsigned char *text_payload = 0;
+    unsigned char *data_payload = 0;
+    size_t text_bound;
+    size_t text_payload_size = 0U;
+    size_t data_payload_size = 0U;
+    uint64_t metadata_value;
+    uint32_t metadata_rva;
+    uint64_t pack_entry_value;
+    uint32_t text_payload_offset;
+    uint32_t data_payload_offset;
+    uint32_t boot_content_size;
+    uint32_t boot_raw_size;
+    uint32_t file_size;
+    uint32_t normal_file_size;
+    uint32_t image_size;
+    uint16_t output_section_count = 2U;
+    uint32_t load_rva;
+    uint32_t load_virtual_size;
+    unsigned char *metadata;
+    unsigned char *output;
+    unsigned char *coff;
+    unsigned char *optional;
+    unsigned char *section_headers;
+    int fd;
+
+    if (link->data_raw_size != 0ULL) {
+        uint64_t data_end = (uint64_t)link->data_file_offset + link->data_raw_size;
+        if (data_end > scratch_size_u64) scratch_size_u64 = data_end;
+    }
+    if (scratch_size_u64 > LINKER_MAX_OUTPUT) {
+        set_link_error(error_out, error_size, "ARM64 packed PE scratch image is too large", output_path);
+        return -1;
+    }
+    scratch_size = (size_t)scratch_size_u64;
+    scratch = (unsigned char *)rt_malloc(scratch_size);
+    if (scratch == 0) {
+        set_link_error(error_out, error_size, "out of memory for ARM64 packed PE image", output_path);
+        return -1;
+    }
+    memset(scratch, 0, scratch_size);
+    if (pe_build_linked_contents(link, scratch, scratch_size, error_out, error_size) != 0) goto failure;
+
+    if (pe_find_global(link, "pe_pack_metadata", &metadata_value, &metadata_rva) != 0 ||
+        metadata_rva < link->boot_rva || (uint64_t)(metadata_rva - link->boot_rva) + PE_PACK_METADATA_SIZE > link->boot_size ||
+        pe_find_global(link, "pePackStartup", &pack_entry_value, &link->pack_entry_rva) != 0) {
+        set_link_error(error_out, error_size, "invalid ARM64 PE pack stub symbols", "");
+        goto failure;
+    }
+    metadata = scratch + link->boot_file_offset + (metadata_rva - link->boot_rva);
+    if (memcmp(metadata, "NPACKA1\0", 8U) != 0) {
+        set_link_error(error_out, error_size, "invalid ARM64 PE pack metadata", "");
+        goto failure;
+    }
+
+    text_bound = compression_lzss_bound((size_t)link->text_size);
+    text_payload = (unsigned char *)rt_malloc(text_bound);
+    if (text_payload == 0 ||
+        compression_lzss_compress_profile(COMPRESSION_LZSS_PROFILE_WIDE_WINDOW,
+                                          scratch + link->text_file_offset, (size_t)link->text_size,
+                                          text_payload, text_bound, &text_payload_size) != 0) {
+        set_link_error(error_out, error_size, "failed to compress ARM64 PE text", "");
+        goto failure;
+    }
+    if (link->data_raw_size != 0ULL) {
+        size_t data_bound = compression_lzss_bound((size_t)link->data_raw_size);
+        data_payload = (unsigned char *)rt_malloc(data_bound);
+        if (data_payload == 0 ||
+            compression_lzss_compress_profile(COMPRESSION_LZSS_PROFILE_WIDE_WINDOW,
+                                              scratch + link->data_file_offset, (size_t)link->data_raw_size,
+                                              data_payload, data_bound, &data_payload_size) != 0) {
+            set_link_error(error_out, error_size, "failed to compress ARM64 PE data", "");
+            goto failure;
+        }
+    }
+
+    if (link->boot_size > 0xffffffffULL || text_payload_size > 0xffffffffU - (uint32_t)link->boot_size ||
+        data_payload_size > 0xffffffffU - (uint32_t)link->boot_size - (uint32_t)text_payload_size) {
+        set_link_error(error_out, error_size, "ARM64 packed PE payload is too large", "");
+        goto failure;
+    }
+    text_payload_offset = (uint32_t)link->boot_size;
+    data_payload_offset = text_payload_offset + (uint32_t)text_payload_size;
+    boot_content_size = data_payload_offset + (uint32_t)data_payload_size;
+    boot_raw_size = (uint32_t)align_u64(boot_content_size, PE_FILE_ALIGNMENT);
+    file_size = PE_HEADERS_SIZE + boot_raw_size;
+    normal_file_size = pe_normal_file_size_for_packed_layout(link);
+    if (file_size >= normal_file_size) {
+        rt_free(data_payload);
+        rt_free(text_payload);
+        rt_free(scratch);
+        return 1;
+    }
+
+    write_u64(metadata + PE_PACK_METADATA_RVA_OFFSET, metadata_rva);
+    write_u64(metadata + PE_PACK_TEXT_RVA_OFFSET, link->text_rva);
+    write_u64(metadata + PE_PACK_TEXT_SIZE_OFFSET, link->text_size);
+    write_u64(metadata + PE_PACK_TEXT_PAYLOAD_RVA_OFFSET, (uint64_t)link->boot_rva + text_payload_offset);
+    write_u64(metadata + PE_PACK_TEXT_PAYLOAD_SIZE_OFFSET, text_payload_size);
+    write_u64(metadata + PE_PACK_DATA_RVA_OFFSET, link->data_rva);
+    write_u64(metadata + PE_PACK_DATA_SIZE_OFFSET, link->data_raw_size);
+    write_u64(metadata + PE_PACK_DATA_PAYLOAD_RVA_OFFSET, (uint64_t)link->boot_rva + data_payload_offset);
+    write_u64(metadata + PE_PACK_DATA_PAYLOAD_SIZE_OFFSET, data_payload_size);
+    write_u64(metadata + PE_PACK_ENTRY_RVA_OFFSET, link->entry_rva);
+
+    image_size = link->data_virtual_size != 0ULL
+        ? (uint32_t)align_u64((uint64_t)link->data_rva + link->data_virtual_size, PE_SECTION_ALIGNMENT)
+        : (uint32_t)align_u64((uint64_t)link->text_rva + link->text_size, PE_SECTION_ALIGNMENT);
+    load_rva = (uint32_t)align_u64((uint64_t)link->boot_rva + boot_content_size, PE_SECTION_ALIGNMENT);
+    load_virtual_size = image_size - load_rva;
+    output = (unsigned char *)rt_malloc(file_size);
+    if (output == 0) {
+        set_link_error(error_out, error_size, "out of memory for ARM64 packed PE output", output_path);
+        goto failure;
+    }
+    memset(output, 0, file_size);
+    output[0] = 'M';
+    output[1] = 'Z';
+    write_u16(output + 2U, 0x78U);
+    write_u16(output + 4U, 1U);
+    write_u16(output + 8U, 4U);
+    write_u16(output + 12U, 0xffffU);
+    write_u16(output + 16U, 0xb8U);
+    write_u16(output + 24U, 0x40U);
+    write_u32(output + 60U, PE_SIGNATURE_OFFSET);
+    memcpy(output + PE_SIGNATURE_OFFSET, "PE\0\0", 4U);
+    coff = output + PE_SIGNATURE_OFFSET + 4U;
+    write_u16(coff, PE_COFF_MACHINE_ARM64);
+    write_u16(coff + 2U, output_section_count);
+    write_u16(coff + 16U, PE_OPTIONAL_HEADER_SIZE);
+    write_u16(coff + 18U, 0x0022U);
+    optional = coff + PE_COFF_HEADER_SIZE;
+    write_u16(optional, 0x020bU);
+    optional[2] = 1U;
+    write_u32(optional + 4U, boot_raw_size);
+    write_u32(optional + 12U, load_virtual_size);
+    write_u32(optional + 16U, link->pack_entry_rva);
+    write_u32(optional + 20U, link->boot_rva);
+    write_u64(optional + 24U, PE_IMAGE_BASE);
+    write_u32(optional + 32U, PE_SECTION_ALIGNMENT);
+    write_u32(optional + 36U, PE_FILE_ALIGNMENT);
+    write_u16(optional + 40U, 6U);
+    write_u16(optional + 48U, 6U);
+    write_u32(optional + 56U, image_size);
+    write_u32(optional + 60U, PE_HEADERS_SIZE);
+    write_u16(optional + 68U, 3U);
+    write_u16(optional + 70U, 0x8160U);
+    write_u64(optional + 72U, 8ULL * 1024ULL * 1024ULL);
+    write_u64(optional + 80U, 4096ULL);
+    write_u64(optional + 88U, 1024ULL * 1024ULL);
+    write_u64(optional + 96U, 4096ULL);
+    write_u32(optional + 108U, 16U);
+    if (link->idata_size != 0ULL) {
+        uint32_t iat_offset = (uint32_t)align_u64(((uint64_t)link->import_group_count + 1ULL) * 20ULL, 8ULL);
+        write_u32(optional + 120U, link->idata_rva);
+        write_u32(optional + 124U, ((uint32_t)link->import_group_count + 1U) * 20U);
+        write_u32(optional + 208U, link->idata_rva + iat_offset);
+        write_u32(optional + 212U, (uint32_t)link->iat_size);
+    }
+    section_headers = optional + PE_OPTIONAL_HEADER_SIZE;
+    pe_write_section_header(section_headers, ".boot", boot_content_size, link->boot_rva,
+                            boot_raw_size, PE_HEADERS_SIZE, 0x60000020U);
+    pe_write_section_header(section_headers + PE_COFF_SECTION_SIZE, ".load", load_virtual_size,
+                            load_rva, 0U, file_size, 0xc00000c0U);
+    memcpy(output + PE_HEADERS_SIZE, scratch + link->boot_file_offset, (size_t)link->boot_size);
+    memcpy(output + PE_HEADERS_SIZE + text_payload_offset, text_payload, text_payload_size);
+    if (data_payload_size != 0U) {
+        memcpy(output + PE_HEADERS_SIZE + data_payload_offset, data_payload, data_payload_size);
+    }
+    fd = platform_open_write(output_path, 0755U);
+    if (fd < 0 || rt_write_all(fd, output, file_size) != 0 || platform_close(fd) != 0) {
+        if (fd >= 0) (void)platform_close(fd);
+        rt_free(output);
+        set_link_error(error_out, error_size, "failed to write ARM64 packed PE output", output_path);
+        goto failure;
+    }
+    rt_free(output);
+    rt_free(data_payload);
+    rt_free(text_payload);
+    rt_free(scratch);
+    return 0;
+
+failure:
+    rt_free(data_payload);
+    rt_free(text_payload);
+    rt_free(scratch);
+    return -1;
+}
+
 static int pe_write_image(PeLinkImage *link, const char *output_path, char *error_out, size_t error_size) {
     uint32_t text_raw_size = (uint32_t)align_u64(link->text_size, PE_FILE_ALIGNMENT);
     uint32_t data_raw_size = (uint32_t)align_u64(link->data_raw_size, PE_FILE_ALIGNMENT);
@@ -1051,7 +1428,6 @@ static int pe_write_image(PeLinkImage *link, const char *output_path, char *erro
     unsigned char *coff;
     unsigned char *optional;
     unsigned char *section_headers;
-    size_t object_index;
     int fd;
 
     if (file_size > LINKER_MAX_OUTPUT) {
@@ -1117,18 +1493,7 @@ static int pe_write_image(PeLinkImage *link, const char *output_path, char *erro
                                 link->data_rva, data_raw_size, link->data_file_offset,
                                 link->data_virtual_size > link->data_raw_size ? 0xc00000c0U : 0xc0000040U);
     }
-    for (object_index = 0U; object_index < link->object_count; ++object_index) {
-        PeInputObject *object = &link->objects[object_index];
-        size_t section_index;
-        for (section_index = 0U; section_index < object->section_count; ++section_index) {
-            PeInputSection *section = &object->sections[section_index];
-            if (section->live && (section->section_class == PE_SECTION_TEXT || section->section_class == PE_SECTION_RDATA || section->section_class == PE_SECTION_DATA) && section->raw_size != 0U) {
-                memcpy(output + section->output_file_offset, object->file + section->raw_offset, section->raw_size);
-            }
-        }
-    }
-    if (link->idata_size != 0ULL) pe_write_import_data(link, output);
-    if (pe_apply_relocations(link, output, file_size, error_out, error_size) != 0) {
+    if (pe_build_linked_contents(link, output, file_size, error_out, error_size) != 0) {
         rt_free(output);
         return -1;
     }
@@ -1153,6 +1518,7 @@ int compiler_link_pe32plus_aarch64_static_options(const char *const *object_path
     const char *entry_symbol = options != 0 && options->entry_symbol != 0 ? options->entry_symbol : "mainCRTStartup";
     size_t object_index;
     uint64_t entry_value;
+    int fallback_to_normal = 0;
     int result = -1;
 
     if (object_paths == 0 || object_count == 0U || object_count > PE_MAX_INPUT_OBJECTS + PE_MAX_IMPORT_GROUPS || output_path == 0) {
@@ -1165,6 +1531,7 @@ int compiler_link_pe32plus_aarch64_static_options(const char *const *object_path
         return -1;
     }
     memset(link, 0, sizeof(*link));
+    link->pack = options != 0 && options->pack != 0;
     for (object_index = 0U; object_index < object_count; ++object_index) {
         if (pe_text_ends_with(object_paths[object_index], ".def")) {
             if (pe_load_import_definitions(link, object_paths[object_index], error_out, error_size) != 0) goto cleanup;
@@ -1180,8 +1547,21 @@ int compiler_link_pe32plus_aarch64_static_options(const char *const *object_path
             link->object_count += 1U;
         }
     }
-    if (link->object_count == 0U ||
-        (options != 0 && options->gc_sections != 0 && pe_mark_live_sections(link, entry_symbol, error_out, error_size) != 0) ||
+    if (link->object_count == 0U) goto cleanup;
+    if (options != 0 && options->gc_sections != 0 &&
+        pe_mark_live_sections(link, entry_symbol, error_out, error_size) != 0) goto cleanup;
+    if (link->pack) {
+        if (link->object_count >= PE_MAX_INPUT_OBJECTS) {
+            set_link_error(error_out, error_size, "too many ARM64 COFF inputs for PE packing", "");
+            goto cleanup;
+        }
+        if (pe_load_pack_stub(&link->objects[link->object_count], error_out, error_size) != 0) {
+            link->object_count += 1U;
+            goto cleanup;
+        }
+        link->object_count += 1U;
+    }
+    if (
         pe_layout_sections(link, error_out, error_size) != 0 ||
         pe_collect_globals(link, error_out, error_size) != 0 || pe_collect_imports(link, error_out, error_size) != 0 ||
         pe_layout_imports(link, error_out, error_size) != 0) goto cleanup;
@@ -1192,7 +1572,16 @@ int compiler_link_pe32plus_aarch64_static_options(const char *const *object_path
         set_link_error(error_out, error_size, "missing PE32+ ARM64 entry symbol", entry_symbol);
         goto cleanup;
     }
-    if (pe_write_image(link, output_path, error_out, error_size) != 0) goto cleanup;
+    if (link->pack) {
+        int pack_result = pe_write_packed_image(link, output_path, error_out, error_size);
+        if (pack_result > 0) {
+            fallback_to_normal = 1;
+            goto cleanup;
+        }
+        if (pack_result != 0) goto cleanup;
+    } else if (pe_write_image(link, output_path, error_out, error_size) != 0) {
+        goto cleanup;
+    }
     result = 0;
 
 cleanup:
@@ -1201,5 +1590,11 @@ cleanup:
         rt_free(link->objects[object_index].file);
     }
     rt_free(link);
+    if (fallback_to_normal) {
+        CompilerLinkerOptions fallback_options = *options;
+        fallback_options.pack = 0;
+        return compiler_link_pe32plus_aarch64_static_options(object_paths, object_count, output_path,
+                                                              &fallback_options, error_out, error_size);
+    }
     return result;
 }

@@ -331,7 +331,9 @@ $xmlSources = @("src/shared/xml.c", "src/shared/xml_stream.c", "src/shared/xml_d
 $editorSources = Add-Unique (@($variables["EDITOR_TOOL_SOURCES"]) + @($tuiSources))
 $mailSources = Add-Unique (@($variables["MAIL_TOOL_SOURCES"]) + @($tuiSources) + @($tlsSources) + @($cryptoSources) + @($windowsTlsSources))
 $nccSources = Add-Unique (@($compilerSources) + @($sharedSources) + @("src/shared/crypto/sha256.c"))
-$linkerSources = Add-Unique (@($compilerSources | Where-Object { $_ -match 'src/compiler/linker[^/]*\.c$' }) + @("src/shared/crypto/sha256.c"))
+$linkerSources = Add-Unique (@($compilerSources | Where-Object { $_ -match 'src/compiler/linker[^/]*\.c$' }) + @(
+    "src/shared/compression/lzss.c", "src/shared/crypto/sha256.c"
+))
 $shellToolSources = Add-Unique (@($shellSources) + @($sharedSources))
 $makeToolSources = Add-Unique (@($variables["MAKE_TOOL_SOURCES"]) + @($sharedSources))
 $httpdSources = Add-Unique (@($variables["HTTPD_TOOL_SOURCES"]) + @($sharedSources))

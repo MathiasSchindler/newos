@@ -23,7 +23,7 @@ try {
     if (-not (Test-Path $readobj)) { throw "Could not find llvm-readobj beside Clang" }
 
     & .\tests\windows\build-windows-freestanding.ps1 -Compiler $Compiler -TargetTriple aarch64-w64-windows-gnu -Tools linker,true,false
-    if ($LASTEXITCODE -ne 0) { throw "Failed to build the Windows ARM64 linker" }
+    if (-not $?) { throw "Failed to build the Windows ARM64 linker" }
 
     $linker = "build\freestanding-windows-aarch64\linker.exe"
     $minimalTrue = "build\freestanding-windows-aarch64\true.exe"
@@ -104,6 +104,39 @@ void mainCRTStartup(void) {
     ExitProcess(use_large_stack(20U) == 41U ? 0U : 1U);
 }
 '@)
+    [IO.File]::WriteAllText((Join-Path $scratch "pack_text.c"), @'
+__declspec(dllimport) void ExitProcess(unsigned int exit_code);
+
+static volatile const unsigned char payload[16384] = {
+    [0] = 42,
+    [16383] = 99
+};
+
+void mainCRTStartup(void) {
+    ExitProcess(payload[0] == 42 && payload[16383] == 99 ? 0U : 1U);
+}
+'@)
+    [IO.File]::WriteAllText((Join-Path $scratch "pack_data.c"), @'
+__declspec(dllimport) void ExitProcess(unsigned int exit_code);
+
+static volatile unsigned char initialized[16384] = {
+    [0] = 42,
+    [16383] = 99
+};
+static volatile unsigned char zeroed[8192];
+
+void mainCRTStartup(void) {
+    if (initialized[0] != 42) ExitProcess(1U);
+    if (initialized[16383] != 99) ExitProcess(2U);
+    if (zeroed[0] != 0) ExitProcess(3U);
+    if (zeroed[8191] != 0) ExitProcess(4U);
+    initialized[1] = 7;
+    zeroed[8191] = 11;
+    if (initialized[1] != 7) ExitProcess(5U);
+    if (zeroed[8191] != 11) ExitProcess(6U);
+    ExitProcess(0U);
+}
+'@)
     [IO.File]::WriteAllText((Join-Path $scratch "associative.S"), @'
     .section .text$associative_parent,"xr",one_only,associative_parent
     .globl associative_parent
@@ -121,7 +154,7 @@ associative_parent:
         "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
         "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections"
     )
-    foreach ($name in @("entry", "first", "second", "simple", "writable", "stack")) {
+    foreach ($name in @("entry", "first", "second", "simple", "writable", "stack", "pack_text", "pack_data")) {
         & $Compiler @commonFlags -c (Join-Path $scratch "$name.c") -o (Join-Path $scratch "$name.obj")
         if ($LASTEXITCODE -ne 0) { throw "Failed to compile $name.c" }
     }
@@ -172,6 +205,60 @@ associative_parent:
         throw "PE ARM64 compact import layout is not a one-section 1024-byte image"
     }
 
+    & $linker --target=pe-arm64 --pack -o (Join-Path $scratch "simple-pack.exe") `
+        (Join-Path $scratch "simple.obj") $kernel32
+    if ($LASTEXITCODE -ne 0) { throw "PE ARM64 packed fallback link failed" }
+    & (Join-Path $scratch "simple-pack.exe")
+    if ($LASTEXITCODE -ne 0) { throw "PE ARM64 packed fallback executable returned $LASTEXITCODE" }
+    $simpleHash = (Get-FileHash -Algorithm SHA256 (Join-Path $scratch "simple.exe")).Hash
+    $simplePackHash = (Get-FileHash -Algorithm SHA256 (Join-Path $scratch "simple-pack.exe")).Hash
+    if ($simpleHash -ne $simplePackHash) {
+        throw "PE ARM64 --pack fallback is not byte-identical to the normal image"
+    }
+
+    $tempStateBefore = @(Get-ChildItem -LiteralPath $env:TEMP -Filter "ex????????.exe" -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+    foreach ($name in @("pack_text", "pack_data")) {
+        $normalOutput = Join-Path $scratch "$name-normal.exe"
+        $packedOutput = Join-Path $scratch "$name-packed.exe"
+        & $linker --target=pe-arm64 --gc-sections -o $normalOutput (Join-Path $scratch "$name.obj") $kernel32
+        if ($LASTEXITCODE -ne 0) { throw "PE ARM64 normal $name link failed" }
+        & $linker --target=pe-arm64 --gc-sections --pack -o $packedOutput (Join-Path $scratch "$name.obj") $kernel32
+        if ($LASTEXITCODE -ne 0) { throw "PE ARM64 packed $name link failed" }
+        & $normalOutput
+        if ($LASTEXITCODE -ne 0) { throw "PE ARM64 normal $name executable returned $LASTEXITCODE" }
+        & $packedOutput
+        if ($LASTEXITCODE -ne 0) { throw "PE ARM64 packed $name executable returned $LASTEXITCODE" }
+        if ((Get-Item $packedOutput).Length -ge (Get-Item $normalOutput).Length) {
+            throw "PE ARM64 packed $name image is not smaller than its normal image"
+        }
+
+        $packedLayout = & $readobj --file-headers --sections --coff-imports $packedOutput | Out-String
+        if ($packedLayout -notmatch "Name: \.boot" -or $packedLayout -notmatch "Name: \.load" -or
+            $packedLayout -notmatch "Symbol: ExitProcess" -or
+            $packedLayout -notmatch "Symbol: VirtualProtect" -or
+            $packedLayout -notmatch "Symbol: FlushInstructionCache" -or
+            $packedLayout -match "Symbol: Sleep") {
+            throw "PE ARM64 packed $name image has the wrong sections or bootstrap imports"
+        }
+        $entryMatch = [regex]::Match($packedLayout, "AddressOfEntryPoint: (0x[0-9A-Fa-f]+)")
+        $bootMatch = [regex]::Match($packedLayout, "(?s)Name: \.boot.*?VirtualSize: (0x[0-9A-Fa-f]+).*?VirtualAddress: (0x[0-9A-Fa-f]+)")
+        if (-not $entryMatch.Success -or -not $bootMatch.Success) {
+            throw "Could not read the PE ARM64 packed $name entry or .boot range"
+        }
+        $entryRva = [Convert]::ToUInt32($entryMatch.Groups[1].Value.Substring(2), 16)
+        $bootSize = [Convert]::ToUInt32($bootMatch.Groups[1].Value.Substring(2), 16)
+        $bootRva = [Convert]::ToUInt32($bootMatch.Groups[2].Value.Substring(2), 16)
+        if ($entryRva -lt $bootRva -or $entryRva -ge ($bootRva + $bootSize)) {
+            throw "PE ARM64 packed $name entry is outside .boot"
+        }
+    }
+    $tempStateAfter = @(Get-ChildItem -LiteralPath $env:TEMP -Filter "ex????????.exe" -File -ErrorAction SilentlyContinue |
+        Sort-Object FullName | ForEach-Object { "$($_.FullName)|$($_.Length)|$($_.LastWriteTimeUtc.Ticks)" }) -join "`n"
+    if ($tempStateAfter -ne $tempStateBefore) {
+        throw "PE ARM64 packed execution created or changed a legacy expack temporary executable"
+    }
+
     foreach ($name in @("true", "false")) {
         $minimalOutput = Join-Path $scratch "$name-own.exe"
         & $linker --target=pe-arm64 --gc-sections -o $minimalOutput `
@@ -218,7 +305,7 @@ associative_parent:
     if ($LASTEXITCODE -ne 0) { throw "LLD stack-probe executable returned $LASTEXITCODE" }
 
     $gcSize = (Get-Item (Join-Path $scratch "gc.exe")).Length
-    Write-Output "PASS: PE ARM64 compact layout, section GC, COMDAT, imports, stack probes, and writable data ($gcSize bytes)"
+    Write-Output "PASS: PE ARM64 compact/packed layouts, fallback, GC, COMDAT, imports, stack probes, and writable data ($gcSize bytes)"
 } finally {
     Pop-Location
 }

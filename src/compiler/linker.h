@@ -14,6 +14,7 @@ typedef enum {
 typedef struct {
 	CompilerLinkerTarget target;
 	int tiny;
+	int pack;
 	int gc_sections;
 	int stats;
 	int icf_safe;

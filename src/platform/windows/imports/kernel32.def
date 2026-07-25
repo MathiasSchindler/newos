@@ -10,6 +10,7 @@ EXPORTS
     FileTimeToLocalFileTime
     FileTimeToSystemTime
     FlushFileBuffers
+    FlushInstructionCache
     GetCommandLineA
     GetComputerNameA
     GetConsoleMode
@@ -39,4 +40,5 @@ EXPORTS
     Sleep
     VirtualAlloc
     VirtualFree
+    VirtualProtect
     WriteFile

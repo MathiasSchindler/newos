@@ -2,7 +2,7 @@
 
 ## NAME
 
-**linker** - link static ELF64 x86-64 and project Mach-O arm64 executables
+**linker** - link static ELF64 x86-64, Mach-O arm64, and PE32+ ARM64 executables
 
 ## SYNOPSIS
 
@@ -23,7 +23,8 @@ with no intended dylib imports.
 The implemented targets are intentionally narrow. Inputs must define `_start` or
 provide an archive member that defines it. Linux output is an `ET_EXEC` ELF64
 file for x86-64; macOS output is a loader-safe arm64 Mach-O executable for the
-project runtime and Darwin syscall layer.
+project runtime and Darwin syscall layer. The PE ARM64 target accepts raw COFF
+objects and project-owned `.def` import files and enters at `mainCRTStartup`.
 
 The command-line parser has an explicit linker target boundary. The supported
 ELF spellings select the existing ELF64 x86-64 backend. Mach-O arm64 spellings
@@ -37,6 +38,7 @@ aliases.
 - `-m elf_x86_64` - select the ELF x86-64 emulation
 - `--target=elf64-x86_64`, `--target=x86_64-linux`, `--target=linux-x86_64` - select the implemented ELF64 x86-64 target
 - `--target=mach-o-arm64`, `--target=macho64-aarch64`, `--target=macos-aarch64` - select the early Mach-O arm64 target
+- `--target=pe-arm64`, `--target=pe-aarch64`, `--target=windows-aarch64` - select the PE32+ ARM64 target
 - `-e SYMBOL`, `--entry=SYMBOL` - use SYMBOL as the entry symbol instead of `_start`
 - `-static`, `--static` - accepted for compatibility; static linking is always used
 - `@FILE` - read additional whitespace-separated arguments from FILE; single and double quotes are honored
@@ -76,6 +78,12 @@ aliases.
   and keep unused runtime wrappers in small tools.
 - `--no-gc-sections` - disable section-level garbage collection and keep the
   current object-level reachability behavior.
+- `--pack` - on PE ARM64, compress linked text and initialized data into a
+  self-decompressing `.boot` section. The bootstrap decodes directly into the
+  final virtual `.load` range, restores RX text protection, and enters the
+  original `mainCRTStartup` without a temporary file or child process. If the
+  packed file would not be smaller, ordinary output is emitted byte-for-byte.
+- `--no-pack` - disable PE packing after an earlier `--pack` option.
 - `--macho-compact` - for Mach-O arm64 outputs, preserve loader-safe 16 KiB
   page-aligned segment layout while omitting the optional `LC_BUILD_VERSION`
   tool record. This saves load-command payload bytes and can reduce file size
@@ -220,6 +228,7 @@ linker --separate-code --gc-sections --symbol-ordering-file hot.order -o app @ob
 linker --separate-code --gc-sections --call-graph-profile app.cgprofile --call-graph-order -o app @objects.rsp
 linker --tiny --gc-sections --icf=all --merge-constants --stats -o app @objects.rsp
 linker --target=mach-o-arm64 --macho-compact --gc-sections --lto-cc=clang -o app start.o app.o runtime.o
+linker --target=pe-arm64 --gc-sections --pack -o app.exe start.obj app.obj src/platform/windows/imports/kernel32.def
 ```
 
 ## TESTING

@@ -114,6 +114,19 @@ For example:
 build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections -o build\tool.exe tool.obj src\platform\windows\imports\kernel32.def
 ```
 
+Add `--pack` to ask the linker for a self-decompressing ARM64 image:
+
+```
+build\freestanding-windows-aarch64\linker.exe --target=pe-arm64 --gc-sections --pack -o build\tool-packed.exe tool.obj src\platform\windows\imports\kernel32.def
+```
+
+This mode compresses linked text and initialized data into an RX `.boot`
+section and decompresses them directly into a virtual RW `.load` section at
+startup. It uses `VirtualProtect` and `FlushInstructionCache` before entering
+the original program. It does not create a temporary file or process. When the
+complete packed PE is not smaller, the linker emits the ordinary output
+byte-for-byte instead.
+
 Run the native ARM64 regression with:
 
 ```
@@ -121,8 +134,11 @@ Run the native ARM64 regression with:
 ```
 
 The direct PE backend does not yet consume archives or LTO objects and does not
-emit base-relocation tables. Clang/lld remains the reference path for general
-Windows builds while those input and loader features are completed.
+emit base-relocation tables. Normal and packed images therefore require the
+preferred image base even though Windows ARM64 requires the dynamic-base header
+characteristics for these compact images to load. Clang/lld remains the
+reference path for general Windows builds while those input and loader features
+are completed.
 
 ## MACOS FREESTANDING BUILD
 

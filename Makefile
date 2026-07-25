@@ -469,7 +469,7 @@ MACOS_MAKE_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_MAKE_SOURCES) $(
 MACOS_SERVICE_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_SERVICE_SOURCES) $(MACOS_PLATFORM_SOURCES))
 MACOS_USB_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_USB_SOURCES) $(MACOS_PLATFORM_SOURCES))
 
-$(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+$(BUILD_DIR)/linker: src/tools/linker.c $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) src/compiler/linker.h src/compiler/compiler.h src/compiler/source.h src/compiler/pe_pack_stub_aarch64.c src/compiler/pe_pack_stub_aarch64.inc src/compiler/generate_pe_pack_stub_aarch64.ps1 $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_LINKER_CFLAGS) -DCOMPILER_LINKER_ENABLE_REPORTING=1 $< $(LINKER_TOOL_SOURCES) $(LINKER_SIGNING_SOURCE) $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(MACOS_BUILD_DIR)/.obj/newlinker_tiny_start.o: tests/fixtures/macho/newlinker_tiny_start.c | $(MACOS_BUILD_DIR)/.obj
