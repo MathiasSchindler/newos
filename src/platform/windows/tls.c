@@ -4,10 +4,6 @@
 #include "tls/tls12_client.h"
 #include "tls/tls13_client.h"
 
-#define WIN_BCRYPT_USE_SYSTEM_PREFERRED_RNG 0x00000002UL
-
-__declspec(dllimport) long __stdcall BCryptGenRandom(void *algorithm, unsigned char *buffer, unsigned long count, unsigned long flags);
-
 static const char *windows_tls_error = "none";
 static const char *windows_tls_peer_status = "not-verified-windows-freestanding";
 
@@ -33,16 +29,6 @@ static Tls12Client *windows_native_tls12_client(PlatformTlsClient *client) {
 
 static int windows_native_tls_version(PlatformTlsClient *client) {
     return client->opaque[1] == (void *)12 ? 12 : 13;
-}
-
-int platform_random_bytes(unsigned char *buffer, size_t count) {
-    while (count > 0U) {
-        unsigned long chunk = count > 0xffffffffUL ? 0xffffffffUL : (unsigned long)count;
-        if (BCryptGenRandom(0, buffer, chunk, WIN_BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return -1;
-        buffer += chunk;
-        count -= chunk;
-    }
-    return 0;
 }
 
 int platform_tls_connect_timeout(PlatformTlsClient *client, const char *host, unsigned int port, unsigned int timeout_milliseconds) {

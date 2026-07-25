@@ -78,6 +78,13 @@ runtime or the Microsoft C runtime.
 - selects native AArch64 or x86-64 from the host by default
 - writes binaries to `build/freestanding-windows-aarch64/` or
   `build/freestanding-windows-x86_64/`
+- compiles independent source/profile combinations in parallel, reuses cached
+  objects and dependency files across tools and later invocations, and skips
+  unchanged final links
+- defaults `-Jobs` to the logical processor count and `-LinkJobs` to at most
+  four concurrent memory-intensive LTO links; both limits can be overridden
+- removes the selected output tree and its `.objects` cache when passed
+  `-Clean`
 - uses the minimal `src/platform/windows/` startup and Kernel32 imports
 - generates architecture-specific import archives with llvm-dlltool, without a
   Windows SDK or MinGW runtime
@@ -88,7 +95,8 @@ runtime or the Microsoft C runtime.
 - gives argument-independent `true` and `false` a dedicated startup; their
   AArch64 and x86-64 outputs are 1024-byte, one-section PE files with an
   explicit `ExitProcess` import
-- currently builds the small text/core tools, comparison/checksum/image/path/filesystem tools, regex/archive/awk/XML groups, native Winsock/TLS-backed `wtf`, and larger bring-up targets including `editor`, `mail`, and `ncc`
+- builds every tool declared in `TOOLS` except `ncc` by default; pass
+  `-Tools ncc` to build that compiler bring-up target explicitly
 - is intentionally separate from the Linux `make freestanding` target while the Windows platform API surface is added incrementally
 
 The in-tree linker also has a direct `--target=pe-arm64` bring-up path. It
@@ -269,6 +277,12 @@ require `make`, a Windows SDK, or a POSIX-style shell. It defaults to
 x86-64 Windows. From PowerShell, use:
 
   .\tests\windows\build-windows-freestanding.ps1
+
+The script parallelizes object compilation across the logical processor count
+and limits concurrent LTO links to four by default. Override these independently
+with `-Jobs N` and `-LinkJobs N`. Objects, generated dependency files, import
+archives, and unchanged final links are reused from the selected build directory
+on later invocations. Pass `-Clean` to discard that build tree and its cache.
 
 The script uses `clang` from `PATH` by default, with common LLVM and MSYS2 Clang
 install locations as fallbacks.

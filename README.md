@@ -46,6 +46,13 @@ tools are LLVM/Clang, lld, and llvm-dlltool. The PowerShell builder selects
 .\tests\windows\build-windows-freestanding.ps1
 ```
 
+The builder compiles independent source/profile combinations in parallel and
+reuses objects, dependency files, import archives, and unchanged linked tools
+across runs. It defaults to one compile job per logical processor and caps the
+more memory-intensive LTO links at four concurrent jobs. Use `-Jobs N` and
+`-LinkJobs N` to tune those limits. `-Clean` removes the selected build tree,
+including its `.objects` cache, before rebuilding.
+
 That script prefers `clang` on `PATH`, then common LLVM/MSYS2 Clang install
 locations. It generates target-specific import archives from the definitions
 under `src/platform/windows/imports/` with llvm-dlltool. MSYS2 can still provide
@@ -133,10 +140,10 @@ tool link is driven through `ncc -flto -nostdlib -static`, using the compiler's
 in-tree native ELF linker path. This currently builds the full 197-tool Linux
 x86-64 freestanding set and is useful for measuring native `ncc` whole-program
 object LTO separately from GCC/Clang LTO.
-The native no-CRT Windows PE path is `tests/windows/build-windows-freestanding.ps1`. It now
-builds the small text/core tools, comparison/checksum/image/path/filesystem
-tools, regex/archive/awk/XML groups, `wtf`, and larger bring-up targets such as
-`editor`, `mail`, and the `ncc` compiler executable. `wtf` and `mail` use the
+The native no-CRT Windows PE path is `tests/windows/build-windows-freestanding.ps1`. Its
+default build covers every tool declared in `TOOLS` except `ncc`; pass
+`-Tools ncc` when that compiler bring-up target is wanted explicitly. `wtf`,
+`portscan`, `wget`, `mail`, Git, and the SSH tools use the
 native Winsock/TLS path; certificate validation is not wired to the Windows trust
 store yet, so treat network TLS on Windows as bring-up testing rather than a
 hardened HTTPS/IMAPS client. The Windows-built `ncc` can target the existing
