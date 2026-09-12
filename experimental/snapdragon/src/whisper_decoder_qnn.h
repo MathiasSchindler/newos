@@ -19,6 +19,11 @@ typedef struct WhisperDecoderQnnIds {
     u32 mlp_layer_count;
     u32 mlp_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
     u32 mlp_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 cross_layer_count;
+    u32 cross_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 cross_key_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 cross_value_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 cross_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
 } WhisperDecoderQnnIds;
 
 WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model);
@@ -45,6 +50,13 @@ int whisper_decoder_qnn_mlp_offload(
     void *context,
     u32 layer,
     const float *normalized,
+    float *projected,
+    u64 *execute_ticks
+);
+int whisper_decoder_qnn_cross_attention_offload(
+    void *context,
+    u32 layer,
+    const float *hidden,
     float *projected,
     u64 *execute_ticks
 );

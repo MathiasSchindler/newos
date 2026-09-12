@@ -98,6 +98,7 @@ struct WhisperDecoder {
     u16 *cross_value_cache_storage;
     const u16 *cross_key_cache;
     const u16 *cross_value_cache;
+    int cross_cache_head_major;
     float *hidden;
     float *normalized;
     float *query;
@@ -112,6 +113,8 @@ struct WhisperDecoder {
     WhisperDecoderProfile profile;
     WhisperDecoderMlpOffload mlp_offload;
     void *mlp_offload_context;
+    WhisperDecoderCrossAttentionOffload cross_attention_offload;
+    void *cross_attention_offload_context;
     RtTaskPool pool;
     int pool_ready;
     float logit_maxima[RT_TASK_POOL_MAX_WORKERS];
@@ -654,6 +657,7 @@ static void prepare_cross_attention_cache(WhisperDecoder *decoder) {
     );
     decoder->cross_key_cache = decoder->cross_key_cache_storage;
     decoder->cross_value_cache = decoder->cross_value_cache_storage;
+    decoder->cross_cache_head_major = 0;
 }
 
 static void import_cross_attention_cache(
@@ -663,6 +667,7 @@ static void import_cross_attention_cache(
 ) {
     decoder->cross_key_cache = keys;
     decoder->cross_value_cache = values;
+    decoder->cross_cache_head_major = 1;
 }
 
 static void self_attention(
@@ -761,19 +766,33 @@ static int cross_attention_head_range(
         float *head_scores = decoder->attention_scores +
             (u64)head * model->encoder_frames;
         for (frame = 0U; frame < model->encoder_frames; ++frame) {
-            head_scores[frame] = dot_product_fp16(
-                layer_keys + (u64)frame * model->width + head * head_width,
-                decoder->query + head * head_width,
-                head_width
-            ) * 0.125f;
+            if (decoder->cross_cache_head_major) {
+                double sum = 0.0;
+                for (lane = 0U; lane < head_width; ++lane) {
+                    sum += (double)whisper_frontend_half_to_float(
+                        layer_keys[
+                            ((u64)head * head_width + lane) *
+                            model->encoder_frames + frame
+                        ]
+                    ) * decoder->query[head * head_width + lane];
+                }
+                head_scores[frame] = (float)sum * 0.125f;
+            } else {
+                head_scores[frame] = dot_product_fp16(
+                    layer_keys + (u64)frame * model->width + head * head_width,
+                    decoder->query + head * head_width,
+                    head_width
+                ) * 0.125f;
+            }
         }
         softmax(head_scores, model->encoder_frames);
         for (lane = 0U; lane < head_width; ++lane) {
             decoder->attended[head * head_width + lane] = 0.0f;
         }
         for (frame = 0U; frame < model->encoder_frames; ++frame) {
-            const u16 *frame_value =
-                layer_values + (u64)frame * model->width + head * head_width;
+            const u16 *frame_value = decoder->cross_cache_head_major
+                ? layer_values + ((u64)head * model->encoder_frames + frame) * head_width
+                : layer_values + (u64)frame * model->width + head * head_width;
             f32x4 factor = {
                 head_scores[frame], head_scores[frame],
                 head_scores[frame], head_scores[frame]
@@ -790,14 +809,26 @@ static int cross_attention_head_range(
     return 0;
 }
 
-static void cross_attention(
+static int cross_attention(
     WhisperDecoder *decoder,
     u32 layer,
-    const DecoderLayerWeights *item
+    const DecoderLayerWeights *item,
+    u64 *npu_execute_ticks
 ) {
     const WhisperModelConfig *model = &decoder->model;
     CrossAttentionContext context;
     u32 index;
+    *npu_execute_ticks = 0U;
+    if (decoder->cross_attention_offload != 0 &&
+        decoder->cross_attention_offload(
+            decoder->cross_attention_offload_context, layer,
+            decoder->hidden, decoder->projected, npu_execute_ticks
+        )) {
+        for (index = 0U; index < model->width; ++index) {
+            decoder->hidden[index] += decoder->projected[index];
+        }
+        return 1;
+    }
     layer_norm(
         decoder->hidden, item->cross_norm_weight, item->cross_norm_bias,
         decoder->normalized, model->width
@@ -819,6 +850,7 @@ static void cross_attention(
     for (index = 0U; index < model->width; ++index) {
         decoder->hidden[index] += decoder->projected[index];
     }
+    return 0;
 }
 
 static int feed_forward(
@@ -911,18 +943,22 @@ static float sample_gumbel(const LogitContext *context, u32 token) {
 
 static void collect_no_repeat_tokens(u32 position, LogitContext *context) {
     const u16 *generated_tokens = context->decoder->generated_tokens;
+    u32 prefix_size = context->temperature > 0.0f ? 2U : 3U;
     u32 start;
     context->forbidden_count = 0U;
-    if (position < 6U) return;
-    for (start = 4U; start + 3U <= position; ++start) {
+    if (position < 4U + prefix_size - 1U) return;
+    for (start = 4U; start + prefix_size <= position; ++start) {
         u32 index;
         u16 candidate;
-        if (generated_tokens[start] != generated_tokens[position - 2U] ||
-            generated_tokens[start + 1U] != generated_tokens[position - 1U] ||
-            generated_tokens[start + 2U] != generated_tokens[position]) {
-            continue;
+        u32 prefix_index;
+        for (prefix_index = 0U; prefix_index < prefix_size; ++prefix_index) {
+            if (generated_tokens[start + prefix_index] !=
+                generated_tokens[position + 1U - prefix_size + prefix_index]) {
+                break;
+            }
         }
-        candidate = generated_tokens[start + 3U];
+        if (prefix_index != prefix_size) continue;
+        candidate = generated_tokens[start + prefix_size];
         for (index = 0U; index < context->forbidden_count; ++index) {
             if (context->forbidden_tokens[index] == candidate) break;
         }
@@ -1009,9 +1045,16 @@ static u32 decoder_step(
         QueryPerformanceCounter(&end);
         decoder->profile.self_attention_ticks += (u64)(end - start);
         QueryPerformanceCounter(&start);
-        cross_attention(decoder, layer, &decoder->weights.layers[layer]);
+        index = (u32)cross_attention(
+            decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
+        );
         QueryPerformanceCounter(&end);
-        decoder->profile.cross_attention_ticks += (u64)(end - start);
+        decoder->profile.npu_cross_attention_execute_ticks += npu_execute_ticks;
+        if (index != 0U) {
+            decoder->profile.npu_cross_attention_ticks += (u64)(end - start);
+        } else {
+            decoder->profile.cross_attention_ticks += (u64)(end - start);
+        }
         QueryPerformanceCounter(&start);
         index = (u32)feed_forward(
             decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
@@ -1072,17 +1115,19 @@ static void write_token(
     }
 }
 
-static u32 repetition_penalty(const u16 *tokens, u32 count) {
+static u32 repetition_penalty(const u16 *tokens, u32 count, int penalize_bigrams) {
     u32 duplicate_bigrams = 0U;
     u32 duplicate_trigrams = 0U;
     u32 index;
-    for (index = 1U; index < count; ++index) {
-        u32 previous;
-        for (previous = 1U; previous < index; ++previous) {
-            if (tokens[previous - 1U] == tokens[index - 1U] &&
-                tokens[previous] == tokens[index]) {
-                ++duplicate_bigrams;
-                break;
+    if (penalize_bigrams) {
+        for (index = 1U; index < count; ++index) {
+            u32 previous;
+            for (previous = 1U; previous < index; ++previous) {
+                if (tokens[previous - 1U] == tokens[index - 1U] &&
+                    tokens[previous] == tokens[index]) {
+                    ++duplicate_bigrams;
+                    break;
+                }
             }
         }
     }
@@ -1162,6 +1207,8 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.cross_cache_ticks = 0U;
     decoder->profile.self_attention_ticks = 0U;
     decoder->profile.cross_attention_ticks = 0U;
+    decoder->profile.npu_cross_attention_ticks = 0U;
+    decoder->profile.npu_cross_attention_execute_ticks = 0U;
     decoder->profile.feed_forward_ticks = 0U;
     decoder->profile.npu_feed_forward_ticks = 0U;
     decoder->profile.npu_mlp_execute_ticks = 0U;
@@ -1189,7 +1236,8 @@ static int whisper_decoder_transcribe_impl(
         );
         u32 count = decoded < 0 ? 0U : (u32)decoded;
         u32 penalty = repetition_penalty(
-            decoder->generated_tokens + PROMPT_TOKENS, count
+            decoder->generated_tokens + PROMPT_TOKENS, count,
+            decoder->model.model_id != WHISPER_MODEL_ID_SMALL
         );
         if (penalty < selected_penalty) {
             selected_count = count;
@@ -1244,6 +1292,16 @@ void whisper_decoder_set_mlp_offload(
     if (decoder == 0) return;
     decoder->mlp_offload = offload;
     decoder->mlp_offload_context = context;
+}
+
+void whisper_decoder_set_cross_attention_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderCrossAttentionOffload offload,
+    void *context
+) {
+    if (decoder == 0) return;
+    decoder->cross_attention_offload = offload;
+    decoder->cross_attention_offload_context = context;
 }
 
 void whisper_decoder_shutdown(WhisperDecoder *decoder) {

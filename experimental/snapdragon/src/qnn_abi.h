@@ -33,6 +33,7 @@ typedef QnnHandle QnnDeviceHandle;
 typedef QnnHandle QnnProfileHandle;
 typedef QnnHandle QnnContextHandle;
 typedef QnnHandle QnnGraphHandle;
+typedef QnnHandle QnnMemHandle;
 
 typedef struct QnnBackendConfig QnnBackendConfig;
 typedef struct QnnDeviceConfig QnnDeviceConfig;
@@ -61,9 +62,45 @@ enum {
     QNN_DATATYPE_UFIXED_POINT_8 = 0x0408,
     QNN_DATATYPE_UFIXED_POINT_16 = 0x0416,
     QNN_TENSORMEMTYPE_RAW = 0,
+    QNN_TENSORMEMTYPE_MEMHANDLE = 1,
+    QNN_MEM_TYPE_CUSTOM = 2,
+    QNN_HTP_MEM_SHARED_BUFFER = 1,
     QNN_TENSOR_VERSION_1 = 1,
     QNN_OPCONFIG_VERSION_1 = 1
 };
+
+typedef struct QnnMemShape {
+    u32 rank;
+    u32 *dimensions;
+    void *shape_config;
+} QnnMemShape;
+
+typedef struct QnnMemDescriptor {
+    QnnMemShape shape;
+    u32 data_type;
+    u32 memory_type;
+    union {
+        struct {
+            i32 fd;
+        } ion;
+        void *custom_info;
+        u64 reserved[2];
+    } memory;
+} QnnMemDescriptor;
+
+typedef struct QnnHtpSharedBufferConfig {
+    i32 fd;
+    u64 offset;
+} QnnHtpSharedBufferConfig;
+
+typedef struct QnnHtpMemDescriptor {
+    u32 type;
+    u64 size;
+    union {
+        QnnHtpSharedBufferConfig shared_buffer;
+        u64 reserved[2];
+    } config;
+} QnnHtpMemDescriptor;
 
 typedef struct QnnScaleOffset {
     float scale;
@@ -188,6 +225,8 @@ typedef u64 (*QnnGraphFinalize)(QnnGraphHandle, QnnProfileHandle, QnnHandle);
 typedef u64 (*QnnGraphRetrieve)(QnnContextHandle, const char *, QnnGraphHandle *);
 typedef u64 (*QnnGraphExecute)(QnnGraphHandle, const QnnTensor *, u32, QnnTensor *, u32, QnnProfileHandle, QnnHandle);
 typedef u64 (*QnnTensorCreateGraphTensor)(QnnGraphHandle, QnnTensor *);
+typedef u64 (*QnnMemRegister)(QnnContextHandle, const QnnMemDescriptor *, u32, QnnMemHandle *);
+typedef u64 (*QnnMemDeregister)(QnnMemHandle *, u32);
 
 typedef struct QnnInterfaceV2 {
     QnnUnusedFunction property_has_capability;
@@ -225,8 +264,8 @@ typedef struct QnnInterfaceV2 {
     QnnUnusedFunction profile_get_event_data;
     QnnUnusedFunction profile_get_extended_event_data;
     QnnProfileFree profile_free;
-    QnnUnusedFunction mem_register;
-    QnnUnusedFunction mem_deregister;
+    QnnMemRegister mem_register;
+    QnnMemDeregister mem_deregister;
     QnnUnusedFunction device_get_platform_info;
     QnnUnusedFunction device_free_platform_info;
     QnnUnusedFunction device_get_infrastructure;
@@ -254,6 +293,10 @@ _Static_assert(__builtin_offsetof(QnnTensorV1, quantize_params) == 32, "QNN 2.32
 _Static_assert(__builtin_offsetof(QnnTensorV1, memory) == 96, "QNN 2.32 tensor memory mismatch");
 _Static_assert(sizeof(QnnOpConfigV1) == 72, "QNN 2.32 op config V1 ABI mismatch");
 _Static_assert(sizeof(QnnOpConfig) == 80, "QNN 2.32 op config ABI mismatch");
+_Static_assert(sizeof(QnnMemShape) == 24, "QNN 2.32 memory shape ABI mismatch");
+_Static_assert(sizeof(QnnMemDescriptor) == 48, "QNN 2.32 memory descriptor ABI mismatch");
+_Static_assert(sizeof(QnnHtpSharedBufferConfig) == 16, "QNN 2.32 HTP shared buffer ABI mismatch");
+_Static_assert(sizeof(QnnHtpMemDescriptor) == 32, "QNN 2.32 HTP memory descriptor ABI mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_create) == 120, "QNN graphCreate slot mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_add_node) == 144, "QNN graphAddNode slot mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_execute) == 168, "QNN graphExecute slot mismatch");

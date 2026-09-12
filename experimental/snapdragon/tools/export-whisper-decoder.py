@@ -249,10 +249,23 @@ def export_cross_kv(model, spec, output):
             (f"{prefix}.v_proj.weight", (width, width)),
             (f"{prefix}.v_proj.bias", (width,)),
         ])
+    for layer in range(spec["decoder_layers"]):
+        prefix = f"model.decoder.layers.{layer}"
+        tensors.extend([
+            (f"{prefix}.encoder_attn_layer_norm.weight", (width,)),
+            (f"{prefix}.encoder_attn_layer_norm.bias", (width,)),
+            (f"{prefix}.encoder_attn.q_proj.weight", (width, width)),
+            (f"{prefix}.encoder_attn.q_proj.bias", (width,)),
+            (f"{prefix}.encoder_attn.out_proj.weight", (width, width)),
+            (f"{prefix}.encoder_attn.out_proj.bias", (width,)),
+        ])
     value_count = sum(int(np.prod(shape)) for _, shape in tensors)
     with ArtifactWriter(output, spec, PAYLOAD_CROSS_KV_WEIGHTS, ELEMENT_F16, value_count) as artifact:
         for name, shape in tensors:
-            artifact.write(np.asarray(model.f32(name, shape), dtype="<f2"))
+            values = model.f32(name, shape)
+            if ".encoder_attn.q_proj." in name:
+                values = values * np.float32(0.125)
+            artifact.write(np.asarray(values, dtype="<f2"))
     return tensors, value_count
 
 

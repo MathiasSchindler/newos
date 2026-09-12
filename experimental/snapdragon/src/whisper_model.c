@@ -154,8 +154,8 @@ unsigned long long whisper_model_cross_kv_weight_count(const WhisperModelConfig 
     if (!whisper_model_config_valid(config)) return 0U;
     width = config->width;
     if (!whisper_model_size_multiply(width, width, &width_squared) ||
-        !whisper_model_size_multiply(2U, width_squared, &projected_values) ||
-        !whisper_model_size_add(projected_values, width, &layer_values) ||
+        !whisper_model_size_multiply(4U, width_squared, &projected_values) ||
+        !whisper_model_size_add(projected_values, 5U * width, &layer_values) ||
         !whisper_model_size_multiply(
             config->decoder_layers, layer_values, &all_layer_values
         ) || !whisper_model_size_multiply(2U, width, &norm_values) ||
