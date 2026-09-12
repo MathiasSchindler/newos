@@ -1,0 +1,3 @@
+LIBRARY DXCORE.dll
+EXPORTS
+    DXCoreCreateAdapterFactory

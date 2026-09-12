@@ -1,0 +1,25 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+    CloseHandle
+    CreateThread
+    CreateFileA
+    ExitProcess
+    FreeLibrary
+    GetCommandLineA
+    GetActiveProcessorCount
+    GetConsoleMode
+    GetConsoleOutputCP
+    GetLastError
+    GetProcAddress
+    GetStdHandle
+    QueryPerformanceCounter
+    QueryPerformanceFrequency
+    ReadFile
+    SetFilePointerEx
+    SetConsoleOutputCP
+    SetStdHandle
+    IsProcessorFeaturePresent
+    LoadLibraryA
+    VirtualAlloc
+    VirtualFree
+    WriteFile

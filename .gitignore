@@ -37,6 +37,10 @@ experimental/eurlex/data/
 experimental/threading/build/
 !experimental/latency/
 experimental/latency/build/
+!experimental/snapdragon/
+experimental/snapdragon/build/
+experimental/snapdragon/models/
+experimental/snapdragon/data/
 services/httpd/log/
 sequel/
 gui/

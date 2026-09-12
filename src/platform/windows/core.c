@@ -28,7 +28,6 @@
 #define WIN_MOVEFILE_REPLACE_EXISTING 0x00000001UL
 #define WIN_FILE_TYPE_CHAR 0x0002UL
 #define WIN_ERROR_BROKEN_PIPE 109UL
-#define WIN_MEM_RELEASE 0x8000UL
 #define WIN_ENABLE_ECHO_INPUT 0x0004UL
 #define WIN_ENABLE_LINE_INPUT 0x0002UL
 #define WIN_ENABLE_PROCESSED_INPUT 0x0001UL
@@ -169,8 +168,6 @@ __declspec(dllimport) unsigned int __stdcall GetTempFileNameA(const char *path_n
 __declspec(dllimport) int __stdcall FlushFileBuffers(void *handle);
 __declspec(dllimport) int __stdcall RemoveDirectoryA(const char *path_name);
 __declspec(dllimport) int __stdcall CreatePipe(void **read_pipe, void **write_pipe, void *pipe_attributes, unsigned long size);
-__declspec(dllimport) void *__stdcall VirtualAlloc(void *address, size_t size, unsigned long allocation_type, unsigned long protect);
-__declspec(dllimport) int __stdcall VirtualFree(void *address, size_t size, unsigned long free_type);
 __declspec(dllimport) int __stdcall CloseHandle(void *handle);
 __declspec(dllimport) int __stdcall ReadFile(void *handle, void *buffer, unsigned long count, unsigned long *read_out, void *overlapped);
 __declspec(dllimport) int __stdcall WriteFile(void *handle, const void *buffer, unsigned long count, unsigned long *written_out, void *overlapped);
@@ -332,81 +329,6 @@ static int windows_winsock_start(void) {
     if (WSAStartup(0x0202U, wsa_data) != 0) return -1;
     windows_winsock_started = 1;
     return 0;
-}
-
-void *platform_allocate_pages(size_t size) {
-    return VirtualAlloc(0, size, 0x3000UL, 0x04UL);
-}
-
-size_t platform_page_size(void) {
-    return 4096U;
-}
-
-int platform_free_pages(void *ptr, size_t size) {
-    (void)size;
-    if (ptr == 0) return 0;
-    return VirtualFree(ptr, 0, WIN_MEM_RELEASE) ? 0 : -1;
-}
-
-int platform_worker_threads_supported(void) {
-    return 0;
-}
-
-unsigned int platform_worker_thread_count(void) {
-    return 1U;
-}
-
-int platform_worker_thread_start(PlatformWorkerThread *thread, PlatformWorkerMain entry, void *arg, size_t stack_size) {
-    (void)thread;
-    (void)entry;
-    (void)arg;
-    (void)stack_size;
-    return -1;
-}
-
-int platform_worker_thread_join(PlatformWorkerThread *thread, int *result_out) {
-    (void)thread;
-    (void)result_out;
-    return -1;
-}
-
-void platform_wait_word(volatile unsigned int *word, unsigned int expected) {
-    while (__atomic_load_n(word, __ATOMIC_ACQUIRE) == expected) {
-        break;
-    }
-}
-
-void platform_wake_word_one(volatile unsigned int *word) {
-    (void)word;
-}
-
-void platform_wake_word_count(volatile unsigned int *word, unsigned int count) {
-    (void)word;
-    (void)count;
-}
-
-void platform_wake_word_all(volatile unsigned int *word) {
-    (void)word;
-}
-
-void platform_wait_wake_stats_reset(void) {
-}
-
-void platform_wait_wake_stats_get(PlatformWaitWakeStats *stats_out) {
-    if (stats_out != 0) {
-        stats_out->wait_calls = 0ULL;
-        stats_out->wake_calls = 0ULL;
-        stats_out->wait_eagain = 0ULL;
-        stats_out->wait_eintr = 0ULL;
-    }
-}
-
-int platform_thread_start(PlatformThread *thread, PlatformThreadMain entry, void *arg, size_t stack_size) {
-    return platform_worker_thread_start((PlatformWorkerThread *)thread, (PlatformWorkerMain)entry, arg, stack_size);
-}
-
-int platform_thread_join(PlatformThread *thread, int *result_out) {
-    return platform_worker_thread_join((PlatformWorkerThread *)thread, result_out);
 }
 
 void platform_mutex_init(PlatformMutex *mutex) {

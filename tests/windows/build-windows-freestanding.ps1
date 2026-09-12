@@ -320,6 +320,7 @@ $variables["SSHD_TOOL_SOURCES"] = $sshdToolSources
 
 $runtimeSources = Add-Unique (Read-MakeVariable $makefileText "WINDOWS_FREESTANDING_RUNTIME_SOURCES")
 $stackProbeSource = "src/arch/$targetArchitecture/windows/chkstk.S"
+$windowsCoreSources = @("src/platform/windows/core.c", "src/platform/windows/thread.c")
 $windowsRandomSource = "src/platform/windows/random.c"
 $windowsTlsSources = @("src/platform/windows/tls.c", $windowsRandomSource)
 $imageSources = Add-Unique (@($imageManifestSources) + @("src/shared/compression/crc32.c", "src/shared/compression/zlib.c"))
@@ -489,14 +490,14 @@ foreach ($tool in $selectedTools) {
         "mail" { $sources += $mailSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "wget" { $sources += $runtimeSources + $tlsSources + $cryptoSources + @($windowsTlsSources); $linkFlags = $windowsTlsLdFlags }
         "minimal" { $sources += "src/platform/windows/minimal_start.c" }
-        "ncc" { $extraCFlags += "-Isrc/compiler"; $sources += $nccSources + @("src/platform/windows/core.c") }
+        "ncc" { $extraCFlags += "-Isrc/compiler"; $sources += $nccSources + $windowsCoreSources }
         "linker" { $extraCFlags += "-Isrc/compiler"; $sources += $linkerSources + $runtimeSources }
-        "shell" { $sources += $shellToolSources + @("src/platform/windows/core.c") }
-        "make" { $sources += $makeToolSources + @("src/platform/windows/core.c") }
-        "httpd" { $sources += $httpdSources + @("src/platform/windows/core.c") }
-        "service" { $sources += $serviceSources + @("src/platform/windows/core.c") }
-        "ssh" { $sources += $sshSources + @("src/platform/windows/core.c"); $linkFlags = $windowsTlsLdFlags }
-        "sshd" { $sources += $sshdSources + @("src/platform/windows/core.c"); $linkFlags = $windowsTlsLdFlags }
+        "shell" { $sources += $shellToolSources + $windowsCoreSources }
+        "make" { $sources += $makeToolSources + $windowsCoreSources }
+        "httpd" { $sources += $httpdSources + $windowsCoreSources }
+        "service" { $sources += $serviceSources + $windowsCoreSources }
+        "ssh" { $sources += $sshSources + $windowsCoreSources; $linkFlags = $windowsTlsLdFlags }
+        "sshd" { $sources += $sshdSources + $windowsCoreSources; $linkFlags = $windowsTlsLdFlags }
         "git" { $sources += $gitSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "usb" { $sources += $windowsUsbSources + $runtimeSources }
         default { throw "Unhandled build kind '$kind' for $tool" }

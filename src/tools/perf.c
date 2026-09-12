@@ -120,6 +120,11 @@ static long perf_linux_syscall6(long number, long arg0, long arg1, long arg2, lo
 }
 #endif
 
+static void print_usage(void) {
+    tool_write_usage("perf", "[-m MAP] [-F HZ] [-n COUNT] [--csv] [--kernel] -- COMMAND [ARG ...]");
+}
+
+#if defined(__linux__)
 typedef struct {
     unsigned long long address;
     unsigned long long samples;
@@ -145,10 +150,6 @@ static size_t perf_row_count;
 static size_t perf_symbol_count;
 static unsigned long long perf_total_samples;
 static unsigned long long perf_lost_samples;
-
-static void print_usage(void) {
-    tool_write_usage("perf", "[-m MAP] [-F HZ] [-n COUNT] [--csv] [--kernel] -- COMMAND [ARG ...]");
-}
 
 static void print_open_failure(long err) {
     char value[64];
@@ -413,7 +414,6 @@ static void print_results(unsigned int count, int csv, unsigned long long elapse
     }
 }
 
-#if defined(__linux__)
 typedef struct {
     unsigned int type;
     unsigned int size;

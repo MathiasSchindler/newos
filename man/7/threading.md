@@ -14,7 +14,7 @@ The central decision of this design is that tools do not program against raw thr
 - nothing here introduces an external dependency, a standard C library call, or `libSystem`/dylib imports on macOS
 - the same tool source runs correctly on every platform, including platforms whose native thread backend does not exist yet, because serial execution is a real backend rather than an error path
 
-This page describes that two-layer model, the public APIs tools actually call, the private substrate beneath them, and the current platform status for Linux, project-linked macOS, and hosted verification builds. It is also a migration guide: a developer or LLM implementing a threaded tool should be able to choose the right model, keep the serial path correct, preserve deterministic output, and know what to measure before calling the work complete.
+This page describes that two-layer model, the public APIs tools actually call, the private substrate beneath them, and the current platform status for Linux, project-linked macOS, native Windows, and hosted verification builds. It is also a migration guide: a developer or LLM implementing a threaded tool should be able to choose the right model, keep the serial path correct, preserve deterministic output, and know what to measure before calling the work complete.
 
 ## THE TWO AXES OF CONCURRENCY
 
@@ -231,6 +231,14 @@ Join waits on the worker's `clear_tid` word with `__ulock_wait` and releases the
 
 The I/O loop on macOS currently uses the portable poll backend. A `kqueue` backend still makes sense as a later targeted replacement, and it can land independently of worker thread creation.
 
+## WINDOWS BACKEND
+
+Native no-CRT Windows builds use the worker substrate in `src/platform/windows/thread.c`. Worker creation uses `CreateThread` behind the private `platform_worker_thread_start` contract; tool code still sees only `RtTaskPool`. The worker start record is page-backed, the kernel-owned thread handle is closed immediately, and structured join waits on the worker's explicit `clear_tid` word before releasing that record.
+
+Wait/wake uses `WaitOnAddress` and `WakeByAddressSingle`/`WakeByAddressAll`. These entry points are resolved from `KernelBase.dll` at runtime through Kernel32 loader APIs because they are not direct Kernel32 exports on Windows ARM64. If resolution fails, `platform_worker_threads_supported` reports false and the shared pool selects its normal width-1 serial backend. Default width comes from `GetActiveProcessorCount`; worker functions remain allocation-free unless they explicitly use their indexed arena.
+
+This backend adds no CRT, C11 thread library, pthread layer, or third-party dependency. Freestanding PE files retain only their existing Windows system-library imports.
+
 ## HOSTED BACKENDS
 
 Hosted POSIX currently reports no native worker support and therefore exercises
@@ -410,9 +418,9 @@ The intended result is a concurrency layer where:
   macOS allocator-object granularity still has to reach this target
 - tools express CPU parallelism through a reusable task pool and I/O concurrency through an I/O loop, never through hand-rolled threads
 - the hot parallel path is lock-free by construction via per-worker arenas, with no thread-local storage
-- one wait/wake substrate (`platform_wait_word` over Linux `futex` or Darwin `__ulock`) and compiler atomics carry all synchronization, with no libc and no `libSystem`
+- one wait/wake substrate (`platform_wait_word` over Linux `futex`, Darwin `__ulock`, or Windows `WaitOnAddress`) and compiler atomics carry all synchronization, with no libc and no `libSystem`
 - the serial backend makes every threaded tool correct on every platform immediately, so native backends are pure performance upgrades
-- macOS and hosted backends implement the same two models without any change to tool code
+- Linux, macOS, Windows, and hosted backends implement the same two models without any change to tool code
 
 ## SEE ALSO
 

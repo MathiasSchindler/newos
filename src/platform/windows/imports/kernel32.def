@@ -1,6 +1,7 @@
 LIBRARY KERNEL32.dll
 EXPORTS
     CloseHandle
+    CreateThread
     CreateDirectoryA
     CreateFileA
     CreateHardLinkA
@@ -12,6 +13,7 @@ EXPORTS
     FlushFileBuffers
     FlushInstructionCache
     GetCommandLineA
+    GetActiveProcessorCount
     GetComputerNameA
     GetConsoleMode
     GetConsoleScreenBufferInfo
@@ -23,12 +25,14 @@ EXPORTS
     GetFileSizeEx
     GetFileType
     GetLastError
+    GetProcAddress
     GetStdHandle
     GetSystemTimeAsFileTime
     GetTempFileNameA
     GetTempPathA
     GetTickCount64
     GlobalMemoryStatusEx
+    LoadLibraryA
     MoveFileExA
     ReadFile
     RemoveDirectoryA

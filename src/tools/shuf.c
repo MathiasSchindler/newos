@@ -19,7 +19,7 @@ static void seed_rng(void) {
     }
 
     unsigned long long seed = (unsigned long long)platform_get_epoch_time();
-    unsigned long long addr = (unsigned long long)(unsigned long)(&seed);
+    unsigned long long addr = (unsigned long long)(size_t)&seed;
 
     shuf_rng_state = seed ^ (addr << 1U) ^ 0x9e3779b97f4a7c15ULL;
     if (shuf_rng_state == 0ULL) {

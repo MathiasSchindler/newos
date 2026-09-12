@@ -284,22 +284,6 @@ static void solve_emit_kv(const char *key, const char *value) {
     rt_write_line(1, value);
 }
 
-static void solve_emit_pair(const char *key, const char *value) {
-    if (tool_json_is_enabled()) {
-        if (tool_json_begin_event(1, "solve", "stdout", "solve_value") != 0) return;
-        rt_write_cstr(1, ",\"data\":{\"key\":");
-        tool_json_write_string(1, key);
-        rt_write_cstr(1, ",\"value\":");
-        tool_json_write_string(1, value != 0 ? value : "");
-        rt_write_char(1, '}');
-        tool_json_end_event(1);
-        return;
-    }
-    rt_write_cstr(1, key);
-    rt_write_cstr(1, ": ");
-    rt_write_line(1, value);
-}
-
 static char g_solve_line[8192];
 static size_t g_solve_line_len = 0U;
 

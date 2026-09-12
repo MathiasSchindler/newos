@@ -1,0 +1,140 @@
+# Snapdragon NPU plan
+
+## Constraints
+
+- Application code is C11, freestanding, no CRT, and statically linked except for Windows APIs and Qualcomm's required QNN runtime.
+- The production path uses QNN directly. ONNX Runtime and `whisper.cpp` are reference implementations for correctness and performance only.
+- Proprietary QNN binaries stay outside Git. Runtime versions and licenses are recorded with benchmark results.
+- Every accelerator result is checked against a small CPU reference before performance is reported.
+- Report cold setup time, warm latency, throughput, memory, and power where reliable counters are available.
+
+## Milestones
+
+1. **Runtime discovery (complete)**: load `QnnHtp.dll`, resolve `QnnInterface_getProviders`, and report provider identity and API versions. This is implemented by `../src/npu_probe.c`.
+2. **NPU session lifecycle (complete)**: create logging, backend, device, profile, and context handles through the QNN 2.x provider table, then free them in reverse order. The live `deviceCreate` and `contextCreate` calls both succeed on the target machine.
+3. **First static graph (complete)**: construct a one-dimensional UINT8 `qti.aisw/ElementWiseAdd` graph, finalize it on HTP, execute it, and compare every output byte with a scalar CPU reference. Exact QNN core 2.32 layouts are represented by the narrow `../src/qnn_abi.h` interoperability subset.
+4. **Measurement harness (in progress)**: high-resolution Windows counter timing, fixed warm-up control, min/median/p95/max/mean latency, separate graph creation/finalization timing, and context-binary cache timing are implemented. Batched throughput and memory/power measurements remain.
+5. **Matrix benchmark (Tiny shape sweep complete)**: `[1,384] x [384,384]`, `[1500,384] x [384,384]`, `[1500,384] x [384,1536]`, and `[1500,1536] x [1536,384]` execute on HTP with full scalar-reference checks. Additional batch-size sweeps remain optional measurement work rather than a blocker for transformer composition.
+6. **Transformer primitives (complete)**: model-derived LayerNorm, Q/K/V projections, reshape/transpose, rank-3 attention MatMuls, Softmax, output projection, residual addition, GELU, and the two-layer MLP execute on HTP with independent regression probes.
+7. **Static encoder (monolithic FP16 complete and cached)**: four 22-node blocks execute independently, as a chained encoder, and as one 88-node graph on HTP. The monolithic context is serialized and restored without rebuilding the graph. Its result has about 1.31% relative L2 error against the float encoder, resolving the UINT8 quality blocker.
+8. **Audio frontend (fixed-shape path complete)**: freestanding C parses the pinned 16 kHz float WAV, computes and normalizes the `[80,3000]` log-mel input, packs both convolution windows, and drives cached FP16 QNN convolution/GELU/position graphs. General input conversion and resampling remain future work.
+9. **Whisper-like encoder (four-block integration complete)**: the WAV-derived frontend output feeds the cached 88-node FP16 encoder directly and passes the layer-3 fixture gate.
+10. **Autoregressive decoder (hybrid path complete)**: plain freestanding C performs greedy token generation with four incremental self-attention KV caches, precomputed cross-attention K/V tensors, Whisper suppression rules, and byte-level detokenization. The project task pool parallelizes profitable CPU regions, and one cached FP16 HTP graph computes encoder normalization plus all eight cross-attention K/V projections.
+11. **End-to-end transcription (long-form complete)**: a fixed German/no-timestamps prompt transcribes 30-second windows. A resumable development-time driver converts compressed input, processes overlapping windows, repairs capped or sustained-repeat segments, preserves timestamped raw output, and stitches boundary text. Language selection, accuracy corpora, first-token reporting, memory, and energy comparisons remain.
+
+## Immediate next step
+
+Continue from the validated single-window transcription path:
+
+1. **Reduce decoder weight traffic:** evaluate an FP16 decoder-weight bundle, beginning with token embeddings and the MLP matrices, while retaining FP32 accumulation and transcription-level accuracy checks.
+2. **Add stable benchmark controls:** record CPU power state or frequency alongside repeated interleaved samples; absolute decoder times vary materially with scheduling and power state even when NPU stages remain stable.
+3. **Retain UINT8 with advanced calibration:** investigate per-channel activation scaling, SmoothQuant, or substantially more aggressive clipping. This may preserve higher peak throughput and smaller weights, but adds conversion complexity and requires transcription-level accuracy measurements to tune clipping safely.
+4. **Accept the current UINT8 cascade:** proceed to a monolithic graph despite 0.796 relative L2 error against the float encoder. This is not recommended because graph correctness and speed would mask an already unacceptable model-quality loss.
+
+Quantized 16-bit activation experiments are closed for this QAIRT/HTP version. UINT16 ElementWiseAdd is exact, but UINT16 activation with INT8 weights reduces small FullyConnected results to zero and rounds a 3,000-code result to 2,816. QNN's supported UINT16-weight `Convert` to symmetric INT16 followed by W16A16 FullyConnected still reduces a 30-code result to zero. The complete FP16 encoder is accurate enough to proceed, though its 18.235 ms median is 2.34 times the UINT8 chain's 7.792 ms median.
+
+## Milestone 2 record
+
+- ABI source: Qualcomm's public QAIRT generated C API listings for `QnnInterface.h`, `QnnLog.h`, `QnnBackend.h`, `QnnDevice.h`, `QnnProfile.h`, and `QnnContext.h` in documentation set `80-63442-50`.
+- Runtime: `Microsoft.ML.OnnxRuntime.QNN` 1.24.4, QAIRT product version `2.42.0.251225135753_193295`, QNN core 2.32.0, HTP backend 5.41.0.
+- Hardware result: `logCreate`, `backendCreate`, `deviceCreate`, `profileCreate`, and `contextCreate` returned zero. All matching free calls returned zero in reverse order.
+- Binary result: ARM64 PE, no CRT, with imports limited to `KERNEL32.dll`; `QnnHtp.dll` is loaded dynamically.
+- Failure coverage: missing DLL, missing provider symbol, incompatible core API major, missing lifecycle pointers, and forced context-creation failure with reverse cleanup.
+- Repeatable checks: run `../tools/test-npu-probe.ps1` for mock-provider failures, then stage the pinned runtime and run `../build/npu_probe.exe` for the real HTP lifecycle.
+
+## Milestone 3 record
+
+- SDK decision: retained QAIRT `2.42.0.251225`; byte-range reads extracted only its matching QNN headers, `sdk.yaml`, and license from the 1,543,955,191-byte Community archive. SDK files remain outside Git.
+- ABI source: exact QNN core 2.32.0 `QnnCommon.h`, `QnnTypes.h`, `QnnInterface.h`, `QnnGraph.h`, `QnnTensor.h`, and `QnnOpDef.h` from that archive.
+- ABI verification: Clang 22.1.8 targeting Windows ARM64 reports `Qnn_QuantizeParams_t` 40 bytes, `Qnn_TensorV1_t` 112 bytes, `Qnn_Tensor_t` 144 bytes, `Qnn_OpConfigV1_t` 72 bytes, and `Qnn_OpConfig_t` 80 bytes. `../src/qnn_abi.h` has compile-time assertions for these layouts and graph function-table slots.
+- Graph: two rank-1, eight-element `QNN_DATATYPE_UFIXED_POINT_8` application inputs and one output, all with scale 1 and offset 0, connected by `qti.aisw/ElementWiseAdd`.
+- Hardware result: `graphCreate`, all three `tensorCreateGraphTensor` calls, `graphAddNode`, `graphFinalize`, and `graphExecute` returned zero on HTP. Output `{11,22,33,44,55,70,90,110}` matched the scalar CPU reference exactly.
+- Failure coverage: 12 cases now cover loading/provider failures, lifecycle validation and cleanup, each graph stage, deliberate output corruption, and successful execution.
+
+## Milestone 4 initial record
+
+- Timer: `QueryPerformanceCounter`; the binary remains no-CRT and imports only Kernel32. Measured execution calls do not attach a QNN profile handle.
+- Method: one separately timed first execution, 10 untimed warm-ups, then 100 individually timed executions. Exact scalar-reference validation runs after the first execution and after the measured batch.
+- Real HTP sample: graph creation 147,305.2 us; graph finalization 17,282.8 us; first execution 1,874.6 us.
+- Warm execution sample: minimum 148.4 us, median 156.4 us, p95 259.8 us, maximum 970.1 us, mean 191.0 us.
+- Interpretation: these are end-to-end host call latencies for a deliberately tiny graph, not kernel-only timings. The graph is dispatch-bound, so throughput conclusions require the planned matrix-size sweep.
+
+## Milestone 5 Whisper Tiny record
+
+- Scope: synthetic UINT8 projections using Whisper Tiny's encoder width 384 and audio context length 1,500. Weights are static graph tensors; activations and outputs are application buffers.
+- Fixture: deterministic binary weights and four distinct repeating token-row patterns keep UINT8 sums in range. Every output byte is checked against a freestanding scalar GEMM implementation before and after timed execution batches.
+- Method: one first execution, 10 warm-ups, and 100 measured calls per graph. Reported throughput uses one multiply-accumulate per inner-dimension element and includes host/runtime overhead.
+- Single-token result, `[1,384] x [384,384]` (0.147456 MMAC): first execution 448.9 us; warmed minimum 145.1 us, median 173.0 us, p95 247.4 us, mean 189.6 us; median throughput 0.852 GMAC/s.
+- Encoder-sequence result, `[1500,384] x [384,384]` (221.184 MMAC): first execution 861.1 us; warmed minimum 246.3 us, median 314.7 us, p95 562.0 us, mean 345.9 us; median throughput 702.840 GMAC/s.
+- MLP expansion result, `[1500,384] x [384,1536]` (884.736 MMAC): first execution 1,466.0 us; warmed minimum 562.0 us, median 692.9 us, p95 1,824.4 us, mean 792.5 us; median throughput 1,276.859 GMAC/s.
+- MLP contraction result, `[1500,1536] x [1536,384]` (884.736 MMAC): first execution 1,057.4 us; warmed minimum 599.6 us, median 738.3 us, p95 2,703.9 us, mean 1,009.5 us; median throughput 1,198.342 GMAC/s.
+- Interpretation: one-token projection remains dispatch-bound, while sequence projections amortize dispatch. The MLP shapes exceed 1.19 TMAC/s median end-to-end on this synthetic fixture; expansion is about 6% faster than contraction despite equal MAC count.
+- Correctness note: the contraction fixture uses eight sparse token patterns to keep scale-1 UINT8 outputs below saturation. A deliberate denser trial confirmed HTP saturates out-of-range results rather than wrapping.
+- Binary result: ARM64 PE with virtual zero-fill benchmark buffers, no CRT, and imports limited to the existing nine Kernel32 functions.
+
+## Milestone 6 model-derived MLP record
+
+- Model: multilingual `openai/whisper-tiny`, revision `169d4a4341b33bc18d8881c4b69c2e104e1cc0af`, Apache-2.0; `model.safetensors` is 151,061,672 bytes with SHA-256 `7ebd0e69e78190ffe1438491fa05cc1f5c1aa3a4c4db3bc1723adbb551ea2395`.
+- Calibration corpus: validation row 0 from 16 language configurations in `google/fleurs`, revision `70bb2e84b976b7e960aa89f1c648e09c59f894dd`, CC BY 4.0. The manifest records each source asset and SHA-256.
+- Quantization: UINT8 activations use calibrated 0.01/99.99-percentile scale/offset pairs: MLP input `0.0712593108/-125`, FC1 output `0.0333050565/-186`, GELU output `0.00953949219/-18`, and FC2 output `0.0138430737/-158`. Both weight matrices use signed INT8 per output channel; fused biases use signed INT32 with the corresponding input-times-weight channel scale.
+- Offline quality: the selected percentile simulation has `0.09246643` relative L2 error across the complete MLP. The deployment bundle contains a deterministic 1,500-token quantized input/output fixture plus hashes for every runtime artifact.
+- Graph: QNN accepted all eight tensors and `qti.aisw/FullyConnected -> Gelu -> FullyConnected`; finalization and execution returned zero. The HTP output differed from the offline fixture by at most one UINT8 code, with zero of 576,000 values exceeding the two-code tolerance.
+- Timing method: one first execution, 10 warm-ups, then 100 measured calls. Graph creation took 238.7 us, finalization 58,083.9 us, and first execution 2,888.8 us. Warm latency was 404.2 us minimum, 452.7 us median, 1,095.2 us p95, 2,825.7 us maximum, and 565.2 us mean. The two projections total 1.769472 GMAC, yielding 3,908.707 GMAC/s at the median including host/runtime overhead.
+- Binary result: LLVM reports `COFF-ARM64`, direct freestanding entry, no exception or CLR tables, and one import DLL. The 14 `KERNEL32.dll` imports also include `VirtualAlloc` and `VirtualFree` for context-cache buffers; `QnnHtp.dll` is loaded dynamically.
+- Regression coverage: all 12 freestanding mock cases still pass. Mock runs omit generated assets and therefore skip the model-derived graph cleanly after exercising the existing Add and projection paths.
+
+## Milestone 7 static encoder-block record
+
+- Calibration: 16 pinned FLEURS clips define 15 UINT8 activation encodings from encoder input through final residual output. Q uses the Whisper head scale `1/sqrt(64) = 0.125` folded into its projection weights and bias. Weights are signed INT8 per output channel and biases are signed INT32 per channel.
+- Isolated primitives: model-derived LayerNorm has maximum byte delta 1 across 576,000 values. Q/K/V each have maximum delta 1. The `[1500,6,64] -> [6,1500,64]` layout transform is byte-exact. Rank-3 `MatMul -> Softmax -> MatMul` attention has maximum delta 14, with 139 of 576,000 outputs over two codes.
+- Complete graph: 39 data tensors and four registered static parameter tensors connect 21 nodes: two LayerNorms, four FullyConnected projections around attention, three Q/K/V reshapes and transposes, score/value MatMuls, Softmax, inverse layout, two residual adds, and the three-node MLP.
+- Correctness: the complete HTP output has maximum byte delta 19, mean absolute delta 1.366, and relative L2 4.94% against the offline quantized fixture. Of 576,000 values, 13,067 exceed four codes, 283 exceed eight, and three exceed sixteen. The regression gate limits maximum delta to 20, values over four codes to 2.5%, and relative L2 to 5.48%.
+- Timing: graph creation took 374.5 us, finalization 216,107.7 us, and first execution 1,906.6 us. Across 100 calls after 10 warm-ups, latency was 1,550.1 us minimum, 1,728.5 us median, 7,108.0 us p95, 9,894.0 us maximum, and 2,373.1 us mean. The projection and attention work totals 4.382208 GMAC, yielding 2,535.266 GMAC/s at the median.
+
+## Milestone 7 four-layer encoder record
+
+- Tooling: weight preparation and activation calibration now accept encoder layers 0 through 3 while preserving layer 0 as the default. Each target-layer calibration streams float activations through preceding layers and caches only the selected layer's tensors.
+- Independent HTP graphs: all four complete blocks pass the byte-domain regression gate. Warm median latency was 1,700.6 us for layer 0, 1,669.7 us for layer 1, 1,733.9 us for layer 2, and 1,755.5 us for layer 3.
+- Chained execution: four finalized graphs exchange their `[1500,384]` UINT8 application buffers without conversion because adjacent output/input encodings match exactly. Across 100 calls after 10 warm-ups, latency was 6,685.5 us minimum, 7,792.2 us median, 14,032.6 us p95, 18,019.6 us maximum, and 9,039.5 us mean. The 17.528832 GMAC total yields 2,249.535 GMAC/s at the median.
+- HTP versus cascaded simulator: final output has maximum byte delta 66 and mean absolute delta 1.211; 9,979 of 576,000 values exceed four codes. Per-layer cumulative maximum deltas are 19, 28, 68, and 66.
+- Precision blocker: standalone quantized block relative L2 errors against float are 0.276, 0.211, 0.784, and 1.054 for layers 0 through 3. The complete cascaded UINT8 encoder has 0.796 relative L2 error. Layer 2's block-output scale expands to 0.148085 after residual outliers reach 250.8, making per-tensor UINT8 too coarse for the later residual stream.
+- Precision probes: UINT16 ElementWiseAdd is exact. Direct W8A16 and converted W16A16 FullyConnected both lose the lower eight output bits and are not precision-viable. FP16 FullyConnected finalizes, executes, and matches the exact half-precision fixture.
+- FP16 independent layers: all four existing 22-node topologies run with FP16 data tensors, weights, and biases. Warm median latencies are 4.117, 4.364, 4.308, and 4.172 ms for layers 0 through 3. Their relative L2 squared errors against independently rounded float references are 88, 55, 2, and less than 1 ppm.
+- FP16 chained encoder: cumulative relative L2 squared error after layers 0 through 3 is 88, 111, 121, and 172 ppm, ending at about 1.31% relative L2. Warm latency is 16.328 ms minimum, 18.235 ms median, 23.058 ms p95, and 18.995 ms mean; median throughput is 961.284 GMAC/s. The final maximum absolute delta is 4.125, reflecting sparse later-layer outliers despite low aggregate error.
+- Monolithic graph: one 88-node graph reproduces the chained result at 172 ppm squared relative L2. A representative run took 12.261 s to finalize and 14.981 ms median to execute, versus 18.235 ms for four graph submissions.
+- Context cache: the combined frontend and monolithic encoder context is 17,457,152 binary bytes plus a 48-byte project header. It restores all three graphs by name and reconstructs their application tensors without building graph nodes.
+- Dependency boundary: Python and NumPy generate and hash raw FP16 development artifacts. The deployed ARM64 executable remains freestanding C, uses no CRT or standard C library, reads fixed-size blobs through Kernel32, and calls QNN directly.
+- Decision: FP16 resolves the encoder quality blocker. Retain the four-graph path as a numerical baseline and use the cached monolithic graph for integration.
+
+## Milestone 8 audio frontend record
+
+- CPU path: freestanding C and the project math runtime parse the pinned 16 kHz mono float WAV, perform a factorized 400-point DFT, apply the 80-bin mel bank, log normalization, and FP16 conversion without libc or external production dependencies.
+- Log-mel correctness: all 240,000 values are within `0.0001` of the NumPy fixture; maximum absolute error is below one millionth. Representative WAV-to-log-mel time was 162.458 ms.
+- HTP frontend: packed `[3000,240]` conv1 and `[1500,1152]` conv2 windows drive two FP16 `FullyConnected -> Gelu` graphs; the second graph also adds the `[1500,384]` positional embedding. Conv1 measured 8.390 ms and conv2 plus position addition 6.306 ms in a representative cached run.
+- Frontend correctness: conv1 output has 1 ppm squared relative L2 error and the final frontend output has less than 1 ppm; no value in either tensor differs from its FP16 fixture by more than `0.01`.
+- Integrated encoder: the frontend output directly feeds the cached 88-node encoder. The WAV-derived layer-3 result has 192 ppm squared relative L2 error, versus 172 ppm with the precomputed encoder input, and measured 14.918 ms median across 100 warm executions.
+- Cache: the two frontend graphs, monolithic encoder, and decoder cross-K/V graph share one 19,890,176-byte context payload. A representative fresh-process restore took about 52 ms and retrieved all four graphs successfully.
+- Real-audio check: a 30-second window beginning five minutes into the 6,420-second Bundestag committee recording was converted from 48 kHz stereo MP3 to 16 kHz mono float32 WAV. The no-CRT path produced log-mel, frontend, and encoder FNV-1a fingerprints `0x40dc0d3d562fe0f8`, `0xb24dccf3a2d92142`, and `0x548b01265f57c5a3`; every QNN call and cleanup call returned zero. This first run spent 278.914 ms in log-mel, 7.078 ms in conv1, 3.450 ms in conv2 plus position addition, and 14.354 ms in the encoder.
+- Regression and binary checks: all 12 mock-provider cases pass. LLVM reports ARM64, no exception table, and only 15 imports from `KERNEL32.dll`; `QnnHtp.dll` remains dynamically loaded. The additional import is `GetCommandLineA` for selecting a WAV without a C runtime.
+
+## Milestone 10 decoder and tokenizer record
+
+- Artifacts: the pinned checkpoint exports 29,553,024 FP32 decoder values to a fixed-layout 118,212,112-byte bundle. The tokenizer exporter converts all 51,865 vocabulary IDs to a 514,541-byte offset/byte table; merges are not needed at runtime because ASR uses fixed prompt IDs and only detokenizes generated IDs.
+- Runtime: the cached HTP graph applies the missing encoder post-stack LayerNorm and computes eight FP16 `[1500,384]` cross-attention K/V tensors once per audio window. Freestanding C consumes those buffers directly, widens FP16 vectors at use sites, and runs four decoder layers with incremental self-attention KV caches. The shared `RtTaskPool` uses the native Windows substrate and preserves a width-1 serial fallback.
+- Generation: the current prompt fixes German transcription without timestamps. Greedy decoding suppresses the checkpoint's non-speech token list and timestamp range, emits UTF-8 bytes incrementally, and stops at EOT or the configured token limit.
+- Real-audio result: the Bundestag segment generated 109 tokens and terminated at EOT. The original serial decoder took 5.351 seconds. Conventional K/V caching, FP32 vector accumulation, and 12 persistent workers reduced the CPU-precompute path to 1.063 seconds while preserving the transcript.
+- Hybrid decoder profile: the cached HTP graph computes encoder normalization and all eight K/V projections in 8.5 ms median. The old parallel FP16-to-FP32 import added about 6.1 ms and expanded 9.2 MB of K/V output to 18.4 MB per window; direct FP16 consumption removes that import and halves cache bytes streamed by cross-attention. Cross/MLP projection rows use the persistent task pool, while self projections remain serial because their dispatches did not amortize. A four-accumulator vocabulary kernel removes the dominant accumulation dependency chain.
+- Ten-window optimization result: a representative persistent run fell from 15.172 to 13.330 seconds process wall (12.1%) and from 14.714 to 12.791 seconds of window work (13.1%). Logits fell from 2.399 to 1.204 seconds, cross-attention from 5.360 to 4.551 seconds, feed-forward from 3.516 to 3.167 seconds, and FP16 cache import from 104 ms to effectively zero. All 1,235 generated tokens and stitched transcript bytes remained identical (`951d8a996cfc7c9f3386d0d08826718856813b05142a30e128c98a2612a2a361`). Repeat absolute samples varied substantially with CPU power state, so stage deltas and interleaved runs are more reliable than a single wall measurement.
+- Per-token QNN offload decision: retain the hybrid decoder. The restored graph API has no mutable tensor state path, and this integration exposes `mem_register` only as an unused ABI slot. A stateless four-layer graph split would therefore upload up to 11,968,512 bytes of cross/self K/V inputs per token, plus outputs, and submit four dispatch-bound graphs. The existing `[1,384] x [384,384]` QNN projection already costs 173 us median before cache movement. Full-layer offload should be reconsidered only after a verified persistent QNN memory/state mechanism is available.
+- Dependency boundary: Python and NumPy only verify and export immutable raw artifacts. Weight loading, encoder normalization, attention, MLP, token selection, KV caching, and detokenization are all plain C without libc.
+
+## Milestone 11 long-form transcription record
+
+- Source: the 6,420.010667-second, 48 kHz stereo Bundestag MP3 was converted to a 410,880,776-byte mono 16 kHz float32 WAV. Its SHA-256 is `aed9699f81980997c136cbff76b73f0c5238ab22cd8d2acacf2c7a859ad30d09`.
+- Orchestration: 257 windows use 30-second spans with five seconds of overlap. Each result is committed independently for resume support; raw logs, JSONL records, timestamped text, a conservatively stitched transcript, CSV timings, and aggregate timings are retained.
+- Decoder robustness: EOT and the model's no-speech token may terminate the first generated step, and a bounded no-repeat four-gram constraint prevents greedy cycles. The first pass exposed 21 capped loops; selective retry plus one three-way 15-second split removed every cap and sustained-repeat flag.
+- Final corpus: 27,435 generated tokens cover the full 6,420.011 seconds. Conservative overlap matching removed 1,705 duplicated words. The timestamped segments remain the audit source because Whisper Tiny still makes ordinary recognition errors in names, compounds, and technical terms.
+- Aggregate profile: measured stages total 326.9 seconds. Cross-attention used 109.1 seconds (33.4%), feed-forward layers 77.6 seconds (23.8%), vocabulary logits 47.7 seconds (14.6%), log-mel 40.3 seconds (12.3%), self-attention 30.0 seconds (9.2%), and context restore 12.3 seconds (3.8%). All NPU encoder/frontend/K/V stages combined are below 3%.
+- Optimization consequence: first keep the process, QNN context, decoder weights, and worker pool alive across windows. Then target cross-attention/cache bandwidth and feed-forward/logit matrix-vector work. More frontend or encoder offload cannot materially change end-to-end time at the measured shares.
+- Persistent batch result: `npu_probe.exe @manifest` now restores QNN, loads decoder artifacts, and creates the task pool once before processing newline-delimited WAV paths. Ten windows produced byte-identical per-window and stitched transcripts versus process isolation. Probe wall time fell from 19.324 seconds across ten processes to 15.172 seconds in one process, a 21.5% reduction; the one-process window work itself was 14.714 seconds.
+- Native direct-WAV result: a plain compatible WAV path now processes the complete data chunk with seek-based 30-second windows and a 25-second stride. Transcript bytes are captured in bounded static storage and stitched with the same conservative suffix/interior word matching used by the development driver. `--single-window=<path>` retains explicit first-window diagnostics, while `@manifest` retains externally prepared batch behavior.
