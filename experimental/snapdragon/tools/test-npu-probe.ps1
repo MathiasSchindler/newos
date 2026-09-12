@@ -132,7 +132,7 @@ try {
         @("finalize failure", "QNN_MOCK_FINALIZE_FAILURE", 22, "(?s)graphFinalize: 0x0000000000002004.*contextFree: 0x0000000000000000", "graphExecute:"),
         @("execute failure", "QNN_MOCK_EXECUTE_FAILURE", 23, "(?s)graphExecute: 0x0000000000002005.*contextFree: 0x0000000000000000", "output matches"),
         @("output mismatch", "QNN_MOCK_BAD_OUTPUT", 24, "output mismatch at 0: expected 11, got 12", "output matches"),
-        @("graph success", "QNN_MOCK_SUCCESS", 0, "(?s)output matches CPU reference.*MatMul \[1,384\].*MatMul \[1500,384\] x \[384,384\].*MatMul \[1500,384\] x \[384,1536\].*MatMul \[1500,1536\] x \[1536,384\].*output matches scalar UINT8 GEMM reference.*contextFree: 0x0000000000000000", "output mismatch")
+        @("graph primitives success", "QNN_MOCK_SUCCESS", 107, "(?s)output matches CPU reference.*MatMul \[1,384\].*MatMul \[1500,384\] x \[384,384\].*MatMul \[1500,384\] x \[384,1536\].*MatMul \[1500,1536\] x \[1536,384\].*output matches scalar UINT8 GEMM reference.*graph build: skipped \(artifacts unavailable\).*contextFree: 0x0000000000000000", "output mismatch")
     )
 
     foreach ($case in $cases) {

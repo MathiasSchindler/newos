@@ -183,7 +183,9 @@ static char model_context_cache_local[96];
 
 enum {
     MODEL_CONTEXT_CACHE_METADATA_SIZE =
-    8U + 10U * 4U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U
+    8U + 11U * 4U +
+    (WHISPER_DECODER_QNN_MAX_OUTPUTS +
+     WHISPER_DECODER_QNN_MAX_LAYERS * 2U) * 4U
 };
 
 typedef struct ProcessMemoryCounters {
@@ -903,6 +905,21 @@ static void encode_model_context_metadata(
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_OUTPUTS; ++index) {
         cache_write_u32(output + 48U + index * 4U, metadata->decoder.output_ids[index]);
     }
+    cache_write_u32(
+        output + 48U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U,
+        metadata->decoder.mlp_layer_count
+    );
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 52U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U;
+        cache_write_u32(
+            output + base + index * 4U,
+            metadata->decoder.mlp_input_ids[index]
+        );
+        cache_write_u32(
+            output + base + (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U,
+            metadata->decoder.mlp_output_ids[index]
+        );
+    }
 }
 
 static void decode_model_context_metadata(
@@ -923,6 +940,18 @@ static void decode_model_context_metadata(
     metadata->decoder.input_id = cache_read_u32(input + 44U);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_OUTPUTS; ++index) {
         metadata->decoder.output_ids[index] = cache_read_u32(input + 48U + index * 4U);
+    }
+    metadata->decoder.mlp_layer_count = cache_read_u32(
+        input + 48U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U
+    );
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 52U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U;
+        metadata->decoder.mlp_input_ids[index] = cache_read_u32(
+            input + base + index * 4U
+        );
+        metadata->decoder.mlp_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U
+        );
     }
 }
 
@@ -3894,6 +3923,14 @@ static u32 run_external_wav_window(
             frequency
         );
         write_duration_us(
+            "  NPU feed-forward", decoder_profile->npu_feed_forward_ticks,
+            frequency
+        );
+        write_duration_us(
+            "  NPU MLP graphExecute", decoder_profile->npu_mlp_execute_ticks,
+            frequency
+        );
+        write_duration_us(
             "  CPU final norm/logits", decoder_profile->logits_ticks,
             frequency
         );
@@ -4121,6 +4158,12 @@ void mainCRTStartup(void) {
             )) == 0) {
             write_text("Whisper decoder artifacts are missing or invalid.\n");
             exit_status = 108U;
+        }
+        if (exit_status == 0U) {
+            whisper_decoder_set_mlp_offload(
+                whisper_decoder, whisper_decoder_qnn_mlp_offload,
+                whisper_decoder_qnn
+            );
         }
         if (exit_status == 0U && wav_argument[0] == '@') {
             u32 segment_index = 0U;
@@ -4481,7 +4524,7 @@ void mainCRTStartup(void) {
             int decoder_qnn_status = whisper_decoder_qnn_build(
                 whisper_decoder_qnn, api, context_handle, &decoder_qnn_ids
             );
-            write_text("QNN decoder cross K/V graph build: ");
+            write_text("QNN decoder cross K/V and MLP graph build: ");
             write_text(decoder_qnn_status == 1 ? "complete\n" :
                 (decoder_qnn_status == 0 ? "skipped (artifacts unavailable)\n" : "failed\n"));
             if (decoder_qnn_status < 0) {

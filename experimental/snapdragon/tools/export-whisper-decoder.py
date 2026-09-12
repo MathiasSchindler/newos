@@ -19,6 +19,7 @@ PAYLOAD_TOKEN_BYTES = 2
 PAYLOAD_CROSS_KV_WEIGHTS = 3
 PAYLOAD_FRONTEND_WEIGHTS = 5
 PAYLOAD_ENCODER_WEIGHTS = 6
+PAYLOAD_DECODER_MLP_WEIGHTS = 7
 ELEMENT_F32 = 1
 ELEMENT_F16 = 2
 ELEMENT_U8 = 3
@@ -255,6 +256,27 @@ def export_cross_kv(model, spec, output):
     return tensors, value_count
 
 
+def export_decoder_mlp(model, spec, output):
+    width = spec["width"]
+    ffn_width = spec["ffn_width"]
+    tensors = []
+    for layer in range(spec["decoder_layers"]):
+        prefix = f"model.decoder.layers.{layer}"
+        tensors.extend([
+            (f"{prefix}.fc1.weight", (ffn_width, width)),
+            (f"{prefix}.fc1.bias", (ffn_width,)),
+            (f"{prefix}.fc2.weight", (width, ffn_width)),
+            (f"{prefix}.fc2.bias", (width,)),
+        ])
+    value_count = sum(int(np.prod(shape)) for _, shape in tensors)
+    with ArtifactWriter(
+        output, spec, PAYLOAD_DECODER_MLP_WEIGHTS, ELEMENT_F16, value_count
+    ) as artifact:
+        for name, shape in tensors:
+            artifact.write(np.asarray(model.f32(name, shape), dtype="<f2"))
+    return tensors, value_count
+
+
 def export_frontend(model, spec, output):
     width = spec["width"]
     tensors = [
@@ -321,6 +343,7 @@ def main():
     parser.add_argument("--catalog", type=Path, default=script_dir / "whisper-models.json")
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--mlp-only", action="store_true")
     args = parser.parse_args()
     model_dir = (args.model_dir or snapdragon_dir / "models" / f"whisper-{args.model}").resolve()
     output_dir = (args.output_dir or model_dir / "decoder-fp16").resolve()
@@ -332,14 +355,38 @@ def main():
     weights_path = output_dir / "weights-fp16.bin"
     tokens_path = output_dir / "token-bytes.bin"
     cross_kv_path = output_dir / "cross-kv-fp16.bin"
+    decoder_mlp_path = output_dir / "mlp-fp16.bin"
     encoder_dir = model_dir / "encoder-fp16"
     encoder_dir.mkdir(parents=True, exist_ok=True)
     frontend_path = encoder_dir / "frontend-fp16.bin"
     encoder_path = encoder_dir / "encoder-fp16.bin"
     model = SafeTensorsFile(model_path)
+    if args.mlp_only:
+        decoder_mlp_contract, decoder_mlp_count = export_decoder_mlp(
+            model, spec, decoder_mlp_path
+        )
+        manifest_path = output_dir / "deployment.json"
+        manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+        manifest.update({
+            "decoder_mlp_value_count": decoder_mlp_count,
+            "decoder_mlp_size": decoder_mlp_path.stat().st_size,
+            "decoder_mlp_sha256": sha256(decoder_mlp_path),
+            "decoder_mlp_tensor_order": [
+                {"name": name, "shape": list(shape)}
+                for name, shape in decoder_mlp_contract
+            ],
+        })
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="ascii"
+        )
+        print(f"Wrote {decoder_mlp_path} ({decoder_mlp_path.stat().st_size} bytes)")
+        return
     contract, float_count = export_weights(model, spec, weights_path)
     token_bytes = export_tokens(model_dir / "vocab.json", spec, tokens_path)
     cross_contract, cross_count = export_cross_kv(model, spec, cross_kv_path)
+    decoder_mlp_contract, decoder_mlp_count = export_decoder_mlp(
+        model, spec, decoder_mlp_path
+    )
     frontend_contract, frontend_count = export_frontend(model, spec, frontend_path)
     encoder_contract, encoder_count = export_encoder(model, spec, encoder_path)
     manifest = {
@@ -356,6 +403,13 @@ def main():
         "cross_kv_sha256": sha256(cross_kv_path),
         "cross_kv_tensor_order": [
             {"name": name, "shape": list(shape)} for name, shape in cross_contract
+        ],
+        "decoder_mlp_value_count": decoder_mlp_count,
+        "decoder_mlp_size": decoder_mlp_path.stat().st_size,
+        "decoder_mlp_sha256": sha256(decoder_mlp_path),
+        "decoder_mlp_tensor_order": [
+            {"name": name, "shape": list(shape)}
+            for name, shape in decoder_mlp_contract
         ],
         "frontend_weight_count": frontend_count,
         "frontend_size": frontend_path.stat().st_size,
@@ -380,6 +434,7 @@ def main():
     print(f"Wrote {weights_path} ({weights_path.stat().st_size} bytes)")
     print(f"Wrote {tokens_path} ({tokens_path.stat().st_size} bytes)")
     print(f"Wrote {cross_kv_path} ({cross_kv_path.stat().st_size} bytes)")
+    print(f"Wrote {decoder_mlp_path} ({decoder_mlp_path.stat().st_size} bytes)")
     print(f"Wrote {frontend_path} ({frontend_path.stat().st_size} bytes)")
     print(f"Wrote {encoder_path} ({encoder_path.stat().st_size} bytes)")
 

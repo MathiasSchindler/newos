@@ -1,5 +1,6 @@
 #include "whisper_decoder_qnn.h"
 #include "whisper_artifact.h"
+#include "whisper_frontend.h"
 
 typedef unsigned long long usize;
 
@@ -11,6 +12,7 @@ __declspec(dllimport) void *CreateFileA(
 __declspec(dllimport) int ReadFile(
     void *handle, void *buffer, u32 size, u32 *read, void *overlapped
 );
+__declspec(dllimport) int QueryPerformanceCounter(long long *value);
 __declspec(dllimport) void *VirtualAlloc(
     void *address, usize size, u32 allocation_type, u32 protect
 );
@@ -18,22 +20,37 @@ __declspec(dllimport) int VirtualFree(void *address, usize size, u32 free_type);
 
 enum {
     DECODER_QNN_NAME_CAPACITY = 56,
-    DECODER_QNN_PATH_CAPACITY = 192
+    DECODER_QNN_PATH_CAPACITY = 192,
+    DECODER_QNN_MLP_TENSORS = 8,
+    DECODER_QNN_MLP_NODES = 3
 };
+
+typedef struct DecoderQnnMlpWeights {
+    u16 *fc1_weight;
+    u16 *fc1_bias;
+    u16 *fc2_weight;
+    u16 *fc2_bias;
+} DecoderQnnMlpWeights;
 
 struct WhisperDecoderQnn {
     WhisperModelConfig model;
     u32 output_count;
     void *runtime_allocation;
     void *builder_allocation;
+    void *mlp_builder_allocation;
     u16 *keys_cache;
     u16 *values_cache;
+    u16 *mlp_input_buffer;
+    u16 *mlp_output_buffer;
     u16 *norm_weight;
     u16 *norm_bias;
     u16 *projection_weights[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     u16 *projection_biases[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     QnnGraphHandle graph;
+    QnnGraphHandle mlp_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnTensor input;
+    QnnTensor mlp_inputs[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnTensor mlp_outputs[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnTensor outputs[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     QnnTensor execute_outputs[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     QnnTensor norm_weight_tensor;
@@ -43,11 +60,20 @@ struct WhisperDecoderQnn {
     QnnTensor projection_bias_tensors[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     QnnParam norm_parameters[2];
     QnnTensor *registered[5U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 3U];
+    DecoderQnnMlpWeights mlp_weights[WHISPER_DECODER_QNN_MAX_LAYERS];
+    const QnnInterfaceV2 *api;
+    int mlp_ready;
+    int mlp_disabled;
     u32 activation_dimensions[2];
     u32 weight_dimensions[2];
     u32 width_dimensions[1];
     u32 vector_dimensions[1];
     u32 axes[1];
+    u32 mlp_activation_dimensions[2];
+    u32 mlp_hidden_dimensions[2];
+    u32 mlp_fc1_dimensions[2];
+    u32 mlp_fc2_dimensions[2];
+    u32 mlp_hidden_vector_dimensions[1];
     char graph_name[DECODER_QNN_NAME_CAPACITY];
     char input_name[DECODER_QNN_NAME_CAPACITY];
     char norm_weight_name[DECODER_QNN_NAME_CAPACITY];
@@ -61,6 +87,13 @@ struct WhisperDecoderQnn {
     char node_names[WHISPER_DECODER_QNN_MAX_OUTPUTS][DECODER_QNN_NAME_CAPACITY];
     char weight_path[DECODER_QNN_PATH_CAPACITY];
     char weight_fallback[DECODER_QNN_PATH_CAPACITY];
+    char mlp_weight_path[DECODER_QNN_PATH_CAPACITY];
+    char mlp_weight_fallback[DECODER_QNN_PATH_CAPACITY];
+    char mlp_graph_names[WHISPER_DECODER_QNN_MAX_LAYERS][DECODER_QNN_NAME_CAPACITY];
+    char mlp_tensor_names[WHISPER_DECODER_QNN_MAX_LAYERS]
+        [DECODER_QNN_MLP_TENSORS][DECODER_QNN_NAME_CAPACITY];
+    char mlp_node_names[WHISPER_DECODER_QNN_MAX_LAYERS]
+        [DECODER_QNN_MLP_NODES][DECODER_QNN_NAME_CAPACITY];
 };
 
 static int append_text(char *output, u32 capacity, u32 *used, const char *text) {
@@ -129,8 +162,36 @@ static int make_weight_path(
         append_text(output, capacity, &used, "/decoder-fp16/cross-kv-fp16.bin");
 }
 
+static int make_mlp_weight_path(
+    char *output,
+    u32 capacity,
+    const char *prefix,
+    const WhisperModelConfig *model
+) {
+    u32 used = 0U;
+    return append_text(output, capacity, &used, prefix) &&
+        append_text(output, capacity, &used, model->name) &&
+        append_text(output, capacity, &used, "/decoder-fp16/mlp-fp16.bin");
+}
+
+static int make_mlp_name(
+    char *output,
+    u32 capacity,
+    const WhisperModelConfig *model,
+    u32 layer,
+    const char *suffix
+) {
+    u32 used = 0U;
+    return append_text(output, capacity, &used, model->name) &&
+        append_text(output, capacity, &used, "_decoder_l") &&
+        append_u32(output, capacity, &used, layer) &&
+        append_text(output, capacity, &used, "_mlp_") &&
+        append_text(output, capacity, &used, suffix);
+}
+
 static int initialize_names(WhisperDecoderQnn *decoder) {
     u32 index;
+    u32 layer;
     const WhisperModelConfig *model = &decoder->model;
     if (!make_model_name(
             decoder->graph_name, sizeof(decoder->graph_name), model,
@@ -159,6 +220,12 @@ static int initialize_names(WhisperDecoderQnn *decoder) {
         ) || !make_weight_path(
             decoder->weight_fallback, sizeof(decoder->weight_fallback),
             "../models/whisper-", model
+        ) || !make_mlp_weight_path(
+            decoder->mlp_weight_path, sizeof(decoder->mlp_weight_path),
+            "experimental/snapdragon/models/whisper-", model
+        ) || !make_mlp_weight_path(
+            decoder->mlp_weight_fallback, sizeof(decoder->mlp_weight_fallback),
+            "../models/whisper-", model
         )) return 0;
     for (index = 0U; index < decoder->output_count; ++index) {
         if (!make_projection_name(
@@ -174,6 +241,33 @@ static int initialize_names(WhisperDecoderQnn *decoder) {
                 decoder->node_names[index], sizeof(decoder->node_names[index]),
                 model, index, "_fc"
             )) return 0;
+    }
+    for (layer = 0U; layer < model->decoder_layers; ++layer) {
+        static const char *tensor_suffixes[DECODER_QNN_MLP_TENSORS] = {
+            "input", "fc1_weight", "fc1_bias", "fc1_output",
+            "gelu_output", "fc2_weight", "fc2_bias", "output"
+        };
+        static const char *node_suffixes[DECODER_QNN_MLP_NODES] = {
+            "fc1", "gelu", "fc2"
+        };
+        if (!make_mlp_name(
+                decoder->mlp_graph_names[layer], DECODER_QNN_NAME_CAPACITY,
+                model, layer, "graph"
+            )) return 0;
+        for (index = 0U; index < DECODER_QNN_MLP_TENSORS; ++index) {
+            if (!make_mlp_name(
+                    decoder->mlp_tensor_names[layer][index],
+                    DECODER_QNN_NAME_CAPACITY, model, layer,
+                    tensor_suffixes[index]
+                )) return 0;
+        }
+        for (index = 0U; index < DECODER_QNN_MLP_NODES; ++index) {
+            if (!make_mlp_name(
+                    decoder->mlp_node_names[layer][index],
+                    DECODER_QNN_NAME_CAPACITY, model, layer,
+                    node_suffixes[index]
+                )) return 0;
+        }
     }
     return 1;
 }
@@ -266,11 +360,79 @@ static int decoder_qnn_load_weights(WhisperDecoderQnn *decoder) {
         ? 1 : -1;
 }
 
+static int decoder_qnn_load_mlp_weights(WhisperDecoderQnn *decoder) {
+    void *invalid = (void *)(usize)-1;
+    void *handle = CreateFileA(
+        decoder->mlp_weight_path, 0x80000000U, 1U, 0, 3U, 0x80U, 0
+    );
+    u8 header_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
+    WhisperArtifactHeader header;
+    u64 matrix_values;
+    u64 layer_values;
+    u64 expected_values;
+    u64 expected_bytes;
+    u16 *cursor;
+    u32 layer;
+    const WhisperModelConfig *model = &decoder->model;
+    if (!whisper_model_size_multiply(
+            model->width, model->ffn_width, &matrix_values
+        ) || !whisper_model_size_multiply(2U, matrix_values, &layer_values) ||
+        !whisper_model_size_add(layer_values, model->ffn_width, &layer_values) ||
+        !whisper_model_size_add(layer_values, model->width, &layer_values) ||
+        !whisper_model_size_multiply(
+            layer_values, model->decoder_layers, &expected_values
+        ) || !whisper_model_size_multiply(
+            expected_values, sizeof(u16), &expected_bytes
+        ) || expected_bytes > 0xffffffffULL) return -1;
+    if (handle == invalid) {
+        handle = CreateFileA(
+            decoder->mlp_weight_fallback, 0x80000000U, 1U, 0, 3U, 0x80U, 0
+        );
+    }
+    if (handle == invalid) return 0;
+    if (!decoder_qnn_read_exact(handle, header_bytes, sizeof(header_bytes)) ||
+        !whisper_artifact_decode_header(header_bytes, &header) ||
+        !whisper_artifact_header_valid(
+            &header, model, WHISPER_ARTIFACT_PAYLOAD_DECODER_MLP_WEIGHTS,
+            WHISPER_ARTIFACT_ELEMENT_F16, expected_values, expected_bytes
+        )) {
+        CloseHandle(handle);
+        return -1;
+    }
+    decoder->mlp_builder_allocation = VirtualAlloc(
+        0, (usize)expected_bytes, 0x3000U, 0x04U
+    );
+    if (decoder->mlp_builder_allocation == 0 || !decoder_qnn_read_exact(
+            handle, decoder->mlp_builder_allocation, (u32)expected_bytes
+        )) {
+        CloseHandle(handle);
+        return -1;
+    }
+    CloseHandle(handle);
+    if (!whisper_artifact_payload_valid(
+            &header, decoder->mlp_builder_allocation, expected_bytes
+        )) return -1;
+    cursor = (u16 *)decoder->mlp_builder_allocation;
+    for (layer = 0U; layer < model->decoder_layers; ++layer) {
+        decoder->mlp_weights[layer].fc1_weight = cursor;
+        cursor += matrix_values;
+        decoder->mlp_weights[layer].fc1_bias = cursor;
+        cursor += model->ffn_width;
+        decoder->mlp_weights[layer].fc2_weight = cursor;
+        cursor += matrix_values;
+        decoder->mlp_weights[layer].fc2_bias = cursor;
+        cursor += model->width;
+    }
+    return cursor == (u16 *)decoder->mlp_builder_allocation + expected_values
+        ? 1 : -1;
+}
+
 WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
     WhisperDecoderQnn *decoder;
     u64 cache_values;
     u64 cache_bytes;
     u64 runtime_bytes;
+    u64 vector_bytes;
     if (!whisper_model_config_valid(model) ||
         model->decoder_layers > WHISPER_DECODER_QNN_MAX_OUTPUTS / 2U ||
         !whisper_model_size_multiply(
@@ -279,7 +441,10 @@ WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
             cache_values, model->width, &cache_values
         ) || !whisper_model_size_multiply(
             cache_values, sizeof(u16), &cache_bytes
-        ) || !whisper_model_size_multiply(2U, cache_bytes, &runtime_bytes)) {
+        ) || !whisper_model_size_multiply(2U, cache_bytes, &runtime_bytes) ||
+        !whisper_model_size_multiply(model->width, sizeof(u16), &vector_bytes) ||
+        !whisper_model_size_add(runtime_bytes, 2U * vector_bytes, &runtime_bytes) ||
+        model->decoder_layers > WHISPER_DECODER_QNN_MAX_LAYERS) {
         return 0;
     }
     decoder = VirtualAlloc(0, sizeof(*decoder), 0x3000U, 0x04U);
@@ -295,6 +460,8 @@ WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
     }
     decoder->keys_cache = (u16 *)decoder->runtime_allocation;
     decoder->values_cache = (u16 *)((u8 *)decoder->runtime_allocation + cache_bytes);
+    decoder->mlp_input_buffer = (u16 *)((u8 *)decoder->values_cache + cache_bytes);
+    decoder->mlp_output_buffer = decoder->mlp_input_buffer + model->width;
     decoder->activation_dimensions[0] = model->encoder_frames;
     decoder->activation_dimensions[1] = model->width;
     decoder->weight_dimensions[0] = model->width;
@@ -302,6 +469,15 @@ WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
     decoder->width_dimensions[0] = model->width;
     decoder->vector_dimensions[0] = 1U;
     decoder->axes[0] = 1U;
+    decoder->mlp_activation_dimensions[0] = 1U;
+    decoder->mlp_activation_dimensions[1] = model->width;
+    decoder->mlp_hidden_dimensions[0] = 1U;
+    decoder->mlp_hidden_dimensions[1] = model->ffn_width;
+    decoder->mlp_fc1_dimensions[0] = model->ffn_width;
+    decoder->mlp_fc1_dimensions[1] = model->width;
+    decoder->mlp_fc2_dimensions[0] = model->width;
+    decoder->mlp_fc2_dimensions[1] = model->ffn_width;
+    decoder->mlp_hidden_vector_dimensions[0] = model->ffn_width;
     if (!initialize_names(decoder)) {
         whisper_decoder_qnn_shutdown(decoder);
         return 0;
@@ -363,6 +539,133 @@ static u64 decoder_qnn_add_node(
     operation.data.v1.output_count = 1U;
     operation.data.v1.outputs = outputs;
     return api->graph_add_node(decoder->graph, operation);
+}
+
+static u64 decoder_qnn_add_mlp_node(
+    const QnnInterfaceV2 *api,
+    QnnGraphHandle graph,
+    const char *name,
+    const char *type,
+    QnnTensor *input0,
+    QnnTensor *input1,
+    QnnTensor *input2,
+    u32 input_count,
+    QnnTensor *output
+) {
+    QnnTensor inputs[3];
+    QnnTensor outputs[1];
+    QnnOpConfig operation = {0};
+    u32 index;
+    for (index = 0U; index < input_count; ++index) {
+        QnnTensor *source = index == 0U ? input0 : (index == 1U ? input1 : input2);
+        inputs[index] = *source;
+    }
+    outputs[0] = *output;
+    operation.version = QNN_OPCONFIG_VERSION_1;
+    operation.data.v1.name = name;
+    operation.data.v1.package_name = "qti.aisw";
+    operation.data.v1.type_name = type;
+    operation.data.v1.input_count = input_count;
+    operation.data.v1.inputs = inputs;
+    operation.data.v1.output_count = 1U;
+    operation.data.v1.outputs = outputs;
+    return api->graph_add_node(graph, operation);
+}
+
+static int __attribute__((noinline)) decoder_qnn_build_mlps(
+    WhisperDecoderQnn *decoder,
+    const QnnInterfaceV2 *api,
+    QnnContextHandle context,
+    WhisperDecoderQnnIds *ids_out
+) {
+    u64 matrix_bytes = (u64)decoder->model.width *
+        decoder->model.ffn_width * sizeof(u16);
+    u64 width_bytes = (u64)decoder->model.width * sizeof(u16);
+    u64 hidden_bytes = (u64)decoder->model.ffn_width * sizeof(u16);
+    u32 layer;
+    int loaded = decoder_qnn_load_mlp_weights(decoder);
+    if (loaded != 1 || matrix_bytes > 0xffffffffULL) return loaded;
+    for (layer = 0U; layer < decoder->model.decoder_layers; ++layer) {
+        DecoderQnnMlpWeights *weights = &decoder->mlp_weights[layer];
+        QnnTensor tensors[DECODER_QNN_MLP_TENSORS];
+        QnnTensor *registered[DECODER_QNN_MLP_TENSORS];
+        u32 index;
+        if (api->graph_create(
+                context, decoder->mlp_graph_names[layer], 0,
+                &decoder->mlp_graphs[layer]
+            ) != 0U) return -1;
+        tensors[0] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][0], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        tensors[1] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][1], QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_fc1_dimensions, 2U
+        );
+        tensors[1].data.v1.memory.client_buffer.data = weights->fc1_weight;
+        tensors[1].data.v1.memory.client_buffer.data_size = (u32)matrix_bytes;
+        tensors[2] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][2], QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_hidden_vector_dimensions, 1U
+        );
+        tensors[2].data.v1.memory.client_buffer.data = weights->fc1_bias;
+        tensors[2].data.v1.memory.client_buffer.data_size = (u32)hidden_bytes;
+        tensors[3] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][3], QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_hidden_dimensions, 2U
+        );
+        tensors[4] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][4], QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_hidden_dimensions, 2U
+        );
+        tensors[5] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][5], QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_fc2_dimensions, 2U
+        );
+        tensors[5].data.v1.memory.client_buffer.data = weights->fc2_weight;
+        tensors[5].data.v1.memory.client_buffer.data_size = (u32)matrix_bytes;
+        tensors[6] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][6], QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U
+        );
+        tensors[6].data.v1.memory.client_buffer.data = weights->fc2_bias;
+        tensors[6].data.v1.memory.client_buffer.data_size = (u32)width_bytes;
+        tensors[7] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[layer][7], QNN_TENSOR_TYPE_APP_READ,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        for (index = 0U; index < DECODER_QNN_MLP_TENSORS; ++index) {
+            registered[index] = &tensors[index];
+            if (api->tensor_create_graph_tensor(
+                    decoder->mlp_graphs[layer], registered[index]
+                ) != 0U) return -1;
+        }
+        if (decoder_qnn_add_mlp_node(
+                api, decoder->mlp_graphs[layer],
+                decoder->mlp_node_names[layer][0], "FullyConnected",
+                &tensors[0], &tensors[1], &tensors[2], 3U, &tensors[3]
+            ) != 0U || decoder_qnn_add_mlp_node(
+                api, decoder->mlp_graphs[layer],
+                decoder->mlp_node_names[layer][1], "Gelu",
+                &tensors[3], 0, 0, 1U, &tensors[4]
+            ) != 0U || decoder_qnn_add_mlp_node(
+                api, decoder->mlp_graphs[layer],
+                decoder->mlp_node_names[layer][2], "FullyConnected",
+                &tensors[4], &tensors[5], &tensors[6], 3U, &tensors[7]
+            ) != 0U || api->graph_finalize(
+                decoder->mlp_graphs[layer], 0, 0
+            ) != 0U) return -1;
+        decoder->mlp_inputs[layer] = tensors[0];
+        decoder->mlp_outputs[layer] = tensors[7];
+        if (ids_out != 0) {
+            ids_out->mlp_input_ids[layer] = tensors[0].data.v1.id;
+            ids_out->mlp_output_ids[layer] = tensors[7].data.v1.id;
+        }
+    }
+    if (ids_out != 0) ids_out->mlp_layer_count = decoder->model.decoder_layers;
+    decoder->api = api;
+    decoder->mlp_ready = 1;
+    return 1;
 }
 
 int whisper_decoder_qnn_build(
@@ -486,7 +789,7 @@ int whisper_decoder_qnn_build(
             ids_out->output_ids[index] = decoder->outputs[index].data.v1.id;
         }
     }
-    return 1;
+    return decoder_qnn_build_mlps(decoder, api, context, ids_out);
 }
 
 int whisper_decoder_qnn_restore(
@@ -497,13 +800,19 @@ int whisper_decoder_qnn_restore(
 ) {
     u32 index;
     if (decoder == 0 || ids == 0 || ids->model_id != decoder->model.model_id ||
-        ids->output_count != decoder->output_count || api->graph_retrieve(
+        ids->output_count != decoder->output_count ||
+        ids->mlp_layer_count != decoder->model.decoder_layers ||
+        api->graph_retrieve(
             context, decoder->graph_name, &decoder->graph) != 0U) {
         return 0;
     }
     if (decoder->builder_allocation != 0) {
         VirtualFree(decoder->builder_allocation, 0U, 0x8000U);
         decoder->builder_allocation = 0;
+    }
+    if (decoder->mlp_builder_allocation != 0) {
+        VirtualFree(decoder->mlp_builder_allocation, 0U, 0x8000U);
+        decoder->mlp_builder_allocation = 0;
     }
     decoder->input = decoder_qnn_tensor(
         decoder->input_name, QNN_TENSOR_TYPE_APP_WRITE,
@@ -517,6 +826,24 @@ int whisper_decoder_qnn_restore(
         );
         decoder->outputs[index].data.v1.id = ids->output_ids[index];
     }
+    for (index = 0U; index < decoder->model.decoder_layers; ++index) {
+        if (api->graph_retrieve(
+                context, decoder->mlp_graph_names[index],
+                &decoder->mlp_graphs[index]
+            ) != 0U) return 0;
+        decoder->mlp_inputs[index] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[index][0], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        decoder->mlp_inputs[index].data.v1.id = ids->mlp_input_ids[index];
+        decoder->mlp_outputs[index] = decoder_qnn_tensor(
+            decoder->mlp_tensor_names[index][7], QNN_TENSOR_TYPE_APP_READ,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        decoder->mlp_outputs[index].data.v1.id = ids->mlp_output_ids[index];
+    }
+    decoder->api = api;
+    decoder->mlp_ready = 1;
     return 1;
 }
 
@@ -562,10 +889,62 @@ const u16 *whisper_decoder_qnn_values(const WhisperDecoderQnn *decoder) {
     return decoder == 0 ? 0 : decoder->values_cache;
 }
 
+int whisper_decoder_qnn_mlp_offload(
+    void *context,
+    u32 layer,
+    const float *normalized,
+    float *projected,
+    u64 *execute_ticks
+) {
+    WhisperDecoderQnn *decoder = (WhisperDecoderQnn *)context;
+    QnnTensor input;
+    QnnTensor output;
+    long long execute_start;
+    long long execute_end;
+    u64 status;
+    u32 index;
+    u32 vector_bytes;
+    if (execute_ticks != 0) *execute_ticks = 0U;
+    if (decoder == 0 || normalized == 0 || projected == 0 ||
+        !decoder->mlp_ready || decoder->mlp_disabled ||
+        layer >= decoder->model.decoder_layers || decoder->api == 0) return 0;
+    vector_bytes = decoder->model.width * sizeof(u16);
+    for (index = 0U; index < decoder->model.width; ++index) {
+        decoder->mlp_input_buffer[index] =
+            whisper_frontend_float_to_half(normalized[index]);
+    }
+    input = decoder->mlp_inputs[layer];
+    input.data.v1.memory.client_buffer.data = decoder->mlp_input_buffer;
+    input.data.v1.memory.client_buffer.data_size = vector_bytes;
+    output = decoder->mlp_outputs[layer];
+    output.data.v1.memory.client_buffer.data = decoder->mlp_output_buffer;
+    output.data.v1.memory.client_buffer.data_size = vector_bytes;
+    QueryPerformanceCounter(&execute_start);
+    status = decoder->api->graph_execute(
+        decoder->mlp_graphs[layer], &input, 1U, &output, 1U, 0, 0
+    );
+    QueryPerformanceCounter(&execute_end);
+    if (execute_ticks != 0) {
+        *execute_ticks = (u64)(execute_end - execute_start);
+    }
+    if (status != 0U) {
+        decoder->mlp_disabled = 1;
+        return 0;
+    }
+    for (index = 0U; index < decoder->model.width; ++index) {
+        projected[index] =
+            whisper_frontend_half_to_float(decoder->mlp_output_buffer[index]);
+    }
+    return 1;
+}
+
 void whisper_decoder_qnn_shutdown(WhisperDecoderQnn *decoder) {
     if (decoder == 0) return;
     if (decoder->builder_allocation != 0) {
         VirtualFree(decoder->builder_allocation, 0U, 0x8000U);
+    }
+    if (decoder->mlp_builder_allocation != 0) {
+        VirtualFree(decoder->mlp_builder_allocation, 0U, 0x8000U);
     }
     if (decoder->runtime_allocation != 0) {
         VirtualFree(decoder->runtime_allocation, 0U, 0x8000U);

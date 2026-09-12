@@ -5,7 +5,8 @@
 #include "whisper_model.h"
 
 enum {
-    WHISPER_DECODER_QNN_MAX_OUTPUTS = 64
+    WHISPER_DECODER_QNN_MAX_OUTPUTS = 64,
+    WHISPER_DECODER_QNN_MAX_LAYERS = 16
 };
 
 typedef struct WhisperDecoderQnn WhisperDecoderQnn;
@@ -15,6 +16,9 @@ typedef struct WhisperDecoderQnnIds {
     u32 output_count;
     u32 input_id;
     u32 output_ids[WHISPER_DECODER_QNN_MAX_OUTPUTS];
+    u32 mlp_layer_count;
+    u32 mlp_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 mlp_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
 } WhisperDecoderQnnIds;
 
 WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model);
@@ -37,6 +41,13 @@ u64 whisper_decoder_qnn_execute(
 );
 const u16 *whisper_decoder_qnn_keys(const WhisperDecoderQnn *decoder);
 const u16 *whisper_decoder_qnn_values(const WhisperDecoderQnn *decoder);
+int whisper_decoder_qnn_mlp_offload(
+    void *context,
+    u32 layer,
+    const float *normalized,
+    float *projected,
+    u64 *execute_ticks
+);
 void whisper_decoder_qnn_shutdown(WhisperDecoderQnn *decoder);
 
 #endif

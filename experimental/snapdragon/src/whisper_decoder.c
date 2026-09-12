@@ -110,6 +110,8 @@ struct WhisperDecoder {
     u16 *generated_tokens;
     u16 *selected_tokens;
     WhisperDecoderProfile profile;
+    WhisperDecoderMlpOffload mlp_offload;
+    void *mlp_offload_context;
     RtTaskPool pool;
     int pool_ready;
     float logit_maxima[RT_TASK_POOL_MAX_WORKERS];
@@ -819,13 +821,28 @@ static void cross_attention(
     }
 }
 
-static void feed_forward(WhisperDecoder *decoder, const DecoderLayerWeights *item) {
+static int feed_forward(
+    WhisperDecoder *decoder,
+    u32 layer,
+    const DecoderLayerWeights *item,
+    u64 *npu_execute_ticks
+) {
     const WhisperModelConfig *model = &decoder->model;
     u32 index;
+    *npu_execute_ticks = 0U;
     layer_norm(
         decoder->hidden, item->final_norm_weight, item->final_norm_bias,
         decoder->normalized, model->width
     );
+    if (decoder->mlp_offload != 0 && decoder->mlp_offload(
+            decoder->mlp_offload_context, layer,
+            decoder->normalized, decoder->projected, npu_execute_ticks
+        )) {
+        for (index = 0U; index < model->width; ++index) {
+            decoder->hidden[index] += decoder->projected[index];
+        }
+        return 1;
+    }
     matrix_vector_parallel(
         decoder, item->fc1_weight, decoder->normalized, item->fc1_bias,
         decoder->mlp_hidden, model->ffn_width, model->width
@@ -840,6 +857,7 @@ static void feed_forward(WhisperDecoder *decoder, const DecoderLayerWeights *ite
     for (index = 0U; index < model->width; ++index) {
         decoder->hidden[index] += decoder->projected[index];
     }
+    return 0;
 }
 
 static int suppressed_token(u32 token, int first_generated) {
@@ -977,6 +995,7 @@ static u32 decoder_step(
     u32 best = DECODER_EOT;
     u32 layer;
     u32 index;
+    u64 npu_execute_ticks;
     LogitContext logit_context;
     long long start;
     long long end;
@@ -994,9 +1013,16 @@ static u32 decoder_step(
         QueryPerformanceCounter(&end);
         decoder->profile.cross_attention_ticks += (u64)(end - start);
         QueryPerformanceCounter(&start);
-        feed_forward(decoder, &decoder->weights.layers[layer]);
+        index = (u32)feed_forward(
+            decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
+        );
         QueryPerformanceCounter(&end);
-        decoder->profile.feed_forward_ticks += (u64)(end - start);
+        decoder->profile.npu_mlp_execute_ticks += npu_execute_ticks;
+        if (index != 0U) {
+            decoder->profile.npu_feed_forward_ticks += (u64)(end - start);
+        } else {
+            decoder->profile.feed_forward_ticks += (u64)(end - start);
+        }
     }
     QueryPerformanceCounter(&start);
     layer_norm(
@@ -1137,6 +1163,8 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.self_attention_ticks = 0U;
     decoder->profile.cross_attention_ticks = 0U;
     decoder->profile.feed_forward_ticks = 0U;
+    decoder->profile.npu_feed_forward_ticks = 0U;
+    decoder->profile.npu_mlp_execute_ticks = 0U;
     decoder->profile.logits_ticks = 0U;
     decoder->profile.decoder_steps = 0U;
     decoder->profile.worker_count = rt_task_pool_width(&decoder->pool);
@@ -1206,6 +1234,16 @@ const WhisperDecoderProfile *whisper_decoder_get_profile(
     const WhisperDecoder *decoder
 ) {
     return decoder == 0 ? 0 : &decoder->profile;
+}
+
+void whisper_decoder_set_mlp_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderMlpOffload offload,
+    void *context
+) {
+    if (decoder == 0) return;
+    decoder->mlp_offload = offload;
+    decoder->mlp_offload_context = context;
 }
 
 void whisper_decoder_shutdown(WhisperDecoder *decoder) {
