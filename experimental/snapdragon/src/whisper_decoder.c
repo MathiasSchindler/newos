@@ -45,46 +45,46 @@ __declspec(dllimport) int VirtualFree(void *address, usize size, u32 free_type);
 #endif
 
 typedef struct DecoderLayerWeights {
-    float *self_norm_weight;
-    float *self_norm_bias;
-    float *self_k_weight;
-    float *self_q_weight;
-    float *self_q_bias;
-    float *self_v_weight;
-    float *self_v_bias;
-    float *self_out_weight;
-    float *self_out_bias;
-    float *cross_norm_weight;
-    float *cross_norm_bias;
-    float *cross_k_weight;
-    float *cross_q_weight;
-    float *cross_q_bias;
-    float *cross_v_weight;
-    float *cross_v_bias;
-    float *cross_out_weight;
-    float *cross_out_bias;
-    float *final_norm_weight;
-    float *final_norm_bias;
-    float *fc1_weight;
-    float *fc1_bias;
-    float *fc2_weight;
-    float *fc2_bias;
+    u16 *self_norm_weight;
+    u16 *self_norm_bias;
+    u16 *self_k_weight;
+    u16 *self_q_weight;
+    u16 *self_q_bias;
+    u16 *self_v_weight;
+    u16 *self_v_bias;
+    u16 *self_out_weight;
+    u16 *self_out_bias;
+    u16 *cross_norm_weight;
+    u16 *cross_norm_bias;
+    u16 *cross_k_weight;
+    u16 *cross_q_weight;
+    u16 *cross_q_bias;
+    u16 *cross_v_weight;
+    u16 *cross_v_bias;
+    u16 *cross_out_weight;
+    u16 *cross_out_bias;
+    u16 *final_norm_weight;
+    u16 *final_norm_bias;
+    u16 *fc1_weight;
+    u16 *fc1_bias;
+    u16 *fc2_weight;
+    u16 *fc2_bias;
 } DecoderLayerWeights;
 
 typedef struct DecoderWeights {
-    float *token_embedding;
-    float *position_embedding;
-    float *encoder_norm_weight;
-    float *encoder_norm_bias;
-    float *decoder_norm_weight;
-    float *decoder_norm_bias;
+    u16 *token_embedding;
+    u16 *position_embedding;
+    u16 *encoder_norm_weight;
+    u16 *encoder_norm_bias;
+    u16 *decoder_norm_weight;
+    u16 *decoder_norm_bias;
     DecoderLayerWeights *layers;
 } DecoderWeights;
 
 struct WhisperDecoder {
     WhisperModelConfig model;
     void *weight_allocation;
-    float *weight_storage;
+    u16 *weight_storage;
     void *token_allocation;
     u32 *token_offsets;
     u8 *token_bytes;
@@ -142,7 +142,7 @@ static int make_decoder_bundle_path(
     const char *file
 ) {
     u32 used = 0U;
-    const char *parts[4] = {prefix, model->name, "/decoder-f32/", file};
+    const char *parts[4] = {prefix, model->name, "/decoder-fp16/", file};
     u32 part;
     for (part = 0U; part < 4U; ++part) {
         const char *text = parts[part];
@@ -155,8 +155,8 @@ static int make_decoder_bundle_path(
     return 1;
 }
 
-static float *take_weights(float **cursor, u64 count) {
-    float *result = *cursor;
+static u16 *take_weights(u16 **cursor, u64 count) {
+    u16 *result = *cursor;
     *cursor += count;
     return result;
 }
@@ -258,7 +258,7 @@ static int allocate_scratch(WhisperDecoder *decoder) {
 static int bind_weights(WhisperDecoder *decoder) {
     const WhisperModelConfig *model = &decoder->model;
     DecoderWeights *weights = &decoder->weights;
-    float *cursor = decoder->weight_storage;
+    u16 *cursor = decoder->weight_storage;
     u64 width_squared = (u64)model->width * model->width;
     u32 layer;
     weights->token_embedding = take_weights(
@@ -306,7 +306,10 @@ static int bind_weights(WhisperDecoder *decoder) {
         whisper_model_decoder_float_count(model);
 }
 
-WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
+WhisperDecoder *whisper_decoder_load_with_workers(
+    const WhisperModelConfig *config,
+    u32 worker_count
+) {
     WhisperDecoder *decoder;
     void *invalid = (void *)(usize)-1;
     void *handle;
@@ -323,15 +326,15 @@ WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
     if (!whisper_model_config_valid(config) ||
         whisper_model_decoder_float_count(config) == 0U ||
         !whisper_model_size_multiply(
-            whisper_model_decoder_float_count(config), sizeof(float),
+            whisper_model_decoder_float_count(config), sizeof(u16),
             &expected_weight_bytes
         ) || expected_weight_bytes > 0xffffffffULL ||
         !make_decoder_bundle_path(
             weight_path, sizeof(weight_path),
-            "experimental/snapdragon/models/whisper-", config, "weights-f32.bin"
+            "experimental/snapdragon/models/whisper-", config, "weights-fp16.bin"
         ) || !make_decoder_bundle_path(
             weight_fallback, sizeof(weight_fallback),
-            "../models/whisper-", config, "weights-f32.bin"
+            "../models/whisper-", config, "weights-fp16.bin"
         ) || !make_decoder_bundle_path(
             token_path, sizeof(token_path),
             "experimental/snapdragon/models/whisper-", config, "token-bytes.bin"
@@ -351,7 +354,7 @@ WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
         !whisper_artifact_decode_header(header_bytes, &header) ||
         !whisper_artifact_header_valid(
             &header, config, WHISPER_ARTIFACT_PAYLOAD_DECODER_WEIGHTS,
-            WHISPER_ARTIFACT_ELEMENT_F32,
+            WHISPER_ARTIFACT_ELEMENT_F16,
             whisper_model_decoder_float_count(config),
             expected_weight_bytes
         )) {
@@ -361,7 +364,7 @@ WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
     decoder->weight_allocation = DECODER_ALLOCATE(
         0, (usize)expected_weight_bytes, 0x3000U, 0x04U
     );
-    decoder->weight_storage = (float *)decoder->weight_allocation;
+    decoder->weight_storage = (u16 *)decoder->weight_allocation;
     if (decoder->weight_storage == 0 || !read_exact(
             handle, decoder->weight_storage, (u32)expected_weight_bytes)) {
         CloseHandle(handle);
@@ -410,13 +413,17 @@ WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
             goto failure;
         }
     }
-    (void)rt_task_pool_init(&decoder->pool, 0U);
+    (void)rt_task_pool_init(&decoder->pool, worker_count);
     decoder->pool_ready = 1;
     return decoder;
 
 failure:
     whisper_decoder_shutdown(decoder);
     return 0;
+}
+
+WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *config) {
+    return whisper_decoder_load_with_workers(config, 0U);
 }
 
 static float dot_product(const float *left, const float *right, u32 count) {
@@ -428,24 +435,25 @@ static float dot_product(const float *left, const float *right, u32 count) {
     return sum[0] + sum[1] + sum[2] + sum[3];
 }
 
-static float dot_product_unrolled(const float *left, const float *right, u32 count) {
+static float dot_product_fp16(const u16 *left, const float *right, u32 count) {
     f32x4 sum0 = {0.0f, 0.0f, 0.0f, 0.0f};
     f32x4 sum1 = {0.0f, 0.0f, 0.0f, 0.0f};
     f32x4 sum2 = {0.0f, 0.0f, 0.0f, 0.0f};
     f32x4 sum3 = {0.0f, 0.0f, 0.0f, 0.0f};
     u32 index;
     for (index = 0U; index + 16U <= count; index += 16U) {
-        sum0 += *(const f32x4 *)(left + index) *
+        sum0 += __builtin_convertvector(*(const f16x4 *)(left + index), f32x4) *
             *(const f32x4 *)(right + index);
-        sum1 += *(const f32x4 *)(left + index + 4U) *
+        sum1 += __builtin_convertvector(*(const f16x4 *)(left + index + 4U), f32x4) *
             *(const f32x4 *)(right + index + 4U);
-        sum2 += *(const f32x4 *)(left + index + 8U) *
+        sum2 += __builtin_convertvector(*(const f16x4 *)(left + index + 8U), f32x4) *
             *(const f32x4 *)(right + index + 8U);
-        sum3 += *(const f32x4 *)(left + index + 12U) *
+        sum3 += __builtin_convertvector(*(const f16x4 *)(left + index + 12U), f32x4) *
             *(const f32x4 *)(right + index + 12U);
     }
     for (; index + 4U <= count; index += 4U) {
-        sum0 += *(const f32x4 *)(left + index) * *(const f32x4 *)(right + index);
+        sum0 += __builtin_convertvector(*(const f16x4 *)(left + index), f32x4) *
+            *(const f32x4 *)(right + index);
     }
     sum0 += sum1;
     sum2 += sum3;
@@ -454,9 +462,9 @@ static float dot_product_unrolled(const float *left, const float *right, u32 cou
 }
 
 typedef struct MatrixVectorContext {
-    const float *matrix;
+    const u16 *matrix;
     const float *input;
-    const float *bias;
+    const u16 *bias;
     float *output;
     u32 columns;
 } MatrixVectorContext;
@@ -471,35 +479,36 @@ static int matrix_vector_range(
     size_t row;
     (void)worker_index;
     for (row = begin; row < end; ++row) {
-        context->output[row] = dot_product(
+        context->output[row] = dot_product_fp16(
             context->matrix + row * context->columns,
             context->input,
             context->columns
-        ) + (context->bias == 0 ? 0.0f : context->bias[row]);
+        ) + (context->bias == 0 ? 0.0f :
+            whisper_frontend_half_to_float(context->bias[row]));
     }
     return 0;
 }
 
 static void matrix_vector_serial(
-    const float *matrix,
+    const u16 *matrix,
     const float *input,
-    const float *bias,
+    const u16 *bias,
     float *output,
     u32 rows,
     u32 columns
 ) {
     u32 row;
     for (row = 0U; row < rows; ++row) {
-        output[row] = dot_product(matrix + row * columns, input, columns) +
-            (bias == 0 ? 0.0f : bias[row]);
+        output[row] = dot_product_fp16(matrix + row * columns, input, columns) +
+            (bias == 0 ? 0.0f : whisper_frontend_half_to_float(bias[row]));
     }
 }
 
 static void matrix_vector_parallel(
     WhisperDecoder *decoder,
-    const float *matrix,
+    const u16 *matrix,
     const float *input,
-    const float *bias,
+    const u16 *bias,
     float *output,
     u32 rows,
     u32 columns
@@ -516,25 +525,25 @@ static void matrix_vector_parallel(
 }
 
 static void matrix_vector_fp16(
-    const float *matrix,
+    const u16 *matrix,
     const float *input,
-    const float *bias,
+    const u16 *bias,
     u16 *output,
     u32 rows,
     u32 columns
 ) {
     u32 row;
     for (row = 0U; row < rows; ++row) {
-        float value = dot_product(matrix + row * columns, input, columns) +
-            (bias == 0 ? 0.0f : bias[row]);
+        float value = dot_product_fp16(matrix + row * columns, input, columns) +
+            (bias == 0 ? 0.0f : whisper_frontend_half_to_float(bias[row]));
         output[row] = whisper_frontend_float_to_half(value);
     }
 }
 
 static void layer_norm(
     const float *input,
-    const float *scale,
-    const float *bias,
+    const u16 *scale,
+    const u16 *bias,
     float *output,
     u32 width
 ) {
@@ -550,7 +559,9 @@ static void layer_norm(
     }
     inverse = 1.0 / math_sqrt(squared_sum / width + 1.0e-5);
     for (index = 0U; index < width; ++index) {
-        output[index] = (float)(((input[index] - sum) * inverse) * scale[index] + bias[index]);
+        output[index] = (float)(((input[index] - sum) * inverse) *
+            whisper_frontend_half_to_float(scale[index]) +
+            whisper_frontend_half_to_float(bias[index]));
     }
 }
 
@@ -652,18 +663,6 @@ static void import_cross_attention_cache(
     decoder->cross_value_cache = values;
 }
 
-static float dot_product_fp16(const float *left, const u16 *right, u32 count) {
-    f32x4 sum = {0.0f, 0.0f, 0.0f, 0.0f};
-    u32 index;
-    for (index = 0U; index + 4U <= count; index += 4U) {
-        f32x4 converted = __builtin_convertvector(
-            *(const f16x4 *)(right + index), f32x4
-        );
-        sum += *(const f32x4 *)(left + index) * converted;
-    }
-    return sum[0] + sum[1] + sum[2] + sum[3];
-}
-
 static void self_attention(
     WhisperDecoder *decoder,
     u32 layer,
@@ -761,8 +760,8 @@ static int cross_attention_head_range(
             (u64)head * model->encoder_frames;
         for (frame = 0U; frame < model->encoder_frames; ++frame) {
             head_scores[frame] = dot_product_fp16(
-                decoder->query + head * head_width,
                 layer_keys + (u64)frame * model->width + head * head_width,
+                decoder->query + head * head_width,
                 head_width
             ) * 0.125f;
         }
@@ -942,7 +941,7 @@ static int logit_partition_range(
                 if (token == context->forbidden_tokens[forbidden_index]) break;
             }
             if (forbidden_index != context->forbidden_count) continue;
-            logit = dot_product_unrolled(
+            logit = dot_product_fp16(
                 decoder->weights.token_embedding + (u64)token * model->width,
                 decoder->normalized,
                 model->width
@@ -970,9 +969,9 @@ static u32 decoder_step(
     u32 sample_seed
 ) {
     const WhisperModelConfig *model = &decoder->model;
-    const float *embedding = decoder->weights.token_embedding +
+    const u16 *embedding = decoder->weights.token_embedding +
         (u64)token * model->width;
-    const float *position_values = decoder->weights.position_embedding +
+    const u16 *position_values = decoder->weights.position_embedding +
         (u64)position * model->width;
     float maximum = -3.402823466e+38f;
     u32 best = DECODER_EOT;
@@ -982,7 +981,8 @@ static u32 decoder_step(
     long long start;
     long long end;
     for (index = 0U; index < model->width; ++index) {
-        decoder->hidden[index] = embedding[index] + position_values[index];
+        decoder->hidden[index] = whisper_frontend_half_to_float(embedding[index]) +
+            whisper_frontend_half_to_float(position_values[index]);
     }
     for (layer = 0U; layer < model->decoder_layers; ++layer) {
         QueryPerformanceCounter(&start);
@@ -1117,7 +1117,7 @@ static int whisper_decoder_transcribe_impl(
     static const float temperatures[] = {0.0f, 0.2f, 0.4f, 0.6f};
     enum { PROMPT_TOKENS = 4 };
     u32 attempt_count = decoder != 0 &&
-        decoder->model.model_id == WHISPER_MODEL_ID_BASE ?
+        decoder->model.model_id != WHISPER_MODEL_ID_TINY ?
         (u32)(sizeof(temperatures) / sizeof(temperatures[0])) : 1U;
     u32 selected_count = 0U;
     u32 selected_penalty = ~0U;

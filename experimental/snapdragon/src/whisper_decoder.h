@@ -20,6 +20,10 @@ typedef struct WhisperDecoderProfile {
 } WhisperDecoderProfile;
 
 WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *model);
+WhisperDecoder *whisper_decoder_load_with_workers(
+    const WhisperModelConfig *model,
+    unsigned int worker_count
+);
 int whisper_decoder_transcribe(
     WhisperDecoder *decoder,
     const unsigned short *encoder_output,

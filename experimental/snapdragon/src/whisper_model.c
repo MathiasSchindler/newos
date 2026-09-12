@@ -38,6 +38,20 @@ static const WhisperModelConfig base_config = {
     WHISPER_BASE_ENCODER_FRAMES
 };
 
+static const WhisperModelConfig small_config = {
+    WHISPER_MODEL_ID_SMALL,
+    "small",
+    WHISPER_SMALL_WIDTH,
+    WHISPER_SMALL_FFN_WIDTH,
+    WHISPER_SMALL_ATTENTION_HEADS,
+    WHISPER_SMALL_ENCODER_LAYERS,
+    WHISPER_SMALL_DECODER_LAYERS,
+    WHISPER_SMALL_VOCABULARY_SIZE,
+    WHISPER_SMALL_TEXT_CONTEXT,
+    WHISPER_SMALL_MEL_BINS,
+    WHISPER_SMALL_ENCODER_FRAMES
+};
+
 _Static_assert(WHISPER_TINY_DECODER_FLOAT_COUNT == 29553024,
     "Whisper Tiny decoder weight count changed");
 _Static_assert(WHISPER_TINY_CROSS_KV_WEIGHT_VALUES == 1181952,
@@ -49,6 +63,10 @@ const WhisperModelConfig *whisper_model_tiny(void) {
 
 const WhisperModelConfig *whisper_model_base(void) {
     return &base_config;
+}
+
+const WhisperModelConfig *whisper_model_small(void) {
+    return &small_config;
 }
 
 int whisper_model_config_valid(const WhisperModelConfig *config) {

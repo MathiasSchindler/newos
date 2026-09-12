@@ -18,6 +18,7 @@ typedef struct WhisperModelConfig {
 enum {
     WHISPER_MODEL_ID_TINY = 1,
     WHISPER_MODEL_ID_BASE = 2,
+    WHISPER_MODEL_ID_SMALL = 3,
     WHISPER_TINY_WIDTH = 384,
     WHISPER_TINY_FFN_WIDTH = 1536,
     WHISPER_TINY_ATTENTION_HEADS = 6,
@@ -47,11 +48,21 @@ enum {
     WHISPER_BASE_VOCABULARY_SIZE = 51865,
     WHISPER_BASE_TEXT_CONTEXT = 448,
     WHISPER_BASE_MEL_BINS = 80,
-    WHISPER_BASE_ENCODER_FRAMES = 1500
+    WHISPER_BASE_ENCODER_FRAMES = 1500,
+    WHISPER_SMALL_WIDTH = 768,
+    WHISPER_SMALL_FFN_WIDTH = 3072,
+    WHISPER_SMALL_ATTENTION_HEADS = 12,
+    WHISPER_SMALL_ENCODER_LAYERS = 12,
+    WHISPER_SMALL_DECODER_LAYERS = 12,
+    WHISPER_SMALL_VOCABULARY_SIZE = 51865,
+    WHISPER_SMALL_TEXT_CONTEXT = 448,
+    WHISPER_SMALL_MEL_BINS = 80,
+    WHISPER_SMALL_ENCODER_FRAMES = 1500
 };
 
 const WhisperModelConfig *whisper_model_tiny(void);
 const WhisperModelConfig *whisper_model_base(void);
+const WhisperModelConfig *whisper_model_small(void);
 int whisper_model_config_valid(const WhisperModelConfig *config);
 int whisper_model_size_add(
     unsigned long long left,

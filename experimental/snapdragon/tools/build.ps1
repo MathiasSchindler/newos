@@ -72,6 +72,14 @@ try {
         @npuLinkFlags -o "$BuildDir/npu_probe_builder.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe_builder.exe" }
     Write-Output "Built $BuildDir/npu_probe_builder.exe"
+
+    & $compilerPath @flags `
+        experimental/snapdragon/src/decoder_kernel_benchmark.c `
+        src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
+        src/platform/windows/thread.c `
+        @npuLinkFlags -o "$BuildDir/decoder_kernel_benchmark.exe"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build decoder_kernel_benchmark.exe" }
+    Write-Output "Built $BuildDir/decoder_kernel_benchmark.exe"
 } finally {
     Pop-Location
 }

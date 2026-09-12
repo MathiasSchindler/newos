@@ -18,7 +18,7 @@ __declspec(dllimport) void *VirtualAlloc(
 __declspec(dllimport) int VirtualFree(void *address, usize size, u32 free_type);
 
 enum {
-    ENCODER_QNN_MAX_LAYERS = 8,
+    ENCODER_QNN_MAX_LAYERS = 16,
     ENCODER_QNN_NAME_CAPACITY = 64,
     ENCODER_QNN_PATH_CAPACITY = 192,
     ENCODER_QNN_PROJECTIONS = 3,

@@ -102,11 +102,11 @@ Exit criteria: Base completes native long-form transcription without code copied
 
 ### Phase 6: Weight traffic and Whisper Small
 
-- [ ] Implement and validate FP16 decoder-weight storage with FP32 accumulation, beginning with embeddings and MLP matrices.
-- [ ] Benchmark kernel tiling and worker partitioning separately for widths 384, 512, and 768.
-- [ ] Measure resident/committed memory rather than relying only on artifact size.
-- [ ] Add the pinned Small checkpoint only after the Base path and FP16 weight path are stable.
-- [ ] Reconsider additional QNN decoder offload only if persistent device memory/state becomes available.
+- [x] Implement and validate FP16 decoder-weight storage with FP32 accumulation, beginning with embeddings and MLP matrices.
+- [x] Benchmark kernel tiling and worker partitioning separately for widths 384, 512, and 768.
+- [x] Measure resident/committed memory rather than relying only on artifact size.
+- [x] Add the pinned Small checkpoint only after the Base path and FP16 weight path are stable.
+- [x] Reconsider additional QNN decoder offload only if persistent device memory/state becomes available.
 
 Exit criteria: Small runs within an explicit memory budget and its speed/quality tradeoff is documented.
 
@@ -132,3 +132,5 @@ For artifact-format changes, additionally test bad magic, unsupported version, d
 - 2026-09-12: Completed Phase 4 with model-derived QNN graph/tensor names, bounded decoder output IDs, model-specific context artifacts, an explicit `WhisperDecoderQnn`, and separate 33,280-byte runtime and 90,112-byte cache-builder binaries. Tiny context build/restore works on HTP, wrong-model metadata is rejected, and the 538-byte quiet transcript remains byte-identical.
 - 2026-09-12: Completed Phase 5 with the pinned multilingual Base checkpoint and complete version-2 decoder, token, cross-K/V, frontend, and six-layer encoder bundles. The 49,713,552-byte Base context builds, restores, and executes on HTP; a 30-second window completed in 2.133 seconds with 114 generated tokens, and the 35-second quiet path emitted 539 bytes of strict UTF-8 with empty stderr. Peak working set was 362,921,984 bytes versus Tiny's 217,350,144 bytes. Tiny still produced 92 tokens in 1.073 seconds on the matched window, but its transcript repeated and lost substantially more content than Base.
 - 2026-09-12: Added a Base-only deterministic temperature fallback for greedy results with excessive repeated token bigrams and trigrams. The previously collapsed 300-second hearing window now emits a coherent 475-byte passage; reruns are byte-identical, while the established 539-byte Base and 538-byte Tiny fixtures remain unchanged.
+- 2026-09-12: Completed Phase 6 with homogeneous FP16 decoder bundles and FP32 activation/accumulation. Tiny and Base decoder storage fell from 118,212,192 to 59,106,144 bytes and from 208,017,504 to 104,008,800 bytes while preserving their established transcripts. A freestanding ARM64 benchmark now sweeps 1/2/4/8 accumulator kernels and 1/4/8/12 worker partitions at widths 384, 512, and 768; repeated checksum-identical runs showed dimension and power-state sensitivity, so the stable four-accumulator production kernel and explicit worker override remain preferable to an unverified universal specialization.
+- 2026-09-12: Added pinned multilingual Small with width 768 and 12 encoder/decoder layers. Its 307,164,768-byte FP16 decoder, 28,333,152-byte cross-K/V bundle, and 210,792,448-byte serialized QNN context restore and execute successfully. The reference window produced a coherent 107-token German transcript in 17.200 seconds total. Peak working set was 715,628,544 bytes and private committed memory was 494,174,208 bytes, satisfying the explicit limits of 768 MiB resident and 512 MiB private. CPU cross-attention and feed-forward remain dominant; per-token QNN decoder offload is still rejected until persistent device-resident mutable state is available.

@@ -126,7 +126,7 @@ static int make_weight_path(
     u32 used = 0U;
     return append_text(output, capacity, &used, prefix) &&
         append_text(output, capacity, &used, model->name) &&
-        append_text(output, capacity, &used, "/decoder-f32/cross-kv-fp16.bin");
+        append_text(output, capacity, &used, "/decoder-fp16/cross-kv-fp16.bin");
 }
 
 static int initialize_names(WhisperDecoderQnn *decoder) {

@@ -95,12 +95,12 @@ try {
         src/platform/windows/thread.c `
         -o $decoderTestPath
     if ($LASTEXITCODE -ne 0) { throw "Failed to build decoder cleanup test" }
-    $decoderAssetDirectory = Join-Path $testRoot "experimental/snapdragon/models/whisper-tiny/decoder-f32"
+    $decoderAssetDirectory = Join-Path $testRoot "experimental/snapdragon/models/whisper-tiny/decoder-fp16"
     New-Item -ItemType Directory -Force -Path $decoderAssetDirectory | Out-Null
-    $decoderSourceDirectory = Join-Path $repoRoot "experimental/snapdragon/models/whisper-tiny/decoder-f32"
+    $decoderSourceDirectory = Join-Path $repoRoot "experimental/snapdragon/models/whisper-tiny/decoder-fp16"
     New-Item -ItemType HardLink `
-        -Path (Join-Path $decoderAssetDirectory "weights-f32.bin") `
-        -Target (Join-Path $decoderSourceDirectory "weights-f32.bin") | Out-Null
+        -Path (Join-Path $decoderAssetDirectory "weights-fp16.bin") `
+        -Target (Join-Path $decoderSourceDirectory "weights-fp16.bin") | Out-Null
     New-Item -ItemType HardLink `
         -Path (Join-Path $decoderAssetDirectory "token-bytes.bin") `
         -Target (Join-Path $decoderSourceDirectory "token-bytes.bin") | Out-Null

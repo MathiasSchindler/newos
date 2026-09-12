@@ -205,11 +205,11 @@ def bytes_to_unicode():
 
 def export_weights(model, spec, output):
     contract = decoder_tensor_contract(spec)
-    float_count = sum(int(np.prod(shape)) for _, shape in contract)
-    with ArtifactWriter(output, spec, PAYLOAD_DECODER_WEIGHTS, ELEMENT_F32, float_count) as artifact:
+    value_count = sum(int(np.prod(shape)) for _, shape in contract)
+    with ArtifactWriter(output, spec, PAYLOAD_DECODER_WEIGHTS, ELEMENT_F16, value_count) as artifact:
         for name, shape in contract:
-            artifact.write(np.asarray(model.f32(name, shape), dtype="<f4"))
-    return contract, float_count
+            artifact.write(np.asarray(model.f32(name, shape), dtype="<f2"))
+    return contract, value_count
 
 
 def export_tokens(vocab_path, spec, output):
@@ -323,13 +323,13 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     model_dir = (args.model_dir or snapdragon_dir / "models" / f"whisper-{args.model}").resolve()
-    output_dir = (args.output_dir or model_dir / "decoder-f32").resolve()
+    output_dir = (args.output_dir or model_dir / "decoder-fp16").resolve()
     model_path = model_dir / "model.safetensors"
     spec = load_model_spec(args.catalog.resolve(), args.model, model_dir)
     if sha256(model_path) != spec["sha256"]:
         raise ValueError("model SHA-256 does not match the pinned catalog entry")
     output_dir.mkdir(parents=True, exist_ok=True)
-    weights_path = output_dir / "weights-f32.bin"
+    weights_path = output_dir / "weights-fp16.bin"
     tokens_path = output_dir / "token-bytes.bin"
     cross_kv_path = output_dir / "cross-kv-fp16.bin"
     encoder_dir = model_dir / "encoder-fp16"

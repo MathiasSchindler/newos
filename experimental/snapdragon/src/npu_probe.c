@@ -140,6 +140,7 @@ static u32 frontend_bias_dimensions[1] = {WHISPER_HIDDEN_SIZE};
 static char external_wav_path[512];
 static int quiet_output;
 static int command_argument_error;
+static u32 decoder_worker_count;
 
 typedef struct WavManifestReader {
     void *handle;
@@ -185,16 +186,34 @@ enum {
     8U + 10U * 4U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U
 };
 
+typedef struct ProcessMemoryCounters {
+    u32 size;
+    u32 page_fault_count;
+    usize peak_working_set_size;
+    usize working_set_size;
+    usize quota_peak_paged_pool_usage;
+    usize quota_paged_pool_usage;
+    usize quota_peak_nonpaged_pool_usage;
+    usize quota_nonpaged_pool_usage;
+    usize pagefile_usage;
+    usize peak_pagefile_usage;
+    usize private_usage;
+} ProcessMemoryCounters;
+
 __declspec(dllimport) int CloseHandle(void *handle);
 __declspec(dllimport) void *CreateFileA(const char *name, u32 access, u32 sharing, void *security, u32 creation, u32 attributes, void *template_file);
 __declspec(dllimport) void ExitProcess(u32 exit_code);
 __declspec(dllimport) char *GetCommandLineA(void);
+__declspec(dllimport) void *GetCurrentProcess(void);
 __declspec(dllimport) int GetConsoleMode(void *console, u32 *mode);
 __declspec(dllimport) u32 GetConsoleOutputCP(void);
 __declspec(dllimport) void *GetProcAddress(void *module, const char *name);
 __declspec(dllimport) u32 GetLastError(void);
 __declspec(dllimport) void *GetStdHandle(u32 handle_id);
 __declspec(dllimport) void *LoadLibraryA(const char *name);
+__declspec(dllimport) int K32GetProcessMemoryInfo(
+    void *process, ProcessMemoryCounters *counters, u32 size
+);
 __declspec(dllimport) int QueryPerformanceCounter(long long *value);
 __declspec(dllimport) int QueryPerformanceFrequency(long long *value);
 __declspec(dllimport) int ReadFile(void *handle, void *buffer, u32 size, u32 *read, void *overlapped);
@@ -291,6 +310,18 @@ static int argument_has_prefix(const char *text, const char *prefix) {
     return *prefix == '\0';
 }
 
+static int parse_worker_count(const char *text, u32 *value) {
+    u32 parsed = 0U;
+    if (*text == '\0') return 0;
+    while (*text != '\0') {
+        if (*text < '0' || *text > '9' || parsed > 3U) return 0;
+        parsed = parsed * 10U + (u32)(*text++ - '0');
+    }
+    if (parsed == 0U || parsed > 32U) return 0;
+    *value = parsed;
+    return 1;
+}
+
 static const char *first_command_argument(void) {
     const char *cursor = GetCommandLineA();
     int result;
@@ -319,6 +350,19 @@ static const char *first_command_argument(void) {
         }
         if (argument_equals(external_wav_path, "--model=base")) {
             active_model = whisper_model_base();
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--model=small")) {
+            active_model = whisper_model_small();
+            continue;
+        }
+        if (argument_has_prefix(external_wav_path, "--decoder-workers=")) {
+            if (!parse_worker_count(
+                    external_wav_path + 18U, &decoder_worker_count
+                )) {
+                command_argument_error = 1;
+                return 0;
+            }
             continue;
         }
         if (argument_has_prefix(external_wav_path, "--model=")) {
@@ -456,6 +500,21 @@ static void write_u64(u64 value) {
         value /= 10U;
     } while (value != 0U);
     while (used != 0U) write_bytes(&digits[--used], 1U);
+}
+
+static void write_process_memory(void) {
+    ProcessMemoryCounters counters;
+    counters.size = sizeof(counters);
+    if (!K32GetProcessMemoryInfo(
+            GetCurrentProcess(), &counters, sizeof(counters)
+        )) return;
+    write_text("  process peak resident bytes: ");
+    write_u64(counters.peak_working_set_size);
+    write_text("\n  process resident bytes: ");
+    write_u64(counters.working_set_size);
+    write_text("\n  process private committed bytes: ");
+    write_u64(counters.private_usage);
+    write_text("\n");
 }
 
 static int text_has_prefix(const char *text, const char *prefix) {
@@ -3838,6 +3897,7 @@ static u32 run_external_wav_window(
             "  CPU final norm/logits", decoder_profile->logits_ticks,
             frequency
         );
+        write_process_memory();
         if (decoder_tokens < 0) result = 109U;
     }
     QueryPerformanceCounter(&window_end);
@@ -3917,7 +3977,7 @@ void mainCRTStartup(void) {
     if (!initialize_model_context_paths(active_model)) finish(117U);
     if (command_argument_error) {
         static const char usage[] =
-            "Usage: npu_probe.exe [--model=tiny|base] [--quiet] <wav-path>\n";
+            "Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--quiet] <wav-path>\n";
         write_raw_bytes(usage, sizeof(usage) - 1U);
         finish(116U);
     }
@@ -4056,7 +4116,9 @@ void mainCRTStartup(void) {
             exit_status = 107U;
         }
         if (exit_status == 0U &&
-            (whisper_decoder = whisper_decoder_load(active_model)) == 0) {
+            (whisper_decoder = whisper_decoder_load_with_workers(
+                active_model, decoder_worker_count
+            )) == 0) {
             write_text("Whisper decoder artifacts are missing or invalid.\n");
             exit_status = 108U;
         }
@@ -4164,7 +4226,7 @@ void mainCRTStartup(void) {
     }
 
 #if defined(WHISPER_RUNTIME_ONLY)
-    write_text("Usage: npu_probe.exe [--model=tiny|base] [--quiet] <wav-path>\n");
+    write_text("Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--quiet] <wav-path>\n");
     exit_status = 116U;
     goto cleanup;
 #else
