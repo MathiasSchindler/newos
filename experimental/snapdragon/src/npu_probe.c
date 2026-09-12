@@ -1,16 +1,18 @@
 #include "qnn_abi.h"
+#include "whisper_artifact.h"
 #include "whisper_decoder.h"
 #include "whisper_decoder_qnn.h"
+#include "whisper_encoder_qnn.h"
 #include "whisper_frontend.h"
 
 typedef unsigned long long usize;
 
 enum {
-    TINY_WIDTH = 384,
-    TINY_MLP_WIDTH = 1536,
-    TINY_SEQUENCE_LENGTH = 1500,
-    TINY_ATTENTION_HEADS = 6,
-    TINY_ATTENTION_HEAD_WIDTH = 64,
+    TINY_WIDTH = WHISPER_TINY_WIDTH,
+    TINY_MLP_WIDTH = WHISPER_TINY_FFN_WIDTH,
+    TINY_SEQUENCE_LENGTH = WHISPER_TINY_ENCODER_FRAMES,
+    TINY_ATTENTION_HEADS = WHISPER_TINY_ATTENTION_HEADS,
+    TINY_ATTENTION_HEAD_WIDTH = WHISPER_TINY_WIDTH / WHISPER_TINY_ATTENTION_HEADS,
     ATTENTION_PROJECTION_COUNT = 3,
     BENCHMARK_WARMUPS = 10,
     BENCHMARK_SAMPLES = 100
@@ -116,7 +118,12 @@ static u16 frontend_expected[WHISPER_ENCODER_FRAMES * WHISPER_HIDDEN_SIZE];
 static QnnGraphHandle frontend_graphs[2];
 static QnnTensor frontend_inputs[2];
 static QnnTensor frontend_outputs[2];
+static WhisperEncoderQnnIds encoder_qnn_ids;
+static WhisperEncoderQnn *whisper_encoder_qnn;
 static WhisperDecoderQnnIds decoder_qnn_ids;
+static WhisperDecoderQnn *whisper_decoder_qnn;
+static WhisperDecoder *whisper_decoder;
+static const WhisperModelConfig *active_model;
 static u32 frontend_input_dimensions[2][2] = {
     {WHISPER_FRAME_COUNT, WHISPER_MEL_BINS * 3U},
     {WHISPER_ENCODER_FRAMES, WHISPER_HIDDEN_SIZE * 3U}
@@ -164,25 +171,19 @@ static int capture_decoder_output;
 static char stitched_transcript[STITCHED_TRANSCRIPT_CAPACITY];
 static u32 stitched_transcript_size;
 
-typedef struct ModelContextCacheHeader {
-    u64 magic;
+typedef struct ModelContextCacheMetadata {
     u64 binary_size;
-    u32 version;
-    u32 frontend1_input_id;
-    u32 frontend1_output_id;
-    u32 frontend2_input_id;
-    u32 frontend2_output_id;
-    u32 input_id;
-    u32 output_id;
+    WhisperEncoderQnnIds encoder;
     WhisperDecoderQnnIds decoder;
-    u32 reserved;
-} ModelContextCacheHeader;
+} ModelContextCacheMetadata;
 
-#define MODEL_CONTEXT_CACHE_MAGIC 0x31484341434e4e51ULL
-#define MODEL_CONTEXT_CACHE_VERSION 4U
-#define MODEL_CONTEXT_CACHE_PRIMARY \
-    "experimental/snapdragon/build/whisper-tiny-encoder-fp16.qnnctx"
-#define MODEL_CONTEXT_CACHE_LOCAL "whisper-tiny-encoder-fp16.qnnctx"
+static char model_context_cache_primary[192];
+static char model_context_cache_local[96];
+
+enum {
+    MODEL_CONTEXT_CACHE_METADATA_SIZE =
+    8U + 10U * 4U + WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U
+};
 
 __declspec(dllimport) int CloseHandle(void *handle);
 __declspec(dllimport) void *CreateFileA(const char *name, u32 access, u32 sharing, void *security, u32 creation, u32 attributes, void *template_file);
@@ -215,6 +216,44 @@ static usize text_length(const char *text) {
     return length;
 }
 
+static int append_path_text(
+    char *path,
+    u32 capacity,
+    u32 *used,
+    const char *text
+) {
+    while (*text != '\0') {
+        if (*used + 1U >= capacity) return 0;
+        path[(*used)++] = *text++;
+    }
+    path[*used] = '\0';
+    return 1;
+}
+
+static int initialize_model_context_paths(const WhisperModelConfig *model) {
+    u32 primary_used = 0U;
+    u32 local_used = 0U;
+    return append_path_text(
+            model_context_cache_primary, sizeof(model_context_cache_primary),
+            &primary_used, "experimental/snapdragon/build/whisper-"
+        ) && append_path_text(
+            model_context_cache_primary, sizeof(model_context_cache_primary),
+            &primary_used, model->name
+        ) && append_path_text(
+            model_context_cache_primary, sizeof(model_context_cache_primary),
+            &primary_used, "-encoder-fp16.qnnctx"
+        ) && append_path_text(
+            model_context_cache_local, sizeof(model_context_cache_local),
+            &local_used, "whisper-"
+        ) && append_path_text(
+            model_context_cache_local, sizeof(model_context_cache_local),
+            &local_used, model->name
+        ) && append_path_text(
+            model_context_cache_local, sizeof(model_context_cache_local),
+            &local_used, "-encoder-fp16.qnnctx"
+        );
+}
+
 static int read_command_argument(const char **command, char *output, u32 capacity) {
     const char *cursor = *command;
     u32 quoted = 0U;
@@ -236,6 +275,22 @@ static int read_command_argument(const char **command, char *output, u32 capacit
     return length == 0U ? 0 : 1;
 }
 
+static int argument_equals(const char *left, const char *right) {
+    while (*left != '\0' && *left == *right) {
+        ++left;
+        ++right;
+    }
+    return *left == '\0' && *right == '\0';
+}
+
+static int argument_has_prefix(const char *text, const char *prefix) {
+    while (*prefix != '\0' && *text == *prefix) {
+        ++text;
+        ++prefix;
+    }
+    return *prefix == '\0';
+}
+
 static const char *first_command_argument(void) {
     const char *cursor = GetCommandLineA();
     int result;
@@ -248,36 +303,41 @@ static const char *first_command_argument(void) {
     } else {
         while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t') ++cursor;
     }
-    result = read_command_argument(&cursor, external_wav_path, sizeof(external_wav_path));
-    if (result <= 0) {
-        command_argument_error = result < 0;
-        return 0;
-    }
-    if (external_wav_path[0] == '-' && external_wav_path[1] == '-' &&
-        external_wav_path[2] == 'q' && external_wav_path[3] == 'u' &&
-        external_wav_path[4] == 'i' && external_wav_path[5] == 'e' &&
-        external_wav_path[6] == 't' && external_wav_path[7] == '\0') {
-        quiet_output = 1;
+    for (;;) {
         result = read_command_argument(&cursor, external_wav_path, sizeof(external_wav_path));
-        if (result != 1) {
+        if (result <= 0) {
+            command_argument_error = result < 0;
+            return 0;
+        }
+        if (argument_equals(external_wav_path, "--quiet")) {
+            quiet_output = 1;
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--model=tiny")) {
+            active_model = whisper_model_tiny();
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--model=base")) {
+            active_model = whisper_model_base();
+            continue;
+        }
+        if (argument_has_prefix(external_wav_path, "--model=")) {
             command_argument_error = 1;
             return 0;
         }
-    } else if (external_wav_path[0] == '-' && external_wav_path[1] == '-' &&
-               external_wav_path[2] == 'q' && external_wav_path[3] == 'u' &&
-               external_wav_path[4] == 'i' && external_wav_path[5] == 'e' &&
-               external_wav_path[6] == 't' && external_wav_path[7] == '=') {
-        quiet_output = 1;
-        index = 8U;
-        if (external_wav_path[index] == '\0') {
-            command_argument_error = 1;
-            return 0;
+        if (argument_has_prefix(external_wav_path, "--quiet=")) {
+            quiet_output = 1;
+            index = 8U;
+            if (external_wav_path[index] == '\0') {
+                command_argument_error = 1;
+                return 0;
+            }
+            do {
+                external_wav_path[index - 8U] = external_wav_path[index];
+            } while (external_wav_path[index++] != '\0');
         }
-        do {
-            external_wav_path[index - 8U] = external_wav_path[index];
-        } while (external_wav_path[index++] != '\0');
+        return external_wav_path;
     }
-    return external_wav_path;
 }
 
 static int wav_manifest_open(WavManifestReader *reader, const char *path) {
@@ -742,6 +802,69 @@ static int write_handle_exact(void *handle, const void *buffer, u64 size) {
         size -= count;
     }
     return 1;
+}
+
+static u32 cache_read_u32(const u8 *bytes) {
+    return (u32)bytes[0] | ((u32)bytes[1] << 8U) |
+        ((u32)bytes[2] << 16U) | ((u32)bytes[3] << 24U);
+}
+
+static u64 cache_read_u64(const u8 *bytes) {
+    return (u64)cache_read_u32(bytes) | ((u64)cache_read_u32(bytes + 4U) << 32U);
+}
+
+static void cache_write_u32(u8 *bytes, u32 value) {
+    bytes[0] = (u8)value;
+    bytes[1] = (u8)(value >> 8U);
+    bytes[2] = (u8)(value >> 16U);
+    bytes[3] = (u8)(value >> 24U);
+}
+
+static void cache_write_u64(u8 *bytes, u64 value) {
+    cache_write_u32(bytes, (u32)value);
+    cache_write_u32(bytes + 4U, (u32)(value >> 32U));
+}
+
+static void encode_model_context_metadata(
+    u8 output[MODEL_CONTEXT_CACHE_METADATA_SIZE],
+    const ModelContextCacheMetadata *metadata
+) {
+    u32 index;
+    cache_write_u64(output, metadata->binary_size);
+    cache_write_u32(output + 8U, metadata->encoder.model_id);
+    cache_write_u32(output + 12U, metadata->decoder.model_id);
+    cache_write_u32(output + 16U, metadata->decoder.output_count);
+    cache_write_u32(output + 20U, metadata->encoder.frontend_input_ids[0]);
+    cache_write_u32(output + 24U, metadata->encoder.frontend_output_ids[0]);
+    cache_write_u32(output + 28U, metadata->encoder.frontend_input_ids[1]);
+    cache_write_u32(output + 32U, metadata->encoder.frontend_output_ids[1]);
+    cache_write_u32(output + 36U, metadata->encoder.encoder_input_id);
+    cache_write_u32(output + 40U, metadata->encoder.encoder_output_id);
+    cache_write_u32(output + 44U, metadata->decoder.input_id);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_OUTPUTS; ++index) {
+        cache_write_u32(output + 48U + index * 4U, metadata->decoder.output_ids[index]);
+    }
+}
+
+static void decode_model_context_metadata(
+    const u8 input[MODEL_CONTEXT_CACHE_METADATA_SIZE],
+    ModelContextCacheMetadata *metadata
+) {
+    u32 index;
+    metadata->binary_size = cache_read_u64(input);
+    metadata->encoder.model_id = cache_read_u32(input + 8U);
+    metadata->decoder.model_id = cache_read_u32(input + 12U);
+    metadata->decoder.output_count = cache_read_u32(input + 16U);
+    metadata->encoder.frontend_input_ids[0] = cache_read_u32(input + 20U);
+    metadata->encoder.frontend_output_ids[0] = cache_read_u32(input + 24U);
+    metadata->encoder.frontend_input_ids[1] = cache_read_u32(input + 28U);
+    metadata->encoder.frontend_output_ids[1] = cache_read_u32(input + 32U);
+    metadata->encoder.encoder_input_id = cache_read_u32(input + 36U);
+    metadata->encoder.encoder_output_id = cache_read_u32(input + 40U);
+    metadata->decoder.input_id = cache_read_u32(input + 44U);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_OUTPUTS; ++index) {
+        metadata->decoder.output_ids[index] = cache_read_u32(input + 48U + index * 4U);
+    }
 }
 
 static int make_model_layer_path(
@@ -1454,7 +1577,7 @@ static u64 add_graph_node(
     return api->graph_add_node(graph, operation);
 }
 
-static u32 build_whisper_frontend_graphs(
+static u32 __attribute__((unused)) build_whisper_frontend_graphs(
     const QnnInterfaceV2 *api,
     QnnContextHandle context
 ) {
@@ -1576,7 +1699,7 @@ static u32 build_whisper_frontend_graphs(
     return 0U;
 }
 
-static u32 run_cached_whisper_frontend(
+static u32 __attribute__((unused)) run_cached_whisper_frontend(
     const QnnInterfaceV2 *api,
     u64 frequency,
     int validate_fixture
@@ -3343,39 +3466,64 @@ static u32 run_tiny_projection(
 
 static u32 write_model_context_cache(const QnnInterfaceV2 *api, QnnContextHandle context) {
     void *invalid_handle = (void *)(usize)-1;
-    ModelContextCacheHeader header = {0};
+    const WhisperModelConfig *model = active_model;
+    ModelContextCacheMetadata metadata = {0};
+    WhisperArtifactHeader artifact = {0};
+    u8 artifact_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
+    u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
     void *buffer;
     void *handle;
     u64 written_size = 0U;
     u64 status;
 
-    status = api->context_get_binary_size(context, &header.binary_size);
+    status = api->context_get_binary_size(context, &metadata.binary_size);
     write_call_status("  contextGetBinarySize", status);
-    if (status != 0U || header.binary_size == 0U) return 81U;
-    buffer = VirtualAlloc(0, (usize)header.binary_size, 0x3000U, 0x04U);
+    if (status != 0U || metadata.binary_size == 0U) return 81U;
+    buffer = VirtualAlloc(0, (usize)metadata.binary_size, 0x3000U, 0x04U);
     if (buffer == 0) return 82U;
-    status = api->context_get_binary(context, buffer, header.binary_size, &written_size);
+    status = api->context_get_binary(context, buffer, metadata.binary_size, &written_size);
     write_call_status("  contextGetBinary", status);
-    if (status != 0U || written_size != header.binary_size) {
+    if (status != 0U || written_size != metadata.binary_size) {
         VirtualFree(buffer, 0U, 0x8000U);
         return 83U;
     }
-    header.magic = MODEL_CONTEXT_CACHE_MAGIC;
-    header.version = MODEL_CONTEXT_CACHE_VERSION;
-    header.frontend1_input_id = frontend_inputs[0].data.v1.id;
-    header.frontend1_output_id = frontend_outputs[0].data.v1.id;
-    header.frontend2_input_id = frontend_inputs[1].data.v1.id;
-    header.frontend2_output_id = frontend_outputs[1].data.v1.id;
-    header.input_id = model_fp16_monolithic_input.data.v1.id;
-    header.output_id = model_fp16_monolithic_output.data.v1.id;
-    header.decoder = decoder_qnn_ids;
-    handle = CreateFileA(MODEL_CONTEXT_CACHE_PRIMARY, 0x40000000U, 0U, 0, 2U, 0x80U, 0);
+    metadata.encoder = encoder_qnn_ids;
+    metadata.decoder = decoder_qnn_ids;
+    encode_model_context_metadata(metadata_bytes, &metadata);
+    artifact.model_id = model->model_id;
+    artifact.payload_type = WHISPER_ARTIFACT_PAYLOAD_QNN_CONTEXT;
+    artifact.element_type = WHISPER_ARTIFACT_ELEMENT_BLOB;
+    artifact.element_count = MODEL_CONTEXT_CACHE_METADATA_SIZE + metadata.binary_size;
+    artifact.payload_size = artifact.element_count;
+    artifact.payload_hash = whisper_artifact_hash_update(
+        WHISPER_ARTIFACT_HASH_OFFSET_BASIS,
+        metadata_bytes, sizeof(metadata_bytes)
+    );
+    artifact.payload_hash = whisper_artifact_hash_update(
+        artifact.payload_hash, buffer, metadata.binary_size
+    );
+    artifact.width = model->width;
+    artifact.ffn_width = model->ffn_width;
+    artifact.attention_heads = model->attention_heads;
+    artifact.encoder_layers = model->encoder_layers;
+    artifact.decoder_layers = model->decoder_layers;
+    artifact.vocabulary_size = model->vocabulary_size;
+    artifact.text_context = model->text_context;
+    artifact.mel_bins = model->mel_bins;
+    artifact.encoder_frames = model->encoder_frames;
+    whisper_artifact_encode_header(artifact_bytes, &artifact);
+    handle = CreateFileA(
+        model_context_cache_primary, 0x40000000U, 0U, 0, 2U, 0x80U, 0
+    );
     if (handle == invalid_handle) {
-        handle = CreateFileA(MODEL_CONTEXT_CACHE_LOCAL, 0x40000000U, 0U, 0, 2U, 0x80U, 0);
+        handle = CreateFileA(
+            model_context_cache_local, 0x40000000U, 0U, 0, 2U, 0x80U, 0
+        );
     }
     if (handle == invalid_handle ||
-        !write_handle_exact(handle, &header, sizeof(header)) ||
-        !write_handle_exact(handle, buffer, header.binary_size)) {
+        !write_handle_exact(handle, artifact_bytes, sizeof(artifact_bytes)) ||
+        !write_handle_exact(handle, metadata_bytes, sizeof(metadata_bytes)) ||
+        !write_handle_exact(handle, buffer, metadata.binary_size)) {
         if (handle != invalid_handle) CloseHandle(handle);
         VirtualFree(buffer, 0U, 0x8000U);
         return 84U;
@@ -3383,7 +3531,7 @@ static u32 write_model_context_cache(const QnnInterfaceV2 *api, QnnContextHandle
     CloseHandle(handle);
     VirtualFree(buffer, 0U, 0x8000U);
     write_text("  cached context binary bytes: ");
-    write_u64(header.binary_size);
+    write_u64(metadata.binary_size);
     write_text("\n");
     return 0U;
 }
@@ -3398,10 +3546,16 @@ static u32 load_model_context_cache(
     int *loaded
 ) {
     void *invalid_handle = (void *)(usize)-1;
-    ModelContextCacheHeader header;
+    const WhisperModelConfig *model = active_model;
+    ModelContextCacheMetadata metadata;
+    WhisperArtifactHeader artifact;
+    u8 artifact_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
+    u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
+    u64 expected_payload_size;
+    u64 payload_hash;
     void *buffer;
     void *handle = CreateFileA(
-        MODEL_CONTEXT_CACHE_PRIMARY, 0x80000000U, 1U, 0, 3U, 0x80U, 0
+        model_context_cache_primary, 0x80000000U, 1U, 0, 3U, 0x80U, 0
     );
     long long start_counter;
     long long end_counter;
@@ -3409,23 +3563,53 @@ static u32 load_model_context_cache(
 
     *loaded = 0;
     if (handle == invalid_handle) {
-        handle = CreateFileA(MODEL_CONTEXT_CACHE_LOCAL, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+        handle = CreateFileA(
+            model_context_cache_local, 0x80000000U, 1U, 0, 3U, 0x80U, 0
+        );
     }
     if (handle == invalid_handle) return 0U;
-    if (!read_handle_exact(handle, &header, sizeof(header)) ||
-        header.magic != MODEL_CONTEXT_CACHE_MAGIC ||
-        header.version != MODEL_CONTEXT_CACHE_VERSION ||
-        header.binary_size == 0U || header.binary_size > 0x80000000ULL) {
+    if (!read_handle_exact(handle, artifact_bytes, sizeof(artifact_bytes)) ||
+        !whisper_artifact_decode_header(artifact_bytes, &artifact) ||
+        artifact.payload_size < MODEL_CONTEXT_CACHE_METADATA_SIZE ||
+        artifact.payload_size > 0x80000000ULL ||
+        !whisper_artifact_header_valid(
+            &artifact, model, WHISPER_ARTIFACT_PAYLOAD_QNN_CONTEXT,
+            WHISPER_ARTIFACT_ELEMENT_BLOB, artifact.payload_size,
+            artifact.payload_size
+        ) || !read_handle_exact(handle, metadata_bytes, sizeof(metadata_bytes))) {
         CloseHandle(handle);
         return 0U;
     }
-    buffer = VirtualAlloc(0, (usize)header.binary_size, 0x3000U, 0x04U);
-    if (buffer == 0 || !read_handle_exact(handle, buffer, header.binary_size)) {
+    decode_model_context_metadata(metadata_bytes, &metadata);
+    if (!whisper_model_size_add(
+            MODEL_CONTEXT_CACHE_METADATA_SIZE, metadata.binary_size,
+            &expected_payload_size
+        ) || expected_payload_size != artifact.payload_size ||
+        metadata.encoder.model_id != model->model_id ||
+        metadata.decoder.model_id != model->model_id ||
+        metadata.decoder.output_count != model->decoder_layers * 2U ||
+        metadata.binary_size == 0U || metadata.binary_size > 0x80000000ULL) {
+        CloseHandle(handle);
+        return 0U;
+    }
+    buffer = VirtualAlloc(0, (usize)metadata.binary_size, 0x3000U, 0x04U);
+    if (buffer == 0 || !read_handle_exact(handle, buffer, metadata.binary_size)) {
         CloseHandle(handle);
         if (buffer != 0) VirtualFree(buffer, 0U, 0x8000U);
         return 85U;
     }
     CloseHandle(handle);
+    payload_hash = whisper_artifact_hash_update(
+        WHISPER_ARTIFACT_HASH_OFFSET_BASIS,
+        metadata_bytes, sizeof(metadata_bytes)
+    );
+    payload_hash = whisper_artifact_hash_update(
+        payload_hash, buffer, metadata.binary_size
+    );
+    if (payload_hash != artifact.payload_hash) {
+        VirtualFree(buffer, 0U, 0x8000U);
+        return 0U;
+    }
     status = api->context_free(*context, profile);
     write_call_status("  contextFree before cache load", status);
     *context = 0;
@@ -3435,7 +3619,7 @@ static u32 load_model_context_cache(
     }
     QueryPerformanceCounter(&start_counter);
     status = api->context_create_from_binary(
-        backend, device, 0, buffer, header.binary_size, context, profile
+        backend, device, 0, buffer, metadata.binary_size, context, profile
     );
     QueryPerformanceCounter(&end_counter);
     VirtualFree(buffer, 0U, 0x8000U);
@@ -3444,53 +3628,65 @@ static u32 load_model_context_cache(
         "  contextCreateFromBinary time", (u64)(end_counter - start_counter), frequency
     );
     if (status != 0U) return 87U;
-    status = api->graph_retrieve(
-        *context, "npu_probe_tiny_encoder_monolithic_fp16", &model_fp16_monolithic_graph
-    );
-    write_call_status("  graphRetrieve", status);
-    if (status != 0U) return 88U;
-    status = api->graph_retrieve(*context, "whisper_frontend_conv1", &frontend_graphs[0]);
-    if (status == 0U) {
-        status = api->graph_retrieve(*context, "whisper_frontend_conv2", &frontend_graphs[1]);
-    }
-    write_call_status("  frontend graphRetrieve", status);
-    if (status != 0U) return 88U;
-    if (!whisper_decoder_qnn_restore(api, *context, &header.decoder)) return 88U;
-    frontend_inputs[0] = make_plain_tensor(
-        "frontend_conv1_input", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_16,
-        frontend_input_dimensions[0], 2U
-    );
-    frontend_outputs[0] = make_plain_tensor(
-        "frontend_conv1_output", QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_16,
-        frontend_output_dimensions[0], 2U
-    );
-    frontend_inputs[1] = make_plain_tensor(
-        "frontend_conv2_input", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_16,
-        frontend_input_dimensions[1], 2U
-    );
-    frontend_outputs[1] = make_plain_tensor(
-        "frontend_output", QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_16,
-        frontend_output_dimensions[1], 2U
-    );
-    frontend_inputs[0].data.v1.id = header.frontend1_input_id;
-    frontend_outputs[0].data.v1.id = header.frontend1_output_id;
-    frontend_inputs[1].data.v1.id = header.frontend2_input_id;
-    frontend_outputs[1].data.v1.id = header.frontend2_output_id;
-    model_fp16_monolithic_input = make_plain_tensor(
-        "mono_l0_block_input", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_16,
-        model_encoder_activation_dimensions, 2U
-    );
-    model_fp16_monolithic_output = make_plain_tensor(
-        "mono_l3_block_output", QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_16,
-        model_encoder_activation_dimensions, 2U
-    );
-    model_fp16_monolithic_input.data.v1.id = header.input_id;
-    model_fp16_monolithic_output.data.v1.id = header.output_id;
+    if (!whisper_encoder_qnn_restore(
+            whisper_encoder_qnn, api, *context, &metadata.encoder
+        )) return 88U;
+    if (!whisper_decoder_qnn_restore(
+            whisper_decoder_qnn, api, *context, &metadata.decoder
+        )) return 88U;
     *loaded = 1;
     return 0U;
 }
 
-static u32 run_cached_model_fp16_encoder(
+static u32 run_cached_model_frontend(
+    const QnnInterfaceV2 *api,
+    u64 frequency
+) {
+    long long start_counter;
+    long long end_counter;
+    u64 status;
+    QueryPerformanceCounter(&start_counter);
+    status = whisper_encoder_qnn_execute_frontend(
+        whisper_encoder_qnn, api, frontend_log_mel
+    );
+    QueryPerformanceCounter(&end_counter);
+    write_call_status("  cached frontend graphExecute", status);
+    write_duration_us(
+        "  cached frontend NPU time", (u64)(end_counter - start_counter), frequency
+    );
+    if (status != 0U) return 102U;
+    write_buffer_fingerprint(
+        "  frontend FNV-1a: ",
+        whisper_encoder_qnn_frontend_output(whisper_encoder_qnn),
+        (u32)whisper_encoder_qnn_activation_bytes(whisper_encoder_qnn)
+    );
+    return 0U;
+}
+
+static u32 run_cached_model_encoder(
+    const QnnInterfaceV2 *api,
+    u64 frequency
+) {
+    long long start_counter;
+    long long end_counter;
+    u64 status;
+    QueryPerformanceCounter(&start_counter);
+    status = whisper_encoder_qnn_execute_encoder(whisper_encoder_qnn, api);
+    QueryPerformanceCounter(&end_counter);
+    write_call_status("  cached encoder graphExecute", status);
+    write_duration_us(
+        "  cached encoder NPU time", (u64)(end_counter - start_counter), frequency
+    );
+    if (status != 0U) return 89U;
+    write_buffer_fingerprint(
+        "  encoder output FNV-1a: ",
+        whisper_encoder_qnn_output(whisper_encoder_qnn),
+        (u32)whisper_encoder_qnn_activation_bytes(whisper_encoder_qnn)
+    );
+    return 0U;
+}
+
+static u32 __attribute__((unused)) run_cached_model_fp16_encoder(
     const QnnInterfaceV2 *api,
     u64 frequency,
     const u16 *encoder_input,
@@ -3578,16 +3774,14 @@ static u32 run_external_wav_window(
         frequency, wav_path, 0, start_sample, total_samples, 0,
         "Whisper external WAV log-mel frontend"
     );
-    if (result == 0U) result = run_cached_whisper_frontend(api, frequency, 0);
-    if (result == 0U) {
-        result = run_cached_model_fp16_encoder(
-            api, frequency, frontend_output,
-            "QNN external WAV monolithic FP16 encoder latency", 0, 0
-        );
-    }
+    if (result == 0U) result = run_cached_model_frontend(api, frequency);
+    if (result == 0U) result = run_cached_model_encoder(api, frequency);
     if (result == 0U) {
         QueryPerformanceCounter(&decoder_qnn_start);
-        status = whisper_decoder_qnn_execute(api, model_fp16_block_output);
+        status = whisper_decoder_qnn_execute(
+            whisper_decoder_qnn, api,
+            whisper_encoder_qnn_output(whisper_encoder_qnn)
+        );
         QueryPerformanceCounter(&decoder_qnn_end);
         write_call_status("  decoder cross K/V graphExecute", status);
         write_duration_us(
@@ -3597,14 +3791,16 @@ static u32 run_external_wav_window(
         if (status != 0U) result = 110U;
     }
     if (result == 0U) {
-        if (!capture_decoder_output) write_text("Transcript (German, greedy):\n");
+        if (!capture_decoder_output) write_text("Transcript (German):\n");
         QueryPerformanceCounter(&decoder_start);
         decoder_tokens = whisper_decoder_transcribe_with_cross_cache(
-            whisper_decoder_qnn_keys(), whisper_decoder_qnn_values(),
+            whisper_decoder,
+            whisper_decoder_qnn_keys(whisper_decoder_qnn),
+            whisper_decoder_qnn_values(whisper_decoder_qnn),
             256U, write_decoder_bytes
         );
         QueryPerformanceCounter(&decoder_end);
-        decoder_profile = whisper_decoder_get_profile();
+        decoder_profile = whisper_decoder_get_profile(whisper_decoder);
         if (!capture_decoder_output) write_text("\n");
         write_duration_us(
             "  decoder time", (u64)(decoder_end - decoder_start), frequency
@@ -3710,6 +3906,7 @@ void mainCRTStartup(void) {
     u32 console_mode;
 
     stdout_handle = GetStdHandle(0xfffffff5U);
+    active_model = whisper_model_tiny();
     if (GetConsoleMode(stdout_handle, &console_mode)) {
         original_console_output_cp = GetConsoleOutputCP();
         if (original_console_output_cp != 0U && original_console_output_cp != 65001U) {
@@ -3717,8 +3914,10 @@ void mainCRTStartup(void) {
         }
     }
     wav_argument = first_command_argument();
+    if (!initialize_model_context_paths(active_model)) finish(117U);
     if (command_argument_error) {
-        static const char usage[] = "Usage: npu_probe.exe [--quiet] <wav-path>\n";
+        static const char usage[] =
+            "Usage: npu_probe.exe [--model=tiny|base] [--quiet] <wav-path>\n";
         write_raw_bytes(usage, sizeof(usage) - 1U);
         finish(116U);
     }
@@ -3837,6 +4036,13 @@ void mainCRTStartup(void) {
     }
     write_text("  HTP device/context connection established\n");
 
+    whisper_decoder_qnn = whisper_decoder_qnn_create(active_model);
+    whisper_encoder_qnn = whisper_encoder_qnn_create(active_model);
+    if (whisper_decoder_qnn == 0 || whisper_encoder_qnn == 0) {
+        exit_status = 117U;
+        goto cleanup;
+    }
+
     if (wav_argument != 0) {
         if (api->context_create_from_binary != 0 &&
             api->graph_retrieve != 0) {
@@ -3849,7 +4055,8 @@ void mainCRTStartup(void) {
             write_text("Whisper graph cache is missing; run npu_probe.exe once without arguments.\n");
             exit_status = 107U;
         }
-        if (exit_status == 0U && whisper_decoder_load() != 1) {
+        if (exit_status == 0U &&
+            (whisper_decoder = whisper_decoder_load(active_model)) == 0) {
             write_text("Whisper decoder artifacts are missing or invalid.\n");
             exit_status = 108U;
         }
@@ -3945,7 +4152,7 @@ void mainCRTStartup(void) {
                 if (quiet_output) {
                     write_raw_bytes("\n", 1U);
                 } else {
-                    write_text("Full transcript (German, greedy):\n");
+                    write_text("Full transcript (German):\n");
                     write_bytes(stitched_transcript, stitched_transcript_size);
                     write_text("\n  transcribed windows: ");
                     write_u32(segment_index);
@@ -3956,6 +4163,11 @@ void mainCRTStartup(void) {
         goto cleanup;
     }
 
+#if defined(WHISPER_RUNTIME_ONLY)
+    write_text("Usage: npu_probe.exe [--model=tiny|base] [--quiet] <wav-path>\n");
+    exit_status = 116U;
+    goto cleanup;
+#else
     write_text("QNN quantized ElementWiseAdd graph\n");
     QueryPerformanceCounter(&start_counter);
     status = api->graph_create(context_handle, "npu_probe_add", 0, &graph_handle);
@@ -4170,20 +4382,10 @@ void mainCRTStartup(void) {
         );
     }
     if (exit_status == 0U && cache_loaded) {
-        write_text("QNN cached monolithic FP16 encoder\n");
-        exit_status = run_cached_model_fp16_encoder(
-            api, (u64)counter_frequency, model_fp16_encoder_stack_input,
-            "QNN cached monolithic FP16 encoder latency", 1, 1
-        );
+        write_text("QNN cached model frontend/encoder\n");
+        exit_status = run_cached_model_frontend(api, (u64)counter_frequency);
         if (exit_status == 0U) {
-            exit_status = run_cached_whisper_frontend(api, (u64)counter_frequency, 1);
-        }
-        if (exit_status == 0U) {
-            write_text("QNN WAV-derived monolithic FP16 encoder\n");
-            exit_status = run_cached_model_fp16_encoder(
-                api, (u64)counter_frequency, frontend_output,
-                "QNN WAV-derived monolithic FP16 encoder latency", 1, 1
-            );
+            exit_status = run_cached_model_encoder(api, (u64)counter_frequency);
         }
     } else if (exit_status == 0U) {
         if (api->context_get_binary_size != 0 && api->context_get_binary != 0 &&
@@ -4201,16 +4403,21 @@ void mainCRTStartup(void) {
             }
         }
         if (exit_status == 0U) {
-            exit_status = build_whisper_frontend_graphs(api, context_handle);
-        }
-        for (index = 0U; exit_status == 0U && index < 4U; ++index) {
-            exit_status = run_model_encoder_block(
-                api, context_handle, (u64)counter_frequency, index, 1, 1
+            int encoder_qnn_status = whisper_encoder_qnn_build(
+                whisper_encoder_qnn, api, context_handle, &encoder_qnn_ids
             );
+            write_text("QNN model frontend/encoder graph build: ");
+            write_text(encoder_qnn_status == 1 ? "complete\n" :
+                (encoder_qnn_status == 0 ? "skipped (artifacts unavailable)\n" : "failed\n"));
+            if (encoder_qnn_status < 0) {
+                exit_status = 110U;
+            } else if (encoder_qnn_status == 0) {
+                exit_status = 107U;
+            }
         }
         if (exit_status == 0U) {
             int decoder_qnn_status = whisper_decoder_qnn_build(
-                api, context_handle, &decoder_qnn_ids
+                whisper_decoder_qnn, api, context_handle, &decoder_qnn_ids
             );
             write_text("QNN decoder cross K/V graph build: ");
             write_text(decoder_qnn_status == 1 ? "complete\n" :
@@ -4221,7 +4428,7 @@ void mainCRTStartup(void) {
                 decoder_qnn_built = 1;
             }
         }
-        if (exit_status == 0U && model_fp16_monolithic_graph != 0 && decoder_qnn_built &&
+        if (exit_status == 0U && decoder_qnn_built &&
             api->context_get_binary_size != 0 && api->context_get_binary != 0 &&
             api->context_create_from_binary != 0 && api->graph_retrieve != 0) {
             exit_status = write_model_context_cache(api, context_handle);
@@ -4232,26 +4439,22 @@ void mainCRTStartup(void) {
                 );
             }
             if (exit_status == 0U && cache_loaded) {
-                write_text("QNN reloaded monolithic FP16 encoder\n");
-                exit_status = run_cached_model_fp16_encoder(
-                    api, (u64)counter_frequency, model_fp16_encoder_stack_input,
-                    "QNN reloaded monolithic FP16 encoder latency", 1, 1
-                );
+                write_text("QNN reloaded model frontend/encoder\n");
+                exit_status = run_cached_model_frontend(api, (u64)counter_frequency);
                 if (exit_status == 0U) {
-                    exit_status = run_cached_whisper_frontend(api, (u64)counter_frequency, 1);
-                }
-                if (exit_status == 0U) {
-                    write_text("QNN WAV-derived monolithic FP16 encoder\n");
-                    exit_status = run_cached_model_fp16_encoder(
-                        api, (u64)counter_frequency, frontend_output,
-                        "QNN WAV-derived monolithic FP16 encoder latency", 1, 1
-                    );
+                    exit_status = run_cached_model_encoder(api, (u64)counter_frequency);
                 }
             }
         }
     }
+#endif
 cleanup:
-    whisper_decoder_shutdown();
+    whisper_decoder_shutdown(whisper_decoder);
+    whisper_decoder = 0;
+    whisper_encoder_qnn_shutdown(whisper_encoder_qnn);
+    whisper_encoder_qnn = 0;
+    whisper_decoder_qnn_shutdown(whisper_decoder_qnn);
+    whisper_decoder_qnn = 0;
     if (context_handle != 0) {
         status = api->context_free(context_handle, profile_handle);
         write_call_status("  contextFree", status);

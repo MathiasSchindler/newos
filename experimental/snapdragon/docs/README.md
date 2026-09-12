@@ -34,8 +34,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdrago
 python .\experimental\snapdragon\tools\prepare-whisper-tiny-mlp.py
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\fetch-whisper-calibration.ps1
 python .\experimental\snapdragon\tools\calibrate-whisper-tiny-mlp.py
-.\experimental\snapdragon\build\npu_probe.exe
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model tiny
+.\experimental\snapdragon\build\npu_probe_builder.exe --model=tiny
+.\experimental\snapdragon\build\npu_probe.exe .\experimental\snapdragon\build\long-form-35s.wav
 ```
+
+For Whisper Base, fetch and export its pinned checkpoint, build its independent QNN context, and select it at runtime:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\fetch-whisper-base.ps1
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model base
+.\experimental\snapdragon\build\npu_probe_builder.exe --model=base
+.\experimental\snapdragon\build\npu_probe.exe --model=base .\experimental\snapdragon\build\long-form-35s.wav
+```
+
+Tiny remains the default. Cache files and QNN graph names are model-specific, so `--model=base` never restores the Tiny context.
 
 Pass a 16 kHz mono float32 WAV as the first argument to transcribe the complete track through the cached frontend and encoder. For conversion, retries, resumable records, and richer reports, use the development-time driver:
 
@@ -70,17 +83,19 @@ The long-form driver writes one absolute WAV path per line to `window-manifest.t
 .\experimental\snapdragon\build\npu_probe.exe '@C:\path\to\window-manifest.txt'
 ```
 
-The probe restores the QNN context, loads the 118 MB decoder bundle, and starts the `RtTaskPool` once, then processes every manifest entry in order. Structured `WHISPER BATCH SEGMENT` markers let the driver retain individual logs and resume records. Use `-PerWindowProcesses` only when comparing or debugging process isolation.
+The probe restores the selected model's QNN context, loads its decoder bundle, and starts the `RtTaskPool` once, then processes every manifest entry in order. Structured `WHISPER BATCH SEGMENT` markers let the driver retain individual logs and resume records. Use `-PerWindowProcesses` only when comparing or debugging process isolation.
 
-The external-audio path bypasses the diagnostic graph suite, reports FNV-1a fingerprints for intermediate outputs, and transcribes with a plain-C incremental decoder. German transcription uses the fixed prompt `<|startoftranscript|><|de|><|transcribe|><|notimestamps|>`, greedy selection, four self-attention KV caches, and byte-level token decoding. A cached FP16 QNN graph computes encoder normalization and all eight cross-attention K/V projections once per audio window. The decoder consumes those QNN output buffers in place, widens four FP16 lanes at a time with native ARM64 conversion, and avoids the former 9.2 MB FP16-to-FP32 cache import. The persistent task pool parallelizes cross-attention heads, profitable projection rows, and vocabulary ranges; the vocabulary scan uses four independent NEON accumulators. The decoder weights, token table, and QNN projection bundle are generated once with:
+The external-audio path bypasses the diagnostic graph suite, reports FNV-1a fingerprints for intermediate outputs, and transcribes with a plain-C incremental decoder. German transcription uses the fixed prompt `<|startoftranscript|><|de|><|transcribe|><|notimestamps|>`, descriptor-sized self-attention KV caches, and byte-level token decoding. Tiny retains greedy selection. Base buffers its greedy result and, only when repeated token bigrams and trigrams cross a fixed threshold, tries a bounded deterministic temperature schedule and emits the least repetitive candidate. A cached FP16 QNN graph computes encoder normalization and all descriptor-selected cross-attention K/V projections once per audio window. The decoder consumes those QNN output buffers in place, widens four FP16 lanes at a time with native ARM64 conversion, and avoids an FP16-to-FP32 cache import. The persistent task pool parallelizes cross-attention heads, profitable projection rows, and vocabulary ranges; the vocabulary scan uses four independent NEON accumulators. Decoder, token, cross-K/V, frontend, and encoder bundles are generated atomically with:
 
 ```powershell
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-tiny-decoder.py
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model tiny
 ```
 
-Python and NumPy remain development-only exporters. Runtime token generation and detokenization use freestanding C without a standard library. The native command handles complete compatible WAV tracks and prints a stitched transcript. The PowerShell driver remains useful when compressed-input conversion, resumable per-window records, timestamped output, retry repair, and aggregate profiling are required. Configurable language/task prompts remain separate work.
+The exporter validates checkpoint `config.json` against the pinned model catalog and atomically writes all five bundles. Every production model artifact, including the QNN context cache, starts with the shared 96-byte version-2 header containing model identity, complete dimensions, payload and element types, 64-bit counts and sizes, and an FNV-1a payload hash. Runtime readers reject unsupported versions, wrong models or dimensions, truncation, overflow-sized fields, and hash mismatches before inference.
 
-`npu_probe.exe` is a no-CRT ARM64 PE that imports only `KERNEL32.dll`. It dynamically loads the unavoidable proprietary `QnnHtp.dll` backend, obtains its QNN 2.32 function table, and creates logging, backend, device, profile, and context handles; it does not load ONNX Runtime. Alongside the lower-level probes, freestanding C parses a fixed 16 kHz WAV and computes Whisper log-mel features. Two cached FP16 QNN graphs run the frontend convolutions, GELUs, and position addition before passing their result directly to the cached 88-node encoder. Outputs are checked against scalar or offline fixtures, and the probe reports graph setup plus first/warmed execution latency. Handles are released in reverse order on success and failure.
+Python and NumPy remain development-only exporters. Runtime token generation and detokenization use freestanding C without a standard library. Decoder weights, token storage, layer bindings, attention caches, scratch vectors, task-pool state, and profiling belong to an explicit runtime-sized `WhisperDecoder` context; checked 16-byte-aligned arenas replace Tiny-sized global buffers. The native command handles complete compatible WAV tracks and prints a stitched transcript. The PowerShell driver remains useful when compressed-input conversion, resumable per-window records, timestamped output, retry repair, and aggregate profiling are required. Configurable language/task prompts remain separate work.
+
+`npu_probe.exe` is a no-CRT ARM64 PE that imports only `KERNEL32.dll`. It dynamically loads the unavoidable proprietary `QnnHtp.dll` backend, obtains its QNN 2.32 function table, and creates logging, backend, device, profile, and context handles; it does not load ONNX Runtime. Freestanding C parses a fixed 16 kHz WAV and computes Whisper log-mel features. Two cached FP16 QNN graphs run the frontend convolutions, GELUs, and position addition before passing their result directly to a model-generated encoder graph: 88 nodes for Tiny or 132 for Base. Runtime activation buffers and temporary builder weights are descriptor-sized; builder weights are released after context restoration. Handles are released in reverse order on success and failure.
 
 The QNN staging script extracts the Windows ARM64 HTP/System files and their licenses from the pinned `Microsoft.ML.OnnxRuntime.QNN` package into the ignored build directory. The model script pins multilingual `openai/whisper-tiny` revision `169d4a4341b33bc18d8881c4b69c2e104e1cc0af` and verifies the checkpoint's size and SHA-256. Calibration uses one pinned validation clip from each of 16 FLEURS languages. Model and corpus licenses, source revisions, file hashes, quantization errors, calibrated encodings, and deployment artifact hashes are recorded under the ignored `build/` tree. Python and NumPy are development-time preparation tools only; the deployed graph loader remains freestanding C. Review `build/qnn-licenses/Qualcomm_LICENSE.pdf`, the model card, and the FLEURS CC BY 4.0 attribution before redistribution.
 
@@ -92,7 +107,7 @@ Run the deterministic failure-path suite with:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\test-npu-probe.ps1
 ```
 
-The suite builds freestanding ARM64 mock provider DLLs and runs 12 cases covering loader/provider errors, QNN 2.32 compatibility, required functions, reverse cleanup after lifecycle and graph failures, output corruption detection, and successful Add plus Whisper Tiny MatMul execution.
+The suite first runs no-CRT ARM64 checks for 18 version-2 artifact contract cases and all four decoder allocation-failure cleanup points. It then builds freestanding ARM64 mock provider DLLs and runs 12 cases covering loader/provider errors, QNN 2.32 compatibility, required functions, reverse cleanup after lifecycle and graph failures, output corruption detection, and successful Add plus Whisper Tiny MatMul execution.
 
 Generate a development-time FP16 encoder-layer bundle with:
 

@@ -49,15 +49,29 @@ try {
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
         "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32"
     )
-    & $compilerPath @flags experimental/snapdragon/src/npu_probe.c `
-        experimental/snapdragon/src/whisper_frontend.c `
-        experimental/snapdragon/src/whisper_decoder.c `
-        experimental/snapdragon/src/whisper_decoder_qnn.c src/shared/math.c `
-        src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
-        src/platform/windows/thread.c `
+    $npuSources = @(
+        "experimental/snapdragon/src/npu_probe.c",
+        "experimental/snapdragon/src/whisper_artifact.c",
+        "experimental/snapdragon/src/whisper_model.c",
+        "experimental/snapdragon/src/whisper_frontend.c",
+        "experimental/snapdragon/src/whisper_decoder.c",
+        "experimental/snapdragon/src/whisper_decoder_qnn.c",
+        "experimental/snapdragon/src/whisper_encoder_qnn.c",
+        "src/shared/math.c",
+        "src/shared/runtime/memory.c",
+        "src/shared/runtime/concurrency.c",
+        "src/platform/windows/thread.c"
+    )
+    & $compilerPath @flags "-DWHISPER_RUNTIME_ONLY" `
+        "-Wno-unused-function" "-Wno-unused-variable" @npuSources `
         @npuLinkFlags -o "$BuildDir/npu_probe.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe.exe" }
     Write-Output "Built $BuildDir/npu_probe.exe"
+
+    & $compilerPath @flags @npuSources `
+        @npuLinkFlags -o "$BuildDir/npu_probe_builder.exe"
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe_builder.exe" }
+    Write-Output "Built $BuildDir/npu_probe_builder.exe"
 } finally {
     Pop-Location
 }

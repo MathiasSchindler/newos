@@ -339,20 +339,24 @@ void whisper_frontend_pack_conv1(const float *log_mel, u16 *output) {
     }
 }
 
-void whisper_frontend_pack_conv2(const u16 *conv1, u16 *output) {
+void whisper_frontend_pack_conv2_width(const u16 *conv1, u16 *output, u32 width) {
     u32 frame;
     for (frame = 0U; frame < WHISPER_ENCODER_FRAMES; ++frame) {
         u32 center = frame * 2U;
         u32 channel;
-        for (channel = 0U; channel < WHISPER_HIDDEN_SIZE; ++channel) {
+        for (channel = 0U; channel < width; ++channel) {
             u32 tap;
             for (tap = 0U; tap < 3U; ++tap) {
                 int source_frame = (int)center + (int)tap - 1;
                 u16 value = source_frame < 0 || source_frame >= (int)WHISPER_FRAME_COUNT
                     ? 0U
-                    : conv1[(u32)source_frame * WHISPER_HIDDEN_SIZE + channel];
-                output[(frame * WHISPER_HIDDEN_SIZE + channel) * 3U + tap] = value;
+                    : conv1[(u32)source_frame * width + channel];
+                output[(frame * width + channel) * 3U + tap] = value;
             }
         }
     }
+}
+
+void whisper_frontend_pack_conv2(const u16 *conv1, u16 *output) {
+    whisper_frontend_pack_conv2_width(conv1, output, WHISPER_HIDDEN_SIZE);
 }

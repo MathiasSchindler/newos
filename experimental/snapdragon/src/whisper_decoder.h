@@ -1,9 +1,12 @@
 #ifndef NEWOS_EXPERIMENTAL_SNAPDRAGON_WHISPER_DECODER_H
 #define NEWOS_EXPERIMENTAL_SNAPDRAGON_WHISPER_DECODER_H
 
-#define WHISPER_DECODER_MAX_TOKENS 448U
+#include "whisper_model.h"
+
+#define WHISPER_DECODER_MAX_TOKENS WHISPER_TINY_TEXT_CONTEXT
 
 typedef void (*WhisperDecoderWrite)(const char *data, unsigned int size);
+typedef struct WhisperDecoder WhisperDecoder;
 
 typedef struct WhisperDecoderProfile {
     unsigned long long encoder_normalize_ticks;
@@ -16,19 +19,21 @@ typedef struct WhisperDecoderProfile {
     unsigned int worker_count;
 } WhisperDecoderProfile;
 
-int whisper_decoder_load(void);
+WhisperDecoder *whisper_decoder_load(const WhisperModelConfig *model);
 int whisper_decoder_transcribe(
+    WhisperDecoder *decoder,
     const unsigned short *encoder_output,
     unsigned int maximum_tokens,
     WhisperDecoderWrite write_output
 );
 int whisper_decoder_transcribe_with_cross_cache(
+    WhisperDecoder *decoder,
     const unsigned short *cross_keys,
     const unsigned short *cross_values,
     unsigned int maximum_tokens,
     WhisperDecoderWrite write_output
 );
-const WhisperDecoderProfile *whisper_decoder_get_profile(void);
-void whisper_decoder_shutdown(void);
+const WhisperDecoderProfile *whisper_decoder_get_profile(const WhisperDecoder *decoder);
+void whisper_decoder_shutdown(WhisperDecoder *decoder);
 
 #endif

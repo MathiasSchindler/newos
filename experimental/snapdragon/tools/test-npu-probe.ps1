@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $testRoot = Join-Path $repoRoot "tests/tmp/snapdragon-npu-probe"
-$probePath = Join-Path $repoRoot "$BuildDir/npu_probe.exe"
+$probePath = Join-Path $repoRoot "$BuildDir/npu_probe_builder.exe"
 $mockSource = Join-Path $PSScriptRoot "..\src\qnn_mock.c"
 
 function Assert-Case {
@@ -56,15 +56,68 @@ try {
         "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-Oz",
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib", "-fuse-ld=lld", "-shared"
     )
+    $artifactTestFlags = @(
+        "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-Oz",
+        "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
+        "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections", "-flto",
+        "-Isrc/shared",
+        "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
+        "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
+        "-L$BuildDir", "-lkernel32"
+    )
 
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }
     New-Item -ItemType Directory -Force -Path $testRoot | Out-Null
 
+    $artifactTestPath = Join-Path $testRoot "whisper_artifact_test.exe"
+    & $compilerPath @artifactTestFlags `
+        experimental/snapdragon/src/whisper_artifact_test.c `
+        experimental/snapdragon/src/whisper_artifact.c `
+        experimental/snapdragon/src/whisper_model.c `
+        -o $artifactTestPath
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build artifact contract test" }
+    & $artifactTestPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Artifact contract test failed at case $LASTEXITCODE"
+    }
+    Write-Output "PASS artifact v2 contract (18 checks)"
+
+    $decoderTestPath = Join-Path $testRoot "whisper_decoder_cleanup_test.exe"
+    & $compilerPath @artifactTestFlags "-DWHISPER_DECODER_TEST_ALLOCATOR" `
+        experimental/snapdragon/src/whisper_decoder_cleanup_test.c `
+        experimental/snapdragon/src/whisper_decoder.c `
+        experimental/snapdragon/src/whisper_artifact.c `
+        experimental/snapdragon/src/whisper_model.c `
+        experimental/snapdragon/src/whisper_frontend.c `
+        src/shared/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
+        src/platform/windows/thread.c `
+        -o $decoderTestPath
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build decoder cleanup test" }
+    $decoderAssetDirectory = Join-Path $testRoot "experimental/snapdragon/models/whisper-tiny/decoder-f32"
+    New-Item -ItemType Directory -Force -Path $decoderAssetDirectory | Out-Null
+    $decoderSourceDirectory = Join-Path $repoRoot "experimental/snapdragon/models/whisper-tiny/decoder-f32"
+    New-Item -ItemType HardLink `
+        -Path (Join-Path $decoderAssetDirectory "weights-f32.bin") `
+        -Target (Join-Path $decoderSourceDirectory "weights-f32.bin") | Out-Null
+    New-Item -ItemType HardLink `
+        -Path (Join-Path $decoderAssetDirectory "token-bytes.bin") `
+        -Target (Join-Path $decoderSourceDirectory "token-bytes.bin") | Out-Null
+    Push-Location $testRoot
+    try {
+        & .\whisper_decoder_cleanup_test.exe
+        if ($LASTEXITCODE -ne 0) {
+            throw "Decoder cleanup test failed at case $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Output "PASS decoder allocation cleanup (4 failures and normal shutdown)"
+
     $noDllDirectory = Join-Path $testRoot "no-dll"
     New-Item -ItemType Directory -Force -Path $noDllDirectory | Out-Null
-    Copy-Item -LiteralPath $probePath -Destination $noDllDirectory
+    Copy-Item -LiteralPath $probePath -Destination (Join-Path $noDllDirectory "npu_probe.exe")
     $result = Invoke-Probe $noDllDirectory
     Assert-Case "missing DLL" $result[0] 2 $result[1] "not loadable"
 
@@ -87,7 +140,7 @@ try {
         $define = $case[1]
         $caseDirectory = Join-Path $testRoot ($name -replace " ", "-")
         New-Item -ItemType Directory -Force -Path $caseDirectory | Out-Null
-        Copy-Item -LiteralPath $probePath -Destination $caseDirectory
+        Copy-Item -LiteralPath $probePath -Destination (Join-Path $caseDirectory "npu_probe.exe")
         & $compilerPath @mockFlags "-D$define" $mockSource -o (Join-Path $caseDirectory "QnnHtp.dll")
         if ($LASTEXITCODE -ne 0) { throw "Failed to build mock for $name" }
 
