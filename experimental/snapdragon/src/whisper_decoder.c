@@ -28,6 +28,7 @@ __declspec(dllimport) int ReadFile(
     void *handle, void *buffer, u32 size, u32 *read, void *overlapped
 );
 __declspec(dllimport) int QueryPerformanceCounter(long long *value);
+__declspec(dllimport) int QueryPerformanceFrequency(long long *value);
 #if defined(WHISPER_DECODER_TEST_ALLOCATOR)
 void *whisper_decoder_test_allocate(
     void *address, usize size, u32 allocation_type, u32 protect
@@ -115,10 +116,13 @@ struct WhisperDecoder {
     void *mlp_offload_context;
     WhisperDecoderCrossAttentionOffload cross_attention_offload;
     void *cross_attention_offload_context;
+    WhisperDecoderFusedCrossMlpOffload fused_cross_mlp_offload;
+    void *fused_cross_mlp_offload_context;
     WhisperDecoderLogitsOffload logits_offload;
     void *logits_offload_context;
     WhisperDecoderSelfAttentionOffload self_attention_offload;
     void *self_attention_offload_context;
+    u64 counter_frequency;
     RtTaskPool pool;
     int pool_ready;
     float logit_maxima[RT_TASK_POOL_MAX_WORKERS];
@@ -332,6 +336,7 @@ WhisperDecoder *whisper_decoder_load_with_workers(
     char weight_fallback[160];
     char token_path[192];
     char token_fallback[160];
+    long long counter_frequency;
     if (!whisper_model_config_valid(config) ||
         whisper_model_decoder_float_count(config) == 0U ||
         !whisper_model_size_multiply(
@@ -356,6 +361,10 @@ WhisperDecoder *whisper_decoder_load_with_workers(
     decoder = DECODER_ALLOCATE(0, sizeof(*decoder), 0x3000U, 0x04U);
     if (decoder == 0) return 0;
     decoder->model = *config;
+    if (!QueryPerformanceFrequency(&counter_frequency) || counter_frequency <= 0) {
+        goto failure;
+    }
+    decoder->counter_frequency = (u64)counter_frequency;
     if (!allocate_scratch(decoder)) goto failure;
     handle = open_bundle(weight_path, weight_fallback);
     if (handle == invalid) goto failure;
@@ -909,6 +918,20 @@ static int feed_forward(
     return 0;
 }
 
+static void record_npu_calls(
+    WhisperDecoder *decoder,
+    WhisperDecoderNpuCalls *calls,
+    u64 ticks,
+    u32 graph_submissions
+) {
+    ++calls->offload_calls;
+    calls->graph_submissions += graph_submissions;
+    if (ticks > calls->maximum_ticks) calls->maximum_ticks = ticks;
+    if (ticks >= decoder->counter_frequency / 100U) ++calls->over_10ms;
+    if (ticks >= decoder->counter_frequency / 10U) ++calls->over_100ms;
+    if (ticks >= decoder->counter_frequency) ++calls->over_1000ms;
+}
+
 static int suppressed_token(u32 token, int first_generated) {
     static const u16 suppressed[] = {
         1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63,
@@ -1051,6 +1074,7 @@ static u32 decoder_step(
     u32 best = DECODER_EOT;
     u32 layer;
     u32 index;
+    int fused_cross_mlp;
     u64 npu_execute_ticks;
     const u16 *offloaded_logits = 0;
     LogitContext logit_context;
@@ -1069,31 +1093,66 @@ static u32 decoder_step(
         QueryPerformanceCounter(&end);
         decoder->profile.npu_self_attention_execute_ticks += npu_execute_ticks;
         if (index != 0U) {
+            record_npu_calls(
+                decoder, &decoder->profile.npu_self_attention_calls,
+                npu_execute_ticks, 2U
+            );
             decoder->profile.npu_self_attention_ticks += (u64)(end - start);
         } else {
             decoder->profile.self_attention_ticks += (u64)(end - start);
         }
-        QueryPerformanceCounter(&start);
-        index = (u32)cross_attention(
-            decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
-        );
-        QueryPerformanceCounter(&end);
-        decoder->profile.npu_cross_attention_execute_ticks += npu_execute_ticks;
-        if (index != 0U) {
-            decoder->profile.npu_cross_attention_ticks += (u64)(end - start);
-        } else {
-            decoder->profile.cross_attention_ticks += (u64)(end - start);
+        fused_cross_mlp = 0;
+        if (decoder->fused_cross_mlp_offload != 0) {
+            QueryPerformanceCounter(&start);
+            fused_cross_mlp = decoder->fused_cross_mlp_offload(
+                decoder->fused_cross_mlp_offload_context, layer,
+                decoder->hidden, decoder->projected, &npu_execute_ticks
+            );
+            QueryPerformanceCounter(&end);
+            if (fused_cross_mlp) {
+                decoder->profile.npu_fused_cross_mlp_execute_ticks +=
+                    npu_execute_ticks;
+                decoder->profile.npu_fused_cross_mlp_ticks += (u64)(end - start);
+                record_npu_calls(
+                    decoder, &decoder->profile.npu_fused_cross_mlp_calls,
+                    npu_execute_ticks, 1U
+                );
+                for (index = 0U; index < model->width; ++index) {
+                    decoder->hidden[index] = decoder->projected[index];
+                }
+            }
         }
-        QueryPerformanceCounter(&start);
-        index = (u32)feed_forward(
-            decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
-        );
-        QueryPerformanceCounter(&end);
-        decoder->profile.npu_mlp_execute_ticks += npu_execute_ticks;
-        if (index != 0U) {
-            decoder->profile.npu_feed_forward_ticks += (u64)(end - start);
-        } else {
-            decoder->profile.feed_forward_ticks += (u64)(end - start);
+        if (!fused_cross_mlp) {
+            QueryPerformanceCounter(&start);
+            index = (u32)cross_attention(
+                decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
+            );
+            QueryPerformanceCounter(&end);
+            decoder->profile.npu_cross_attention_execute_ticks += npu_execute_ticks;
+            if (index != 0U) {
+                record_npu_calls(
+                    decoder, &decoder->profile.npu_cross_attention_calls,
+                    npu_execute_ticks, 1U
+                );
+                decoder->profile.npu_cross_attention_ticks += (u64)(end - start);
+            } else {
+                decoder->profile.cross_attention_ticks += (u64)(end - start);
+            }
+            QueryPerformanceCounter(&start);
+            index = (u32)feed_forward(
+                decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
+            );
+            QueryPerformanceCounter(&end);
+            decoder->profile.npu_mlp_execute_ticks += npu_execute_ticks;
+            if (index != 0U) {
+                record_npu_calls(
+                    decoder, &decoder->profile.npu_mlp_calls,
+                    npu_execute_ticks, 1U
+                );
+                decoder->profile.npu_feed_forward_ticks += (u64)(end - start);
+            } else {
+                decoder->profile.feed_forward_ticks += (u64)(end - start);
+            }
         }
     }
     npu_execute_ticks = 0U;
@@ -1105,6 +1164,10 @@ static u32 decoder_step(
         QueryPerformanceCounter(&end);
         decoder->profile.npu_logits_ticks += (u64)(end - start);
         decoder->profile.npu_logits_execute_ticks += npu_execute_ticks;
+        record_npu_calls(
+            decoder, &decoder->profile.npu_logits_calls,
+            npu_execute_ticks, 1U
+        );
         QueryPerformanceCounter(&start);
     } else {
         layer_norm(
@@ -1252,12 +1315,19 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.cross_attention_ticks = 0U;
     decoder->profile.npu_cross_attention_ticks = 0U;
     decoder->profile.npu_cross_attention_execute_ticks = 0U;
+    decoder->profile.npu_fused_cross_mlp_ticks = 0U;
+    decoder->profile.npu_fused_cross_mlp_execute_ticks = 0U;
     decoder->profile.feed_forward_ticks = 0U;
     decoder->profile.npu_feed_forward_ticks = 0U;
     decoder->profile.npu_mlp_execute_ticks = 0U;
     decoder->profile.logits_ticks = 0U;
     decoder->profile.npu_logits_ticks = 0U;
     decoder->profile.npu_logits_execute_ticks = 0U;
+    decoder->profile.npu_self_attention_calls = (WhisperDecoderNpuCalls){0};
+    decoder->profile.npu_cross_attention_calls = (WhisperDecoderNpuCalls){0};
+    decoder->profile.npu_fused_cross_mlp_calls = (WhisperDecoderNpuCalls){0};
+    decoder->profile.npu_mlp_calls = (WhisperDecoderNpuCalls){0};
+    decoder->profile.npu_logits_calls = (WhisperDecoderNpuCalls){0};
     decoder->profile.decoder_steps = 0U;
     decoder->profile.worker_count = rt_task_pool_width(&decoder->pool);
     if (cross_keys != 0 && cross_values != 0) {
@@ -1347,6 +1417,16 @@ void whisper_decoder_set_cross_attention_offload(
     if (decoder == 0) return;
     decoder->cross_attention_offload = offload;
     decoder->cross_attention_offload_context = context;
+}
+
+void whisper_decoder_set_fused_cross_mlp_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderFusedCrossMlpOffload offload,
+    void *context
+) {
+    if (decoder == 0) return;
+    decoder->fused_cross_mlp_offload = offload;
+    decoder->fused_cross_mlp_offload_context = context;
 }
 
 void whisper_decoder_set_logits_offload(

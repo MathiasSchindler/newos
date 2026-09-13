@@ -20,6 +20,13 @@ typedef int (*WhisperDecoderCrossAttentionOffload)(
     float *projected,
     unsigned long long *execute_ticks
 );
+typedef int (*WhisperDecoderFusedCrossMlpOffload)(
+    void *context,
+    unsigned int layer,
+    const float *hidden,
+    float *output,
+    unsigned long long *execute_ticks
+);
 typedef int (*WhisperDecoderLogitsOffload)(
     void *context,
     const float *hidden,
@@ -36,6 +43,15 @@ typedef int (*WhisperDecoderSelfAttentionOffload)(
 );
 typedef struct WhisperDecoder WhisperDecoder;
 
+typedef struct WhisperDecoderNpuCalls {
+    unsigned long long maximum_ticks;
+    unsigned int offload_calls;
+    unsigned int graph_submissions;
+    unsigned int over_10ms;
+    unsigned int over_100ms;
+    unsigned int over_1000ms;
+} WhisperDecoderNpuCalls;
+
 typedef struct WhisperDecoderProfile {
     unsigned long long encoder_normalize_ticks;
     unsigned long long cross_cache_ticks;
@@ -45,12 +61,19 @@ typedef struct WhisperDecoderProfile {
     unsigned long long cross_attention_ticks;
     unsigned long long npu_cross_attention_ticks;
     unsigned long long npu_cross_attention_execute_ticks;
+    unsigned long long npu_fused_cross_mlp_ticks;
+    unsigned long long npu_fused_cross_mlp_execute_ticks;
     unsigned long long feed_forward_ticks;
     unsigned long long npu_feed_forward_ticks;
     unsigned long long npu_mlp_execute_ticks;
     unsigned long long logits_ticks;
     unsigned long long npu_logits_ticks;
     unsigned long long npu_logits_execute_ticks;
+    WhisperDecoderNpuCalls npu_self_attention_calls;
+    WhisperDecoderNpuCalls npu_cross_attention_calls;
+    WhisperDecoderNpuCalls npu_fused_cross_mlp_calls;
+    WhisperDecoderNpuCalls npu_mlp_calls;
+    WhisperDecoderNpuCalls npu_logits_calls;
     unsigned int decoder_steps;
     unsigned int worker_count;
 } WhisperDecoderProfile;
@@ -68,6 +91,11 @@ void whisper_decoder_set_mlp_offload(
 void whisper_decoder_set_cross_attention_offload(
     WhisperDecoder *decoder,
     WhisperDecoderCrossAttentionOffload offload,
+    void *context
+);
+void whisper_decoder_set_fused_cross_mlp_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderFusedCrossMlpOffload offload,
     void *context
 );
 void whisper_decoder_set_logits_offload(

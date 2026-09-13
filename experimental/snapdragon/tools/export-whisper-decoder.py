@@ -278,6 +278,8 @@ def export_decoder_mlp(model, spec, output):
     for layer in range(spec["decoder_layers"]):
         prefix = f"model.decoder.layers.{layer}"
         tensors.extend([
+            (f"{prefix}.final_layer_norm.weight", (width,)),
+            (f"{prefix}.final_layer_norm.bias", (width,)),
             (f"{prefix}.fc1.weight", (ffn_width, width)),
             (f"{prefix}.fc1.bias", (ffn_width,)),
             (f"{prefix}.fc2.weight", (width, ffn_width)),

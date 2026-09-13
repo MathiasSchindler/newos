@@ -4,6 +4,10 @@ param(
     [ValidateSet('tiny', 'base', 'small')]
     [string]$Model = 'small',
     [int]$DecoderWorkers = 0,
+    [ValidateSet('cpu', 'all', 'cross', 'mlp', 'self', 'logits',
+        'cross,mlp', 'cross,mlp,logits', 'cross,mlp,self',
+        'fused', 'fused,logits', 'fused,self', 'fused,self,logits')]
+    [string]$DecoderOffload = 'cross,mlp',
     [string]$OutputDirectory
 )
 
@@ -41,7 +45,7 @@ $audioSeconds = [double]::Parse(
     $durationText.Trim(), [System.Globalization.CultureInfo]::InvariantCulture
 )
 
-$arguments = "--model=$Model"
+$arguments = "--model=$Model --decoder-offload=$DecoderOffload"
 if ($DecoderWorkers -gt 0) { $arguments += " --decoder-workers=$DecoderWorkers" }
 $arguments += ' "' + $WavPath + '"'
 $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -70,6 +74,31 @@ $process.Dispose()
 [System.IO.File]::WriteAllText($stdoutPath, $stdoutText, $utf8NoBom)
 [System.IO.File]::WriteAllText($stderrPath, $stderrText, $utf8NoBom)
 
+$transcriptMatch = [regex]::Match(
+    $stdoutText,
+    '(?ms)^Full transcript \(German\):\r?\n(.*?)\r?\n  transcribed windows:'
+)
+if (-not $transcriptMatch.Success) {
+    $transcriptMatch = [regex]::Match(
+        $stdoutText,
+        '(?ms)^Transcript \(German\):\r?\n(.*?)\r?\n  decoder time:'
+    )
+}
+$transcriptSha256 = ''
+if ($transcriptMatch.Success) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $transcriptBytes = [System.Text.Encoding]::UTF8.GetBytes(
+            $transcriptMatch.Groups[1].Value.Trim()
+        )
+        $transcriptSha256 = [System.BitConverter]::ToString(
+            $sha256.ComputeHash($transcriptBytes)
+        ).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
 function Get-DurationTotalMs([string]$Label) {
     $pattern = '(?m)^  ' + [regex]::Escape($Label) + ': ([0-9.]+) us\r?$'
     $total = 0.0
@@ -80,6 +109,19 @@ function Get-DurationTotalMs([string]$Label) {
         ) / 1000.0
     }
     return $total
+}
+
+function Get-DurationMaximumMs([string]$Label) {
+    $pattern = '(?m)^  ' + [regex]::Escape($Label) + ': ([0-9.]+) us\r?$'
+    $maximum = 0.0
+    foreach ($match in [regex]::Matches($stdoutText, $pattern)) {
+        $value = [double]::Parse(
+            $match.Groups[1].Value,
+            [System.Globalization.CultureInfo]::InvariantCulture
+        ) / 1000.0
+        if ($value -gt $maximum) { $maximum = $value }
+    }
+    return $maximum
 }
 
 function Get-IntegerTotal([string]$Label) {
@@ -113,6 +155,8 @@ $encoderMs = Get-DurationTotalMs 'cached encoder NPU time'
 $crossKvNpuMs = Get-DurationTotalMs 'decoder cross K/V NPU time'
 $npuCrossAttentionMs = Get-DurationTotalMs 'NPU cross-attention'
 $npuCrossAttentionExecuteMs = Get-DurationTotalMs 'NPU cross-attention graphExecute'
+$npuFusedCrossMlpMs = Get-DurationTotalMs 'NPU fused cross/MLP'
+$npuFusedCrossMlpExecuteMs = Get-DurationTotalMs 'NPU fused cross/MLP graphExecute'
 $npuSelfAttentionMs = Get-DurationTotalMs 'NPU self-attention'
 $npuSelfAttentionExecuteMs = Get-DurationTotalMs 'NPU self-attention graphExecute'
 $npuFeedForwardMs = Get-DurationTotalMs 'NPU feed-forward'
@@ -121,7 +165,7 @@ $npuFinalProjectionMs = Get-DurationTotalMs 'NPU final projection'
 $npuFinalProjectionExecuteMs = Get-DurationTotalMs 'NPU final projection graphExecute'
 $npuHostCallMs = $frontendMs + $encoderMs + $crossKvNpuMs +
     $npuSelfAttentionExecuteMs + $npuCrossAttentionExecuteMs +
-    $npuMlpExecuteMs + $npuFinalProjectionExecuteMs
+    $npuFusedCrossMlpExecuteMs + $npuMlpExecuteMs + $npuFinalProjectionExecuteMs
 $decoderMs = Get-DurationTotalMs 'decoder time'
 $selfAttentionMs = Get-DurationTotalMs 'CPU self-attention'
 $crossAttentionMs = Get-DurationTotalMs 'CPU cross-attention'
@@ -130,12 +174,16 @@ $logitsMs = Get-DurationTotalMs 'CPU final norm/logits'
 $logMelMs = Get-DurationTotalMs 'WAV to log-mel time'
 $windowMs = Get-DurationTotalMs 'window total time'
 $contextRestoreMs = Get-DurationTotalMs 'contextCreateFromBinary time'
+$nativeCleanupMs = Get-DurationTotalMs 'native cleanup time'
+$nativeProcessMs = Get-DurationTotalMs 'native process time'
 $generatedTokens = Get-IntegerTotal 'generated tokens'
 $decoderSteps = Get-IntegerTotal 'decoder steps'
 $minimumDecoderSteps = $generatedTokens + 4L * $windowCount
 
 $summary = [ordered]@{
     model = $Model
+    decoder_offload = $DecoderOffload
+    transcript_sha256 = $transcriptSha256
     wav = $WavPath
     audio_seconds = $audioSeconds
     windows = $windowCount
@@ -152,6 +200,8 @@ $summary = [ordered]@{
         100.0 * $npuHostCallMs / ($wallSeconds * 1000.0)
     } else { 0.0 }
     context_restore_ms = $contextRestoreMs
+    native_cleanup_ms = $nativeCleanupMs
+    native_process_ms = $nativeProcessMs
     log_mel_ms = $logMelMs
     frontend_npu_ms = $frontendMs
     encoder_npu_ms = $encoderMs
@@ -160,10 +210,42 @@ $summary = [ordered]@{
     npu_self_attention_execute_ms = $npuSelfAttentionExecuteMs
     npu_cross_attention_ms = $npuCrossAttentionMs
     npu_cross_attention_execute_ms = $npuCrossAttentionExecuteMs
+    npu_fused_cross_mlp_ms = $npuFusedCrossMlpMs
+    npu_fused_cross_mlp_execute_ms = $npuFusedCrossMlpExecuteMs
     npu_feed_forward_ms = $npuFeedForwardMs
     npu_mlp_execute_ms = $npuMlpExecuteMs
     npu_final_projection_ms = $npuFinalProjectionMs
     npu_final_projection_execute_ms = $npuFinalProjectionExecuteMs
+    npu_self_attention_offload_calls = Get-IntegerTotal 'NPU self-attention offload calls'
+    npu_self_attention_graph_submissions = Get-IntegerTotal 'NPU self-attention graph submissions'
+    npu_self_attention_maximum_ms = Get-DurationMaximumMs 'NPU self-attention maximum offload'
+    npu_self_attention_calls_over_10ms = Get-IntegerTotal 'NPU self-attention calls over 10 ms'
+    npu_self_attention_calls_over_100ms = Get-IntegerTotal 'NPU self-attention calls over 100 ms'
+    npu_self_attention_calls_over_1000ms = Get-IntegerTotal 'NPU self-attention calls over 1000 ms'
+    npu_cross_attention_offload_calls = Get-IntegerTotal 'NPU cross-attention offload calls'
+    npu_cross_attention_graph_submissions = Get-IntegerTotal 'NPU cross-attention graph submissions'
+    npu_cross_attention_maximum_ms = Get-DurationMaximumMs 'NPU cross-attention maximum offload'
+    npu_cross_attention_calls_over_10ms = Get-IntegerTotal 'NPU cross-attention calls over 10 ms'
+    npu_cross_attention_calls_over_100ms = Get-IntegerTotal 'NPU cross-attention calls over 100 ms'
+    npu_cross_attention_calls_over_1000ms = Get-IntegerTotal 'NPU cross-attention calls over 1000 ms'
+    npu_fused_cross_mlp_offload_calls = Get-IntegerTotal 'NPU fused cross/MLP offload calls'
+    npu_fused_cross_mlp_graph_submissions = Get-IntegerTotal 'NPU fused cross/MLP graph submissions'
+    npu_fused_cross_mlp_maximum_ms = Get-DurationMaximumMs 'NPU fused cross/MLP maximum offload'
+    npu_fused_cross_mlp_calls_over_10ms = Get-IntegerTotal 'NPU fused cross/MLP calls over 10 ms'
+    npu_fused_cross_mlp_calls_over_100ms = Get-IntegerTotal 'NPU fused cross/MLP calls over 100 ms'
+    npu_fused_cross_mlp_calls_over_1000ms = Get-IntegerTotal 'NPU fused cross/MLP calls over 1000 ms'
+    npu_mlp_offload_calls = Get-IntegerTotal 'NPU MLP offload calls'
+    npu_mlp_graph_submissions = Get-IntegerTotal 'NPU MLP graph submissions'
+    npu_mlp_maximum_ms = Get-DurationMaximumMs 'NPU MLP maximum offload'
+    npu_mlp_calls_over_10ms = Get-IntegerTotal 'NPU MLP calls over 10 ms'
+    npu_mlp_calls_over_100ms = Get-IntegerTotal 'NPU MLP calls over 100 ms'
+    npu_mlp_calls_over_1000ms = Get-IntegerTotal 'NPU MLP calls over 1000 ms'
+    npu_final_projection_offload_calls = Get-IntegerTotal 'NPU final projection offload calls'
+    npu_final_projection_graph_submissions = Get-IntegerTotal 'NPU final projection graph submissions'
+    npu_final_projection_maximum_ms = Get-DurationMaximumMs 'NPU final projection maximum offload'
+    npu_final_projection_calls_over_10ms = Get-IntegerTotal 'NPU final projection calls over 10 ms'
+    npu_final_projection_calls_over_100ms = Get-IntegerTotal 'NPU final projection calls over 100 ms'
+    npu_final_projection_calls_over_1000ms = Get-IntegerTotal 'NPU final projection calls over 1000 ms'
     decoder_ms = $decoderMs
     self_attention_ms = $selfAttentionMs
     cross_attention_ms = $crossAttentionMs

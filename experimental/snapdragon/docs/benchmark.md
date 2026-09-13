@@ -86,6 +86,22 @@ Use end-to-end wall time, process CPU-seconds, exact synchronous QNN duty, retry
 
 The existing 12-worker CPU width remains the default: eight workers were slower and consumed more CPU-seconds, and idle task-pool workers already block instead of spinning.
 
+### Next optimization priorities
+
+Small remains the default model, but the production decoder mode returns to resident HTP cross-attention plus HTP MLP. Stateful self-attention and full-vocabulary projection remain independently selectable experiments until they improve both wall time and process CPU time. Higher host-call duty alone is not an acceptance result.
+
+1. **Complete:** `--decoder-offload` accepts `cpu`, `all`, or comma-separated `cross`, `mlp`, `self`, `logits`, and `fused` selections. The native probe and every profile record the canonical mode. `cross,mlp` remains the default.
+2. **Complete:** native profiles report offload calls, graph submissions, maximum call duration, calls over 10/100/1000 ms, complete process time, and cleanup time. Transcript SHA-256 is included in profiler output. Native and wrapper time agreed within 50 ms in the validation run; cleanup was 497 ms, so teardown does not explain the earlier anomalous wrapper sample.
+3. **Implemented, latency gate not yet passed:** one 16-node graph per layer now fuses cross-attention, both residuals, MLP LayerNorm, and MLP. It halves cross/MLP submissions and reduces their HTP execution time, but the first Small five-minute run was 3.6% slower overall than separate graphs. Keep it selectable as `fused`, not as the default.
+4. Build batch-2 and batch-4 variants for independent long-form windows after fusion is stable. Measure throughput, first-window latency, memory, ordering, and resumability separately.
+5. Reduce greedy vocabulary output with a verified QNN `TopK` or `ArgMax` contract. CPU must validate dynamic suppression and fall back to full logits when the candidate set is exhausted. Temperature/Gumbel retries retain full-vocabulary semantics unless sampling also moves to HTP.
+6. Revisit self-attention only after position-specific profiling. Test active-prefix graph buckets, direct current-row output binding, and a verified in-graph cache update. Require fewer submissions and no fixed 448-position work for short prefixes.
+7. Add QNN hardware event enumeration and performance/DCVS controls, then evaluate mixed-precision decoder weights only after dispatch and graph-switching costs are under control.
+
+For each optimization, run the focused 35-second Small gate and at least three interleaved warm repetitions of the fixed five-minute workload. Report transcript identity or reviewed quality, retry steps, native wall time, process CPU-seconds, graph submissions, per-stage median/p95/p99/maximum when available, calls over 10/100/1000 ms, peak resident/private memory, and context restore/cleanup time.
+
+`tools/benchmark-whisper-offloads.ps1` automates the interleaved repetitions, preserves every raw profile, hashes the extracted transcript, and writes `runs.csv`, `aggregate.csv`, and `aggregate.json`. Its default matrix compares `cross,mlp`, `fused`, and `fused,self,logits` on Small.
+
 ### Retry policy result
 
 The first implementation applied no-repeat trigrams to greedy decoding as well as retries. It was rejected immediately because it changed the Tiny regression transcript. Restricting the stronger constraint to temperature attempts preserves greedy output, and retaining the old acceptance policy for Base preserves both Tiny and Base byte-for-byte gates.
@@ -158,3 +174,29 @@ The fixed five-minute run preserved transcript quality and produced 1,383 tokens
 | Peak resident bytes | 971,997,184 | 1,255,710,720 | +29.2% |
 
 One 122-step window accumulated 273.400 seconds in cross-attention `graphExecute`; a separate run stalled in self-attention instead. Excluding that outlier window, the other eleven windows still totaled about 140 seconds, roughly twice the resident-cross baseline. The PowerShell wrapper reported an inconsistent 4,116-second wall interval, so the table uses native per-window timers and does not derive NPU duty from the wrapper value. The implementation proves state residency and exact fallback behavior, but not a deployable speedup.
+
+### Fused cross-attention and MLP result
+
+The fused graph consumes the FP16 residual state and resident cross K/V, then performs cross LayerNorm, attention, cross residual, final LayerNorm, both MLP projections, GELU, and the final residual in one `graphExecute`. CPU fallback and the separate cross/MLP graphs remain available for controlled comparisons. Moving residuals inside the FP16 graph preserved the focused Tiny, Base, and Small transcripts.
+
+On Tiny, fusion reduced decoder time from 599.011 to 362.847 ms, reduced cross/MLP graph execution from 252.655 to 127.399 ms, and cut submissions from 848 to 424. On the focused Small gate it reduced decoder time from 2.770 to 2.560 seconds and submissions from 2,664 to 1,332; twelve first-use calls exceeded 10 ms and the maximum was 55.983 ms.
+
+The first fixed five-minute Small comparison used the same expanded context for all modes:
+
+| Metric | Separate `cross,mlp` | `fused` | `fused,self,logits` |
+| --- | ---: | ---: | ---: |
+| Wall time | 76.684 s | 79.441 s | 77.845 s |
+| Native process time | 76.636 s | 79.383 s | 77.783 s |
+| Instrumented window time | 72.298 s | 75.941 s | 73.834 s |
+| Process CPU time | 78.672 s | 93.484 s | 67.641 s |
+| NPU host-call duty | 33.43% | 24.88% | 61.22% |
+| Cross + MLP/fused `graphExecute` | 23.409 s | 17.407 s | 18.533 s |
+| Self-attention `graphExecute` | 0.000 s | 0.000 s | 22.183 s |
+| Final projection `graphExecute` | 0.000 s | 0.000 s | 4.717 s |
+| Decoder graph submissions | 52,536 | 26,268 | 81,030 |
+| Maximum offload call | 19.812 ms | 29.797 ms | 16.847 ms |
+| Calls over 100 ms | 0 | 0 | 0 |
+| Tokens / steps / retries | 1,384 / 2,189 / 757 | 1,384 / 2,189 / 757 | 1,382 / 2,190 / 760 |
+| Peak resident bytes | 1,629,048,832 | 1,629,048,832 | 1,629,036,544 |
+
+Fusion succeeds at its direct objective: it halves submissions and cuts cross/MLP HTP execution by 25.6%. It does not yet improve end-to-end Small latency because CPU self-attention and logits become slower under the changed scheduling/power profile. Adding self-attention and logits reaches 61.2% host-call duty and reduces CPU time by 14.0% versus the same-context separate mode, but remains 1.5% slower and changes two generated tokens. The production default therefore remains `cross,mlp` pending repeated interleaved measurements and the next batching/candidate-reduction work.

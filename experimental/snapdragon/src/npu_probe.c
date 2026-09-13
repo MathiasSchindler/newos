@@ -142,6 +142,17 @@ static int quiet_output;
 static int command_argument_error;
 static u32 decoder_worker_count;
 
+enum {
+    DECODER_OFFLOAD_CROSS = 1U,
+    DECODER_OFFLOAD_MLP = 2U,
+    DECODER_OFFLOAD_SELF = 4U,
+    DECODER_OFFLOAD_LOGITS = 8U,
+    DECODER_OFFLOAD_ALL = 15U,
+    DECODER_OFFLOAD_FUSED = 16U
+};
+
+static u32 decoder_offload_mask = DECODER_OFFLOAD_CROSS | DECODER_OFFLOAD_MLP;
+
 typedef struct WavManifestReader {
     void *handle;
     u8 buffer[4096];
@@ -187,7 +198,8 @@ enum {
     (WHISPER_DECODER_QNN_MAX_OUTPUTS +
         WHISPER_DECODER_QNN_MAX_LAYERS * 2U) * 4U +
         (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U + 2U * 4U +
-        (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 9U) * 4U
+    (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 9U) * 4U +
+    (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U
 };
 
 typedef struct ProcessMemoryCounters {
@@ -314,6 +326,59 @@ static int argument_has_prefix(const char *text, const char *prefix) {
     return *prefix == '\0';
 }
 
+static int argument_part_equals(
+    const char *text,
+    u32 length,
+    const char *expected
+) {
+    u32 index = 0U;
+    while (index < length && expected[index] != '\0' &&
+           text[index] == expected[index]) {
+        ++index;
+    }
+    return index == length && expected[index] == '\0';
+}
+
+static int parse_decoder_offloads(const char *text, u32 *mask) {
+    const char *part = text;
+    u32 parsed = 0U;
+    if (argument_equals(text, "cpu")) {
+        *mask = 0U;
+        return 1;
+    }
+    if (argument_equals(text, "all")) {
+        *mask = DECODER_OFFLOAD_ALL;
+        return 1;
+    }
+    while (*part != '\0') {
+        const char *end = part;
+        u32 bit;
+        while (*end != '\0' && *end != ',') ++end;
+        if (argument_part_equals(part, (u32)(end - part), "cross")) {
+            bit = DECODER_OFFLOAD_CROSS;
+        } else if (argument_part_equals(part, (u32)(end - part), "mlp")) {
+            bit = DECODER_OFFLOAD_MLP;
+        } else if (argument_part_equals(part, (u32)(end - part), "self")) {
+            bit = DECODER_OFFLOAD_SELF;
+        } else if (argument_part_equals(part, (u32)(end - part), "logits")) {
+            bit = DECODER_OFFLOAD_LOGITS;
+        } else if (argument_part_equals(part, (u32)(end - part), "fused")) {
+            bit = DECODER_OFFLOAD_FUSED;
+        } else {
+            return 0;
+        }
+        if ((parsed & bit) != 0U) return 0;
+        parsed |= bit;
+        if (*end == '\0') break;
+        part = end + 1;
+    }
+    if (parsed == 0U ||
+        ((parsed & DECODER_OFFLOAD_FUSED) != 0U &&
+         (parsed & (DECODER_OFFLOAD_CROSS | DECODER_OFFLOAD_MLP)) != 0U)) return 0;
+    *mask = parsed;
+    return 1;
+}
+
 static int parse_worker_count(const char *text, u32 *value) {
     u32 parsed = 0U;
     if (*text == '\0') return 0;
@@ -363,6 +428,15 @@ static const char *first_command_argument(void) {
         if (argument_has_prefix(external_wav_path, "--decoder-workers=")) {
             if (!parse_worker_count(
                     external_wav_path + 18U, &decoder_worker_count
+                )) {
+                command_argument_error = 1;
+                return 0;
+            }
+            continue;
+        }
+        if (argument_has_prefix(external_wav_path, "--decoder-offload=")) {
+            if (!parse_decoder_offloads(
+                    external_wav_path + 18U, &decoder_offload_mask
                 )) {
                 command_argument_error = 1;
                 return 0;
@@ -486,6 +560,30 @@ static void write_text(const char *text) {
     write_bytes(text, text_length(text));
 }
 
+static void write_decoder_offload_mode(void) {
+    u32 written = 0U;
+    write_text("decoder offload: ");
+    if (decoder_offload_mask == 0U) {
+        write_text("cpu\n");
+        return;
+    }
+#define WRITE_OFFLOAD(bit, name) \
+    do { \
+        if ((decoder_offload_mask & (bit)) != 0U) { \
+            if (written != 0U) write_text(","); \
+            write_text(name); \
+            written = 1U; \
+        } \
+    } while (0)
+    WRITE_OFFLOAD(DECODER_OFFLOAD_CROSS, "cross");
+    WRITE_OFFLOAD(DECODER_OFFLOAD_MLP, "mlp");
+    WRITE_OFFLOAD(DECODER_OFFLOAD_SELF, "self");
+    WRITE_OFFLOAD(DECODER_OFFLOAD_LOGITS, "logits");
+    WRITE_OFFLOAD(DECODER_OFFLOAD_FUSED, "fused");
+#undef WRITE_OFFLOAD
+    write_text("\n");
+}
+
 static void write_u32(u32 value) {
     char digits[10];
     usize used = 0U;
@@ -504,6 +602,40 @@ static void write_u64(u64 value) {
         value /= 10U;
     } while (value != 0U);
     while (used != 0U) write_bytes(&digits[--used], 1U);
+}
+
+static void write_duration_us(const char *name, u64 ticks, u64 frequency);
+
+static void write_npu_calls(
+    const char *name,
+    const WhisperDecoderNpuCalls *calls,
+    u64 frequency
+) {
+    write_text("  ");
+    write_text(name);
+    write_text(" offload calls: ");
+    write_u32(calls->offload_calls);
+    write_text("\n  ");
+    write_text(name);
+    write_text(" graph submissions: ");
+    write_u32(calls->graph_submissions);
+    write_text("\n");
+    write_text("  ");
+    write_text(name);
+    write_duration_us(" maximum offload", calls->maximum_ticks, frequency);
+    write_text("  ");
+    write_text(name);
+    write_text(" calls over 10 ms: ");
+    write_u32(calls->over_10ms);
+    write_text("\n  ");
+    write_text(name);
+    write_text(" calls over 100 ms: ");
+    write_u32(calls->over_100ms);
+    write_text("\n  ");
+    write_text(name);
+    write_text(" calls over 1000 ms: ");
+    write_u32(calls->over_1000ms);
+    write_text("\n");
 }
 
 static void write_process_memory(void) {
@@ -969,6 +1101,21 @@ static void encode_model_context_metadata(
             (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U,
             metadata->decoder.self_output_ids[index]);
     }
+    cache_write_u32(output + 1284U, metadata->decoder.fused_layer_count);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 1288U;
+        cache_write_u32(output + base + index * 4U,
+            metadata->decoder.fused_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U,
+            metadata->decoder.fused_key_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 2U + index) * 4U,
+            metadata->decoder.fused_value_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U,
+            metadata->decoder.fused_output_ids[index]);
+    }
 }
 
 static void decode_model_context_metadata(
@@ -1037,6 +1184,18 @@ static void decode_model_context_metadata(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 7U + index) * 4U);
         metadata->decoder.self_output_ids[index] = cache_read_u32(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U);
+    }
+    metadata->decoder.fused_layer_count = cache_read_u32(input + 1284U);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 1288U;
+        metadata->decoder.fused_input_ids[index] = cache_read_u32(
+            input + base + index * 4U);
+        metadata->decoder.fused_key_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U);
+        metadata->decoder.fused_value_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 2U + index) * 4U);
+        metadata->decoder.fused_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U);
     }
 }
 
@@ -4023,6 +4182,14 @@ static u32 run_external_wav_window(
             decoder_profile->npu_cross_attention_execute_ticks, frequency
         );
         write_duration_us(
+            "  NPU fused cross/MLP", decoder_profile->npu_fused_cross_mlp_ticks,
+            frequency
+        );
+        write_duration_us(
+            "  NPU fused cross/MLP graphExecute",
+            decoder_profile->npu_fused_cross_mlp_execute_ticks, frequency
+        );
+        write_duration_us(
             "  CPU feed-forward", decoder_profile->feed_forward_ticks,
             frequency
         );
@@ -4045,6 +4212,26 @@ static u32 run_external_wav_window(
         write_duration_us(
             "  NPU final projection graphExecute",
             decoder_profile->npu_logits_execute_ticks, frequency
+        );
+        write_npu_calls(
+            "NPU self-attention",
+            &decoder_profile->npu_self_attention_calls, frequency
+        );
+        write_npu_calls(
+            "NPU cross-attention",
+            &decoder_profile->npu_cross_attention_calls, frequency
+        );
+        write_npu_calls(
+            "NPU fused cross/MLP",
+            &decoder_profile->npu_fused_cross_mlp_calls, frequency
+        );
+        write_npu_calls(
+            "NPU MLP",
+            &decoder_profile->npu_mlp_calls, frequency
+        );
+        write_npu_calls(
+            "NPU final projection",
+            &decoder_profile->npu_logits_calls, frequency
         );
         write_process_memory();
         if (decoder_tokens < 0) result = 109U;
@@ -4108,6 +4295,8 @@ void mainCRTStartup(void) {
     long long counter_frequency;
     long long start_counter;
     long long end_counter;
+    long long process_start_counter = 0;
+    long long cleanup_start_counter = 0;
     u32 exit_status = 0U;
     int cache_loaded = 0;
     int decoder_qnn_built = 0;
@@ -4126,16 +4315,18 @@ void mainCRTStartup(void) {
     if (!initialize_model_context_paths(active_model)) finish(117U);
     if (command_argument_error) {
         static const char usage[] =
-            "Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--quiet] <wav-path>\n";
+            "Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
         write_raw_bytes(usage, sizeof(usage) - 1U);
         finish(116U);
     }
     if (quiet_output) silence_standard_error();
     write_text("QNN HTP provider probe\n");
+    write_decoder_offload_mode();
     if (!QueryPerformanceFrequency(&counter_frequency) || counter_frequency <= 0) {
         write_text("QueryPerformanceFrequency failed.\n");
         finish(25U);
     }
+    QueryPerformanceCounter(&process_start_counter);
     reference_add(input_a, input_b, expected, 8U);
     module = LoadLibraryA("QnnHtp.dll");
     if (module == 0) {
@@ -4272,22 +4463,36 @@ void mainCRTStartup(void) {
             exit_status = 108U;
         }
         if (exit_status == 0U) {
-            whisper_decoder_set_cross_attention_offload(
-                whisper_decoder, whisper_decoder_qnn_cross_attention_offload,
-                whisper_decoder_qnn
-            );
-            whisper_decoder_set_mlp_offload(
-                whisper_decoder, whisper_decoder_qnn_mlp_offload,
-                whisper_decoder_qnn
-            );
-            whisper_decoder_set_logits_offload(
-                whisper_decoder, whisper_decoder_qnn_logits_offload,
-                whisper_decoder_qnn
-            );
-            whisper_decoder_set_self_attention_offload(
-                whisper_decoder, whisper_decoder_qnn_self_attention_offload,
-                whisper_decoder_qnn
-            );
+            if ((decoder_offload_mask & DECODER_OFFLOAD_CROSS) != 0U) {
+                whisper_decoder_set_cross_attention_offload(
+                    whisper_decoder, whisper_decoder_qnn_cross_attention_offload,
+                    whisper_decoder_qnn
+                );
+            }
+            if ((decoder_offload_mask & DECODER_OFFLOAD_MLP) != 0U) {
+                whisper_decoder_set_mlp_offload(
+                    whisper_decoder, whisper_decoder_qnn_mlp_offload,
+                    whisper_decoder_qnn
+                );
+            }
+            if ((decoder_offload_mask & DECODER_OFFLOAD_FUSED) != 0U) {
+                whisper_decoder_set_fused_cross_mlp_offload(
+                    whisper_decoder, whisper_decoder_qnn_fused_cross_mlp_offload,
+                    whisper_decoder_qnn
+                );
+            }
+            if ((decoder_offload_mask & DECODER_OFFLOAD_LOGITS) != 0U) {
+                whisper_decoder_set_logits_offload(
+                    whisper_decoder, whisper_decoder_qnn_logits_offload,
+                    whisper_decoder_qnn
+                );
+            }
+            if ((decoder_offload_mask & DECODER_OFFLOAD_SELF) != 0U) {
+                whisper_decoder_set_self_attention_offload(
+                    whisper_decoder, whisper_decoder_qnn_self_attention_offload,
+                    whisper_decoder_qnn
+                );
+            }
         }
         if (exit_status == 0U && wav_argument[0] == '@') {
             u32 segment_index = 0U;
@@ -4393,7 +4598,7 @@ void mainCRTStartup(void) {
     }
 
 #if defined(WHISPER_RUNTIME_ONLY)
-    write_text("Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--quiet] <wav-path>\n");
+    write_text("Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n");
     exit_status = 116U;
     goto cleanup;
 #else
@@ -4648,7 +4853,7 @@ void mainCRTStartup(void) {
             int decoder_qnn_status = whisper_decoder_qnn_build(
                 whisper_decoder_qnn, api, context_handle, &decoder_qnn_ids
             );
-            write_text("QNN decoder cross K/V and MLP graph build: ");
+            write_text("QNN decoder graph build: ");
             write_text(decoder_qnn_status == 1 ? "complete\n" :
                 (decoder_qnn_status == 0 ? "skipped (artifacts unavailable)\n" : "failed\n"));
             if (decoder_qnn_status < 0) {
@@ -4678,6 +4883,7 @@ void mainCRTStartup(void) {
     }
 #endif
 cleanup:
+    QueryPerformanceCounter(&cleanup_start_counter);
     whisper_decoder_shutdown(whisper_decoder);
     whisper_decoder = 0;
     whisper_encoder_qnn_shutdown(whisper_encoder_qnn);
@@ -4711,6 +4917,15 @@ cleanup:
     }
 
     FreeLibrary(module);
+    QueryPerformanceCounter(&end_counter);
+    write_duration_us(
+        "  native cleanup time", (u64)(end_counter - cleanup_start_counter),
+        (u64)counter_frequency
+    );
+    write_duration_us(
+        "  native process time", (u64)(end_counter - process_start_counter),
+        (u64)counter_frequency
+    );
     if (quiet_stderr_handle != 0) CloseHandle(quiet_stderr_handle);
     finish(exit_status);
 }

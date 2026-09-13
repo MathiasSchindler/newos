@@ -5,6 +5,12 @@ param(
     [double]$WindowSeconds = 30.0,
     [double]$OverlapSeconds = 5.0,
     [int]$MaximumSegments = 0,
+    [ValidateSet('tiny', 'base', 'small')]
+    [string]$Model = 'small',
+    [ValidateSet('cpu', 'all', 'cross', 'mlp', 'self', 'logits',
+        'cross,mlp', 'cross,mlp,logits', 'cross,mlp,self',
+        'fused', 'fused,logits', 'fused,self', 'fused,self,logits')]
+    [string]$DecoderOffload = 'cross,mlp',
     [switch]$SkipConversion,
     [switch]$Resume,
     [switch]$RetryFlagged,
@@ -53,7 +59,7 @@ function Invoke-Probe([string]$WavPath, [string]$StdoutPath, [string]$StderrPath
     if ($WavPath.Contains('"')) { throw 'WAV paths containing quotes are not supported.' }
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $probe
-    $startInfo.Arguments = '"' + $WavPath + '"'
+    $startInfo.Arguments = "--model=$Model --decoder-offload=$DecoderOffload `"$WavPath`""
     $startInfo.WorkingDirectory = $buildDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
@@ -181,7 +187,10 @@ function Test-RepetitiveTranscript([string]$Transcript) {
 function Read-ProbeResult([string]$StdoutPath, [string]$StderrPath, [int]$Index, [double]$StartSeconds, [double]$DurationSeconds, [double]$WallMilliseconds) {
     $text = [System.IO.File]::ReadAllText($StdoutPath, [System.Text.Encoding]::UTF8)
     $lines = $text -split "`r?`n"
-    $marker = [Array]::IndexOf($lines, 'Transcript (German, greedy):')
+    $marker = [Array]::IndexOf($lines, 'Transcript (German):')
+    if ($marker -lt 0) {
+        $marker = [Array]::IndexOf($lines, 'Transcript (German, greedy):')
+    }
     if ($marker -lt 0) { throw "Segment $Index has no transcript marker. See $StdoutPath" }
     $timingLine = -1
     for ($lineIndex = $marker + 1; $lineIndex -lt $lines.Count; ++$lineIndex) {

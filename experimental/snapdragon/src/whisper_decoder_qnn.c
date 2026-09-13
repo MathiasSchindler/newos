@@ -29,6 +29,9 @@ enum {
     DECODER_QNN_CROSS_TENSORS = 19,
     DECODER_QNN_CROSS_PARAMETER_TENSORS = 2,
     DECODER_QNN_CROSS_NODES = 10,
+    DECODER_QNN_FUSED_TENSORS = 31,
+    DECODER_QNN_FUSED_PARAMETER_TENSORS = 2,
+    DECODER_QNN_FUSED_NODES = 16,
     DECODER_QNN_LOGITS_TENSORS = 7,
     DECODER_QNN_LOGITS_PARAMETER_TENSORS = 1,
     DECODER_QNN_LOGITS_NODES = 2,
@@ -41,6 +44,8 @@ enum {
 };
 
 typedef struct DecoderQnnMlpWeights {
+    u16 *norm_weight;
+    u16 *norm_bias;
     u16 *fc1_weight;
     u16 *fc1_bias;
     u16 *fc2_weight;
@@ -94,6 +99,7 @@ struct WhisperDecoderQnn {
     QnnGraphHandle graph;
     QnnGraphHandle mlp_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnGraphHandle cross_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnGraphHandle fused_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnGraphHandle logits_graph;
     QnnGraphHandle self_projection_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnGraphHandle self_attention_graphs[WHISPER_DECODER_QNN_MAX_LAYERS];
@@ -108,6 +114,10 @@ struct WhisperDecoderQnn {
     QnnTensor cross_keys[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnTensor cross_values[WHISPER_DECODER_QNN_MAX_LAYERS];
     QnnTensor cross_outputs[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnTensor fused_inputs[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnTensor fused_keys[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnTensor fused_values[WHISPER_DECODER_QNN_MAX_LAYERS];
+    QnnTensor fused_outputs[WHISPER_DECODER_QNN_MAX_LAYERS];
     void *self_builder_allocation;
     u16 *self_query_buffer;
     u16 *self_key_buffer;
@@ -139,6 +149,11 @@ struct WhisperDecoderQnn {
     QnnTensor *cross_registered[
         DECODER_QNN_CROSS_TENSORS + DECODER_QNN_CROSS_PARAMETER_TENSORS
     ];
+    QnnTensor fused_build_tensors[DECODER_QNN_FUSED_TENSORS];
+    QnnParam fused_build_parameters[3];
+    QnnTensor *fused_registered[
+        DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS
+    ];
     QnnMemHandle cache_handles[WHISPER_DECODER_QNN_MAX_OUTPUTS];
     QnnTensor norm_weight_tensor;
     QnnTensor norm_bias_tensor;
@@ -162,6 +177,8 @@ struct WhisperDecoderQnn {
     int mlp_disabled;
     int cross_ready;
     int cross_disabled;
+    int fused_ready;
+    int fused_disabled;
     int logits_ready;
     int logits_disabled;
     int self_ready;
@@ -249,6 +266,13 @@ struct WhisperDecoderQnn {
         [DECODER_QNN_NAME_CAPACITY];
     char cross_node_names[WHISPER_DECODER_QNN_MAX_LAYERS]
         [DECODER_QNN_CROSS_NODES][DECODER_QNN_NAME_CAPACITY];
+    char fused_graph_names[WHISPER_DECODER_QNN_MAX_LAYERS]
+        [DECODER_QNN_NAME_CAPACITY];
+    char fused_tensor_names[WHISPER_DECODER_QNN_MAX_LAYERS]
+        [DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS]
+        [DECODER_QNN_NAME_CAPACITY];
+    char fused_node_names[WHISPER_DECODER_QNN_MAX_LAYERS]
+        [DECODER_QNN_FUSED_NODES][DECODER_QNN_NAME_CAPACITY];
 };
 
 static int append_text(char *output, u32 capacity, u32 *used, const char *text) {
@@ -403,6 +427,21 @@ static int make_self_name(
         append_text(output, capacity, &used, suffix);
 }
 
+static int make_fused_name(
+    char *output,
+    u32 capacity,
+    const WhisperModelConfig *model,
+    u32 layer,
+    const char *suffix
+) {
+    u32 used = 0U;
+    return append_text(output, capacity, &used, model->name) &&
+        append_text(output, capacity, &used, "_decoder_l") &&
+        append_u32(output, capacity, &used, layer) &&
+        append_text(output, capacity, &used, "_cross_mlp_") &&
+        append_text(output, capacity, &used, suffix);
+}
+
 static int initialize_names(WhisperDecoderQnn *decoder) {
     u32 index;
     u32 layer;
@@ -535,6 +574,25 @@ static int initialize_names(WhisperDecoderQnn *decoder) {
             "norm", "q_fc", "q_reshape", "q_transpose", "scores",
             "softmax", "values", "inverse_transpose", "flatten", "out_fc"
         };
+        static const char *fused_tensor_suffixes[
+            DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS
+        ] = {
+            "input", "cross_norm_weight", "cross_norm_bias", "cross_normalized",
+            "q_weight", "q_bias", "q_output", "q_split", "q_heads",
+            "key", "value", "scores", "probabilities", "attended_heads",
+            "attended_split", "attended_flat", "cross_out_weight",
+            "cross_out_bias", "cross_projected", "cross_residual",
+            "final_norm_weight", "final_norm_bias", "final_normalized",
+            "fc1_weight", "fc1_bias", "fc1_output", "gelu_output",
+            "fc2_weight", "fc2_bias", "mlp_projected", "output",
+            "norm_axes", "head_perm"
+        };
+        static const char *fused_node_suffixes[DECODER_QNN_FUSED_NODES] = {
+            "cross_norm", "q_fc", "q_reshape", "q_transpose", "scores",
+            "softmax", "values", "inverse_transpose", "flatten", "cross_out",
+            "cross_residual", "final_norm", "fc1", "gelu", "fc2",
+            "final_residual"
+        };
         static const char *self_projection_tensor_suffixes[
             DECODER_QNN_SELF_PROJECTION_TENSORS +
             DECODER_QNN_SELF_PROJECTION_PARAMETER_TENSORS
@@ -598,6 +656,26 @@ static int initialize_names(WhisperDecoderQnn *decoder) {
                     DECODER_QNN_NAME_CAPACITY, model, layer,
                     cross_node_suffixes[index]
                 )) return 0;
+            }
+            if (!make_fused_name(
+                    decoder->fused_graph_names[layer], DECODER_QNN_NAME_CAPACITY,
+                    model, layer, "graph"
+                )) return 0;
+            for (index = 0U; index <
+                   DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS;
+                   ++index) {
+                if (!make_fused_name(
+                        decoder->fused_tensor_names[layer][index],
+                        DECODER_QNN_NAME_CAPACITY, model, layer,
+                        fused_tensor_suffixes[index]
+                    )) return 0;
+            }
+            for (index = 0U; index < DECODER_QNN_FUSED_NODES; ++index) {
+                if (!make_fused_name(
+                        decoder->fused_node_names[layer][index],
+                        DECODER_QNN_NAME_CAPACITY, model, layer,
+                        fused_node_suffixes[index]
+                    )) return 0;
             }
             if (!make_self_name(
                 decoder->self_projection_graph_names[layer],
@@ -762,6 +840,7 @@ static int decoder_qnn_load_mlp_weights(WhisperDecoderQnn *decoder) {
     if (!whisper_model_size_multiply(
             model->width, model->ffn_width, &matrix_values
         ) || !whisper_model_size_multiply(2U, matrix_values, &layer_values) ||
+        !whisper_model_size_add(layer_values, model->width * 2U, &layer_values) ||
         !whisper_model_size_add(layer_values, model->ffn_width, &layer_values) ||
         !whisper_model_size_add(layer_values, model->width, &layer_values) ||
         !whisper_model_size_multiply(
@@ -799,6 +878,10 @@ static int decoder_qnn_load_mlp_weights(WhisperDecoderQnn *decoder) {
         )) return -1;
     cursor = (u16 *)decoder->mlp_builder_allocation;
     for (layer = 0U; layer < model->decoder_layers; ++layer) {
+        decoder->mlp_weights[layer].norm_weight = cursor;
+        cursor += model->width;
+        decoder->mlp_weights[layer].norm_bias = cursor;
+        cursor += model->width;
         decoder->mlp_weights[layer].fc1_weight = cursor;
         cursor += matrix_values;
         decoder->mlp_weights[layer].fc1_bias = cursor;
@@ -1588,6 +1671,252 @@ static int __attribute__((noinline)) decoder_qnn_build_mlps(
     return 1;
 }
 
+static int __attribute__((noinline)) decoder_qnn_build_fused_cross_mlps(
+    WhisperDecoderQnn *decoder,
+    const QnnInterfaceV2 *api,
+    QnnContextHandle context,
+    WhisperDecoderQnnIds *ids_out
+) {
+    enum {
+        FUSED_INPUT,
+        FUSED_CROSS_NORM_WEIGHT,
+        FUSED_CROSS_NORM_BIAS,
+        FUSED_CROSS_NORMALIZED,
+        FUSED_Q_WEIGHT,
+        FUSED_Q_BIAS,
+        FUSED_Q_OUTPUT,
+        FUSED_Q_SPLIT,
+        FUSED_Q_HEADS,
+        FUSED_KEYS,
+        FUSED_VALUES,
+        FUSED_SCORES,
+        FUSED_PROBABILITIES,
+        FUSED_ATTENDED_HEADS,
+        FUSED_ATTENDED_SPLIT,
+        FUSED_ATTENDED_FLAT,
+        FUSED_CROSS_OUT_WEIGHT,
+        FUSED_CROSS_OUT_BIAS,
+        FUSED_CROSS_PROJECTED,
+        FUSED_CROSS_RESIDUAL,
+        FUSED_FINAL_NORM_WEIGHT,
+        FUSED_FINAL_NORM_BIAS,
+        FUSED_FINAL_NORMALIZED,
+        FUSED_FC1_WEIGHT,
+        FUSED_FC1_BIAS,
+        FUSED_FC1_OUTPUT,
+        FUSED_GELU_OUTPUT,
+        FUSED_FC2_WEIGHT,
+        FUSED_FC2_BIAS,
+        FUSED_MLP_PROJECTED,
+        FUSED_OUTPUT
+    };
+    u64 width_matrix_bytes = (u64)decoder->model.width *
+        decoder->model.width * sizeof(u16);
+    u64 mlp_matrix_bytes = (u64)decoder->model.width *
+        decoder->model.ffn_width * sizeof(u16);
+    u32 width_bytes = decoder->model.width * sizeof(u16);
+    u32 hidden_bytes = decoder->model.ffn_width * sizeof(u16);
+    u32 layer;
+    if (width_matrix_bytes > 0xffffffffULL ||
+        mlp_matrix_bytes > 0xffffffffULL) return -1;
+    for (layer = 0U; layer < decoder->model.decoder_layers; ++layer) {
+        DecoderQnnCrossWeights *cross = &decoder->cross_weights[layer];
+        DecoderQnnMlpWeights *mlp = &decoder->mlp_weights[layer];
+        QnnTensor *tensors = decoder->fused_build_tensors;
+        QnnParam *parameters = decoder->fused_build_parameters;
+        QnnTensor **registered = decoder->fused_registered;
+        u32 registered_count = 0U;
+        u32 index;
+        if (api->graph_create(
+                context, decoder->fused_graph_names[layer], 0,
+                &decoder->fused_graphs[layer]
+            ) != 0U) return -1;
+#define FUSED_TENSOR(slot, type, dimensions, rank) \
+        tensors[slot] = decoder_qnn_tensor( \
+            decoder->fused_tensor_names[layer][slot], type, dimensions, rank \
+        )
+#define FUSED_STATIC(slot, payload, byte_count) \
+        do { \
+            tensors[slot].data.v1.memory.client_buffer.data = payload; \
+            tensors[slot].data.v1.memory.client_buffer.data_size = byte_count; \
+        } while (0)
+        FUSED_TENSOR(FUSED_INPUT, QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_CROSS_NORM_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_CROSS_NORM_WEIGHT, cross->norm_weight, width_bytes);
+        FUSED_TENSOR(FUSED_CROSS_NORM_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_CROSS_NORM_BIAS, cross->norm_bias, width_bytes);
+        FUSED_TENSOR(FUSED_CROSS_NORMALIZED, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_Q_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->weight_dimensions, 2U);
+        FUSED_STATIC(FUSED_Q_WEIGHT, cross->q_weight, (u32)width_matrix_bytes);
+        FUSED_TENSOR(FUSED_Q_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_Q_BIAS, cross->q_bias, width_bytes);
+        FUSED_TENSOR(FUSED_Q_OUTPUT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_Q_SPLIT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->cross_split_dimensions, 3U);
+        FUSED_TENSOR(FUSED_Q_HEADS, QNN_TENSOR_TYPE_NATIVE,
+            decoder->cross_head_dimensions, 3U);
+        FUSED_TENSOR(FUSED_KEYS, QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->key_dimensions, 3U);
+        FUSED_TENSOR(FUSED_VALUES, QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->head_dimensions, 3U);
+        FUSED_TENSOR(FUSED_SCORES, QNN_TENSOR_TYPE_NATIVE,
+            decoder->score_dimensions, 3U);
+        FUSED_TENSOR(FUSED_PROBABILITIES, QNN_TENSOR_TYPE_NATIVE,
+            decoder->score_dimensions, 3U);
+        FUSED_TENSOR(FUSED_ATTENDED_HEADS, QNN_TENSOR_TYPE_NATIVE,
+            decoder->cross_head_dimensions, 3U);
+        FUSED_TENSOR(FUSED_ATTENDED_SPLIT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->cross_split_dimensions, 3U);
+        FUSED_TENSOR(FUSED_ATTENDED_FLAT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_CROSS_OUT_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->weight_dimensions, 2U);
+        FUSED_STATIC(FUSED_CROSS_OUT_WEIGHT, cross->out_weight,
+            (u32)width_matrix_bytes);
+        FUSED_TENSOR(FUSED_CROSS_OUT_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_CROSS_OUT_BIAS, cross->out_bias, width_bytes);
+        FUSED_TENSOR(FUSED_CROSS_PROJECTED, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_CROSS_RESIDUAL, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_FINAL_NORM_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_FINAL_NORM_WEIGHT, mlp->norm_weight, width_bytes);
+        FUSED_TENSOR(FUSED_FINAL_NORM_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_FINAL_NORM_BIAS, mlp->norm_bias, width_bytes);
+        FUSED_TENSOR(FUSED_FINAL_NORMALIZED, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_FC1_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_fc1_dimensions, 2U);
+        FUSED_STATIC(FUSED_FC1_WEIGHT, mlp->fc1_weight,
+            (u32)mlp_matrix_bytes);
+        FUSED_TENSOR(FUSED_FC1_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_hidden_vector_dimensions, 1U);
+        FUSED_STATIC(FUSED_FC1_BIAS, mlp->fc1_bias, hidden_bytes);
+        FUSED_TENSOR(FUSED_FC1_OUTPUT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_hidden_dimensions, 2U);
+        FUSED_TENSOR(FUSED_GELU_OUTPUT, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_hidden_dimensions, 2U);
+        FUSED_TENSOR(FUSED_FC2_WEIGHT, QNN_TENSOR_TYPE_STATIC,
+            decoder->mlp_fc2_dimensions, 2U);
+        FUSED_STATIC(FUSED_FC2_WEIGHT, mlp->fc2_weight,
+            (u32)mlp_matrix_bytes);
+        FUSED_TENSOR(FUSED_FC2_BIAS, QNN_TENSOR_TYPE_STATIC,
+            decoder->width_dimensions, 1U);
+        FUSED_STATIC(FUSED_FC2_BIAS, mlp->fc2_bias, width_bytes);
+        FUSED_TENSOR(FUSED_MLP_PROJECTED, QNN_TENSOR_TYPE_NATIVE,
+            decoder->mlp_activation_dimensions, 2U);
+        FUSED_TENSOR(FUSED_OUTPUT, QNN_TENSOR_TYPE_APP_READ,
+            decoder->mlp_activation_dimensions, 2U);
+#undef FUSED_STATIC
+#undef FUSED_TENSOR
+        for (index = 0U; index < DECODER_QNN_FUSED_TENSORS; ++index) {
+            registered[registered_count++] = &tensors[index];
+        }
+        parameters[0].type = QNN_PARAMTYPE_SCALAR;
+        parameters[0].name = "epsilon";
+        parameters[0].value.scalar.data_type = QNN_DATATYPE_FLOAT_32;
+        parameters[0].value.scalar.value.float_value = 0.00001f;
+        parameters[1].type = QNN_PARAMTYPE_TENSOR;
+        parameters[1].name = "axes";
+        parameters[1].value.tensor = decoder_qnn_tensor(
+            decoder->fused_tensor_names[layer][DECODER_QNN_FUSED_TENSORS],
+            QNN_TENSOR_TYPE_STATIC, decoder->vector_dimensions, 1U
+        );
+        parameters[1].value.tensor.data.v1.data_type = QNN_DATATYPE_UINT_32;
+        parameters[1].value.tensor.data.v1.memory.client_buffer.data = decoder->axes;
+        parameters[1].value.tensor.data.v1.memory.client_buffer.data_size =
+            sizeof(decoder->axes);
+        registered[registered_count++] = &parameters[1].value.tensor;
+        parameters[2].type = QNN_PARAMTYPE_TENSOR;
+        parameters[2].name = "perm";
+        parameters[2].value.tensor = decoder_qnn_tensor(
+            decoder->fused_tensor_names[layer][DECODER_QNN_FUSED_TENSORS + 1U],
+            QNN_TENSOR_TYPE_STATIC, decoder->perm_dimensions, 1U
+        );
+        parameters[2].value.tensor.data.v1.data_type = QNN_DATATYPE_UINT_32;
+        parameters[2].value.tensor.data.v1.memory.client_buffer.data =
+            decoder->head_perm;
+        parameters[2].value.tensor.data.v1.memory.client_buffer.data_size =
+            sizeof(decoder->head_perm);
+        registered[registered_count++] = &parameters[2].value.tensor;
+        for (index = 0U; index < registered_count; ++index) {
+            if (api->tensor_create_graph_tensor(
+                    decoder->fused_graphs[layer], registered[index]
+                ) != 0U) return -1;
+        }
+#define ADD_FUSED_NODE(node_index, type, input0, input1, input2, count, output, params, param_count) \
+        if (decoder_qnn_add_graph_node( \
+                api, decoder->fused_graphs[layer], \
+                decoder->fused_node_names[layer][node_index], type, \
+                input0, input1, input2, count, output, params, param_count \
+            ) != 0U) return -1
+        ADD_FUSED_NODE(0U, "LayerNorm", &tensors[FUSED_INPUT],
+            &tensors[FUSED_CROSS_NORM_WEIGHT], &tensors[FUSED_CROSS_NORM_BIAS],
+            3U, &tensors[FUSED_CROSS_NORMALIZED], parameters, 2U);
+        ADD_FUSED_NODE(1U, "FullyConnected", &tensors[FUSED_CROSS_NORMALIZED],
+            &tensors[FUSED_Q_WEIGHT], &tensors[FUSED_Q_BIAS], 3U,
+            &tensors[FUSED_Q_OUTPUT], 0, 0U);
+        ADD_FUSED_NODE(2U, "Reshape", &tensors[FUSED_Q_OUTPUT], 0, 0, 1U,
+            &tensors[FUSED_Q_SPLIT], 0, 0U);
+        ADD_FUSED_NODE(3U, "Transpose", &tensors[FUSED_Q_SPLIT], 0, 0, 1U,
+            &tensors[FUSED_Q_HEADS], &parameters[2], 1U);
+        ADD_FUSED_NODE(4U, "MatMul", &tensors[FUSED_Q_HEADS],
+            &tensors[FUSED_KEYS], 0, 2U, &tensors[FUSED_SCORES], 0, 0U);
+        ADD_FUSED_NODE(5U, "Softmax", &tensors[FUSED_SCORES], 0, 0, 1U,
+            &tensors[FUSED_PROBABILITIES], 0, 0U);
+        ADD_FUSED_NODE(6U, "MatMul", &tensors[FUSED_PROBABILITIES],
+            &tensors[FUSED_VALUES], 0, 2U, &tensors[FUSED_ATTENDED_HEADS], 0, 0U);
+        ADD_FUSED_NODE(7U, "Transpose", &tensors[FUSED_ATTENDED_HEADS],
+            0, 0, 1U, &tensors[FUSED_ATTENDED_SPLIT], &parameters[2], 1U);
+        ADD_FUSED_NODE(8U, "Reshape", &tensors[FUSED_ATTENDED_SPLIT], 0, 0, 1U,
+            &tensors[FUSED_ATTENDED_FLAT], 0, 0U);
+        ADD_FUSED_NODE(9U, "FullyConnected", &tensors[FUSED_ATTENDED_FLAT],
+            &tensors[FUSED_CROSS_OUT_WEIGHT], &tensors[FUSED_CROSS_OUT_BIAS],
+            3U, &tensors[FUSED_CROSS_PROJECTED], 0, 0U);
+        ADD_FUSED_NODE(10U, "ElementWiseAdd", &tensors[FUSED_INPUT],
+            &tensors[FUSED_CROSS_PROJECTED], 0, 2U,
+            &tensors[FUSED_CROSS_RESIDUAL], 0, 0U);
+        ADD_FUSED_NODE(11U, "LayerNorm", &tensors[FUSED_CROSS_RESIDUAL],
+            &tensors[FUSED_FINAL_NORM_WEIGHT], &tensors[FUSED_FINAL_NORM_BIAS],
+            3U, &tensors[FUSED_FINAL_NORMALIZED], parameters, 2U);
+        ADD_FUSED_NODE(12U, "FullyConnected", &tensors[FUSED_FINAL_NORMALIZED],
+            &tensors[FUSED_FC1_WEIGHT], &tensors[FUSED_FC1_BIAS], 3U,
+            &tensors[FUSED_FC1_OUTPUT], 0, 0U);
+        ADD_FUSED_NODE(13U, "Gelu", &tensors[FUSED_FC1_OUTPUT], 0, 0, 1U,
+            &tensors[FUSED_GELU_OUTPUT], 0, 0U);
+        ADD_FUSED_NODE(14U, "FullyConnected", &tensors[FUSED_GELU_OUTPUT],
+            &tensors[FUSED_FC2_WEIGHT], &tensors[FUSED_FC2_BIAS], 3U,
+            &tensors[FUSED_MLP_PROJECTED], 0, 0U);
+        ADD_FUSED_NODE(15U, "ElementWiseAdd", &tensors[FUSED_CROSS_RESIDUAL],
+            &tensors[FUSED_MLP_PROJECTED], 0, 2U, &tensors[FUSED_OUTPUT], 0, 0U);
+#undef ADD_FUSED_NODE
+        if (api->graph_finalize(decoder->fused_graphs[layer], 0, 0) != 0U) return -1;
+        decoder->fused_inputs[layer] = tensors[FUSED_INPUT];
+        decoder->fused_keys[layer] = tensors[FUSED_KEYS];
+        decoder->fused_values[layer] = tensors[FUSED_VALUES];
+        decoder->fused_outputs[layer] = tensors[FUSED_OUTPUT];
+        if (ids_out != 0) {
+            ids_out->fused_input_ids[layer] = tensors[FUSED_INPUT].data.v1.id;
+            ids_out->fused_key_ids[layer] = tensors[FUSED_KEYS].data.v1.id;
+            ids_out->fused_value_ids[layer] = tensors[FUSED_VALUES].data.v1.id;
+            ids_out->fused_output_ids[layer] = tensors[FUSED_OUTPUT].data.v1.id;
+        }
+    }
+    if (ids_out != 0) ids_out->fused_layer_count = decoder->model.decoder_layers;
+    decoder->fused_ready = 1;
+    return 1;
+}
+
 static int __attribute__((noinline)) decoder_qnn_build_logits(
     WhisperDecoderQnn *decoder,
     const QnnInterfaceV2 *api,
@@ -2207,6 +2536,8 @@ int whisper_decoder_qnn_build(
     if (loaded != 1) return loaded;
     loaded = decoder_qnn_build_mlps(decoder, api, context, ids_out);
     if (loaded != 1) return loaded;
+    loaded = decoder_qnn_build_fused_cross_mlps(decoder, api, context, ids_out);
+    if (loaded != 1) return loaded;
     loaded = decoder_qnn_build_logits(decoder, api, context, ids_out);
     if (loaded != 1) return loaded;
     return decoder_qnn_build_self_attention(decoder, api, context, ids_out);
@@ -2224,6 +2555,7 @@ int whisper_decoder_qnn_restore(
         ids->mlp_layer_count != decoder->model.decoder_layers ||
         ids->cross_layer_count != decoder->model.decoder_layers ||
         ids->self_layer_count != decoder->model.decoder_layers ||
+        ids->fused_layer_count != decoder->model.decoder_layers ||
         api->graph_retrieve(
             context, decoder->graph_name, &decoder->graph) != 0U) {
         return 0;
@@ -2300,6 +2632,30 @@ int whisper_decoder_qnn_restore(
             decoder->mlp_activation_dimensions, 2U
         );
         decoder->mlp_outputs[index].data.v1.id = ids->mlp_output_ids[index];
+        if (api->graph_retrieve(
+                context, decoder->fused_graph_names[index],
+                &decoder->fused_graphs[index]
+            ) != 0U) return 0;
+        decoder->fused_inputs[index] = decoder_qnn_tensor(
+            decoder->fused_tensor_names[index][0], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        decoder->fused_inputs[index].data.v1.id = ids->fused_input_ids[index];
+        decoder->fused_keys[index] = decoder_qnn_tensor(
+            decoder->fused_tensor_names[index][9], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->key_dimensions, 3U
+        );
+        decoder->fused_keys[index].data.v1.id = ids->fused_key_ids[index];
+        decoder->fused_values[index] = decoder_qnn_tensor(
+            decoder->fused_tensor_names[index][10], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->head_dimensions, 3U
+        );
+        decoder->fused_values[index].data.v1.id = ids->fused_value_ids[index];
+        decoder->fused_outputs[index] = decoder_qnn_tensor(
+            decoder->fused_tensor_names[index][30], QNN_TENSOR_TYPE_APP_READ,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        decoder->fused_outputs[index].data.v1.id = ids->fused_output_ids[index];
     }
     if (api->graph_retrieve(
             context, decoder->logits_graph_name, &decoder->logits_graph
@@ -2379,6 +2735,7 @@ int whisper_decoder_qnn_restore(
     decoder->api = api;
     decoder->cross_ready = 1;
     decoder->mlp_ready = 1;
+    decoder->fused_ready = 1;
     decoder->logits_ready = 1;
     decoder->self_ready = 1;
     return 1;
@@ -2532,6 +2889,61 @@ int whisper_decoder_qnn_cross_attention_offload(
     }
     for (index = 0U; index < decoder->model.width; ++index) {
         projected[index] =
+            whisper_frontend_half_to_float(decoder->mlp_output_buffer[index]);
+    }
+    return 1;
+}
+
+int whisper_decoder_qnn_fused_cross_mlp_offload(
+    void *context,
+    u32 layer,
+    const float *hidden,
+    float *output_values,
+    u64 *execute_ticks
+) {
+    WhisperDecoderQnn *decoder = (WhisperDecoderQnn *)context;
+    QnnTensor inputs[3];
+    QnnTensor output;
+    long long execute_start;
+    long long execute_end;
+    u64 status;
+    u32 index;
+    u32 vector_bytes;
+    if (execute_ticks != 0) *execute_ticks = 0U;
+    if (decoder == 0 || hidden == 0 || output_values == 0 ||
+        !decoder->fused_ready || decoder->fused_disabled ||
+        !decoder->shared_cache_ready || decoder->api == 0 ||
+        layer >= decoder->model.decoder_layers) return 0;
+    vector_bytes = decoder->model.width * sizeof(u16);
+    for (index = 0U; index < decoder->model.width; ++index) {
+        decoder->mlp_input_buffer[index] =
+            whisper_frontend_float_to_half(hidden[index]);
+    }
+    inputs[0] = decoder->fused_inputs[layer];
+    inputs[0].data.v1.memory.client_buffer.data = decoder->mlp_input_buffer;
+    inputs[0].data.v1.memory.client_buffer.data_size = vector_bytes;
+    inputs[1] = decoder->fused_keys[layer];
+    inputs[1].data.v1.memory_type = QNN_TENSORMEMTYPE_MEMHANDLE;
+    inputs[1].data.v1.memory.memory_handle = decoder->cache_handles[layer * 2U];
+    inputs[2] = decoder->fused_values[layer];
+    inputs[2].data.v1.memory_type = QNN_TENSORMEMTYPE_MEMHANDLE;
+    inputs[2].data.v1.memory.memory_handle =
+        decoder->cache_handles[layer * 2U + 1U];
+    output = decoder->fused_outputs[layer];
+    output.data.v1.memory.client_buffer.data = decoder->mlp_output_buffer;
+    output.data.v1.memory.client_buffer.data_size = vector_bytes;
+    QueryPerformanceCounter(&execute_start);
+    status = decoder->api->graph_execute(
+        decoder->fused_graphs[layer], inputs, 3U, &output, 1U, 0, 0
+    );
+    QueryPerformanceCounter(&execute_end);
+    if (execute_ticks != 0) *execute_ticks = (u64)(execute_end - execute_start);
+    if (status != 0U) {
+        decoder->fused_disabled = 1;
+        return 0;
+    }
+    for (index = 0U; index < decoder->model.width; ++index) {
+        output_values[index] =
             whisper_frontend_half_to_float(decoder->mlp_output_buffer[index]);
     }
     return 1;
