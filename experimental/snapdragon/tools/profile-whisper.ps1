@@ -4,6 +4,7 @@ param(
     [ValidateSet('tiny', 'base', 'small')]
     [string]$Model = 'small',
     [int]$DecoderWorkers = 0,
+    [string]$ProbePath,
     [ValidateSet('cpu', 'all', 'cross', 'mlp', 'self', 'logits',
         'cross,mlp', 'cross,mlp,logits', 'cross,mlp,self',
         'fused', 'fused,logits', 'fused,self', 'fused,self,logits')]
@@ -16,6 +17,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\..'))
 $buildDirectory = Join-Path $repoRoot 'experimental\snapdragon\build'
 $probe = Join-Path $buildDirectory 'npu_probe.exe'
+if ($ProbePath) { $probe = [System.IO.Path]::GetFullPath($ProbePath) }
 $WavPath = [System.IO.Path]::GetFullPath($WavPath)
 if (-not $OutputDirectory) {
     $OutputDirectory = Join-Path $repoRoot "experimental\snapdragon\data\profile-$Model"
@@ -254,6 +256,8 @@ $summary = [ordered]@{
     window_total_ms = $windowMs
     generated_tokens = $generatedTokens
     decoder_steps = $decoderSteps
+    prefix_reused_steps = Get-IntegerTotal 'decoder prefix reused steps'
+    transformer_steps = $decoderSteps - (Get-IntegerTotal 'decoder prefix reused steps')
     retry_steps = [math]::Max(0L, $decoderSteps - $minimumDecoderSteps)
     peak_resident_bytes = Get-IntegerMaximum 'process peak resident bytes'
     peak_private_committed_bytes = Get-IntegerMaximum 'process private committed bytes'

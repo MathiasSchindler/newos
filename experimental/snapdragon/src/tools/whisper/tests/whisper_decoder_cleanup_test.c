@@ -13,6 +13,10 @@ static u32 allocation_calls;
 static u32 failed_call;
 static u32 live_allocations;
 
+int whisper_decoder_test_token_exclusions(WhisperDecoder *decoder);
+int whisper_decoder_test_prefix_cache(WhisperDecoder *decoder);
+int whisper_decoder_test_gumbel_cache(WhisperDecoder *decoder, int allocation_fails);
+
 void *whisper_decoder_test_allocate(
     void *address, usize size, u32 allocation_type, u32 protect
 ) {
@@ -56,6 +60,12 @@ void mainCRTStartup(void) {
     live_allocations = 0U;
     decoder = whisper_decoder_load(whisper_model_tiny());
     if (decoder == 0 || live_allocations != 4U) ExitProcess(20U);
+    if (whisper_decoder_test_token_exclusions(decoder) != 0) ExitProcess(22U);
+    if (whisper_decoder_test_prefix_cache(decoder) != 0) ExitProcess(23U);
+    failed_call = allocation_calls + 1U;
+    if (whisper_decoder_test_gumbel_cache(decoder, 1) != 0 || live_allocations != 4U) ExitProcess(24U);
+    failed_call = 0U;
+    if (whisper_decoder_test_gumbel_cache(decoder, 0) != 0 || live_allocations != 5U) ExitProcess(25U);
     whisper_decoder_shutdown(decoder);
     if (live_allocations != 0U) ExitProcess(21U);
     ExitProcess(0U);

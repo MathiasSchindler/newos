@@ -18,6 +18,7 @@ typedef _Float16 f16x4 __attribute__((vector_size(8)));
 #define DECODER_NO_SPEECH 50362U
 #define DECODER_NO_TIMESTAMPS 50363U
 #define DECODER_EOT 50257U
+#define DECODER_TEXT_TOKEN_LIMIT 50364U
 
 __declspec(dllimport) int CloseHandle(void *handle);
 __declspec(dllimport) void *CreateFileA(
@@ -111,6 +112,12 @@ struct WhisperDecoder {
     float *attention_scores;
     u16 *generated_tokens;
     u16 *selected_tokens;
+    u16 *prefix_tokens;
+    float *prefix_hidden;
+    u32 prefix_count;
+    float *gumbel_cache;
+    u32 gumbel_seeds[WHISPER_DECODER_MAX_TOKENS];
+    u8 gumbel_valid[WHISPER_DECODER_MAX_TOKENS];
     WhisperDecoderProfile profile;
     WhisperDecoderMlpOffload mlp_offload;
     void *mlp_offload_context;
@@ -127,6 +134,7 @@ struct WhisperDecoder {
     int pool_ready;
     float logit_maxima[RT_TASK_POOL_MAX_WORKERS];
     u32 logit_tokens[RT_TASK_POOL_MAX_WORKERS];
+    u8 excluded_tokens[(DECODER_TEXT_TOKEN_LIMIT + 7U) / 8U];
 };
 
 static int read_exact(void *handle, void *buffer, u32 size) {
@@ -199,6 +207,7 @@ static int allocate_scratch(WhisperDecoder *decoder) {
     u64 cross_cache_values;
     u64 encoder_values;
     u64 score_values;
+    u64 prefix_values;
     u8 *base;
     if (!whisper_model_size_multiply(
             model->decoder_layers, model->text_context, &self_cache_values
@@ -212,6 +221,8 @@ static int allocate_scratch(WhisperDecoder *decoder) {
             model->encoder_frames, model->width, &encoder_values
         ) || !whisper_model_size_multiply(
             model->attention_heads, model->encoder_frames, &score_values
+        ) || !whisper_model_size_multiply(
+            model->text_context, model->width, &prefix_values
         ) || !reserve_aligned(
             &total, model->decoder_layers, sizeof(DecoderLayerWeights)
         ) || !reserve_aligned(&total, encoder_values, sizeof(float)) ||
@@ -230,6 +241,8 @@ static int allocate_scratch(WhisperDecoder *decoder) {
         !reserve_aligned(&total, score_values, sizeof(float)) ||
         !reserve_aligned(&total, model->text_context, sizeof(u16)) ||
         !reserve_aligned(&total, model->text_context, sizeof(u16)) ||
+        !reserve_aligned(&total, model->text_context, sizeof(u16)) ||
+        !reserve_aligned(&total, prefix_values, sizeof(float)) ||
         total > (u64)(usize)-1) {
         return 0;
     }
@@ -265,6 +278,10 @@ static int allocate_scratch(WhisperDecoder *decoder) {
     decoder->selected_tokens = take_scratch(
         base, &offset, model->text_context, sizeof(u16)
     );
+    decoder->prefix_tokens = take_scratch(
+        base, &offset, model->text_context, sizeof(u16)
+    );
+    decoder->prefix_hidden = take_scratch(base, &offset, prefix_values, sizeof(float));
     return offset == total;
 }
 
@@ -932,8 +949,7 @@ static void record_npu_calls(
     if (ticks >= decoder->counter_frequency) ++calls->over_1000ms;
 }
 
-static int suppressed_token(u32 token, int first_generated) {
-    static const u16 suppressed[] = {
+static const u16 suppressed_tokens[] = {
         1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63,
         90, 91, 92, 93, 359, 503, 522, 542, 873, 893, 902, 918, 922, 931, 1350,
         1853, 1982, 2460, 2627, 3246, 3253, 3268, 3536, 3846, 3961, 4183, 4667,
@@ -942,21 +958,36 @@ static int suppressed_token(u32 token, int first_generated) {
         21675, 22520, 26130, 26161, 26435, 28279, 29464, 31650, 32302, 32470,
         36865, 42863, 47425, 49870, 50254, 50258, 50358, 50359, 50360, 50361,
         50363
-    };
-    u32 index;
-    if (token >= 50364U) return 1;
-    if (token == DECODER_NO_SPEECH) return !first_generated;
-    if (first_generated && token == 220U) return 1;
-    for (index = 0U; index < sizeof(suppressed) / sizeof(suppressed[0]); ++index) {
-        if (token == suppressed[index]) return 1;
+};
+
+static void exclude_token(WhisperDecoder *decoder, u32 token) {
+    if (token < DECODER_TEXT_TOKEN_LIMIT) {
+        decoder->excluded_tokens[token >> 3U] |= (u8)(1U << (token & 7U));
     }
-    return 0;
+}
+
+static int token_excluded(const WhisperDecoder *decoder, u32 token) {
+    return token >= DECODER_TEXT_TOKEN_LIMIT ||
+        (decoder->excluded_tokens[token >> 3U] & (1U << (token & 7U))) != 0U;
+}
+
+static void prepare_token_exclusions(WhisperDecoder *decoder, int first_generated) {
+    u32 index;
+    for (index = 0U; index < sizeof(decoder->excluded_tokens); ++index) {
+        decoder->excluded_tokens[index] = 0U;
+    }
+    for (index = 0U; index < sizeof(suppressed_tokens) / sizeof(suppressed_tokens[0]); ++index) {
+        exclude_token(decoder, suppressed_tokens[index]);
+    }
+    if (!first_generated) exclude_token(decoder, DECODER_NO_SPEECH);
+    if (first_generated) exclude_token(decoder, 220U);
 }
 
 typedef struct LogitContext {
     WhisperDecoder *decoder;
     const u16 *offloaded_logits;
-    int first_generated;
+    float *gumbel_values;
+    int fill_gumbel_values;
     u32 partition_count;
     u32 forbidden_count;
     u32 position;
@@ -980,6 +1011,19 @@ static float sample_gumbel(const LogitContext *context, u32 token) {
     double uniform = (double)((mixed >> 11U) + 1U) /
         (double)(0x20000000000000ULL + 1ULL);
     return (float)-math_log(-math_log(uniform));
+}
+
+static float *prepare_gumbel_cache(WhisperDecoder *decoder, u32 position) {
+    u64 count;
+    u64 bytes;
+    if (position >= decoder->model.text_context || position >= WHISPER_DECODER_MAX_TOKENS) return 0;
+    if (decoder->gumbel_cache == 0) {
+        if (!whisper_model_size_multiply(decoder->model.text_context, decoder->model.vocabulary_size, &count) ||
+            !whisper_model_size_multiply(count, sizeof(float), &bytes) || bytes > (u64)(usize)-1) return 0;
+        decoder->gumbel_cache = DECODER_ALLOCATE(0, (usize)bytes, 0x3000U, 0x04U);
+        if (decoder->gumbel_cache == 0) return 0;
+    }
+    return decoder->gumbel_cache + (u64)position * decoder->model.vocabulary_size;
 }
 
 static void collect_no_repeat_tokens(u32 position, LogitContext *context) {
@@ -1027,15 +1071,15 @@ static int logit_partition_range(
             context->partition_count);
         float maximum = -3.402823466e+38f;
         u32 best = DECODER_EOT;
+        if (context->fill_gumbel_values) {
+            u32 sample_token;
+            for (sample_token = token; sample_token < token_end; ++sample_token) {
+                context->gumbel_values[sample_token] = sample_gumbel(context, sample_token);
+            }
+        }
         for (; token < token_end; ++token) {
             float logit;
-            u32 forbidden_index;
-            if (suppressed_token(token, context->first_generated)) continue;
-            for (forbidden_index = 0U; forbidden_index < context->forbidden_count;
-                 ++forbidden_index) {
-                if (token == context->forbidden_tokens[forbidden_index]) break;
-            }
-            if (forbidden_index != context->forbidden_count) continue;
+            if (token_excluded(decoder, token)) continue;
             logit = context->offloaded_logits != 0
                 ? whisper_frontend_half_to_float(context->offloaded_logits[token])
                 : dot_product_fp16(
@@ -1044,7 +1088,9 @@ static int logit_partition_range(
                     model->width
                 );
             if (context->temperature > 0.0f) {
-                logit += context->temperature * sample_gumbel(context, token);
+                float noise = context->gumbel_values != 0
+                    ? context->gumbel_values[token] : sample_gumbel(context, token);
+                logit += context->temperature * noise;
             }
             if (logit > maximum || (logit == maximum && token < best)) {
                 maximum = logit;
@@ -1055,6 +1101,31 @@ static int logit_partition_range(
         decoder->logit_tokens[partition] = best;
     }
     return 0;
+}
+
+static int restore_prefix_hidden(WhisperDecoder *decoder, u32 token, u32 position) {
+    u32 index;
+#if defined(WHISPER_DECODER_DISABLE_PREFIX_REUSE)
+    decoder->prefix_count = 0U;
+#endif
+    if (position >= decoder->prefix_count || decoder->prefix_tokens[position] != token) {
+        decoder->prefix_count = position;
+        return 0;
+    }
+    for (index = 0U; index < decoder->model.width; ++index) {
+        decoder->hidden[index] = decoder->prefix_hidden[(u64)position * decoder->model.width + index];
+    }
+    ++decoder->profile.prefix_reused_steps;
+    return 1;
+}
+
+static void cache_prefix_hidden(WhisperDecoder *decoder, u32 token, u32 position) {
+    u32 index;
+    for (index = 0U; index < decoder->model.width; ++index) {
+        decoder->prefix_hidden[(u64)position * decoder->model.width + index] = decoder->hidden[index];
+    }
+    decoder->prefix_tokens[position] = (u16)token;
+    decoder->prefix_count = position + 1U;
 }
 
 static u32 decoder_step(
@@ -1080,6 +1151,7 @@ static u32 decoder_step(
     LogitContext logit_context;
     long long start;
     long long end;
+    if (restore_prefix_hidden(decoder, token, position)) goto select_next_token;
     for (index = 0U; index < model->width; ++index) {
         decoder->hidden[index] = whisper_frontend_half_to_float(embedding[index]) +
             whisper_frontend_half_to_float(position_values[index]);
@@ -1155,6 +1227,8 @@ static u32 decoder_step(
             }
         }
     }
+    cache_prefix_hidden(decoder, token, position);
+select_next_token:
     npu_execute_ticks = 0U;
     QueryPerformanceCounter(&start);
     if (decoder->logits_offload != 0 && decoder->logits_offload(
@@ -1177,12 +1251,19 @@ static u32 decoder_step(
     }
     logit_context.decoder = decoder;
     logit_context.offloaded_logits = offloaded_logits;
-    logit_context.first_generated = first_generated;
+    logit_context.gumbel_values = temperature > 0.0f
+        ? prepare_gumbel_cache(decoder, position) : 0;
+    logit_context.fill_gumbel_values = logit_context.gumbel_values != 0 &&
+        (!decoder->gumbel_valid[position] || decoder->gumbel_seeds[position] != sample_seed);
     logit_context.partition_count = rt_task_pool_width(&decoder->pool);
     logit_context.position = position;
     logit_context.sample_seed = sample_seed;
     logit_context.temperature = temperature;
+    prepare_token_exclusions(decoder, first_generated);
     collect_no_repeat_tokens(position, &logit_context);
+    for (index = 0U; index < logit_context.forbidden_count; ++index) {
+        exclude_token(decoder, logit_context.forbidden_tokens[index]);
+    }
     if (logit_context.partition_count > RT_TASK_POOL_MAX_WORKERS) {
         logit_context.partition_count = RT_TASK_POOL_MAX_WORKERS;
     }
@@ -1190,6 +1271,10 @@ static u32 decoder_step(
         &decoder->pool, logit_context.partition_count, 1U,
         logit_partition_range, &logit_context
     );
+    if (logit_context.gumbel_values != 0) {
+        decoder->gumbel_valid[position] = 1U;
+        decoder->gumbel_seeds[position] = sample_seed;
+    }
     for (index = 0U; index < logit_context.partition_count; ++index) {
         if (decoder->logit_maxima[index] > maximum ||
             (decoder->logit_maxima[index] == maximum &&
@@ -1203,6 +1288,70 @@ static u32 decoder_step(
     decoder->profile.decoder_steps += 1U;
     return best;
 }
+
+#if defined(WHISPER_DECODER_TEST_ALLOCATOR)
+int whisper_decoder_test_gumbel_cache(WhisperDecoder *decoder, int allocation_fails) {
+    float *values = prepare_gumbel_cache(decoder, 0U);
+    LogitContext context = {0};
+    u32 token;
+    if (allocation_fails) return values != 0;
+    if (values == 0 || prepare_gumbel_cache(decoder, decoder->model.text_context) != 0) return 1;
+    context.sample_seed = 0x51f15e5eU;
+    context.position = 0U;
+    for (token = 0U; token < decoder->model.vocabulary_size; ++token) {
+        values[token] = sample_gumbel(&context, token);
+    }
+    if (prepare_gumbel_cache(decoder, 0U) != values) return 2;
+    for (token = 0U; token < decoder->model.vocabulary_size; ++token) {
+        if (values[token] != sample_gumbel(&context, token)) return 3;
+    }
+    return 0;
+}
+
+int whisper_decoder_test_prefix_cache(WhisperDecoder *decoder) {
+    u32 index;
+    decoder->prefix_count = 0U;
+    if (restore_prefix_hidden(decoder, 10U, 0U)) return 1;
+    for (index = 0U; index < decoder->model.width; ++index) decoder->hidden[index] = (float)index;
+    cache_prefix_hidden(decoder, 10U, 0U);
+    for (index = 0U; index < decoder->model.width; ++index) decoder->hidden[index] = (float)index + 1.0f;
+    cache_prefix_hidden(decoder, 11U, 1U);
+    if (!restore_prefix_hidden(decoder, 10U, 0U)) return 2;
+    for (index = 0U; index < decoder->model.width; ++index) {
+        if (decoder->hidden[index] != (float)index) return 3;
+    }
+    if (!restore_prefix_hidden(decoder, 11U, 1U)) return 4;
+    if (restore_prefix_hidden(decoder, 12U, 0U) || decoder->prefix_count != 0U) return 5;
+    cache_prefix_hidden(decoder, 12U, 0U);
+    if (restore_prefix_hidden(decoder, 11U, 1U)) return 6;
+    decoder->prefix_count = 0U;
+    return 0;
+}
+
+int whisper_decoder_test_token_exclusions(WhisperDecoder *decoder) {
+    u32 first_generated;
+    for (first_generated = 0U; first_generated < 2U; ++first_generated) {
+        u32 token;
+        prepare_token_exclusions(decoder, (int)first_generated);
+        for (token = 0U; token < decoder->model.vocabulary_size; ++token) {
+            u32 index;
+            int expected = token >= DECODER_TEXT_TOKEN_LIMIT ||
+                (token == DECODER_NO_SPEECH && !first_generated) ||
+                (token == 220U && first_generated);
+            for (index = 0U; index < sizeof(suppressed_tokens) / sizeof(suppressed_tokens[0]); ++index) {
+                if (token == suppressed_tokens[index]) expected = 1;
+            }
+            if (token_excluded(decoder, token) != expected) return 1;
+        }
+        exclude_token(decoder, 0U);
+        exclude_token(decoder, DECODER_TEXT_TOKEN_LIMIT - 1U);
+        exclude_token(decoder, decoder->model.vocabulary_size);
+        if (!token_excluded(decoder, 0U) || token_excluded(decoder, 3U)) return 2;
+    }
+    prepare_token_exclusions(decoder, 1);
+    return token_excluded(decoder, 0U) ? 3 : 0;
+}
+#endif
 
 static void write_token(
     WhisperDecoder *decoder,
@@ -1329,6 +1478,8 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.npu_mlp_calls = (WhisperDecoderNpuCalls){0};
     decoder->profile.npu_logits_calls = (WhisperDecoderNpuCalls){0};
     decoder->profile.decoder_steps = 0U;
+    decoder->profile.prefix_reused_steps = 0U;
+    decoder->prefix_count = 0U;
     decoder->profile.worker_count = rt_task_pool_width(&decoder->pool);
     if (cross_keys != 0 && cross_values != 0) {
         QueryPerformanceCounter(&start);
@@ -1458,6 +1609,10 @@ void whisper_decoder_shutdown(WhisperDecoder *decoder) {
     if (decoder->scratch_allocation != 0) {
         DECODER_FREE(decoder->scratch_allocation, 0U, 0x8000U);
         decoder->scratch_allocation = 0;
+    }
+    if (decoder->gumbel_cache != 0) {
+        DECODER_FREE(decoder->gumbel_cache, 0U, 0x8000U);
+        decoder->gumbel_cache = 0;
     }
     if (decoder->token_allocation != 0) {
         DECODER_FREE(decoder->token_allocation, 0U, 0x8000U);

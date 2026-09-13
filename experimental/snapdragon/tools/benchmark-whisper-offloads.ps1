@@ -6,6 +6,7 @@ param(
     [ValidateRange(1, 20)]
     [int]$Repetitions = 3,
     [int]$DecoderWorkers = 0,
+    [string]$ProbePath,
     [string]$OutputDirectory
 )
 
@@ -62,6 +63,7 @@ for ($repetition = 1; $repetition -le $Repetitions; ++$repetition) {
             '-WavPath', $WavPath, '-OutputDirectory', $runDirectory
         )
         if ($DecoderWorkers -gt 0) { $arguments += @('-DecoderWorkers', $DecoderWorkers) }
+        if ($ProbePath) { $arguments += @('-ProbePath', [System.IO.Path]::GetFullPath($ProbePath)) }
         & powershell.exe @arguments
         if ($LASTEXITCODE -ne 0) {
             throw "Profile failed for repetition $repetition mode $mode."

@@ -10,6 +10,21 @@ This is the active benchmark, profiling, and optimization log for the Windows AR
 - Command: `tools/profile-whisper.ps1 -Model small -WavPath <reference WAV> -OutputDirectory <result directory>`.
 - Runtime shape: 12 overlapping 30-second windows at a 25-second stride in one persistent process.
 
+## Exact decoder work reuse
+
+The decoder now removes repeated host work without changing suppression, temperature seeds, Gumbel arithmetic, or tie-breaking:
+
+- Token suppression and dynamic no-repeat exclusions use a per-step bitset instead of vocabulary-wide repeated linear searches.
+- Retries reuse final hidden states for an unchanged token prefix. Existing CPU or HTP self-K/V entries for that prefix remain valid. The first differing token invalidates the saved suffix, and every audio window resets the prefix cache. Sampling still runs for every decoder step with the current temperature and seed.
+- Gumbel samples are cached by position, token, and retry seed across windows. Storage is allocated only when temperature sampling is requested; allocation failure retains direct computation. A changed seed replaces that position's cached values. Small's complete optional table commits 92,942,080 bytes (88.64 MiB); physical residency depends on the positions used. Hidden-prefix storage adds 1,376,256 bytes (1.31 MiB), plus token metadata.
+- HTP self-attention reuses the causal mask across layers at the same position, including exact FP16 zero and negative-mask values. This does not change graph shapes or the two-submission self-attention contract.
+
+`decoder steps` still counts selection steps, including retries. `decoder prefix reused steps` counts steps that skipped transformer execution; the profiler reports `transformer_steps` as their difference. Reduced submission counts therefore do not imply fewer generated tokens. Gumbel cache reuse does not persist model activations between audio windows.
+
+Both profiling scripts accept `-ProbePath` to compare a separately built executable while retaining the original model context and working directory. Build candidates with `tools/build.ps1 -BuildDir experimental/snapdragon/build/candidate`, stage the matching QNN runtime beside them, and pass the candidate executable to the profiler. Keep binaries unchanged throughout each comparison and retain their hashes. The production offload default remains `cross,mlp` until the relevant transcript and sustained performance gates pass.
+
+Validation includes exhaustive fixed-suppression decisions, dynamic exclusions, prefix hit/divergence/reset behavior, exact Gumbel samples across the vocabulary, optional-cache allocation failure, and allocation cleanup. Paired 35-second Tiny, Base, and Small hardware runs in both `cross,mlp` and `fused,self,logits` retained their baseline transcript hashes.
+
 ## Baseline: CPU decoder MLP
 
 | Metric | Result |

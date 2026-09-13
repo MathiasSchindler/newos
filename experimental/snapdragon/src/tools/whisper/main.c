@@ -4163,6 +4163,9 @@ static u32 run_external_wav_window(
         write_text("  decoder steps: ");
         write_u32(decoder_profile->decoder_steps);
         write_text("\n");
+        write_text("  decoder prefix reused steps: ");
+        write_u32(decoder_profile->prefix_reused_steps);
+        write_text("\n");
         write_text("  decoder workers: ");
         write_u32(decoder_profile->worker_count);
         write_text("\n");

@@ -75,6 +75,7 @@ typedef struct WhisperDecoderProfile {
     WhisperDecoderNpuCalls npu_mlp_calls;
     WhisperDecoderNpuCalls npu_logits_calls;
     unsigned int decoder_steps;
+    unsigned int prefix_reused_steps;
     unsigned int worker_count;
 } WhisperDecoderProfile;
 

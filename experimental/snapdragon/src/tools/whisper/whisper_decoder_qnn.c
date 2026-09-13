@@ -123,6 +123,8 @@ struct WhisperDecoderQnn {
     u16 *self_key_buffer;
     u16 *self_value_buffer;
     u16 *self_mask_buffer;
+    u32 self_mask_position;
+    int self_mask_valid;
     u16 *self_keys_cache;
     u16 *self_values_cache;
     QnnTensor logits_input;
@@ -3068,13 +3070,17 @@ int whisper_decoder_qnn_self_attention_offload(
                 lane
             ] = decoder->self_value_buffer[head * head_width + lane];
         }
-        for (index = 0U; index < decoder->model.text_context; ++index) {
-            decoder->self_mask_buffer[
-                (u64)head * decoder->model.text_context + index
-            ] = whisper_frontend_float_to_half(
-                index <= position ? 0.0f : -65504.0f
-            );
+    }
+    if (!decoder->self_mask_valid || decoder->self_mask_position != position) {
+        for (head = 0U; head < decoder->model.attention_heads; ++head) {
+            for (index = 0U; index < decoder->model.text_context; ++index) {
+                decoder->self_mask_buffer[
+                    (u64)head * decoder->model.text_context + index
+                ] = index <= position ? 0U : 0xfbffU;
+            }
         }
+        decoder->self_mask_position = position;
+        decoder->self_mask_valid = 1;
     }
     attention_inputs[0] = decoder->self_query_inputs[layer];
     attention_inputs[0].data.v1.memory.client_buffer.data = decoder->self_query_buffer;
