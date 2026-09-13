@@ -20,6 +20,8 @@ PAYLOAD_CROSS_KV_WEIGHTS = 3
 PAYLOAD_FRONTEND_WEIGHTS = 5
 PAYLOAD_ENCODER_WEIGHTS = 6
 PAYLOAD_DECODER_MLP_WEIGHTS = 7
+PAYLOAD_DECODER_LOGITS_WEIGHTS = 8
+PAYLOAD_DECODER_SELF_ATTENTION_WEIGHTS = 9
 ELEMENT_F32 = 1
 ELEMENT_F16 = 2
 ELEMENT_U8 = 3
@@ -290,6 +292,57 @@ def export_decoder_mlp(model, spec, output):
     return tensors, value_count
 
 
+def export_decoder_logits(model, spec, output):
+    width = spec["width"]
+    vocabulary_size = spec["vocabulary_size"]
+    tensors = [
+        ("model.decoder.layer_norm.weight", (width,)),
+        ("model.decoder.layer_norm.bias", (width,)),
+        ("model.decoder.embed_tokens.weight", (vocabulary_size, width)),
+        (None, (vocabulary_size,)),
+    ]
+    value_count = sum(int(np.prod(shape)) for _, shape in tensors)
+    with ArtifactWriter(
+        output, spec, PAYLOAD_DECODER_LOGITS_WEIGHTS, ELEMENT_F16, value_count
+    ) as artifact:
+        for name, shape in tensors:
+            values = np.zeros(shape, dtype="<f2") if name is None else np.asarray(
+                model.f32(name, shape), dtype="<f2"
+            )
+            artifact.write(values)
+    return tensors, value_count
+
+
+def export_decoder_self_attention(model, spec, output):
+    width = spec["width"]
+    tensors = []
+    for layer in range(spec["decoder_layers"]):
+        prefix = f"model.decoder.layers.{layer}"
+        tensors.extend([
+            (f"{prefix}.self_attn_layer_norm.weight", (width,), 1.0),
+            (f"{prefix}.self_attn_layer_norm.bias", (width,), 1.0),
+            (f"{prefix}.self_attn.q_proj.weight", (width, width), 0.125),
+            (f"{prefix}.self_attn.q_proj.bias", (width,), 0.125),
+            (f"{prefix}.self_attn.k_proj.weight", (width, width), 1.0),
+            (None, (width,), 0.0),
+            (f"{prefix}.self_attn.v_proj.weight", (width, width), 1.0),
+            (f"{prefix}.self_attn.v_proj.bias", (width,), 1.0),
+            (f"{prefix}.self_attn.out_proj.weight", (width, width), 1.0),
+            (f"{prefix}.self_attn.out_proj.bias", (width,), 1.0),
+        ])
+    value_count = sum(int(np.prod(shape)) for _, shape, _ in tensors)
+    with ArtifactWriter(
+        output, spec, PAYLOAD_DECODER_SELF_ATTENTION_WEIGHTS,
+        ELEMENT_F16, value_count
+    ) as artifact:
+        for name, shape, scale in tensors:
+            values = np.zeros(shape, dtype="<f2") if name is None else np.asarray(
+                model.f32(name, shape) * np.float32(scale), dtype="<f2"
+            )
+            artifact.write(values)
+    return tensors, value_count
+
+
 def export_frontend(model, spec, output):
     width = spec["width"]
     tensors = [
@@ -352,7 +405,7 @@ def main():
     script_dir = Path(__file__).resolve().parent
     snapdragon_dir = script_dir.parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="tiny")
+    parser.add_argument("--model", default="small")
     parser.add_argument("--catalog", type=Path, default=script_dir / "whisper-models.json")
     parser.add_argument("--model-dir", type=Path)
     parser.add_argument("--output-dir", type=Path)
@@ -369,6 +422,8 @@ def main():
     tokens_path = output_dir / "token-bytes.bin"
     cross_kv_path = output_dir / "cross-kv-fp16.bin"
     decoder_mlp_path = output_dir / "mlp-fp16.bin"
+    decoder_logits_path = output_dir / "logits-fp16.bin"
+    decoder_self_attention_path = output_dir / "self-attention-fp16.bin"
     encoder_dir = model_dir / "encoder-fp16"
     encoder_dir.mkdir(parents=True, exist_ok=True)
     frontend_path = encoder_dir / "frontend-fp16.bin"
@@ -400,6 +455,11 @@ def main():
     decoder_mlp_contract, decoder_mlp_count = export_decoder_mlp(
         model, spec, decoder_mlp_path
     )
+    decoder_logits_contract, decoder_logits_count = export_decoder_logits(
+        model, spec, decoder_logits_path
+    )
+    decoder_self_attention_contract, decoder_self_attention_count = \
+        export_decoder_self_attention(model, spec, decoder_self_attention_path)
     frontend_contract, frontend_count = export_frontend(model, spec, frontend_path)
     encoder_contract, encoder_count = export_encoder(model, spec, encoder_path)
     manifest = {
@@ -423,6 +483,20 @@ def main():
         "decoder_mlp_tensor_order": [
             {"name": name, "shape": list(shape)}
             for name, shape in decoder_mlp_contract
+        ],
+        "decoder_logits_value_count": decoder_logits_count,
+        "decoder_logits_size": decoder_logits_path.stat().st_size,
+        "decoder_logits_sha256": sha256(decoder_logits_path),
+        "decoder_logits_tensor_order": [
+            {"name": name or "zero", "shape": list(shape)}
+            for name, shape in decoder_logits_contract
+        ],
+        "decoder_self_attention_value_count": decoder_self_attention_count,
+        "decoder_self_attention_size": decoder_self_attention_path.stat().st_size,
+        "decoder_self_attention_sha256": sha256(decoder_self_attention_path),
+        "decoder_self_attention_tensor_order": [
+            {"name": name or "zero", "shape": list(shape), "scale": scale}
+            for name, shape, scale in decoder_self_attention_contract
         ],
         "frontend_weight_count": frontend_count,
         "frontend_size": frontend_path.stat().st_size,
@@ -448,6 +522,11 @@ def main():
     print(f"Wrote {tokens_path} ({tokens_path.stat().st_size} bytes)")
     print(f"Wrote {cross_kv_path} ({cross_kv_path.stat().st_size} bytes)")
     print(f"Wrote {decoder_mlp_path} ({decoder_mlp_path.stat().st_size} bytes)")
+    print(f"Wrote {decoder_logits_path} ({decoder_logits_path.stat().st_size} bytes)")
+    print(
+        f"Wrote {decoder_self_attention_path} "
+        f"({decoder_self_attention_path.stat().st_size} bytes)"
+    )
     print(f"Wrote {frontend_path} ({frontend_path.stat().st_size} bytes)")
     print(f"Wrote {encoder_path} ({encoder_path.stat().st_size} bytes)")
 

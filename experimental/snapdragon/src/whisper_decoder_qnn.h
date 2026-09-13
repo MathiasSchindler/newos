@@ -24,6 +24,18 @@ typedef struct WhisperDecoderQnnIds {
     u32 cross_key_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
     u32 cross_value_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
     u32 cross_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 logits_input_id;
+    u32 logits_output_id;
+    u32 self_layer_count;
+    u32 self_projection_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_query_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_key_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_value_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_query_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_key_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_value_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_mask_input_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
+    u32 self_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
 } WhisperDecoderQnnIds;
 
 WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model);
@@ -56,6 +68,20 @@ int whisper_decoder_qnn_mlp_offload(
 int whisper_decoder_qnn_cross_attention_offload(
     void *context,
     u32 layer,
+    const float *hidden,
+    float *projected,
+    u64 *execute_ticks
+);
+int whisper_decoder_qnn_logits_offload(
+    void *context,
+    const float *hidden,
+    const u16 **logits,
+    u64 *execute_ticks
+);
+int whisper_decoder_qnn_self_attention_offload(
+    void *context,
+    u32 layer,
+    u32 position,
     const float *hidden,
     float *projected,
     u64 *execute_ticks

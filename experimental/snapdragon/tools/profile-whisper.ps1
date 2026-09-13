@@ -113,10 +113,15 @@ $encoderMs = Get-DurationTotalMs 'cached encoder NPU time'
 $crossKvNpuMs = Get-DurationTotalMs 'decoder cross K/V NPU time'
 $npuCrossAttentionMs = Get-DurationTotalMs 'NPU cross-attention'
 $npuCrossAttentionExecuteMs = Get-DurationTotalMs 'NPU cross-attention graphExecute'
+$npuSelfAttentionMs = Get-DurationTotalMs 'NPU self-attention'
+$npuSelfAttentionExecuteMs = Get-DurationTotalMs 'NPU self-attention graphExecute'
 $npuFeedForwardMs = Get-DurationTotalMs 'NPU feed-forward'
 $npuMlpExecuteMs = Get-DurationTotalMs 'NPU MLP graphExecute'
+$npuFinalProjectionMs = Get-DurationTotalMs 'NPU final projection'
+$npuFinalProjectionExecuteMs = Get-DurationTotalMs 'NPU final projection graphExecute'
 $npuHostCallMs = $frontendMs + $encoderMs + $crossKvNpuMs +
-    $npuCrossAttentionExecuteMs + $npuMlpExecuteMs
+    $npuSelfAttentionExecuteMs + $npuCrossAttentionExecuteMs +
+    $npuMlpExecuteMs + $npuFinalProjectionExecuteMs
 $decoderMs = Get-DurationTotalMs 'decoder time'
 $selfAttentionMs = Get-DurationTotalMs 'CPU self-attention'
 $crossAttentionMs = Get-DurationTotalMs 'CPU cross-attention'
@@ -151,10 +156,14 @@ $summary = [ordered]@{
     frontend_npu_ms = $frontendMs
     encoder_npu_ms = $encoderMs
     cross_kv_npu_ms = $crossKvNpuMs
+    npu_self_attention_ms = $npuSelfAttentionMs
+    npu_self_attention_execute_ms = $npuSelfAttentionExecuteMs
     npu_cross_attention_ms = $npuCrossAttentionMs
     npu_cross_attention_execute_ms = $npuCrossAttentionExecuteMs
     npu_feed_forward_ms = $npuFeedForwardMs
     npu_mlp_execute_ms = $npuMlpExecuteMs
+    npu_final_projection_ms = $npuFinalProjectionMs
+    npu_final_projection_execute_ms = $npuFinalProjectionExecuteMs
     decoder_ms = $decoderMs
     self_attention_ms = $selfAttentionMs
     cross_attention_ms = $crossAttentionMs

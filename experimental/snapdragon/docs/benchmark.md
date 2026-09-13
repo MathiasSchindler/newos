@@ -77,8 +77,8 @@ Use end-to-end wall time, process CPU-seconds, exact synchronous QNN duty, retry
 
 1. **First pass complete: reduce retry amplification.** Small now retries only a repeated trigram, rather than treating four ordinary repeated bigrams anywhere in a 30-second passage as a failure. Greedy decoding retains its no-repeat four-gram constraint; temperature retries use no-repeat trigrams, so one constrained retry must satisfy the Small acceptance rule. Tiny remains greedy and Base retains its established scoring behavior. If the remaining retry cost is material after further offload, investigate prefix reuse between greedy and temperature attempts.
 2. **Second pass complete: keep cross-attention K/V resident on HTP.** FastRPC shared buffers now retain head-major K/V for the complete window, and per-layer QNN graphs consume registered memory handles without copying the caches per token. CPU cross-attention remains available as a fallback. The fixed Small workload reduced process CPU time by 69.3% and raised exact NPU host-call duty to 36.37%, while wall time remained effectively flat.
-3. **Offload vocabulary projection and candidate selection.** Prototype a cached final LayerNorm and vocabulary `FullyConnected` graph. Prefer device-side `TopK` so CPU suppression and temperature logic receive only a small candidate set. The current CPU final-norm/logit opportunity is 12.31 seconds.
-4. **Move self-attention to stateful HTP graphs.** Keep mutable self K/V on device and update only the current position. Once state handling is proven, fuse self-attention, cross-attention, and MLP into one graph per decoder layer. The current self-attention opportunity is 19.65 seconds.
+3. **Third pass implemented, latency gate failed: offload vocabulary projection.** A cached HTP graph now performs final LayerNorm and the complete 51,865-row vocabulary projection. CPU code retains exact suppression, no-repeat, tie-breaking, and temperature/Gumbel selection over the returned FP16 logits. QNN HTP contains a `TopK` operator, but its exact public parameter schema is unavailable; guessing that ABI is not acceptable. Pre-Gumbel TopK would also change temperature sampling semantics, so candidate reduction remains a greedy-only follow-up.
+4. **Fourth pass implemented, latency gate failed: stateful HTP self-attention.** Mutable self K/V now lives in registered FastRPC shared memory; CPU writes only the current FP16 row and supplies the causal mask. Each layer uses one projection graph and one masked-attention/output graph. This removes CPU self-attention and full-cache transfers, but the two submissions per layer made the fixed Small workload slower and exposed multi-minute HTP driver stalls. Keep the CPU fallback and require a fused decoder-layer graph or another measured submission reduction before making this path a performance recommendation.
 5. **Batch independent long-form windows.** Test two- and four-window graph batches to amortize dispatch and improve arithmetic intensity. Preserve output ordering and resumable window records; measure memory growth and latency as well as throughput.
 6. **Enable HTP performance controls and hardware profiling.** Add the required QAIRT ABI for performance/DCVS configuration and profile events. Compare burst and sustained settings, DDR traffic, accelerator cycles, and stalls. Keep host-call duty clearly labeled as distinct from hardware occupancy.
 7. **Reduce MLP weight bandwidth.** Evaluate per-channel mixed-precision weights because each Small MLP layer currently reads about 9.59 MB from DDR per step. Existing per-tensor quantization is not quality-viable, so require transcript and numerical gates for every candidate format.
@@ -134,3 +134,27 @@ Five-minute comparison:
 | Peak private committed | 495,857,664 | 496,955,392 bytes | +0.2% |
 
 Cross-attention itself is substantially cheaper on HTP and removes the dominant CPU stage, but this sustained run did not improve wall throughput. CPU self-attention rose from 11.777 to 21.638 seconds, final norm/logits from 5.134 to 16.731 seconds, and MLP graph execution from 9.350 to 11.502 seconds. The process nevertheless consumed 156.25 fewer CPU-seconds. This makes the pass a strong CPU-use and NPU-duty improvement with neutral latency; the next vocabulary-projection and stateful self-attention passes should address the CPU frequency/scheduling-sensitive stages that now dominate wall time.
+
+### Final projection and stateful self-attention result
+
+The final projection graph accepts the FP32 decoder state, applies final LayerNorm and the tied FP16 token embedding matrix on HTP, and returns all 51,865 FP16 logits. Returning the full vocabulary preserves exact CPU suppression and sampling, but CPU final-norm/logit accounting still includes conversion and a full vocabulary scan. On the focused Small window the graph executed in 235.156 ms while CPU candidate processing took 308.835 ms.
+
+Self-attention uses one registered allocation for immutable cross K/V and mutable self K/V. For each layer and token, an HTP projection graph emits Q/K/V, CPU copies only the current K/V row into its head-major cache, and a second HTP graph performs masked attention and output projection. The accepted 107-token focused transcript is unchanged; all CPU self-attention, cross-attention, and feed-forward counters are zero. That run took 3.263 seconds in the decoder, including 1.165 seconds of self-attention `graphExecute`, 654.316 ms of cross-attention, 754.143 ms of MLP, and 235.156 ms of final projection. Peak resident memory was 1,255,768,064 bytes.
+
+The fixed five-minute run preserved transcript quality and produced 1,383 tokens in 2,191 steps with 760 retry steps. It failed the latency gate:
+
+| Metric | Resident cross K/V | Stateful self K/V + final projection | Change |
+| --- | ---: | ---: | ---: |
+| Instrumented window time | 70.651 s | 422.627 s | +498.2% |
+| Process CPU time | 69.094 s | 74.922 s | +8.4% |
+| CPU self-attention | 21.638 s | 0.000 s | -100% |
+| CPU cross-attention | 0.000 s | 0.000 s | unchanged |
+| CPU feed-forward | 0.000 s | 0.000 s | unchanged |
+| CPU final norm/logits | 16.731 s | 23.864 s | +42.6% |
+| NPU self-attention `graphExecute` | 0.000 s | 52.981 s | new |
+| NPU cross-attention `graphExecute` | 11.951 s | 300.148 s | driver stall |
+| NPU MLP `graphExecute` | 11.502 s | 28.507 s | +147.8% |
+| NPU final projection `graphExecute` | 0.000 s | 6.421 s | new |
+| Peak resident bytes | 971,997,184 | 1,255,710,720 | +29.2% |
+
+One 122-step window accumulated 273.400 seconds in cross-attention `graphExecute`; a separate run stalled in self-attention instead. Excluding that outlier window, the other eleven windows still totaled about 140 seconds, roughly twice the resident-cross baseline. The PowerShell wrapper reported an inconsistent 4,116-second wall interval, so the table uses native per-window timers and does not derive NPU duty from the wrapper value. The implementation proves state residency and exact fallback behavior, but not a deployable speedup.

@@ -186,7 +186,8 @@ enum {
     8U + 11U * 4U +
     (WHISPER_DECODER_QNN_MAX_OUTPUTS +
         WHISPER_DECODER_QNN_MAX_LAYERS * 2U) * 4U +
-        (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U
+        (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U + 2U * 4U +
+        (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 9U) * 4U
 };
 
 typedef struct ProcessMemoryCounters {
@@ -936,6 +937,38 @@ static void encode_model_context_metadata(
             (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U,
             metadata->decoder.cross_output_ids[index]);
     }
+    cache_write_u32(output + 696U, metadata->decoder.logits_input_id);
+    cache_write_u32(output + 700U, metadata->decoder.logits_output_id);
+    cache_write_u32(output + 704U, metadata->decoder.self_layer_count);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 708U;
+        cache_write_u32(output + base + index * 4U,
+            metadata->decoder.self_projection_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U,
+            metadata->decoder.self_query_output_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 2U + index) * 4U,
+            metadata->decoder.self_key_output_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U,
+            metadata->decoder.self_value_output_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 4U + index) * 4U,
+            metadata->decoder.self_query_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 5U + index) * 4U,
+            metadata->decoder.self_key_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 6U + index) * 4U,
+            metadata->decoder.self_value_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 7U + index) * 4U,
+            metadata->decoder.self_mask_input_ids[index]);
+        cache_write_u32(output + base +
+            (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U,
+            metadata->decoder.self_output_ids[index]);
+    }
 }
 
 static void decode_model_context_metadata(
@@ -980,6 +1013,30 @@ static void decode_model_context_metadata(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 2U + index) * 4U);
         metadata->decoder.cross_output_ids[index] = cache_read_u32(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U);
+    }
+    metadata->decoder.logits_input_id = cache_read_u32(input + 696U);
+    metadata->decoder.logits_output_id = cache_read_u32(input + 700U);
+    metadata->decoder.self_layer_count = cache_read_u32(input + 704U);
+    for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
+        u32 base = 708U;
+        metadata->decoder.self_projection_input_ids[index] = cache_read_u32(
+            input + base + index * 4U);
+        metadata->decoder.self_query_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U);
+        metadata->decoder.self_key_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 2U + index) * 4U);
+        metadata->decoder.self_value_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U);
+        metadata->decoder.self_query_input_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 4U + index) * 4U);
+        metadata->decoder.self_key_input_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 5U + index) * 4U);
+        metadata->decoder.self_value_input_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 6U + index) * 4U);
+        metadata->decoder.self_mask_input_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 7U + index) * 4U);
+        metadata->decoder.self_output_ids[index] = cache_read_u32(
+            input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U);
     }
 }
 
@@ -3586,7 +3643,7 @@ static u32 write_model_context_cache(const QnnInterfaceV2 *api, QnnContextHandle
     static ModelContextCacheMetadata metadata;
     WhisperArtifactHeader artifact = {0};
     u8 artifact_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
-    u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
+    static u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
     void *buffer;
     void *handle;
     u64 written_size = 0U;
@@ -3668,7 +3725,7 @@ static u32 load_model_context_cache(
     static ModelContextCacheMetadata metadata;
     WhisperArtifactHeader artifact;
     u8 artifact_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
-    u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
+    static u8 metadata_bytes[MODEL_CONTEXT_CACHE_METADATA_SIZE];
     u64 expected_payload_size;
     u64 payload_hash;
     void *buffer;
@@ -3946,6 +4003,14 @@ static u32 run_external_wav_window(
             frequency
         );
         write_duration_us(
+            "  NPU self-attention", decoder_profile->npu_self_attention_ticks,
+            frequency
+        );
+        write_duration_us(
+            "  NPU self-attention graphExecute",
+            decoder_profile->npu_self_attention_execute_ticks, frequency
+        );
+        write_duration_us(
             "  CPU cross-attention", decoder_profile->cross_attention_ticks,
             frequency
         );
@@ -3972,6 +4037,14 @@ static u32 run_external_wav_window(
         write_duration_us(
             "  CPU final norm/logits", decoder_profile->logits_ticks,
             frequency
+        );
+        write_duration_us(
+            "  NPU final projection", decoder_profile->npu_logits_ticks,
+            frequency
+        );
+        write_duration_us(
+            "  NPU final projection graphExecute",
+            decoder_profile->npu_logits_execute_ticks, frequency
         );
         write_process_memory();
         if (decoder_tokens < 0) result = 109U;
@@ -4042,7 +4115,7 @@ void mainCRTStartup(void) {
     u32 console_mode;
 
     stdout_handle = GetStdHandle(0xfffffff5U);
-    active_model = whisper_model_tiny();
+    active_model = whisper_model_small();
     if (GetConsoleMode(stdout_handle, &console_mode)) {
         original_console_output_cp = GetConsoleOutputCP();
         if (original_console_output_cp != 0U && original_console_output_cp != 65001U) {
@@ -4205,6 +4278,14 @@ void mainCRTStartup(void) {
             );
             whisper_decoder_set_mlp_offload(
                 whisper_decoder, whisper_decoder_qnn_mlp_offload,
+                whisper_decoder_qnn
+            );
+            whisper_decoder_set_logits_offload(
+                whisper_decoder, whisper_decoder_qnn_logits_offload,
+                whisper_decoder_qnn
+            );
+            whisper_decoder_set_self_attention_offload(
+                whisper_decoder, whisper_decoder_qnn_self_attention_offload,
                 whisper_decoder_qnn
             );
         }

@@ -115,6 +115,10 @@ struct WhisperDecoder {
     void *mlp_offload_context;
     WhisperDecoderCrossAttentionOffload cross_attention_offload;
     void *cross_attention_offload_context;
+    WhisperDecoderLogitsOffload logits_offload;
+    void *logits_offload_context;
+    WhisperDecoderSelfAttentionOffload self_attention_offload;
+    void *self_attention_offload_context;
     RtTaskPool pool;
     int pool_ready;
     float logit_maxima[RT_TASK_POOL_MAX_WORKERS];
@@ -670,17 +674,29 @@ static void import_cross_attention_cache(
     decoder->cross_cache_head_major = 1;
 }
 
-static void self_attention(
+static int self_attention(
     WhisperDecoder *decoder,
     u32 layer,
     u32 position,
-    const DecoderLayerWeights *item
+    const DecoderLayerWeights *item,
+    u64 *npu_execute_ticks
 ) {
     const WhisperModelConfig *model = &decoder->model;
     u32 head_width = model->width / model->attention_heads;
     u32 head;
     u32 index;
     u64 cache_offset = ((u64)layer * model->text_context + position) * model->width;
+    *npu_execute_ticks = 0U;
+    if (decoder->self_attention_offload != 0 &&
+        decoder->self_attention_offload(
+            decoder->self_attention_offload_context, layer, position,
+            decoder->hidden, decoder->projected, npu_execute_ticks
+        )) {
+        for (index = 0U; index < model->width; ++index) {
+            decoder->hidden[index] += decoder->projected[index];
+        }
+        return 1;
+    }
     layer_norm(
         decoder->hidden, item->self_norm_weight, item->self_norm_bias,
         decoder->normalized, model->width
@@ -735,6 +751,7 @@ static void self_attention(
     for (index = 0U; index < model->width; ++index) {
         decoder->hidden[index] += decoder->projected[index];
     }
+    return 0;
 }
 
 typedef struct CrossAttentionContext {
@@ -915,6 +932,7 @@ static int suppressed_token(u32 token, int first_generated) {
 
 typedef struct LogitContext {
     WhisperDecoder *decoder;
+    const u16 *offloaded_logits;
     int first_generated;
     u32 partition_count;
     u32 forbidden_count;
@@ -995,11 +1013,13 @@ static int logit_partition_range(
                 if (token == context->forbidden_tokens[forbidden_index]) break;
             }
             if (forbidden_index != context->forbidden_count) continue;
-            logit = dot_product_fp16(
-                decoder->weights.token_embedding + (u64)token * model->width,
-                decoder->normalized,
-                model->width
-            );
+            logit = context->offloaded_logits != 0
+                ? whisper_frontend_half_to_float(context->offloaded_logits[token])
+                : dot_product_fp16(
+                    decoder->weights.token_embedding + (u64)token * model->width,
+                    decoder->normalized,
+                    model->width
+                );
             if (context->temperature > 0.0f) {
                 logit += context->temperature * sample_gumbel(context, token);
             }
@@ -1032,6 +1052,7 @@ static u32 decoder_step(
     u32 layer;
     u32 index;
     u64 npu_execute_ticks;
+    const u16 *offloaded_logits = 0;
     LogitContext logit_context;
     long long start;
     long long end;
@@ -1041,9 +1062,17 @@ static u32 decoder_step(
     }
     for (layer = 0U; layer < model->decoder_layers; ++layer) {
         QueryPerformanceCounter(&start);
-        self_attention(decoder, layer, position, &decoder->weights.layers[layer]);
+        index = (u32)self_attention(
+            decoder, layer, position, &decoder->weights.layers[layer],
+            &npu_execute_ticks
+        );
         QueryPerformanceCounter(&end);
-        decoder->profile.self_attention_ticks += (u64)(end - start);
+        decoder->profile.npu_self_attention_execute_ticks += npu_execute_ticks;
+        if (index != 0U) {
+            decoder->profile.npu_self_attention_ticks += (u64)(end - start);
+        } else {
+            decoder->profile.self_attention_ticks += (u64)(end - start);
+        }
         QueryPerformanceCounter(&start);
         index = (u32)cross_attention(
             decoder, layer, &decoder->weights.layers[layer], &npu_execute_ticks
@@ -1067,12 +1096,24 @@ static u32 decoder_step(
             decoder->profile.feed_forward_ticks += (u64)(end - start);
         }
     }
+    npu_execute_ticks = 0U;
     QueryPerformanceCounter(&start);
-    layer_norm(
-        decoder->hidden, decoder->weights.decoder_norm_weight,
-        decoder->weights.decoder_norm_bias, decoder->normalized, model->width
-    );
+    if (decoder->logits_offload != 0 && decoder->logits_offload(
+            decoder->logits_offload_context, decoder->hidden,
+            &offloaded_logits, &npu_execute_ticks
+        )) {
+        QueryPerformanceCounter(&end);
+        decoder->profile.npu_logits_ticks += (u64)(end - start);
+        decoder->profile.npu_logits_execute_ticks += npu_execute_ticks;
+        QueryPerformanceCounter(&start);
+    } else {
+        layer_norm(
+            decoder->hidden, decoder->weights.decoder_norm_weight,
+            decoder->weights.decoder_norm_bias, decoder->normalized, model->width
+        );
+    }
     logit_context.decoder = decoder;
+    logit_context.offloaded_logits = offloaded_logits;
     logit_context.first_generated = first_generated;
     logit_context.partition_count = rt_task_pool_width(&decoder->pool);
     logit_context.position = position;
@@ -1206,6 +1247,8 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.encoder_normalize_ticks = 0U;
     decoder->profile.cross_cache_ticks = 0U;
     decoder->profile.self_attention_ticks = 0U;
+    decoder->profile.npu_self_attention_ticks = 0U;
+    decoder->profile.npu_self_attention_execute_ticks = 0U;
     decoder->profile.cross_attention_ticks = 0U;
     decoder->profile.npu_cross_attention_ticks = 0U;
     decoder->profile.npu_cross_attention_execute_ticks = 0U;
@@ -1213,6 +1256,8 @@ static int whisper_decoder_transcribe_impl(
     decoder->profile.npu_feed_forward_ticks = 0U;
     decoder->profile.npu_mlp_execute_ticks = 0U;
     decoder->profile.logits_ticks = 0U;
+    decoder->profile.npu_logits_ticks = 0U;
+    decoder->profile.npu_logits_execute_ticks = 0U;
     decoder->profile.decoder_steps = 0U;
     decoder->profile.worker_count = rt_task_pool_width(&decoder->pool);
     if (cross_keys != 0 && cross_values != 0) {
@@ -1302,6 +1347,26 @@ void whisper_decoder_set_cross_attention_offload(
     if (decoder == 0) return;
     decoder->cross_attention_offload = offload;
     decoder->cross_attention_offload_context = context;
+}
+
+void whisper_decoder_set_logits_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderLogitsOffload offload,
+    void *context
+) {
+    if (decoder == 0) return;
+    decoder->logits_offload = offload;
+    decoder->logits_offload_context = context;
+}
+
+void whisper_decoder_set_self_attention_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderSelfAttentionOffload offload,
+    void *context
+) {
+    if (decoder == 0) return;
+    decoder->self_attention_offload = offload;
+    decoder->self_attention_offload_context = context;
 }
 
 void whisper_decoder_shutdown(WhisperDecoder *decoder) {

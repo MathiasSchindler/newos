@@ -20,12 +20,28 @@ typedef int (*WhisperDecoderCrossAttentionOffload)(
     float *projected,
     unsigned long long *execute_ticks
 );
+typedef int (*WhisperDecoderLogitsOffload)(
+    void *context,
+    const float *hidden,
+    const unsigned short **logits,
+    unsigned long long *execute_ticks
+);
+typedef int (*WhisperDecoderSelfAttentionOffload)(
+    void *context,
+    unsigned int layer,
+    unsigned int position,
+    const float *hidden,
+    float *projected,
+    unsigned long long *execute_ticks
+);
 typedef struct WhisperDecoder WhisperDecoder;
 
 typedef struct WhisperDecoderProfile {
     unsigned long long encoder_normalize_ticks;
     unsigned long long cross_cache_ticks;
     unsigned long long self_attention_ticks;
+    unsigned long long npu_self_attention_ticks;
+    unsigned long long npu_self_attention_execute_ticks;
     unsigned long long cross_attention_ticks;
     unsigned long long npu_cross_attention_ticks;
     unsigned long long npu_cross_attention_execute_ticks;
@@ -33,6 +49,8 @@ typedef struct WhisperDecoderProfile {
     unsigned long long npu_feed_forward_ticks;
     unsigned long long npu_mlp_execute_ticks;
     unsigned long long logits_ticks;
+    unsigned long long npu_logits_ticks;
+    unsigned long long npu_logits_execute_ticks;
     unsigned int decoder_steps;
     unsigned int worker_count;
 } WhisperDecoderProfile;
@@ -50,6 +68,16 @@ void whisper_decoder_set_mlp_offload(
 void whisper_decoder_set_cross_attention_offload(
     WhisperDecoder *decoder,
     WhisperDecoderCrossAttentionOffload offload,
+    void *context
+);
+void whisper_decoder_set_logits_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderLogitsOffload offload,
+    void *context
+);
+void whisper_decoder_set_self_attention_offload(
+    WhisperDecoder *decoder,
+    WhisperDecoderSelfAttentionOffload offload,
     void *context
 );
 int whisper_decoder_transcribe(
