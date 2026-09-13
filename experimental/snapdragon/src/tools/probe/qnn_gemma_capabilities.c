@@ -26,7 +26,7 @@ typedef void (*GemmaRpcMemFree)(void *pointer);
 typedef i32 (*GemmaRpcMemToFd)(void *pointer);
 
 enum {
-    GEMMA_HIDDEN_WIDTH = 2304U,
+    GEMMA_HIDDEN_WIDTH = 2560U,
     GEMMA_W4_WEIGHT_ELEMENTS = GEMMA_HIDDEN_WIDTH * GEMMA_HIDDEN_WIDTH,
     GEMMA_W4_BUILD_WEIGHT_BYTES = GEMMA_W4_WEIGHT_ELEMENTS
 };
@@ -222,7 +222,7 @@ static u32 run_w4a16_projection(
     u32 result = 0U;
 
     write_text("TranslateGemma Stage 1 W4A16 projection\n");
-    write_text("  shape: [1,2304] x [2304,2304]\n");
+    write_text("  shape: [1,2560] x [2560,2560], per-output scales\n");
     if (input == 0 || weights == 0 || output == 0 || scales == 0 || references == 0) {
         result = 120U;
         goto cleanup;

@@ -199,7 +199,7 @@ Implementation record:
 - The capability suite is builder-only and runs with
    `tools/test-gemma-stage1.ps1`; the production `npu_probe.exe` neither links the
    probe module nor accepts its option.
-- A representative `[1,2304] x [2304,2304]` FP16 activation/W4 projection agrees
+- A representative `[1,2560] x [2560,2560]` FP16 activation/W4 projection agrees
    with the scalar reference. Native packed `QNN_DATATYPE_SFIXED_POINT_4` is rejected by this HTP
    provider. The accepted construction contract uses signed 8-bit build-time
    storage with `QNN_QUANTIZATION_ENCODING_BW_AXIS_SCALE_OFFSET`, bit width 4,
@@ -222,15 +222,16 @@ Implementation record:
 
 ## Stage 2: Pinned model descriptor and acquisition
 
-**Status: implemented; authenticated source-lock finalization pending.**
+**Status: complete (2026-09-13).**
 
 The descriptor, catalog, authenticated fetch path, strict configuration and
 Safetensors validator, deterministic tensor audit, and local failure fixtures
-are implemented. The current machine has no accepted-license Hugging Face
-credential, so four Git-stored metadata SHA-256 values and the full real-source
-gate cannot be finalized yet. The fetcher verifies those first downloads against
-their official Git blob IDs, records their SHA-256 values in `source-lock.json`,
-and refuses publication unless the complete locked checkpoint validates.
+are implemented. An authenticated official download under
+`data/translategemma-4b` matches the pinned revision across all Git blob IDs,
+LFS SHA-256 values, and file sizes. The complete checkpoint passes configuration,
+index, shard-header, tensor-selection, and inventory validation. Its local
+`source-lock.json` and `tensor-audit.json` are generated data and remain outside
+Git with the licensed model files.
 
 Materialize `src/tools/gemma` with a canonical descriptor for TranslateGemma 4B.
 
@@ -259,10 +260,9 @@ Implementation record:
 
 - `src/tools/gemma/gemma_model.h/.c` pins the 34-layer, 2560-wide text descriptor,
    the 5-local/1-global schedule, and the immutable source revision.
-- `tools/translategemma-models.json` records all 15 official files. Eleven files
-   have complete SHA-256 pins. `README.md`, `chat_template.jinja`, `config.json`,
-   and `generation_config.json` remain intentionally unresolved until an
-   authenticated official-source fetch.
+- `tools/translategemma-models.json` records all 15 official files with complete
+   SHA-256 pins. Git-stored files also retain their official blob SHA-1 identities,
+   while LFS files retain their official object SHA-256 identities.
 - `tools/fetch-translategemma.ps1` requires `-AcceptGemmaLicense`, reads a token
    only from the environment or standard Hugging Face cache, verifies the exact
    revision, resumes into a staging directory, and publishes only after validation.
@@ -281,26 +281,30 @@ Implementation record:
 
 ## Stage 3: Versioned artifacts and W4A16 conversion
 
+**Status: complete (2026-09-13).**
+
 Create a Gemma-specific artifact contract rather than extending Whisper headers
 with unrelated fields.
 
-Required artifacts:
+Artifact classes covered by the contract:
 
 - W4 language-model weights and per-group scales.
 - FP16 normalization and other small parameters where quantization is not useful.
-- Tokenizer vocabulary, normalization data, byte mappings, and lookup tables.
+- Pinned tokenizer source data and, in Stage 4, generated vocabulary,
+   normalization, byte-mapping, and lookup tables.
 - Layer-type and RoPE tables.
-- Deterministic prompt, layer-output, logits, and generated-token fixtures.
-- Prompt-processor and token-generator QNN context binaries.
+- Deterministic prompt, layer-output, logits, and generated-token fixtures from
+   Stage 5.
+- Prompt-processor and token-generator QNN context binaries from Stages 7 and 8.
 
 Actions:
 
 1. Export from the original BF16 checkpoint, not a third-party GGUF conversion.
 2. Start with W8A16 as a numerical bring-up control, then implement symmetric
    W4A16 using the exact grouping and packing accepted by HTP.
-3. Use multilingual translation calibration and validation data. Weight-only
-   quantization should not require activation calibration, but clipping and group
-   size still require measured quality gates.
+3. Record deterministic per-tensor quantization error during conversion. Stage 5
+   applies the multilingual translation quality gate to the resulting W8 and W4
+   artifacts.
 4. Use a little-endian versioned header with model identity, source revision,
    tensor name or stable ID, shape, layout, element and quantization types, group
    size, payload size, and a strong payload hash.
@@ -312,7 +316,37 @@ Exit criteria:
   exporter reference.
 - Wrong model, version, dimensions, layout, quantization, truncation, overflow,
   and payload corruption are rejected before QNN binding.
-- W4 weight and scale storage is in the expected 1.9-2.2 GiB range for the text model.
+- W4 weight and scale storage is in the expected 1.9-2.2 GB range for the text model.
+
+Implementation record:
+
+- `src/tools/gemma/gemma_artifact.h/.c` defines a 256-byte little-endian v1
+   per-artifact header with model and tensor identity, rank and dimensions,
+   layout, element and quantization types, grouping, byte ranges, and SHA-256.
+   The reader rejects reserved-field, model, name, dimension, overflow, size, and
+   payload corruption before binding and expands low-nibble-first signed W4 into
+   the QNN S8 build container.
+- `tools/export-translategemma.py` revalidates the pinned Stage 2 checkpoint,
+   streams BF16 tensors in bounded row chunks, uses ties-to-even symmetric
+   quantization, records per-tensor RMSE and maximum absolute error, and writes
+   the manifest only after every artifact has been reread and SHA-256 checked.
+- QAIRT mapped group-128 encoding finalized and executed but returned an
+   unscaled integer dot product; its float-block alternative failed inside QNN
+   finalization. The deployed contract therefore uses the measured working path:
+   one scale per output channel, S8 build storage with bit-width 4 and axis 1.
+   The corrected 2560-wide hardware probe passes this contract on HTP.
+- The published ignored artifact set under `models/translategemma-4b-stage3/`
+   contains 444 W8A16 tensors with 3,883,175,040 payload bytes and 444 W4A16
+   tensors with 1,943,227,520 payload bytes. W4 matrices and their scales occupy
+   1,942,491,264 bytes; rank-1 FP16 tensors occupy 736,256 bytes.
+- Six pinned tokenizer files, the 34-byte local/global layer schedule, RoPE
+   constants, and the quantization contract are wrapped in the same format.
+   Runtime-ready tokenizer tables, numerical model fixtures, and QNN contexts are
+   deliberately named as deferred outputs in the manifest and are produced by
+   their owning later stages rather than fabricated here.
+- `tools/test-gemma-stage3.ps1` runs the C reader/corruption/unpack checks and
+   Python streaming quantization tests. `tools/export-translategemma.py
+   --verify-only` independently verifies the complete published inventory.
 
 ## Stage 4: Freestanding tokenizer and prompt contract
 
@@ -365,7 +399,7 @@ Exit criteria:
 
 ## Stage 6: QNN transformer block
 
-Prove one local and one global decoder block before constructing all 26 layers.
+Prove one local and one global decoder block before constructing all 34 layers.
 
 Actions:
 
@@ -396,7 +430,7 @@ tokens.
 Actions:
 
 1. Begin with 128-token chunks and context buckets of 512, 1024, and 2048 tokens.
-2. Compose all 26 layers into one graph where QNN finalization permits it. If the
+2. Compose all 34 layers into one graph where QNN finalization permits it. If the
    graph compiler requires partitioning, use the smallest measured partition
    count and never default to one submission per layer.
 3. Produce packed K/V rows directly into registered shared memory.
@@ -419,7 +453,7 @@ end-to-end result.
 
 Actions:
 
-1. Build a one-token graph containing all 26 layers, final RMSNorm, and the tied
+1. Build a one-token graph containing all 34 layers, final RMSNorm, and the tied
    vocabulary projection.
 2. Keep local and global KV caches in registered shared memory for the complete
    request. The graph consumes prior rows and emits the current packed K/V rows;

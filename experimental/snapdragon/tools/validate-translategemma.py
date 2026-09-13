@@ -19,6 +19,7 @@ DTYPE_BYTES = {
     "I64": 8, "U64": 8, "F64": 8,
 }
 GENERATED_FILES = {"source-lock.json", "tensor-audit.json"}
+MISSING = object()
 
 
 class ValidationError(Exception):
@@ -122,9 +123,16 @@ def _expect(config, key, expected):
         raise ValidationError(f"config {key} is {actual!r}; expected {expected!r}")
 
 
+def _expect_default(config, key, expected):
+    actual = config.get(key, MISSING)
+    if actual is not MISSING and actual != expected:
+        raise ValidationError(f"config {key} is {actual!r}; expected {expected!r}")
+
+
 def validate_config(path):
     config = load_json(path)
     _expect(config, "model_type", "gemma3")
+    _expect(config, "dtype", "bfloat16")
     architectures = config.get("architectures")
     if architectures != ["Gemma3ForConditionalGeneration"]:
         raise ValidationError("config architectures do not identify Gemma3ForConditionalGeneration")
@@ -145,13 +153,21 @@ def validate_config(path):
         "rms_norm_eps": 0.000001,
         "query_pre_attn_scalar": 256,
         "sliding_window": 1024,
+        "_sliding_window_pattern": 6,
+        "dtype": "bfloat16",
+        "attention_bias": False,
+        "attention_dropout": 0.0,
+        "use_bidirectional_attention": False,
+    }
+    for key, value in expected.items():
+        _expect(text, key, value)
+    for key, value in {
         "pad_token_id": 0,
         "eos_token_id": 1,
         "bos_token_id": 2,
         "tie_word_embeddings": True,
-    }
-    for key, value in expected.items():
-        _expect(text, key, value)
+    }.items():
+        _expect_default(text, key, value)
     expected_layers = [
         "full_attention" if (layer + 1) % 6 == 0 else "sliding_attention"
         for layer in range(34)
@@ -169,6 +185,10 @@ def validate_config(path):
             local_theta = sliding.get("rope_theta")
     if global_theta != 1000000.0 or local_theta != 10000.0:
         raise ValidationError("config RoPE frequencies do not match TranslateGemma 4B")
+    if not isinstance(rope, dict) or rope.get("full_attention") != {
+        "factor": 8.0, "rope_type": "linear"
+    } or rope.get("sliding_attention") != {"rope_type": "default"}:
+        raise ValidationError("config RoPE scaling does not match TranslateGemma 4B")
 
 
 def read_safetensors_header(path):

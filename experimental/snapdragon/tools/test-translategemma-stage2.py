@@ -21,6 +21,7 @@ def config_fixture():
     return {
         "architectures": ["Gemma3ForConditionalGeneration"],
         "model_type": "gemma3",
+        "dtype": "bfloat16",
         "text_config": {
             "model_type": "gemma3_text",
             "vocab_size": 262208,
@@ -35,12 +36,17 @@ def config_fixture():
             "rms_norm_eps": 0.000001,
             "query_pre_attn_scalar": 256,
             "sliding_window": 1024,
-            "pad_token_id": 0,
-            "eos_token_id": 1,
-            "bos_token_id": 2,
-            "tie_word_embeddings": True,
+            "_sliding_window_pattern": 6,
+            "dtype": "bfloat16",
+            "attention_bias": False,
+            "attention_dropout": 0.0,
+            "use_bidirectional_attention": False,
             "rope_theta": 1000000.0,
             "rope_local_base_freq": 10000.0,
+            "rope_parameters": {
+                "full_attention": {"factor": 8.0, "rope_type": "linear"},
+                "sliding_attention": {"rope_type": "default"},
+            },
             "layer_types": [
                 "full_attention" if (layer + 1) % 6 == 0 else "sliding_attention"
                 for layer in range(34)
@@ -150,6 +156,13 @@ class Stage2ValidationTests(unittest.TestCase):
         write_json(self.model_dir / "config.json", config)
         self.refresh_catalog_file("config.json")
         self.assert_validation_fails("config hidden_size")
+
+    def test_explicit_null_for_omitted_default_fails(self):
+        config = config_fixture()
+        config["text_config"]["pad_token_id"] = None
+        write_json(self.model_dir / "config.json", config)
+        self.refresh_catalog_file("config.json")
+        self.assert_validation_fails("config pad_token_id")
 
     def test_hash_mismatch_fails(self):
         path = self.model_dir / "config.json"
