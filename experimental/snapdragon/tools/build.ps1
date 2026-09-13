@@ -20,27 +20,28 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 
-    & $dllTool -m arm64 -d experimental/snapdragon/src/imports/kernel32.def -l "$BuildDir/libkernel32.a"
+    & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/kernel32.def -l "$BuildDir/libkernel32.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the Kernel32 import library" }
-    & $dllTool -m arm64 -d experimental/snapdragon/src/imports/dxcore.def -l "$BuildDir/libdxcore.a"
+    & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/dxcore.def -l "$BuildDir/libdxcore.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the DXCore import library" }
-    & $dllTool -m arm64 -d experimental/snapdragon/src/imports/d3d12.def -l "$BuildDir/libd3d12.a"
+    & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/d3d12.def -l "$BuildDir/libd3d12.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the D3D12 import library" }
-    & $dllTool -m arm64 -d experimental/snapdragon/src/imports/directml.def -l "$BuildDir/libdirectml.a"
+    & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/directml.def -l "$BuildDir/libdirectml.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the DirectML import library" }
 
     $flags = @(
         "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Oz",
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
         "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections", "-flto",
-        "-Isrc/shared"
+        "-Isrc/shared", "-Iexperimental/snapdragon/src/shared",
+        "-Iexperimental/snapdragon/src/tools/whisper"
     )
     $linkFlags = @(
         "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
         "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32", "-ldxcore", "-ld3d12", "-ldirectml"
     )
-    & $compilerPath @flags experimental/snapdragon/src/probe.c @linkFlags -o "$BuildDir/probe.exe"
+    & $compilerPath @flags experimental/snapdragon/src/tools/probe/main.c @linkFlags -o "$BuildDir/probe.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build probe.exe" }
     Write-Output "Built $BuildDir/probe.exe"
 
@@ -50,13 +51,13 @@ try {
         "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32"
     )
     $npuSources = @(
-        "experimental/snapdragon/src/npu_probe.c",
-        "experimental/snapdragon/src/whisper_artifact.c",
-        "experimental/snapdragon/src/whisper_model.c",
-        "experimental/snapdragon/src/whisper_frontend.c",
-        "experimental/snapdragon/src/whisper_decoder.c",
-        "experimental/snapdragon/src/whisper_decoder_qnn.c",
-        "experimental/snapdragon/src/whisper_encoder_qnn.c",
+        "experimental/snapdragon/src/tools/whisper/main.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_artifact.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_model.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_frontend.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_decoder.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c",
+        "experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c",
         "src/shared/math.c",
         "src/shared/runtime/memory.c",
         "src/shared/runtime/concurrency.c",
@@ -74,7 +75,7 @@ try {
     Write-Output "Built $BuildDir/npu_probe_builder.exe"
 
     & $compilerPath @flags `
-        experimental/snapdragon/src/decoder_kernel_benchmark.c `
+        experimental/snapdragon/src/tools/whisper/benchmarks/decoder_kernel_benchmark.c `
         src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
         src/platform/windows/thread.c `
         @npuLinkFlags -o "$BuildDir/decoder_kernel_benchmark.exe"

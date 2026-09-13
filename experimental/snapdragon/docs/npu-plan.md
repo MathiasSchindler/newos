@@ -10,9 +10,9 @@
 
 ## Milestones
 
-1. **Runtime discovery (complete)**: load `QnnHtp.dll`, resolve `QnnInterface_getProviders`, and report provider identity and API versions. This is implemented by `../src/npu_probe.c`.
+1. **Runtime discovery (complete)**: load `QnnHtp.dll`, resolve `QnnInterface_getProviders`, and report provider identity and API versions. This is implemented by `../src/tools/whisper/main.c`.
 2. **NPU session lifecycle (complete)**: create logging, backend, device, profile, and context handles through the QNN 2.x provider table, then free them in reverse order. The live `deviceCreate` and `contextCreate` calls both succeed on the target machine.
-3. **First static graph (complete)**: construct a one-dimensional UINT8 `qti.aisw/ElementWiseAdd` graph, finalize it on HTP, execute it, and compare every output byte with a scalar CPU reference. Exact QNN core 2.32 layouts are represented by the narrow `../src/qnn_abi.h` interoperability subset.
+3. **First static graph (complete)**: construct a one-dimensional UINT8 `qti.aisw/ElementWiseAdd` graph, finalize it on HTP, execute it, and compare every output byte with a scalar CPU reference. Exact QNN core 2.32 layouts are represented by the narrow `../src/shared/qnn_abi.h` interoperability subset.
 4. **Measurement harness (in progress)**: high-resolution Windows counter timing, fixed warm-up control, min/median/p95/max/mean latency, separate graph creation/finalization timing, context-binary cache timing, and process working-set/private-byte reporting are implemented. Batched throughput and reliable power measurements remain.
 5. **Matrix benchmark (Tiny shape sweep complete)**: `[1,384] x [384,384]`, `[1500,384] x [384,384]`, `[1500,384] x [384,1536]`, and `[1500,1536] x [1536,384]` execute on HTP with full scalar-reference checks. Additional batch-size sweeps remain optional measurement work rather than a blocker for transformer composition.
 6. **Transformer primitives (complete)**: model-derived LayerNorm, Q/K/V projections, reshape/transpose, rank-3 attention MatMuls, Softmax, output projection, residual addition, GELU, and the two-layer MLP execute on HTP with independent regression probes.
@@ -46,7 +46,7 @@ Quantized 16-bit activation experiments are closed for this QAIRT/HTP version. U
 
 - SDK decision: retained QAIRT `2.42.0.251225`; byte-range reads extracted only its matching QNN headers, `sdk.yaml`, and license from the 1,543,955,191-byte Community archive. SDK files remain outside Git.
 - ABI source: exact QNN core 2.32.0 `QnnCommon.h`, `QnnTypes.h`, `QnnInterface.h`, `QnnGraph.h`, `QnnTensor.h`, and `QnnOpDef.h` from that archive.
-- ABI verification: Clang 22.1.8 targeting Windows ARM64 reports `Qnn_QuantizeParams_t` 40 bytes, `Qnn_TensorV1_t` 112 bytes, `Qnn_Tensor_t` 144 bytes, `Qnn_OpConfigV1_t` 72 bytes, and `Qnn_OpConfig_t` 80 bytes. `../src/qnn_abi.h` has compile-time assertions for these layouts and graph function-table slots.
+- ABI verification: Clang 22.1.8 targeting Windows ARM64 reports `Qnn_QuantizeParams_t` 40 bytes, `Qnn_TensorV1_t` 112 bytes, `Qnn_Tensor_t` 144 bytes, `Qnn_OpConfigV1_t` 72 bytes, and `Qnn_OpConfig_t` 80 bytes. `../src/shared/qnn_abi.h` has compile-time assertions for these layouts and graph function-table slots.
 - Graph: two rank-1, eight-element `QNN_DATATYPE_UFIXED_POINT_8` application inputs and one output, all with scale 1 and offset 0, connected by `qti.aisw/ElementWiseAdd`.
 - Hardware result: `graphCreate`, all three `tensorCreateGraphTensor` calls, `graphAddNode`, `graphFinalize`, and `graphExecute` returned zero on HTP. Output `{11,22,33,44,55,70,90,110}` matched the scalar CPU reference exactly.
 - Failure coverage: 12 cases now cover loading/provider failures, lifecycle validation and cleanup, each graph stage, deliberate output corruption, and successful execution.

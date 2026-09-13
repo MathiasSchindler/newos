@@ -1,8 +1,8 @@
 #include "whisper_decoder.h"
 #include "whisper_artifact.h"
 #include "whisper_frontend.h"
-#include "../../../src/shared/math.h"
-#include "../../../src/shared/concurrency.h"
+#include "math.h"
+#include "concurrency.h"
 
 typedef unsigned char u8;
 typedef unsigned short u16;

@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $testRoot = Join-Path $repoRoot "tests/tmp/snapdragon-npu-probe"
 $probePath = Join-Path $repoRoot "$BuildDir/npu_probe_builder.exe"
-$mockSource = Join-Path $PSScriptRoot "..\src\qnn_mock.c"
+$mockSource = Join-Path $PSScriptRoot "..\src\shared\tests\qnn_mock.c"
 
 function Assert-Case {
     param(
@@ -54,13 +54,15 @@ try {
     $compilerPath = $compilerCommand.Source
     $mockFlags = @(
         "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-Oz",
-        "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-nostdlib", "-fuse-ld=lld", "-shared"
+        "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
+        "-Iexperimental/snapdragon/src/shared",
+        "-nostdlib", "-fuse-ld=lld", "-shared"
     )
     $artifactTestFlags = @(
         "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Werror", "-Oz",
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
         "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections", "-flto",
-        "-Isrc/shared",
+        "-Isrc/shared", "-Iexperimental/snapdragon/src/tools/whisper",
         "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
         "-L$BuildDir", "-lkernel32"
@@ -73,9 +75,9 @@ try {
 
     $artifactTestPath = Join-Path $testRoot "whisper_artifact_test.exe"
     & $compilerPath @artifactTestFlags `
-        experimental/snapdragon/src/whisper_artifact_test.c `
-        experimental/snapdragon/src/whisper_artifact.c `
-        experimental/snapdragon/src/whisper_model.c `
+        experimental/snapdragon/src/tools/whisper/tests/whisper_artifact_test.c `
+        experimental/snapdragon/src/tools/whisper/whisper_artifact.c `
+        experimental/snapdragon/src/tools/whisper/whisper_model.c `
         -o $artifactTestPath
     if ($LASTEXITCODE -ne 0) { throw "Failed to build artifact contract test" }
     & $artifactTestPath
@@ -86,11 +88,11 @@ try {
 
     $decoderTestPath = Join-Path $testRoot "whisper_decoder_cleanup_test.exe"
     & $compilerPath @artifactTestFlags "-DWHISPER_DECODER_TEST_ALLOCATOR" `
-        experimental/snapdragon/src/whisper_decoder_cleanup_test.c `
-        experimental/snapdragon/src/whisper_decoder.c `
-        experimental/snapdragon/src/whisper_artifact.c `
-        experimental/snapdragon/src/whisper_model.c `
-        experimental/snapdragon/src/whisper_frontend.c `
+        experimental/snapdragon/src/tools/whisper/tests/whisper_decoder_cleanup_test.c `
+        experimental/snapdragon/src/tools/whisper/whisper_decoder.c `
+        experimental/snapdragon/src/tools/whisper/whisper_artifact.c `
+        experimental/snapdragon/src/tools/whisper/whisper_model.c `
+        experimental/snapdragon/src/tools/whisper/whisper_frontend.c `
         src/shared/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
         src/platform/windows/thread.c `
         -o $decoderTestPath
