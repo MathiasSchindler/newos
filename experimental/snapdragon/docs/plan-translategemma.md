@@ -15,31 +15,32 @@ image translation are explicitly deferred.
 ## Feasibility baseline
 
 The official checkpoint is a Gemma 3 conditional-generation model. Its text
-backbone contains about 4.30 billion BF16 parameters and uses:
+backbone contains exactly 3,880,263,168 BF16 parameters; the complete stored
+checkpoint has 4,300,079,472 parameters after including the vision tower and
+projector. The text backbone uses:
 
 | Property | TranslateGemma 4B text backbone |
 | --- | ---: |
-| Decoder layers | 26 |
-| Hidden width | 2304 |
-| MLP width | 9216 |
+| Decoder layers | 34 |
+| Hidden width | 2560 |
+| MLP width | 10240 |
 | Query heads | 8 |
 | KV heads | 4 |
 | Head width | 256 |
 | Vocabulary | 262208 |
 | Translation context | 2048 tokens |
 | Attention pattern | Five local layers per global layer |
-| Local window | 4096 architecturally, capped by the 2048 deployment context |
+| Local window | 1024 tokens |
 
-BF16 text weights require roughly 8.0 GiB before QNN context and runtime
+BF16 text weights require 7,760,526,336 bytes (about 7.23 GiB) before QNN context and runtime
 overhead. That is not a practical deployment format on the target 16 GiB
 machine. The production target is symmetric weight-only INT4 with FP16
 activations (`W4A16`); INT8 is a bring-up and quality-control format.
 
-At the 2048-token deployment context, an FP16 KV cache requires about 208 MiB.
-The trained 4096-token local window is larger than this deployment context, so
-the local/global pattern does not reduce that initial budget. KV storage is still
-not the primary memory risk; duplicated weights in prompt and token-generator
-contexts are.
+At the 2048-token deployment context, an FP16 KV cache requires about 156 MiB
+when the 29 local layers retain 1024 tokens and the five global layers retain
+2048. KV storage is still not the primary memory risk; duplicated weights in
+prompt and token-generator contexts are.
 
 Comparable Qualcomm AI Hub 4B models already use `q4_0w4a16` on Snapdragon X
 Elite. This establishes platform feasibility, but it is not a performance result
@@ -160,14 +161,15 @@ Implementation record:
 
 ## Stage 1: Shared QNN substrate and runtime upgrade
 
+**Status: complete (2026-09-13).**
+
 QAIRT 2.50/QNN core 2.39 is now the single validated working runtime. Qualcomm's
 comparable 4B packages require QNN SDK 2.45 or newer, so this satisfies the SDK
 floor without keeping a parallel legacy installation.
 
-Migration status (2026-09-13): the official archive is hash-pinned, the narrow
-ABI and provider gate require QNN core 2.39, the ARM64 HTP runtime is staged from
-that archive, all Whisper contexts were regenerated, and the Small transcript
-gate passed. Gemma-specific capability probes remain.
+The official archive is hash-pinned, the narrow ABI and provider gate require
+QNN core 2.39, the ARM64 HTP runtime is staged from that archive, all Whisper
+contexts were regenerated, and the Small transcript gate passed.
 
 Actions:
 
@@ -192,7 +194,43 @@ Exit criteria:
 - Unsupported operations have an explicit host-side or graph-composition
   fallback before full-model work starts.
 
+Implementation record:
+
+- The capability suite is builder-only and runs with
+   `tools/test-gemma-stage1.ps1`; the production `npu_probe.exe` neither links the
+   probe module nor accepts its option.
+- A representative `[1,2304] x [2304,2304]` FP16 activation/W4 projection agrees
+   with the scalar reference. Native packed `QNN_DATATYPE_SFIXED_POINT_4` is rejected by this HTP
+   provider. The accepted construction contract uses signed 8-bit build-time
+   storage with `QNN_QUANTIZATION_ENCODING_BW_AXIS_SCALE_OFFSET`, bit width 4,
+   axis 1, and per-output-channel scales. Production artifacts may remain packed
+   W4 and are unpacked only while constructing the QNN context.
+- Direct FP16 RMSNorm, RotaryEmbedding, Gather, Argmax, and TopK pass numerical
+   checks. Gated GELU passes as `Gelu` followed by `ElementWiseMultiply`.
+- The public `GroupQueryAttention` node accepts graph construction but the
+   Windows HTP provider rejects it during finalization with error 1002. The
+   explicit fallback expands each KV head for its query-head group and executes
+   MatMul, causal-mask addition, Softmax, MatMul, Transpose, and Reshape on HTP.
+   The model geometry of 8 query heads, 4 KV heads, and head width 256 passes a
+   two-token causal numerical reference.
+- Two FP16 KV tensors of shape `[1,4,2048,256]` are allocated in one `rpcmem`
+   region, registered as separate QNN shared-buffer handles, consumed and
+   produced by an HTP graph, and compared exactly after execution.
+- Shared lifecycle extraction remains deferred until the Gemma runtime provides
+   the second production call site. Stage 1 adds only the ABI required by the
+   probes and keeps graph construction model-specific.
+
 ## Stage 2: Pinned model descriptor and acquisition
+
+**Status: implemented; authenticated source-lock finalization pending.**
+
+The descriptor, catalog, authenticated fetch path, strict configuration and
+Safetensors validator, deterministic tensor audit, and local failure fixtures
+are implemented. The current machine has no accepted-license Hugging Face
+credential, so four Git-stored metadata SHA-256 values and the full real-source
+gate cannot be finalized yet. The fetcher verifies those first downloads against
+their official Git blob IDs, records their SHA-256 values in `source-lock.json`,
+and refuses publication unless the complete locked checkpoint validates.
 
 Materialize `src/tools/gemma` with a canonical descriptor for TranslateGemma 4B.
 
@@ -216,6 +254,30 @@ Exit criteria:
 - Configuration drift, missing shards, unexpected tensors, truncation, and hash
   mismatch fail before conversion.
 - The exact retained parameter count and raw byte count are recorded.
+
+Implementation record:
+
+- `src/tools/gemma/gemma_model.h/.c` pins the 34-layer, 2560-wide text descriptor,
+   the 5-local/1-global schedule, and the immutable source revision.
+- `tools/translategemma-models.json` records all 15 official files. Eleven files
+   have complete SHA-256 pins. `README.md`, `chat_template.jinja`, `config.json`,
+   and `generation_config.json` remain intentionally unresolved until an
+   authenticated official-source fetch.
+- `tools/fetch-translategemma.ps1` requires `-AcceptGemmaLicense`, reads a token
+   only from the environment or standard Hugging Face cache, verifies the exact
+   revision, resumes into a staging directory, and publishes only after validation.
+- `tools/validate-translategemma.py` rejects catalog, file, configuration,
+   index, shard-header, namespace, shape, offset, and inventory drift without
+   loading tensor payloads into memory.
+- The source shard headers contain 883 tensors. Text selection retains 444
+   `language_model.*` tensors totaling 3,880,263,168 parameters and 7,760,526,336
+   raw bytes. It reports and omits 439 `vision_tower.*` or
+   `multi_modal_projector.*` tensors totaling 419,816,304 parameters and
+   839,632,608 raw bytes.
+- `tools/test-gemma-stage2.ps1` runs the descriptor and acquisition gates;
+   its `test-translategemma-stage2.py` suite covers accepted selection, configuration
+   drift, file corruption, truncation, shard-map drift, unexpected namespaces,
+   and missing files using local fixtures.
 
 ## Stage 3: Versioned artifacts and W4A16 conversion
 
@@ -250,7 +312,7 @@ Exit criteria:
   exporter reference.
 - Wrong model, version, dimensions, layout, quantization, truncation, overflow,
   and payload corruption are rejected before QNN binding.
-- W4 weight storage is in the expected 2.4-2.8 GiB range for the text model.
+- W4 weight and scale storage is in the expected 1.9-2.2 GiB range for the text model.
 
 ## Stage 4: Freestanding tokenizer and prompt contract
 

@@ -34,6 +34,7 @@ try {
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
         "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections", "-flto",
         "-Isrc/shared", "-Iexperimental/snapdragon/src/shared",
+        "-Iexperimental/snapdragon/src/tools/probe",
         "-Iexperimental/snapdragon/src/tools/whisper"
     )
     $linkFlags = @(
@@ -70,6 +71,7 @@ try {
     Write-Output "Built $BuildDir/npu_probe.exe"
 
     & $compilerPath @flags @npuSources `
+        experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c `
         @npuLinkFlags -o "$BuildDir/npu_probe_builder.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe_builder.exe" }
     Write-Output "Built $BuildDir/npu_probe_builder.exe"

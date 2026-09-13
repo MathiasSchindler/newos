@@ -1,4 +1,7 @@
 #include "qnn_abi.h"
+#if !defined(WHISPER_RUNTIME_ONLY)
+#include "qnn_gemma_capabilities.h"
+#endif
 #include "whisper_artifact.h"
 #include "whisper_decoder.h"
 #include "whisper_decoder_qnn.h"
@@ -140,6 +143,9 @@ static u32 frontend_bias_dimensions[1] = {WHISPER_HIDDEN_SIZE};
 static char external_wav_path[512];
 static int quiet_output;
 static int command_argument_error;
+#if !defined(WHISPER_RUNTIME_ONLY)
+static int gemma_stage1_probe;
+#endif
 static u32 decoder_worker_count;
 
 enum {
@@ -413,6 +419,17 @@ static const char *first_command_argument(void) {
             quiet_output = 1;
             continue;
         }
+#if !defined(WHISPER_RUNTIME_ONLY)
+        if (argument_equals(external_wav_path, "--gemma-stage1")) {
+            gemma_stage1_probe = 1;
+            continue;
+        }
+#else
+        if (argument_equals(external_wav_path, "--gemma-stage1")) {
+            command_argument_error = 1;
+            return 0;
+        }
+#endif
         if (argument_equals(external_wav_path, "--model=tiny")) {
             active_model = whisper_model_tiny();
             continue;
@@ -4314,8 +4331,13 @@ void mainCRTStartup(void) {
     wav_argument = first_command_argument();
     if (!initialize_model_context_paths(active_model)) finish(117U);
     if (command_argument_error) {
+#if defined(WHISPER_RUNTIME_ONLY)
         static const char usage[] =
             "Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
+#else
+        static const char usage[] =
+            "Usage: npu_probe_builder.exe [--gemma-stage1] [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
+#endif
         write_raw_bytes(usage, sizeof(usage) - 1U);
         finish(116U);
     }
@@ -4438,6 +4460,13 @@ void mainCRTStartup(void) {
         goto cleanup;
     }
     write_text("  HTP device/context connection established\n");
+
+#if !defined(WHISPER_RUNTIME_ONLY)
+    if (gemma_stage1_probe) {
+        exit_status = qnn_gemma_stage1_probe(api, context_handle);
+        goto cleanup;
+    }
+#endif
 
     whisper_decoder_qnn = whisper_decoder_qnn_create(active_model);
     whisper_encoder_qnn = whisper_encoder_qnn_create(active_model);

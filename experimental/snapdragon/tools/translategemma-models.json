@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "model": {
+    "name": "translategemma-4b-it",
+    "repository": "google/translategemma-4b-it",
+    "revision": "10042cb0e6e7fdce748996a71dc3dc432a4e0c89",
+    "license": "gemma",
+    "gated": true,
+    "requires_license_acceptance": true
+  },
+  "inventory": {
+    "stored_tensor_count": 883,
+    "stored_parameter_count": 4300079472,
+    "stored_raw_bytes": 8600158944,
+    "reported_parameter_count_with_tied_weights": 4971331952,
+    "retained_tensor_count": 444,
+    "retained_parameter_count": 3880263168,
+    "retained_raw_bytes": 7760526336,
+    "omitted_tensor_count": 439,
+    "omitted_parameter_count": 419816304,
+    "omitted_raw_bytes": 839632608
+  },
+  "files": [
+    {
+      "name": ".gitattributes",
+      "role": "metadata",
+      "size": 1570,
+      "git_blob_sha1": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+      "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+    },
+    {
+      "name": "README.md",
+      "role": "license_metadata",
+      "size": 17508,
+      "git_blob_sha1": "44f3690778da1770bf19d64bace73480c5825bc",
+      "sha256": null
+    },
+    {
+      "name": "added_tokens.json",
+      "role": "tokenizer",
+      "size": 35,
+      "git_blob_sha1": "e17bde03d42feda32d1abfca6d3b598b9a020df7",
+      "sha256": "50b2f405ba56a26d4913fd772089992252d7f942123cc0a034d96424221ba946"
+    },
+    {
+      "name": "chat_template.jinja",
+      "role": "tokenizer",
+      "size": 16982,
+      "git_blob_sha1": "d71968f9770221512d29627697012202451983c",
+      "sha256": null
+    },
+    {
+      "name": "config.json",
+      "role": "config",
+      "size": 2618,
+      "git_blob_sha1": "84ed56cf42ac645cf9e34f99548f0c1db6c2ee10",
+      "sha256": null
+    },
+    {
+      "name": "generation_config.json",
+      "role": "generation_config",
+      "size": 156,
+      "git_blob_sha1": "2fde3a7918391229df4dc54a3c57b7bed4fd332a",
+      "sha256": null
+    },
+    {
+      "name": "model-00001-of-00002.safetensors",
+      "role": "weights",
+      "size": 4961251752,
+      "lfs_sha256": "6187566ec8d00990103cd9243b306aceaa352697abfa3bb6fcbc5ce7a64ce142",
+      "sha256": "6187566ec8d00990103cd9243b306aceaa352697abfa3bb6fcbc5ce7a64ce142"
+    },
+    {
+      "name": "model-00002-of-00002.safetensors",
+      "role": "weights",
+      "size": 3639026128,
+      "lfs_sha256": "40c6a896b2275866e8bf56abc1da85f37a0d1d8fee824ad3008ea3231f4a3b70",
+      "sha256": "40c6a896b2275866e8bf56abc1da85f37a0d1d8fee824ad3008ea3231f4a3b70"
+    },
+    {
+      "name": "model.safetensors.index.json",
+      "role": "weights_index",
+      "size": 90594,
+      "git_blob_sha1": "63f4efcf7f2f61a304bde053a8c55b8a59eb7355",
+      "sha256": "7914bdb0a6717f05e0baa9e569f34add03e455ceca43f8015951cd2d378a74a0"
+    },
+    {
+      "name": "preprocessor_config.json",
+      "role": "vision_metadata",
+      "size": 570,
+      "git_blob_sha1": "cbd4f0cd77e39566f11921f9995bb3a4d008a83e",
+      "sha256": "5b2f684b616a25f3cd4a700e5e471a07fcaabc5ec07871d2231b7e376e8648ce"
+    },
+    {
+      "name": "processor_config.json",
+      "role": "vision_metadata",
+      "size": 70,
+      "git_blob_sha1": "453c7966d4b5d0b4a317c585989f64c58c2a6bf0",
+      "sha256": "3ffd5f11778dc73e2b69b3c00535e4121e1badf7018136263cd17b5b34fbaa53"
+    },
+    {
+      "name": "special_tokens_map.json",
+      "role": "tokenizer",
+      "size": 662,
+      "git_blob_sha1": "1a6193244714d3d78be48666cb02cdbfac62ad86",
+      "sha256": "2f7b0adf4fb469770bb1490e3e35df87b1dc578246c5e7e6fc76ecf33213a397"
+    },
+    {
+      "name": "tokenizer.json",
+      "role": "tokenizer",
+      "size": 33384570,
+      "lfs_sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c",
+      "sha256": "7d4046bf0505a327dd5a0abbb427ecd4fc82f99c2ceaa170bc61ecde12809b0c"
+    },
+    {
+      "name": "tokenizer.model",
+      "role": "tokenizer",
+      "size": 4689074,
+      "lfs_sha256": "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c",
+      "sha256": "1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "role": "tokenizer",
+      "size": 1155415,
+      "git_blob_sha1": "ad0c34f8dd76c7138b35b3973f3b4a422d5136a9",
+      "sha256": "88269475414d45d3e59892d3519b0d4e28ec6416fecf6b523fb986cbe452075f"
+    }
+  ]
+}

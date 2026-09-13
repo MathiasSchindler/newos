@@ -62,16 +62,20 @@ enum {
     QNN_DEFINITION_UNDEFINED = 0x7fffffff,
     QNN_QUANTIZATION_ENCODING_SCALE_OFFSET = 0,
     QNN_QUANTIZATION_ENCODING_AXIS_SCALE_OFFSET = 1,
+    QNN_QUANTIZATION_ENCODING_BW_AXIS_SCALE_OFFSET = 3,
     QNN_QUANTIZATION_ENCODING_UNDEFINED = 0x7fffffff,
     QNN_TENSOR_DATA_FORMAT_DENSE = 0,
+    QNN_DATATYPE_INT_32 = 0x0032,
     QNN_DATATYPE_UINT_32 = 0x0132,
     QNN_DATATYPE_FLOAT_16 = 0x0216,
     QNN_DATATYPE_FLOAT_32 = 0x0232,
+    QNN_DATATYPE_SFIXED_POINT_4 = 0x0304,
     QNN_DATATYPE_SFIXED_POINT_8 = 0x0308,
     QNN_DATATYPE_SFIXED_POINT_16 = 0x0316,
     QNN_DATATYPE_SFIXED_POINT_32 = 0x0332,
     QNN_DATATYPE_UFIXED_POINT_8 = 0x0408,
     QNN_DATATYPE_UFIXED_POINT_16 = 0x0416,
+    QNN_DATATYPE_BOOL_8 = 0x0508,
     QNN_TENSORMEMTYPE_RAW = 0,
     QNN_TENSORMEMTYPE_MEMHANDLE = 1,
     QNN_MEM_TYPE_CUSTOM = 2,
@@ -124,9 +128,18 @@ typedef struct QnnAxisScaleOffset {
     QnnScaleOffset *scale_offsets;
 } QnnAxisScaleOffset;
 
+typedef struct QnnBwAxisScaleOffset {
+    u32 bitwidth;
+    i32 axis;
+    u32 element_count;
+    float *scales;
+    i32 *offsets;
+} QnnBwAxisScaleOffset;
+
 typedef union QnnQuantizeEncoding {
     QnnScaleOffset scale_offset;
     QnnAxisScaleOffset axis_scale_offset;
+    QnnBwAxisScaleOffset bw_axis_scale_offset;
     u64 reserved[4];
 } QnnQuantizeEncoding;
 
@@ -171,6 +184,9 @@ typedef struct QnnScalar {
     u32 data_type;
     union {
         float float_value;
+        i32 int32_value;
+        u32 uint32_value;
+        u8 bool8_value;
         u64 uint64_value;
     } value;
 } QnnScalar;
@@ -295,6 +311,7 @@ typedef u64 (*QnnInterfaceGetProviders)(const QnnInterfacePrefix ***, u32 *);
 
 _Static_assert(sizeof(QnnQuantizeParams) == 40, "QNN 2.39 quantization ABI mismatch");
 _Static_assert(sizeof(QnnAxisScaleOffset) == 16, "QNN 2.39 axis quantization ABI mismatch");
+_Static_assert(sizeof(QnnBwAxisScaleOffset) == 32, "QNN 2.39 bit-width axis quantization ABI mismatch");
 _Static_assert(sizeof(QnnTensorV1) == 112, "QNN 2.39 tensor V1 ABI mismatch");
 _Static_assert(sizeof(QnnTensor) == 144, "QNN 2.39 tensor ABI mismatch");
 _Static_assert(sizeof(QnnScalar) == 16, "QNN 2.39 scalar ABI mismatch");
