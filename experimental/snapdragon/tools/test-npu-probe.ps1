@@ -38,10 +38,13 @@ function Invoke-Probe {
     )
 
     Push-Location $Directory
+    $previousErrorAction = $ErrorActionPreference
     try {
+        $ErrorActionPreference = 'Continue'
         $lines = & .\npu_probe.exe @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     } finally {
+        $ErrorActionPreference = $previousErrorAction
         Pop-Location
     }
     return @($exitCode, ($lines | Out-String))
@@ -119,12 +122,24 @@ try {
         Pop-Location
     }
     Write-Output "PASS decoder allocation cleanup (4 failures and normal shutdown)"
+    Push-Location (Join-Path $repoRoot 'experimental/snapdragon')
+    try {
+        & $decoderTestPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "Project-directory decoder artifact lookup failed: $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+    Write-Output 'PASS decoder artifact lookup from Snapdragon project directory'
 
     $noDllDirectory = Join-Path $testRoot "no-dll"
     New-Item -ItemType Directory -Force -Path $noDllDirectory | Out-Null
     Copy-Item -LiteralPath $probePath -Destination (Join-Path $noDllDirectory "npu_probe.exe")
     $result = Invoke-Probe $noDllDirectory
     Assert-Case "missing DLL" $result[0] 2 $result[1] "not loadable"
+    $result = Invoke-Probe $noDllDirectory @('--quiet')
+    Assert-Case 'quiet missing DLL' $result[0] 2 $result[1] 'npu_probe: failed \(exit 2\)'
 
     $cases = @(
         @("missing symbol", "QNN_MOCK_NO_PROVIDER_EXPORT", 3, "getProviders: missing", ""),
@@ -153,10 +168,12 @@ try {
         Assert-Case $name $result[0] $case[2] $result[1] $case[3] $case[4]
         if ($define -eq "QNN_MOCK_SUCCESS") {
             $quietResult = Invoke-Probe $caseDirectory @("--quiet")
-            if ($quietResult[0] -ne 107 -or $quietResult[1].Trim().Length -ne 0) {
+            if ($quietResult[0] -ne 107 -or
+                $quietResult[1] -notmatch 'npu_probe: failed \(exit 107\).*model context unavailable' -or
+                $quietResult[1] -match 'QNN HTP provider probe') {
                 throw "quiet mode failed: exit $($quietResult[0])`n$($quietResult[1])"
             }
-            Write-Output "PASS quiet mode uses a valid QNN log level (exit 107)"
+            Write-Output "PASS quiet mode hides diagnostics but reports failure (exit 107)"
         }
     }
 } finally {

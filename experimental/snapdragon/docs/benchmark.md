@@ -12,9 +12,33 @@ This is the active benchmark, profiling, and optimization log for the Windows AR
 
 ## Exact decoder work reuse
 
+### September 13 interleaved results
+
+Three alternating baseline/candidate pairs per mode on the five-minute Small workload completed with identical transcript SHA-256 `9a77d2b4b82890f5f1bf49aeef791725bb9bd1525395d7163935da9c83472d0d` in all twelve profiles. These measurements cover suppression bitsets, exact Gumbel caching, prefix reuse, and mask reuse, before the subsequent serial-selection experiment. Runtime: QAIRT 2.50.0.260828; Windows Balanced plan, AC power. Raw results are in `data/decoder-optimization-20260913/comparison-runs.json` and per-run directories under `long/`.
+
+| Mode / executable | Median wall seconds | Median CPU-seconds | Median NPU host-call duty |
+| --- | ---: | ---: | ---: |
+| `fused`, original | 53.090 | 56.266 | 31.53% |
+| `fused`, work reuse | 52.537 | 39.594 | 31.51% |
+| `fused,self,logits`, original | 75.832 | 70.906 | 59.35% |
+| `fused,self,logits`, work reuse | 57.239 | 27.172 | 78.69% |
+
+Maximum offload with work reuse reduced CPU-seconds by 61.7% and elapsed time by 24.5% versus the same mode before optimization. Its three wall times were 57.073, 57.239, and 58.059 seconds (about 5.24x real-time at the median). This is the preferred measured configuration when CPU reduction and NPU placement lead the priorities. Duty measures synchronous host-call duration, not hardware arithmetic occupancy.
+
+All optimized runs reused 155 prefix steps. Maximum-offload self-attention submissions fell from 52,512 to 48,792 and fused submissions from 26,256 to 24,396; final projection still runs for every selection step. Peak private commitment increased from approximately 499 MB to 593 MB because of the optional sampling cache. Fused-only candidate wall time varied from 44.518 to 82.541 seconds, so its nearly unchanged median must not be presented as a stable latency win; CPU-seconds improved in all three pairs.
+
+The original executable SHA-256 was `c943b5afce3185035684c21e094c603691095ac84d9d99da76e1352e7bad48d3`; the work-reuse candidate was `d86a32e09ed9c1ed9c619a4dcd1a8e6f636577dcc9f90749e33498d9c4ce4b85`. Both used the same serialized context. Comparing different offload modes still changes one passage relative to `cross,mlp`; exactness here refers to before/after within a mode, not equivalence between all modes.
+
+### Implementation and checks
+
+An additional serial scan of offloaded logits was tested and rejected. Three alternating five-minute Small pairs retained identical transcripts, but median elapsed time increased from 56.484 to 61.655 seconds and CPU-seconds from 24.141 to 26.375. Results are under `data/decoder-optimization-20260913/serial-verified/`. Production selection continues to use the task pool; partition-equivalence regression coverage remains. Do not combine these samples with the earlier baseline comparison, since the sustained scheduling/power conditions differed.
+
+The subsequent unused-prompt-prediction elimination passed paired Tiny, Base, and Small hardware transcript gates and the full mock-provider suite. Its final five-minute Small validation retained the same full transcript and 2,188 decoder steps, reused 155 transformer steps, and reduced vocabulary graph submissions from 2,188 to 2,134. This single validation took 57.719 seconds and 23.031 CPU-seconds with 81.88% host-call duty; it is not a repeated measurement of the incremental speedup. Logs are under `data/decoder-optimization-20260913/final-gates/` and `final-long/`. The normal rebuilt `build/npu_probe.exe` is byte-identical to the tested candidate, SHA-256 `21604dd72cdb825380792dbcbb75b8036503ac9519e0f7df9e09c4ceec05e188`, and imports only `KERNEL32.dll`.
+
 The decoder now removes repeated host work without changing suppression, temperature seeds, Gumbel arithmetic, or tie-breaking:
 
 - Token suppression and dynamic no-repeat exclusions use a per-step bitset instead of vocabulary-wide repeated linear searches.
+- Fixed prompt tokens still populate transformer state, but the first three prompt positions no longer compute vocabulary predictions that the caller discards. The final prompt position and every generated-token position retain the original selection rules. Decoder-step accounting continues to include all prompt positions.
 - Retries reuse final hidden states for an unchanged token prefix. Existing CPU or HTP self-K/V entries for that prefix remain valid. The first differing token invalidates the saved suffix, and every audio window resets the prefix cache. Sampling still runs for every decoder step with the current temperature and seed.
 - Gumbel samples are cached by position, token, and retry seed across windows. Storage is allocated only when temperature sampling is requested; allocation failure retains direct computation. A changed seed replaces that position's cached values. Small's complete optional table commits 92,942,080 bytes (88.64 MiB); physical residency depends on the positions used. Hidden-prefix storage adds 1,376,256 bytes (1.31 MiB), plus token metadata.
 - HTP self-attention reuses the causal mask across layers at the same position, including exact FP16 zero and negative-mask values. This does not change graph shapes or the two-submission self-attention contract.

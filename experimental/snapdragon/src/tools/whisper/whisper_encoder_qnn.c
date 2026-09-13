@@ -231,7 +231,7 @@ static int encoder_qnn_load_artifact(
     u64 payload_size;
     if (!whisper_model_size_multiply(expected_values, sizeof(u16), &payload_size) ||
         payload_size > 0xffffffffULL) return -1;
-    handle = CreateFileA(path, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+    handle = whisper_artifact_open_read(path);
     if (handle == invalid) {
         handle = CreateFileA(fallback, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
     }

@@ -77,16 +77,22 @@ ffmpeg -ss 300 -i .\experimental\snapdragon\data\7654653_mp3_128kb_stereo_de_128
 A plain mono 16 kHz `pcm_f32le` WAV argument is transcribed to the end of the track. The native probe seeks through overlapping 30-second windows at a 25-second stride, keeps QNN and decoder state loaded, and prints each new deduplicated `Transcript update (stitched)` as soon as its window completes. It also prints `Full transcript (German, greedy)` after the final window. Use a quoted `--single-window=<path>` argument only when deliberately limiting inference to the first 30 seconds:
 
 ```powershell
-.\experimental\snapdragon\build\npu_probe.exe '--single-window=..\data\bundestag-hearing-16k-mono-f32.wav'
+.\experimental\snapdragon\build\npu_probe.exe '--single-window=.\experimental\snapdragon\data\bundestag-hearing-16k-mono-f32.wav'
 ```
 
 Use `--quiet` when stdout should contain only the progressively stitched transcript, with no probe headings, timing data, segment markers, or repeated final transcript:
 
 ```powershell
-.\experimental\snapdragon\build\npu_probe.exe --quiet ..\data\bundestag-hearing-16k-mono-f32.wav
+.\experimental\snapdragon\build\npu_probe.exe --quiet .\experimental\snapdragon\data\bundestag-hearing-16k-mono-f32.wav
 ```
 
-The equivalent single-argument form is `--quiet=<path>`. The existing output remains the default for diagnostics and manifest-driven orchestration.
+The equivalent single-argument form is `--quiet=<path>`. Quiet mode still reports failures on stderr and returns a nonzero exit code; run without `--quiet` for detailed diagnostics. The existing output remains the default for diagnostics and manifest-driven orchestration.
+
+Model artifacts are located when running from the repository root, `experimental/snapdragon`, or its `build` directory. WAV paths remain relative to your current directory. For example, from `experimental/snapdragon`:
+
+```powershell
+.\build\npu_probe.exe --quiet --model=small --decoder-offload=fused,self,logits .\data\bundestag-hearing-16k-mono-f32.wav
+```
 
 The long-form driver writes one absolute WAV path per line to `window-manifest.txt` and invokes the native batch interface once:
 
@@ -133,6 +139,14 @@ Generate a development-time FP16 encoder-layer bundle with:
 Python and NumPy are used only to verify the pinned inputs and emit raw FP16 artifacts. The deployed `npu_probe.exe` path is freestanding C with no CRT or standard-library dependency; it reads those blobs through Kernel32 and submits the graph directly through QNN.
 
 ## Current machine result
+
+For CPU-first Small transcription, explicitly select the measured high-offload path:
+
+```powershell
+.\experimental\snapdragon\build\npu_probe.exe --model=small --decoder-offload=fused,self,logits <compatible.wav>
+```
+
+Rebuild the executable with `tools/build.ps1` before using the decoder work-reuse changes; existing QNN contexts remain compatible. Three interleaved five-minute before/after pairs in this mode reduced median CPU-seconds from 70.91 to 27.17 and elapsed time from 75.83 to 57.24 seconds, with identical transcripts. Median NPU host-call duty rose from 59.35% to 78.69%; it is not a hardware occupancy measurement. Optional exact sampling caching increases private commitment by roughly 94 MB. See [benchmark.md](benchmark.md) for binary identities, variability, and validation. The default remains `cross,mlp`: changing the offload mode itself can change model output, even though these work-reuse changes preserve each tested mode's transcript.
 
 On the Surface Laptop 7 used for bring-up:
 

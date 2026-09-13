@@ -150,7 +150,7 @@ static int read_exact(void *handle, void *buffer, u32 size) {
 
 static void *open_bundle(const char *primary, const char *fallback) {
     void *invalid = (void *)(usize)-1;
-    void *handle = CreateFileA(primary, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+    void *handle = whisper_artifact_open_read(primary);
     if (handle == invalid) handle = CreateFileA(fallback, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
     return handle;
 }
@@ -1134,7 +1134,8 @@ static u32 decoder_step(
     u32 position,
     int first_generated,
     float temperature,
-    u32 sample_seed
+    u32 sample_seed,
+    int select_output
 ) {
     const WhisperModelConfig *model = &decoder->model;
     const u16 *embedding = decoder->weights.token_embedding +
@@ -1229,6 +1230,10 @@ static u32 decoder_step(
     }
     cache_prefix_hidden(decoder, token, position);
 select_next_token:
+    if (!select_output) {
+        ++decoder->profile.decoder_steps;
+        return DECODER_EOT;
+    }
     npu_execute_ticks = 0U;
     QueryPerformanceCounter(&start);
     if (decoder->logits_offload != 0 && decoder->logits_offload(
@@ -1290,6 +1295,83 @@ select_next_token:
 }
 
 #if defined(WHISPER_DECODER_TEST_ALLOCATOR)
+static u32 test_logits_calls;
+
+static int test_prompt_logits_offload(
+    void *context, const float *hidden, const u16 **logits, u64 *ticks
+) {
+    static u16 values[DECODER_TEXT_TOKEN_LIMIT + 1501U];
+    (void)context;
+    (void)hidden;
+    ++test_logits_calls;
+    *logits = values;
+    *ticks = 0U;
+    return 1;
+}
+
+int whisper_decoder_test_prompt_logits(WhisperDecoder *decoder) {
+    u32 index;
+    u32 steps = decoder->profile.decoder_steps;
+    for (index = 0U; index < decoder->model.width; ++index) decoder->hidden[index] = 0.0f;
+    cache_prefix_hidden(decoder, DECODER_SOT, 0U);
+    decoder->logits_offload = test_prompt_logits_offload;
+    test_logits_calls = 0U;
+    if (decoder_step(decoder, DECODER_SOT, 0U, 0, 0.0f, 0U, 0) != DECODER_EOT ||
+        test_logits_calls != 0U || decoder->profile.decoder_steps != steps + 1U) return 1;
+    if (decoder_step(decoder, DECODER_SOT, 0U, 0, 0.0f, 0U, 1) != 0U ||
+        test_logits_calls != 1U || decoder->profile.decoder_steps != steps + 2U) return 2;
+    decoder->logits_offload = 0;
+    decoder->prefix_count = 0U;
+    return 0;
+}
+
+int whisper_decoder_test_logit_partitions(WhisperDecoder *decoder) {
+    static u16 logits[DECODER_TEXT_TOKEN_LIMIT + 1501U];
+    LogitContext context = {0};
+    u32 scenario;
+    u32 token;
+    context.decoder = decoder;
+    context.offloaded_logits = logits;
+    if (decoder->model.vocabulary_size > sizeof(logits) / sizeof(logits[0])) return 1;
+    for (scenario = 0U; scenario < 4U; ++scenario) {
+        u32 expected;
+        float expected_maximum;
+        float maximum = -3.402823466e+38f;
+        u32 best = DECODER_EOT;
+        prepare_token_exclusions(decoder, scenario & 1U);
+        for (token = 0U; token < decoder->model.vocabulary_size; ++token) {
+            logits[token] = scenario == 0U ? 0U :
+                whisper_frontend_float_to_half((float)(token % 127U) - 63.0f);
+        }
+        logits[3] = 0x7e00U;
+        logits[4] = 0xfc00U;
+        logits[5] = 0x8000U;
+        if (scenario == 2U) {
+            logits[100] = 0x7c00U;
+            logits[200] = 0x7c00U;
+            exclude_token(decoder, 100U);
+        }
+        context.temperature = scenario == 3U ? 0.2f : 0.0f;
+        context.gumbel_values = scenario == 3U ? prepare_gumbel_cache(decoder, 0U) : 0;
+        if (scenario == 3U && context.gumbel_values == 0) return 2;
+        context.partition_count = 1U;
+        (void)logit_partition_range(0U, 1U, 0U, &context);
+        expected = decoder->logit_tokens[0];
+        expected_maximum = decoder->logit_maxima[0];
+        context.partition_count = 12U;
+        (void)logit_partition_range(0U, 12U, 0U, &context);
+        for (token = 0U; token < 12U; ++token) {
+            if (decoder->logit_maxima[token] > maximum ||
+                (decoder->logit_maxima[token] == maximum && decoder->logit_tokens[token] < best)) {
+                maximum = decoder->logit_maxima[token];
+                best = decoder->logit_tokens[token];
+            }
+        }
+        if (best != expected || maximum != expected_maximum) return 3;
+    }
+    return 0;
+}
+
 int whisper_decoder_test_gumbel_cache(WhisperDecoder *decoder, int allocation_fails) {
     float *values = prepare_gumbel_cache(decoder, 0U);
     LogitContext context = {0};
@@ -1415,7 +1497,8 @@ static int decode_attempt(
         next = decoder_step(
             decoder, prompt[index], position,
             index + 1U == sizeof(prompt) / sizeof(prompt[0]),
-            temperature, sample_seed
+            temperature, sample_seed,
+            index + 1U == sizeof(prompt) / sizeof(prompt[0])
         );
         ++position;
     }
@@ -1423,7 +1506,7 @@ static int decode_attempt(
         next != DECODER_NO_SPEECH; ++index) {
         decoder->generated_tokens[position] = (u16)next;
         next = decoder_step(
-            decoder, next, position, 0, temperature, sample_seed
+            decoder, next, position, 0, temperature, sample_seed, 1
         );
         ++position;
     }

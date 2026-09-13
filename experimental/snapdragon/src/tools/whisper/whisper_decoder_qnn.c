@@ -735,9 +735,7 @@ static int decoder_qnn_read_exact(void *handle, void *buffer, u32 size) {
 
 static int decoder_qnn_load_weights(WhisperDecoderQnn *decoder) {
     void *invalid = (void *)(usize)-1;
-    void *handle = CreateFileA(
-        decoder->weight_path, 0x80000000U, 1U, 0, 3U, 0x80U, 0
-    );
+    void *handle = whisper_artifact_open_read(decoder->weight_path);
     u8 header_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
     WhisperArtifactHeader header;
     u64 expected_values;
@@ -827,9 +825,7 @@ static int decoder_qnn_load_weights(WhisperDecoderQnn *decoder) {
 
 static int decoder_qnn_load_mlp_weights(WhisperDecoderQnn *decoder) {
     void *invalid = (void *)(usize)-1;
-    void *handle = CreateFileA(
-        decoder->mlp_weight_path, 0x80000000U, 1U, 0, 3U, 0x80U, 0
-    );
+    void *handle = whisper_artifact_open_read(decoder->mlp_weight_path);
     u8 header_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
     WhisperArtifactHeader header;
     u64 matrix_values;
@@ -899,9 +895,7 @@ static int decoder_qnn_load_mlp_weights(WhisperDecoderQnn *decoder) {
 
 static int decoder_qnn_load_logits_weights(WhisperDecoderQnn *decoder) {
     void *invalid = (void *)(usize)-1;
-    void *handle = CreateFileA(
-        decoder->logits_weight_path, 0x80000000U, 1U, 0, 3U, 0x80U, 0
-    );
+    void *handle = whisper_artifact_open_read(decoder->logits_weight_path);
     u8 header_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
     WhisperArtifactHeader header;
     u64 matrix_values;
@@ -960,9 +954,7 @@ static int decoder_qnn_load_logits_weights(WhisperDecoderQnn *decoder) {
 
 static int decoder_qnn_load_self_weights(WhisperDecoderQnn *decoder) {
     void *invalid = (void *)(usize)-1;
-    void *handle = CreateFileA(
-        decoder->self_weight_path, 0x80000000U, 1U, 0, 3U, 0x80U, 0
-    );
+    void *handle = whisper_artifact_open_read(decoder->self_weight_path);
     u8 header_bytes[WHISPER_ARTIFACT_HEADER_SIZE];
     WhisperArtifactHeader header;
     u64 matrix_values;

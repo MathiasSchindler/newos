@@ -248,6 +248,7 @@ __declspec(dllimport) int WriteFile(void *handle, const void *buffer, u32 size, 
 
 static void *stdout_handle;
 static void *quiet_stderr_handle;
+static void *original_stderr_handle;
 static u32 original_console_output_cp;
 static int console_output_cp_changed;
 
@@ -969,7 +970,7 @@ static void copy_tensor(QnnTensor *destination, const QnnTensor *source) {
 
 static int read_exact_file(const char *primary, const char *fallback, void *buffer, u32 size) {
     void *invalid_handle = (void *)(usize)-1;
-    void *handle = CreateFileA(primary, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+    void *handle = whisper_artifact_open_read(primary);
     u32 total = 0U;
     u8 extra;
     u32 count;
@@ -3905,9 +3906,7 @@ static u32 load_model_context_cache(
     u64 expected_payload_size;
     u64 payload_hash;
     void *buffer;
-    void *handle = CreateFileA(
-        model_context_cache_primary, 0x80000000U, 1U, 0, 3U, 0x80U, 0
-    );
+    void *handle = whisper_artifact_open_read(model_context_cache_primary);
     long long start_counter;
     long long end_counter;
     u64 status;
@@ -4272,6 +4271,17 @@ static void write_batch_marker(u32 index, const char *state) {
 }
 
 static void finish(u32 status) {
+    if (quiet_output && status != 0U) {
+        stdout_handle = original_stderr_handle;
+        quiet_output = 0;
+        write_text("npu_probe: failed (exit ");
+        write_u32(status);
+        write_text(")");
+        if (status == 107U) {
+            write_text(": model context unavailable; check the model artifacts and working directory");
+        }
+        write_text(". Run without --quiet for details.\n");
+    }
     if (console_output_cp_changed) SetConsoleOutputCP(original_console_output_cp);
     ExitProcess(status);
 }
@@ -4324,6 +4334,7 @@ void mainCRTStartup(void) {
     u32 console_mode;
 
     stdout_handle = GetStdHandle(0xfffffff5U);
+    original_stderr_handle = GetStdHandle(0xfffffff4U);
     active_model = whisper_model_small();
     if (GetConsoleMode(stdout_handle, &console_mode)) {
         original_console_output_cp = GetConsoleOutputCP();

@@ -6,6 +6,8 @@
 #define WHISPER_ARTIFACT_HEADER_SIZE 96U
 #define WHISPER_ARTIFACT_HASH_OFFSET_BASIS 0xcbf29ce484222325ULL
 
+void *whisper_artifact_open_read(const char *path);
+
 typedef enum WhisperArtifactPayloadType {
     WHISPER_ARTIFACT_PAYLOAD_DECODER_WEIGHTS = 1,
     WHISPER_ARTIFACT_PAYLOAD_TOKEN_BYTES = 2,

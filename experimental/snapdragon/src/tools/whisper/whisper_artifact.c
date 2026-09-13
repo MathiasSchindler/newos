@@ -3,6 +3,23 @@
 #define WHISPER_ARTIFACT_MAGIC 0x3254464152485357ULL
 #define WHISPER_ARTIFACT_VERSION 2U
 
+__declspec(dllimport) void *CreateFileA(
+    const char *name, unsigned int access, unsigned int sharing, void *security,
+    unsigned int creation, unsigned int attributes, void *template_file
+);
+
+void *whisper_artifact_open_read(const char *path) {
+    static const char prefix[] = "experimental/snapdragon/";
+    void *invalid = (void *)(unsigned long long)-1;
+    void *handle = CreateFileA(path, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+    unsigned int index;
+    if (handle != invalid) return handle;
+    for (index = 0U; prefix[index] != '\0'; ++index) {
+        if (path[index] != prefix[index]) return handle;
+    }
+    return CreateFileA(path + index, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+}
+
 static unsigned int read_u32(const unsigned char *bytes) {
     return (unsigned int)bytes[0] | ((unsigned int)bytes[1] << 8U) |
         ((unsigned int)bytes[2] << 16U) | ((unsigned int)bytes[3] << 24U);
