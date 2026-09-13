@@ -125,7 +125,7 @@ try {
 
     $cases = @(
         @("missing symbol", "QNN_MOCK_NO_PROVIDER_EXPORT", 3, "getProviders: missing", ""),
-        @("API mismatch", "QNN_MOCK_API_MISMATCH", 5, "No ABI-compatible QNN 2.32\+ provider found", ""),
+        @("API mismatch", "QNN_MOCK_API_MISMATCH", 5, "No ABI-compatible QNN 2.39\+ provider found", ""),
         @("missing lifecycle", "QNN_MOCK_MISSING_LIFECYCLE", 6, "missing one or more required lifecycle or graph functions", ""),
         @("context failure cleanup", "QNN_MOCK_CONTEXT_FAILURE", 11, "(?s)contextCreate: 0x0000000000001234.*profileFree: 0x0000000000000000.*deviceFree: 0x0000000000000000.*backendFree: 0x0000000000000000.*logFree: 0x0000000000000000", "contextFree:"),
         @("graph create failure", "QNN_MOCK_GRAPH_CREATE_FAILURE", 17, "(?s)graphCreate: 0x0000000000002001.*contextFree: 0x0000000000000000", "graphAddNode:"),

@@ -299,11 +299,13 @@ static const QnnInterfaceProviderV2 provider = {
 };
 #elif defined(QNN_MOCK_MISSING_LIFECYCLE)
 static const QnnInterfaceProviderV2 provider = {
-    {6U, "MOCK_QNN", {{2U, 32U, 0U}, {5U, 41U, 0U}}}, {0}
+    {6U, "MOCK_QNN", {{QNN_CORE_API_VERSION_MAJOR, QNN_CORE_API_VERSION_MINOR,
+        QNN_CORE_API_VERSION_PATCH}, {5U, 41U, 0U}}}, {0}
 };
 #else
 static const QnnInterfaceProviderV2 provider = {
-    {6U, "MOCK_QNN", {{2U, 32U, 0U}, {5U, 41U, 0U}}},
+    {6U, "MOCK_QNN", {{QNN_CORE_API_VERSION_MAJOR, QNN_CORE_API_VERSION_MINOR,
+        QNN_CORE_API_VERSION_PATCH}, {5U, 41U, 0U}}},
     {
         .backend_create = backend_create,
         .backend_free = backend_free,

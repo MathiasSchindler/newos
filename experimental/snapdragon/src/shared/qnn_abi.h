@@ -9,6 +9,12 @@ typedef int i32;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 
+enum {
+    QNN_CORE_API_VERSION_MAJOR = 2,
+    QNN_CORE_API_VERSION_MINOR = 39,
+    QNN_CORE_API_VERSION_PATCH = 0
+};
+
 typedef struct QnnVersion {
     u32 major;
     u32 minor;
@@ -282,21 +288,21 @@ typedef struct QnnInterfaceProviderV2 {
 
 typedef u64 (*QnnInterfaceGetProviders)(const QnnInterfacePrefix ***, u32 *);
 
-_Static_assert(sizeof(QnnQuantizeParams) == 40, "QNN 2.32 quantization ABI mismatch");
-_Static_assert(sizeof(QnnAxisScaleOffset) == 16, "QNN 2.32 axis quantization ABI mismatch");
-_Static_assert(sizeof(QnnTensorV1) == 112, "QNN 2.32 tensor V1 ABI mismatch");
-_Static_assert(sizeof(QnnTensor) == 144, "QNN 2.32 tensor ABI mismatch");
-_Static_assert(sizeof(QnnScalar) == 16, "QNN 2.32 scalar ABI mismatch");
-_Static_assert(sizeof(QnnParam) == 160, "QNN 2.32 parameter ABI mismatch");
-_Static_assert(__builtin_offsetof(QnnParam, value) == 16, "QNN 2.32 parameter field mismatch");
-_Static_assert(__builtin_offsetof(QnnTensorV1, quantize_params) == 32, "QNN 2.32 tensor field mismatch");
-_Static_assert(__builtin_offsetof(QnnTensorV1, memory) == 96, "QNN 2.32 tensor memory mismatch");
-_Static_assert(sizeof(QnnOpConfigV1) == 72, "QNN 2.32 op config V1 ABI mismatch");
-_Static_assert(sizeof(QnnOpConfig) == 80, "QNN 2.32 op config ABI mismatch");
-_Static_assert(sizeof(QnnMemShape) == 24, "QNN 2.32 memory shape ABI mismatch");
-_Static_assert(sizeof(QnnMemDescriptor) == 48, "QNN 2.32 memory descriptor ABI mismatch");
-_Static_assert(sizeof(QnnHtpSharedBufferConfig) == 16, "QNN 2.32 HTP shared buffer ABI mismatch");
-_Static_assert(sizeof(QnnHtpMemDescriptor) == 32, "QNN 2.32 HTP memory descriptor ABI mismatch");
+_Static_assert(sizeof(QnnQuantizeParams) == 40, "QNN 2.39 quantization ABI mismatch");
+_Static_assert(sizeof(QnnAxisScaleOffset) == 16, "QNN 2.39 axis quantization ABI mismatch");
+_Static_assert(sizeof(QnnTensorV1) == 112, "QNN 2.39 tensor V1 ABI mismatch");
+_Static_assert(sizeof(QnnTensor) == 144, "QNN 2.39 tensor ABI mismatch");
+_Static_assert(sizeof(QnnScalar) == 16, "QNN 2.39 scalar ABI mismatch");
+_Static_assert(sizeof(QnnParam) == 160, "QNN 2.39 parameter ABI mismatch");
+_Static_assert(__builtin_offsetof(QnnParam, value) == 16, "QNN 2.39 parameter field mismatch");
+_Static_assert(__builtin_offsetof(QnnTensorV1, quantize_params) == 32, "QNN 2.39 tensor field mismatch");
+_Static_assert(__builtin_offsetof(QnnTensorV1, memory) == 96, "QNN 2.39 tensor memory mismatch");
+_Static_assert(sizeof(QnnOpConfigV1) == 72, "QNN 2.39 op config V1 ABI mismatch");
+_Static_assert(sizeof(QnnOpConfig) == 80, "QNN 2.39 op config ABI mismatch");
+_Static_assert(sizeof(QnnMemShape) == 24, "QNN 2.39 memory shape ABI mismatch");
+_Static_assert(sizeof(QnnMemDescriptor) == 48, "QNN 2.39 memory descriptor ABI mismatch");
+_Static_assert(sizeof(QnnHtpSharedBufferConfig) == 16, "QNN 2.39 HTP shared buffer ABI mismatch");
+_Static_assert(sizeof(QnnHtpMemDescriptor) == 32, "QNN 2.39 HTP memory descriptor ABI mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_create) == 120, "QNN graphCreate slot mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_add_node) == 144, "QNN graphAddNode slot mismatch");
 _Static_assert(__builtin_offsetof(QnnInterfaceV2, graph_execute) == 168, "QNN graphExecute slot mismatch");

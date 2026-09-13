@@ -4373,14 +4373,15 @@ void mainCRTStartup(void) {
         write_text(", backend ");
         write_version(&version->backend_api_version);
         write_text("\n");
-        if (provider == 0 && version->core_api_version.major == 2U &&
-            version->core_api_version.minor >= 32U) {
+        if (provider == 0 &&
+            version->core_api_version.major == QNN_CORE_API_VERSION_MAJOR &&
+            version->core_api_version.minor >= QNN_CORE_API_VERSION_MINOR) {
             provider = (const QnnInterfaceProviderV2 *)providers[index];
         }
     }
 
     if (provider == 0) {
-        write_text("No ABI-compatible QNN 2.32+ provider found.\n");
+        write_text("No ABI-compatible QNN 2.39+ provider found.\n");
         FreeLibrary(module);
         finish(5U);
     }

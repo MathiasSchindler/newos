@@ -43,11 +43,13 @@ function Get-Percentile([double[]]$Values, [double]$Fraction) {
 
 $runs = [System.Collections.Generic.List[object]]::new()
 for ($repetition = 1; $repetition -le $Repetitions; ++$repetition) {
-    $orderedModes = if (($repetition % 2) -eq 0) {
-        @($Modes[($Modes.Count - 1)..0])
-    } else {
-        @($Modes)
-    }
+    [string[]]$orderedModes = @(
+        if (($repetition % 2) -eq 0) {
+            $Modes[($Modes.Count - 1)..0]
+        } else {
+            $Modes
+        }
+    )
     for ($order = 0; $order -lt $orderedModes.Count; ++$order) {
         $mode = $orderedModes[$order]
         $safeMode = $mode.Replace(',', '-')

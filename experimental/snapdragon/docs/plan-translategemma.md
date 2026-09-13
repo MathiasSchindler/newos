@@ -160,9 +160,14 @@ Implementation record:
 
 ## Stage 1: Shared QNN substrate and runtime upgrade
 
-Upgrade from the currently validated QAIRT 2.42/QNN core 2.32 runtime to a pinned
-current QAIRT release. Qualcomm's comparable 4B packages require QNN SDK 2.45 or
-newer, so 2.45 is the minimum target rather than an optional later update.
+QAIRT 2.50/QNN core 2.39 is now the single validated working runtime. Qualcomm's
+comparable 4B packages require QNN SDK 2.45 or newer, so this satisfies the SDK
+floor without keeping a parallel legacy installation.
+
+Migration status (2026-09-13): the official archive is hash-pinned, the narrow
+ABI and provider gate require QNN core 2.39, the ARM64 HTP runtime is staged from
+that archive, all Whisper contexts were regenerated, and the Small transcript
+gate passed. Gemma-specific capability probes remain.
 
 Actions:
 

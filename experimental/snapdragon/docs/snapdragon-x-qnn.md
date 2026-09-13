@@ -1,6 +1,6 @@
 # Snapdragon X QNN notes
 
-These are reusable findings from running freestanding ARM64 Whisper inference through QAIRT 2.42 / QNN core 2.32 on Windows on Snapdragon X.
+These are reusable findings from running freestanding ARM64 Whisper inference through QAIRT 2.50 / QNN core 2.39 on Windows on Snapdragon X. Earlier benchmark values may predate the runtime migration; retain their recorded version when comparing performance.
 
 ## Deployment boundary
 
@@ -12,7 +12,8 @@ These are reusable findings from running freestanding ARM64 Whisper inference th
 ## HTP behavior
 
 - Large fixed-shape graphs can compile successfully while exceeding efficient VTCM grouping. QNN spill/fill reports are performance evidence, not correctness failures; Small's 768-wide 12-layer encoder reported roughly 357 MB spilled and 385 MB filled.
-- Messages such as `UNSUPPORTED_KEY: 49/50`, uninitialized CFB callback lists, and VTCM spill warnings occurred on successful executions. Gate on QNN return codes and output validation rather than treating every backend log line as fatal.
+- During QAIRT 2.50 context restoration on Windows, `m_CFBCallbackInfoObj is not initialized, return emptyList` means that no optional CFB callback list was registered. The repeated `setInferenceBufferForHtpExtensionSkel ... not supported` pairs mean that the restored graphs cannot use the optional ExtensionSkel inference-buffer path on this platform; QNN falls back to its normal graph buffers. These startup warnings do not indicate CPU execution or failed HTP inference when `contextCreateFromBinary`, graph retrieval, and `graphExecute` return success and output validation passes.
+- Messages such as `UNSUPPORTED_KEY: 49/50` and VTCM spill warnings also occurred on successful executions. Gate on QNN return codes and output validation rather than treating every backend log line as fatal. Use `--quiet` for transcript-only operation without QNN warning output; retain the default warning-level logger for diagnostics.
 - Cache build can take much longer and consume much more temporary memory than restore. Build once with the exact deployed runtime and retain the validated context artifact.
 - Rebuild caches after changing model dimensions, tensor IDs, graph names, QNN ABI/runtime version, or graph topology. Do not infer compatibility from a successful file read.
 
