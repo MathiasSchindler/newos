@@ -31,7 +31,7 @@ static u16 __attribute__((used)) integer_half(u32 value) {
 
 static u64 __attribute__((used)) log_create(void *callback, u32 level, QnnHandle *handle) {
     (void)callback;
-    (void)level;
+    if (level < QNN_LOG_LEVEL_ERROR || level > QNN_LOG_LEVEL_DEBUG) return 0x1003U;
     *handle = &log_storage;
     return 0U;
 }

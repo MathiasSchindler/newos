@@ -32,11 +32,14 @@ function Assert-Case {
 }
 
 function Invoke-Probe {
-    param([string]$Directory)
+    param(
+        [string]$Directory,
+        [string[]]$Arguments = @()
+    )
 
     Push-Location $Directory
     try {
-        $lines = & .\npu_probe.exe 2>&1
+        $lines = & .\npu_probe.exe @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     } finally {
         Pop-Location
@@ -148,6 +151,13 @@ try {
 
         $result = Invoke-Probe $caseDirectory
         Assert-Case $name $result[0] $case[2] $result[1] $case[3] $case[4]
+        if ($define -eq "QNN_MOCK_SUCCESS") {
+            $quietResult = Invoke-Probe $caseDirectory @("--quiet")
+            if ($quietResult[0] -ne 107 -or $quietResult[1].Trim().Length -ne 0) {
+                throw "quiet mode failed: exit $($quietResult[0])`n$($quietResult[1])"
+            }
+            Write-Output "PASS quiet mode uses a valid QNN log level (exit 107)"
+        }
     }
 } finally {
     Pop-Location

@@ -4401,7 +4401,9 @@ void mainCRTStartup(void) {
     }
 
     write_text("QNN HTP lifecycle\n");
-    status = api->log_create(0, quiet_output ? 0U : 2U, &log_handle);
+    status = api->log_create(
+        0, quiet_output ? QNN_LOG_LEVEL_ERROR : QNN_LOG_LEVEL_WARN, &log_handle
+    );
     write_call_status("  logCreate", status);
     if (status != 0U) {
         exit_status = 7U;

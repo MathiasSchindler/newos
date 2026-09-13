@@ -12,7 +12,12 @@ typedef unsigned long long u64;
 enum {
     QNN_CORE_API_VERSION_MAJOR = 2,
     QNN_CORE_API_VERSION_MINOR = 39,
-    QNN_CORE_API_VERSION_PATCH = 0
+    QNN_CORE_API_VERSION_PATCH = 0,
+    QNN_LOG_LEVEL_ERROR = 1,
+    QNN_LOG_LEVEL_WARN = 2,
+    QNN_LOG_LEVEL_INFO = 3,
+    QNN_LOG_LEVEL_VERBOSE = 4,
+    QNN_LOG_LEVEL_DEBUG = 5
 };
 
 typedef struct QnnVersion {
