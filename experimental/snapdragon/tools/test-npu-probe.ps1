@@ -90,7 +90,26 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Artifact contract test failed at case $LASTEXITCODE"
     }
-    Write-Output "PASS artifact v2 contract (18 checks)"
+    Write-Output "PASS artifact v2 contract (20 checks, including Medium)"
+
+    $contextTestPath = Join-Path $testRoot "whisper_context_test.exe"
+    & $compilerPath @artifactTestFlags `
+        "-Iexperimental/snapdragon/src/shared" `
+        "-Wno-unused-function" "-Wno-unused-variable" `
+        experimental/snapdragon/src/tools/whisper/tests/whisper_context_test.c `
+        experimental/snapdragon/src/tools/whisper/whisper_artifact.c `
+        experimental/snapdragon/src/tools/whisper/whisper_model.c `
+        experimental/snapdragon/src/tools/whisper/whisper_frontend.c `
+        experimental/snapdragon/src/tools/whisper/whisper_decoder.c `
+        experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c `
+        experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c `
+        src/shared/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
+        src/platform/windows/thread.c `
+        -o $contextTestPath
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build context metadata test" }
+    & $contextTestPath
+    if ($LASTEXITCODE -ne 0) { throw "Context metadata round trip failed" }
+    Write-Output "PASS 24-layer context metadata round trip"
 
     $decoderTestPath = Join-Path $testRoot "whisper_decoder_cleanup_test.exe"
     & $compilerPath @artifactTestFlags "-DWHISPER_DECODER_TEST_ALLOCATOR" `

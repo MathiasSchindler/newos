@@ -11,6 +11,12 @@
     "revision": "e37978b90ca9030d5170a5c07aadb050351a65bb",
     "sha256": "07cadb9f25677c8d50df603e66a98fbd842cce45047139baeb16e6219a1e807b"
   },
+  "medium": {
+    "model_id": 4,
+    "repository": "openai/whisper-medium",
+    "revision": "abdf7c39ab9d0397620ccaea8974cc764cd0953e",
+    "sha256": "62f73550fa6db24b0c6f6c5962bd0dae80fa644e93cde9cd9c3792971b47fd28"
+  },
   "small": {
     "model_id": 3,
     "repository": "openai/whisper-small",

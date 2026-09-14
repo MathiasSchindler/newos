@@ -148,15 +148,6 @@ static int gemma_stage1_probe;
 #endif
 static u32 decoder_worker_count;
 
-enum {
-    DECODER_OFFLOAD_CROSS = 1U,
-    DECODER_OFFLOAD_MLP = 2U,
-    DECODER_OFFLOAD_SELF = 4U,
-    DECODER_OFFLOAD_LOGITS = 8U,
-    DECODER_OFFLOAD_ALL = 15U,
-    DECODER_OFFLOAD_FUSED = 16U
-};
-
 static u32 decoder_offload_mask = DECODER_OFFLOAD_CROSS | DECODER_OFFLOAD_MLP;
 
 typedef struct WavManifestReader {
@@ -199,13 +190,16 @@ static char model_context_cache_primary[192];
 static char model_context_cache_local[96];
 
 enum {
-    MODEL_CONTEXT_CACHE_METADATA_SIZE =
-    8U + 11U * 4U +
-    (WHISPER_DECODER_QNN_MAX_OUTPUTS +
-        WHISPER_DECODER_QNN_MAX_LAYERS * 2U) * 4U +
-        (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U + 2U * 4U +
-    (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 9U) * 4U +
-    (1U + WHISPER_DECODER_QNN_MAX_LAYERS * 4U) * 4U
+    MODEL_CONTEXT_CROSS_OFFSET = 52U +
+        WHISPER_DECODER_QNN_MAX_OUTPUTS * 4U +
+        WHISPER_DECODER_QNN_MAX_LAYERS * 8U,
+    MODEL_CONTEXT_LOGITS_OFFSET = MODEL_CONTEXT_CROSS_OFFSET + 4U +
+        WHISPER_DECODER_QNN_MAX_LAYERS * 16U,
+    MODEL_CONTEXT_SELF_OFFSET = MODEL_CONTEXT_LOGITS_OFFSET + 8U,
+    MODEL_CONTEXT_FUSED_OFFSET = MODEL_CONTEXT_SELF_OFFSET + 4U +
+        WHISPER_DECODER_QNN_MAX_LAYERS * 36U,
+    MODEL_CONTEXT_CACHE_METADATA_SIZE = MODEL_CONTEXT_FUSED_OFFSET + 4U +
+        WHISPER_DECODER_QNN_MAX_LAYERS * 16U
 };
 
 typedef struct ProcessMemoryCounters {
@@ -275,6 +269,13 @@ static int append_path_text(
 static int initialize_model_context_paths(const WhisperModelConfig *model) {
     u32 primary_used = 0U;
     u32 local_used = 0U;
+    char mode_suffix[] = "-m00";
+    const char *mode = "";
+    if (model->model_id == WHISPER_MODEL_ID_MEDIUM) {
+        mode_suffix[2] = "0123456789abcdef"[decoder_offload_mask >> 4U];
+        mode_suffix[3] = "0123456789abcdef"[decoder_offload_mask & 15U];
+        mode = mode_suffix;
+    }
     return append_path_text(
             model_context_cache_primary, sizeof(model_context_cache_primary),
             &primary_used, "experimental/snapdragon/build/whisper-"
@@ -283,7 +284,10 @@ static int initialize_model_context_paths(const WhisperModelConfig *model) {
             &primary_used, model->name
         ) && append_path_text(
             model_context_cache_primary, sizeof(model_context_cache_primary),
-            &primary_used, "-encoder-fp16.qnnctx"
+            &primary_used, mode
+        ) && append_path_text(
+            model_context_cache_primary, sizeof(model_context_cache_primary),
+            &primary_used, "-encoder-fp16-l24.qnnctx"
         ) && append_path_text(
             model_context_cache_local, sizeof(model_context_cache_local),
             &local_used, "whisper-"
@@ -292,7 +296,10 @@ static int initialize_model_context_paths(const WhisperModelConfig *model) {
             &local_used, model->name
         ) && append_path_text(
             model_context_cache_local, sizeof(model_context_cache_local),
-            &local_used, "-encoder-fp16.qnnctx"
+            &local_used, mode
+        ) && append_path_text(
+            model_context_cache_local, sizeof(model_context_cache_local),
+            &local_used, "-encoder-fp16-l24.qnnctx"
         );
 }
 
@@ -441,6 +448,10 @@ static const char *first_command_argument(void) {
         }
         if (argument_equals(external_wav_path, "--model=small")) {
             active_model = whisper_model_small();
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--model=medium")) {
+            active_model = whisper_model_medium();
             continue;
         }
         if (argument_has_prefix(external_wav_path, "--decoder-workers=")) {
@@ -1072,9 +1083,9 @@ static void encode_model_context_metadata(
             metadata->decoder.mlp_output_ids[index]
         );
     }
-    cache_write_u32(output + 436U, metadata->decoder.cross_layer_count);
+    cache_write_u32(output + MODEL_CONTEXT_CROSS_OFFSET, metadata->decoder.cross_layer_count);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 440U;
+        u32 base = MODEL_CONTEXT_CROSS_OFFSET + 4U;
         cache_write_u32(output + base + index * 4U,
             metadata->decoder.cross_input_ids[index]);
         cache_write_u32(output + base +
@@ -1087,11 +1098,11 @@ static void encode_model_context_metadata(
             (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U,
             metadata->decoder.cross_output_ids[index]);
     }
-    cache_write_u32(output + 696U, metadata->decoder.logits_input_id);
-    cache_write_u32(output + 700U, metadata->decoder.logits_output_id);
-    cache_write_u32(output + 704U, metadata->decoder.self_layer_count);
+    cache_write_u32(output + MODEL_CONTEXT_LOGITS_OFFSET, metadata->decoder.logits_input_id);
+    cache_write_u32(output + MODEL_CONTEXT_LOGITS_OFFSET + 4U, metadata->decoder.logits_output_id);
+    cache_write_u32(output + MODEL_CONTEXT_SELF_OFFSET, metadata->decoder.self_layer_count);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 708U;
+        u32 base = MODEL_CONTEXT_SELF_OFFSET + 4U;
         cache_write_u32(output + base + index * 4U,
             metadata->decoder.self_projection_input_ids[index]);
         cache_write_u32(output + base +
@@ -1119,9 +1130,9 @@ static void encode_model_context_metadata(
             (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U,
             metadata->decoder.self_output_ids[index]);
     }
-    cache_write_u32(output + 1284U, metadata->decoder.fused_layer_count);
+    cache_write_u32(output + MODEL_CONTEXT_FUSED_OFFSET, metadata->decoder.fused_layer_count);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 1288U;
+        u32 base = MODEL_CONTEXT_FUSED_OFFSET + 4U;
         cache_write_u32(output + base + index * 4U,
             metadata->decoder.fused_input_ids[index]);
         cache_write_u32(output + base +
@@ -1167,9 +1178,9 @@ static void decode_model_context_metadata(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS + index) * 4U
         );
     }
-    metadata->decoder.cross_layer_count = cache_read_u32(input + 436U);
+    metadata->decoder.cross_layer_count = cache_read_u32(input + MODEL_CONTEXT_CROSS_OFFSET);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 440U;
+        u32 base = MODEL_CONTEXT_CROSS_OFFSET + 4U;
         metadata->decoder.cross_input_ids[index] = cache_read_u32(
             input + base + index * 4U);
         metadata->decoder.cross_key_ids[index] = cache_read_u32(
@@ -1179,11 +1190,11 @@ static void decode_model_context_metadata(
         metadata->decoder.cross_output_ids[index] = cache_read_u32(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 3U + index) * 4U);
     }
-    metadata->decoder.logits_input_id = cache_read_u32(input + 696U);
-    metadata->decoder.logits_output_id = cache_read_u32(input + 700U);
-    metadata->decoder.self_layer_count = cache_read_u32(input + 704U);
+    metadata->decoder.logits_input_id = cache_read_u32(input + MODEL_CONTEXT_LOGITS_OFFSET);
+    metadata->decoder.logits_output_id = cache_read_u32(input + MODEL_CONTEXT_LOGITS_OFFSET + 4U);
+    metadata->decoder.self_layer_count = cache_read_u32(input + MODEL_CONTEXT_SELF_OFFSET);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 708U;
+        u32 base = MODEL_CONTEXT_SELF_OFFSET + 4U;
         metadata->decoder.self_projection_input_ids[index] = cache_read_u32(
             input + base + index * 4U);
         metadata->decoder.self_query_output_ids[index] = cache_read_u32(
@@ -1203,9 +1214,9 @@ static void decode_model_context_metadata(
         metadata->decoder.self_output_ids[index] = cache_read_u32(
             input + base + (WHISPER_DECODER_QNN_MAX_LAYERS * 8U + index) * 4U);
     }
-    metadata->decoder.fused_layer_count = cache_read_u32(input + 1284U);
+    metadata->decoder.fused_layer_count = cache_read_u32(input + MODEL_CONTEXT_FUSED_OFFSET);
     for (index = 0U; index < WHISPER_DECODER_QNN_MAX_LAYERS; ++index) {
-        u32 base = 1288U;
+        u32 base = MODEL_CONTEXT_FUSED_OFFSET + 4U;
         metadata->decoder.fused_input_ids[index] = cache_read_u32(
             input + base + index * 4U);
         metadata->decoder.fused_key_ids[index] = cache_read_u32(
@@ -3938,7 +3949,8 @@ static u32 load_model_context_cache(
         metadata.encoder.model_id != model->model_id ||
         metadata.decoder.model_id != model->model_id ||
         metadata.decoder.output_count != model->decoder_layers * 2U ||
-        metadata.decoder.cross_layer_count != model->decoder_layers ||
+        (metadata.decoder.cross_layer_count != 0U &&
+         metadata.decoder.cross_layer_count != model->decoder_layers) ||
         metadata.binary_size == 0U || metadata.binary_size > 0x80000000ULL) {
         CloseHandle(handle);
         return 0U;
@@ -4347,10 +4359,10 @@ void mainCRTStartup(void) {
     if (command_argument_error) {
 #if defined(WHISPER_RUNTIME_ONLY)
         static const char usage[] =
-            "Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
+            "Usage: npu_probe.exe [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
 #else
         static const char usage[] =
-            "Usage: npu_probe_builder.exe [--gemma-stage1] [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
+            "Usage: npu_probe_builder.exe [--gemma-stage1] [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
 #endif
         write_raw_bytes(usage, sizeof(usage) - 1U);
         finish(116U);
@@ -4482,7 +4494,10 @@ void mainCRTStartup(void) {
     }
 #endif
 
-    whisper_decoder_qnn = whisper_decoder_qnn_create(active_model);
+    whisper_decoder_qnn = whisper_decoder_qnn_create(
+        active_model, active_model->model_id == WHISPER_MODEL_ID_MEDIUM ?
+        decoder_offload_mask : DECODER_OFFLOAD_ALL | DECODER_OFFLOAD_FUSED
+    );
     whisper_encoder_qnn = whisper_encoder_qnn_create(active_model);
     if (whisper_decoder_qnn == 0 || whisper_encoder_qnn == 0) {
         exit_status = 117U;
@@ -4644,7 +4659,7 @@ void mainCRTStartup(void) {
     }
 
 #if defined(WHISPER_RUNTIME_ONLY)
-    write_text("Usage: npu_probe.exe [--model=tiny|base|small] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n");
+    write_text("Usage: npu_probe.exe [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n");
     exit_status = 116U;
     goto cleanup;
 #else

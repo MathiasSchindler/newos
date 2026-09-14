@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$WavPath,
-    [ValidateSet('tiny', 'base', 'small')]
+    [ValidateSet('tiny', 'base', 'small', 'medium')]
     [string]$Model = 'small',
     [int]$DecoderWorkers = 0,
     [string]$ProbePath,

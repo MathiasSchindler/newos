@@ -59,6 +59,84 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdrago
 
 Small is the current default because its multilingual transcription quality is materially better. Cache files and QNN graph names are model-specific, so Tiny and Base never restore an incompatible context.
 
+Whisper Medium uses the same FP16 path with width 1024, 16 attention heads,
+and 24 encoder and decoder layers. Prepare its pinned multilingual checkpoint
+and model-specific context with:
+
+```powershell
+.\experimental\snapdragon\tools\build.ps1
+.\experimental\snapdragon\tools\fetch-whisper-medium.ps1
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model medium
+.\experimental\snapdragon\build\npu_probe_builder.exe --model=medium
+.\experimental\snapdragon\build\npu_probe.exe --model=medium .\experimental\snapdragon\build\long-form-35s.wav
+```
+
+The 24-layer context metadata layout uses `whisper-<model>-encoder-fp16-l24.qnnctx`
+for Tiny/Base/Small. Medium builds only the selected decoder offloads and includes
+their hexadecimal mask in the filename: `whisper-medium-m03-encoder-fp16-l24.qnnctx`
+for `cross,mlp`, and `whisper-medium-m18-encoder-fp16-l24.qnnctx` for
+`fused,logits`. Use the same offload option when building and transcribing.
+Rebuild each selected model's context when upgrading from the 16-layer executable;
+the old unsuffixed caches are neither loaded nor overwritten. Model weight bundles
+retain the version-2 artifact format. Small remains the default model.
+
+Medium's source checkpoint is 3,055,544,304 bytes; its FP16 decoder weights alone
+occupy about 871 MiB. QNN contexts, graph compiler allocations, caches, and retained
+CPU fallback weights add to this. Measure both context-build and transcription
+memory on the target machine. An initial Medium context containing every decoder
+graph variant reached 2,073,598,736 bytes and failed DSP weight-buffer mapping and
+context restore. Mode-specific contexts avoid the unused graph variants; the
+smaller models retain their existing all-variant contexts.
+
+On the current 16 GB Surface Laptop and QAIRT 2.50 runtime, Medium
+`fused,self,logits` still fails context restore after pruning: QNN estimates
+2,857,368,320 bytes of context memory and reports that no process domain is
+available. This mode is not a supported Medium deployment on this machine.
+The `cross,mlp` context restores and transcribes successfully; its first
+35.008-second two-window smoke run took 36.016 seconds and 33.641 CPU-seconds,
+with 132 generated tokens and about 2.76 GiB peak resident memory. Repetition
+retries contributed substantially to this result. It is not a steady-state
+speed or transcription-quality benchmark.
+
+The lower-memory `fused,logits` mode also restores and transcribes successfully.
+It keeps decoder self-attention on the CPU while offloading fused cross-attention
+and MLP plus final vocabulary projection:
+
+```powershell
+.\experimental\snapdragon\build\npu_probe_builder.exe --model=medium --decoder-offload=fused,logits
+.\experimental\snapdragon\build\npu_probe.exe --model=medium --decoder-offload=fused,logits .\experimental\snapdragon\build\long-form-35s.wav
+```
+
+Its first matched-clip smoke run took 29.123 seconds and 25.484 CPU-seconds,
+with about 2.91 GiB peak resident memory. It generated 137 tokens rather than
+132 in `cross,mlp`; the transcript changes with offload precision. These single
+runs are not a repeated performance comparison. Small and `cross,mlp` remain
+the defaults; use `--model=medium --decoder-offload=fused,logits` explicitly.
+
+The final hardware regression repeated both Medium modes at 34.888 seconds /
+32.328 CPU-seconds (`cross,mlp`) and 33.581 seconds / 28.750 CPU-seconds
+(`fused,logits`), preserving each mode's first-run transcript. All six
+Tiny/Base/Small model/mode comparisons matched the original executable's
+transcript hashes and token counts. The candidate remains at
+`build/medium-candidate/npu_probe.exe`; the original binaries are unchanged.
+The candidate SHA-256 is
+`627ecfd72c850fae237c968aed6103f98c28211c586c79b582637aadc52cca6d`.
+
+For isolated bring-up, build with
+`tools/build.ps1 -BuildDir experimental/snapdragon/build/medium-candidate`
+and stage the same QNN DLLs,
+DSP `.so` files, and `.cat` files beside the candidate. The original executable
+and unsuffixed contexts can then remain in place for comparison. After building
+the three smaller `-l24` contexts and Medium's `cross,mlp` and `fused,logits`
+contexts, run
+`experimental/snapdragon/tools/test-whisper-medium.ps1` from the repository root.
+It defaults to the isolated candidate and existing 35-second WAV, checks
+Tiny/Base/Small transcripts against the original executable in both decoder
+modes, and records Medium CPU time, elapsed time, memory, and NPU submissions
+under `data/medium-validation/`. These are hardware smoke measurements, not a
+transcription-quality benchmark. The optional `-MediumModes` array selects
+additional mode-specific contexts to test.
+
 The stable decoder default is `--decoder-offload=cross,mlp`. Use `cpu`, `all`, or a comma-separated subset of `cross`, `mlp`, `self`, `logits`, and `fused` for controlled measurements. `fused` replaces separate cross-attention and MLP graphs and cannot be combined with `cross` or `mlp`. Stateful self-attention and final projection remain experimental because they have not passed the Small wall-time gate.
 
 Pass a 16 kHz mono float32 WAV as the first argument to transcribe the complete track through the cached frontend and encoder. For conversion, retries, resumable records, and richer reports, use the development-time driver:
@@ -128,7 +206,7 @@ Run the deterministic failure-path suite with:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\test-npu-probe.ps1
 ```
 
-The suite first runs no-CRT ARM64 checks for 18 version-2 artifact contract cases and all four decoder allocation-failure cleanup points. It then builds freestanding ARM64 mock provider DLLs and runs 12 cases covering loader/provider errors, QNN 2.39 compatibility, required functions, reverse cleanup after lifecycle and graph failures, output corruption detection, and successful Add plus Whisper Tiny MatMul execution.
+The suite first runs no-CRT ARM64 checks for 20 version-2 artifact contract cases, including Medium dimensions and model isolation, a complete 24-layer context metadata round trip, and all four decoder allocation-failure cleanup points. It then builds freestanding ARM64 mock provider DLLs and runs 12 cases covering loader/provider errors, QNN 2.39 compatibility, required functions, reverse cleanup after lifecycle and graph failures, output corruption detection, and successful Add plus Whisper Tiny MatMul execution.
 
 Generate a development-time FP16 encoder-layer bundle with:
 

@@ -38,6 +38,12 @@ static const WhisperModelConfig base_config = {
     WHISPER_BASE_ENCODER_FRAMES
 };
 
+static const WhisperModelConfig medium_config = {
+    WHISPER_MODEL_ID_MEDIUM,
+    "medium",
+    1024, 4096, 16, 24, 24, 51865, 448, 80, 1500
+};
+
 static const WhisperModelConfig small_config = {
     WHISPER_MODEL_ID_SMALL,
     "small",
@@ -67,6 +73,10 @@ const WhisperModelConfig *whisper_model_base(void) {
 
 const WhisperModelConfig *whisper_model_small(void) {
     return &small_config;
+}
+
+const WhisperModelConfig *whisper_model_medium(void) {
+    return &medium_config;
 }
 
 int whisper_model_config_valid(const WhisperModelConfig *config) {

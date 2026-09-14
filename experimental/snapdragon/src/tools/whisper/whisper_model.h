@@ -19,6 +19,7 @@ enum {
     WHISPER_MODEL_ID_TINY = 1,
     WHISPER_MODEL_ID_BASE = 2,
     WHISPER_MODEL_ID_SMALL = 3,
+    WHISPER_MODEL_ID_MEDIUM = 4,
     WHISPER_TINY_WIDTH = 384,
     WHISPER_TINY_FFN_WIDTH = 1536,
     WHISPER_TINY_ATTENTION_HEADS = 6,
@@ -63,6 +64,7 @@ enum {
 const WhisperModelConfig *whisper_model_tiny(void);
 const WhisperModelConfig *whisper_model_base(void);
 const WhisperModelConfig *whisper_model_small(void);
+const WhisperModelConfig *whisper_model_medium(void);
 int whisper_model_config_valid(const WhisperModelConfig *config);
 int whisper_model_size_add(
     unsigned long long left,

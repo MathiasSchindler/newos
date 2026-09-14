@@ -5,7 +5,7 @@ param(
     [double]$WindowSeconds = 30.0,
     [double]$OverlapSeconds = 5.0,
     [int]$MaximumSegments = 0,
-    [ValidateSet('tiny', 'base', 'small')]
+    [ValidateSet('tiny', 'base', 'small', 'medium')]
     [string]$Model = 'small',
     [ValidateSet('cpu', 'all', 'cross', 'mlp', 'self', 'logits',
         'cross,mlp', 'cross,mlp,logits', 'cross,mlp,self',

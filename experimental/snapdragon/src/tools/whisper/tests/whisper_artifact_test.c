@@ -119,5 +119,28 @@ void mainCRTStartup(void) {
     encoded[92] = 1U;
     if (whisper_artifact_decode_header(encoded, &decoded)) ExitProcess(18U);
 
+    {
+        const WhisperModelConfig *medium = whisper_model_medium();
+        if (!whisper_model_config_valid(medium) || medium->width != 1024U ||
+            medium->ffn_width != 4096U || medium->attention_heads != 16U ||
+            medium->encoder_layers != 24U || medium->decoder_layers != 24U ||
+            whisper_model_decoder_float_count(medium) != 456643584ULL ||
+            whisper_model_encoder_weight_count(medium) != 302309376ULL) {
+            ExitProcess(19U);
+        }
+        set_header(
+            &header, medium, WHISPER_ARTIFACT_PAYLOAD_QNN_CONTEXT,
+            WHISPER_ARTIFACT_ELEMENT_BLOB, payload, sizeof(payload)
+        );
+        whisper_artifact_encode_header(encoded, &header);
+        if (!whisper_artifact_decode_header(encoded, &decoded) ||
+            !whisper_artifact_header_valid(
+                &decoded, medium, WHISPER_ARTIFACT_PAYLOAD_QNN_CONTEXT,
+                WHISPER_ARTIFACT_ELEMENT_BLOB, sizeof(payload), sizeof(payload)
+            ) || whisper_artifact_header_valid(
+                &decoded, whisper_model_small(), WHISPER_ARTIFACT_PAYLOAD_QNN_CONTEXT,
+                WHISPER_ARTIFACT_ELEMENT_BLOB, sizeof(payload), sizeof(payload)
+            )) ExitProcess(20U);
+    }
     ExitProcess(0U);
 }

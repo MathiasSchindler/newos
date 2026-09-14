@@ -6,7 +6,16 @@
 
 enum {
     WHISPER_DECODER_QNN_MAX_OUTPUTS = 64,
-    WHISPER_DECODER_QNN_MAX_LAYERS = 16
+    WHISPER_DECODER_QNN_MAX_LAYERS = 24
+};
+
+enum {
+    DECODER_OFFLOAD_CROSS = 1U,
+    DECODER_OFFLOAD_MLP = 2U,
+    DECODER_OFFLOAD_SELF = 4U,
+    DECODER_OFFLOAD_LOGITS = 8U,
+    DECODER_OFFLOAD_ALL = 15U,
+    DECODER_OFFLOAD_FUSED = 16U
 };
 
 typedef struct WhisperDecoderQnn WhisperDecoderQnn;
@@ -43,7 +52,7 @@ typedef struct WhisperDecoderQnnIds {
     u32 fused_output_ids[WHISPER_DECODER_QNN_MAX_LAYERS];
 } WhisperDecoderQnnIds;
 
-WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model);
+WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model, u32 graph_mask);
 int whisper_decoder_qnn_build(
     WhisperDecoderQnn *decoder,
     const QnnInterfaceV2 *api,

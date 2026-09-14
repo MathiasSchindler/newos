@@ -79,6 +79,7 @@ typedef void (*DecoderRpcMemFree)(void *allocation);
 typedef i32 (*DecoderRpcMemToFd)(void *allocation);
 
 struct WhisperDecoderQnn {
+    u32 graph_mask;
     WhisperModelConfig model;
     u32 output_count;
     void *runtime_allocation;
@@ -156,7 +157,7 @@ struct WhisperDecoderQnn {
     QnnTensor *fused_registered[
         DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS
     ];
-    QnnMemHandle cache_handles[WHISPER_DECODER_QNN_MAX_OUTPUTS];
+    QnnMemHandle cache_handles[WHISPER_DECODER_QNN_MAX_OUTPUTS * 2U];
     QnnTensor norm_weight_tensor;
     QnnTensor norm_bias_tensor;
     QnnTensor norm_output_tensor;
@@ -276,6 +277,10 @@ struct WhisperDecoderQnn {
     char fused_node_names[WHISPER_DECODER_QNN_MAX_LAYERS]
         [DECODER_QNN_FUSED_NODES][DECODER_QNN_NAME_CAPACITY];
 };
+
+_Static_assert(sizeof(((WhisperDecoderQnn *)0)->cache_handles) /
+    sizeof(QnnMemHandle) >= WHISPER_DECODER_QNN_MAX_LAYERS * 4U,
+    "Shared cross/self K/V handles must cover every decoder layer");
 
 static int append_text(char *output, u32 capacity, u32 *used, const char *text) {
     while (*text != '\0') {
@@ -1030,7 +1035,7 @@ static int decoder_qnn_load_self_weights(WhisperDecoderQnn *decoder) {
         ? 1 : -1;
 }
 
-WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
+WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model, u32 graph_mask) {
     WhisperDecoderQnn *decoder;
     u64 cache_values;
     u64 cache_bytes;
@@ -1063,6 +1068,7 @@ WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model) {
     }
     decoder = VirtualAlloc(0, sizeof(*decoder), 0x3000U, 0x04U);
     if (decoder == 0) return 0;
+    decoder->graph_mask = graph_mask;
     decoder->model = *model;
     decoder->output_count = model->decoder_layers * 2U;
     decoder->runtime_allocation = VirtualAlloc(
@@ -1711,6 +1717,10 @@ static int __attribute__((noinline)) decoder_qnn_build_fused_cross_mlps(
     u32 width_bytes = decoder->model.width * sizeof(u16);
     u32 hidden_bytes = decoder->model.ffn_width * sizeof(u16);
     u32 layer;
+    if (decoder->mlp_builder_allocation == 0) {
+        int loaded = decoder_qnn_load_mlp_weights(decoder);
+        if (loaded != 1) return loaded;
+    }
     if (width_matrix_bytes > 0xffffffffULL ||
         mlp_matrix_bytes > 0xffffffffULL) return -1;
     for (layer = 0U; layer < decoder->model.decoder_layers; ++layer) {
@@ -2526,15 +2536,26 @@ int whisper_decoder_qnn_build(
             ids_out->output_ids[index] = decoder->outputs[index].data.v1.id;
         }
     }
-    loaded = decoder_qnn_build_cross_attention(decoder, api, context, ids_out);
-    if (loaded != 1) return loaded;
-    loaded = decoder_qnn_build_mlps(decoder, api, context, ids_out);
-    if (loaded != 1) return loaded;
-    loaded = decoder_qnn_build_fused_cross_mlps(decoder, api, context, ids_out);
-    if (loaded != 1) return loaded;
-    loaded = decoder_qnn_build_logits(decoder, api, context, ids_out);
-    if (loaded != 1) return loaded;
-    return decoder_qnn_build_self_attention(decoder, api, context, ids_out);
+    if ((decoder->graph_mask & DECODER_OFFLOAD_CROSS) != 0U) {
+        loaded = decoder_qnn_build_cross_attention(decoder, api, context, ids_out);
+        if (loaded != 1) return loaded;
+    }
+    if ((decoder->graph_mask & DECODER_OFFLOAD_MLP) != 0U) {
+        loaded = decoder_qnn_build_mlps(decoder, api, context, ids_out);
+        if (loaded != 1) return loaded;
+    }
+    if ((decoder->graph_mask & DECODER_OFFLOAD_FUSED) != 0U) {
+        loaded = decoder_qnn_build_fused_cross_mlps(decoder, api, context, ids_out);
+        if (loaded != 1) return loaded;
+    }
+    if ((decoder->graph_mask & DECODER_OFFLOAD_LOGITS) != 0U) {
+        loaded = decoder_qnn_build_logits(decoder, api, context, ids_out);
+        if (loaded != 1) return loaded;
+    }
+    if ((decoder->graph_mask & DECODER_OFFLOAD_SELF) != 0U) {
+        return decoder_qnn_build_self_attention(decoder, api, context, ids_out);
+    }
+    return 1;
 }
 
 int whisper_decoder_qnn_restore(
@@ -2546,10 +2567,10 @@ int whisper_decoder_qnn_restore(
     u32 index;
     if (decoder == 0 || ids == 0 || ids->model_id != decoder->model.model_id ||
         ids->output_count != decoder->output_count ||
-        ids->mlp_layer_count != decoder->model.decoder_layers ||
-        ids->cross_layer_count != decoder->model.decoder_layers ||
-        ids->self_layer_count != decoder->model.decoder_layers ||
-        ids->fused_layer_count != decoder->model.decoder_layers ||
+        ids->mlp_layer_count != ((decoder->graph_mask & DECODER_OFFLOAD_MLP) ? decoder->model.decoder_layers : 0U) ||
+        ids->cross_layer_count != ((decoder->graph_mask & DECODER_OFFLOAD_CROSS) ? decoder->model.decoder_layers : 0U) ||
+        ids->self_layer_count != ((decoder->graph_mask & DECODER_OFFLOAD_SELF) ? decoder->model.decoder_layers : 0U) ||
+        ids->fused_layer_count != ((decoder->graph_mask & DECODER_OFFLOAD_FUSED) ? decoder->model.decoder_layers : 0U) ||
         api->graph_retrieve(
             context, decoder->graph_name, &decoder->graph) != 0U) {
         return 0;
@@ -2587,7 +2608,7 @@ int whisper_decoder_qnn_restore(
         );
         decoder->outputs[index].data.v1.id = ids->output_ids[index];
     }
-    for (index = 0U; index < decoder->model.decoder_layers; ++index) {
+    for (index = 0U; index < ids->cross_layer_count; ++index) {
         if (api->graph_retrieve(
                 context, decoder->cross_graph_names[index],
                 &decoder->cross_graphs[index]
@@ -2612,6 +2633,8 @@ int whisper_decoder_qnn_restore(
             decoder->mlp_activation_dimensions, 2U
         );
         decoder->cross_outputs[index].data.v1.id = ids->cross_output_ids[index];
+    }
+    for (index = 0U; index < ids->mlp_layer_count; ++index) {
         if (api->graph_retrieve(
                 context, decoder->mlp_graph_names[index],
                 &decoder->mlp_graphs[index]
@@ -2626,6 +2649,8 @@ int whisper_decoder_qnn_restore(
             decoder->mlp_activation_dimensions, 2U
         );
         decoder->mlp_outputs[index].data.v1.id = ids->mlp_output_ids[index];
+    }
+    for (index = 0U; index < ids->fused_layer_count; ++index) {
         if (api->graph_retrieve(
                 context, decoder->fused_graph_names[index],
                 &decoder->fused_graphs[index]
@@ -2651,20 +2676,22 @@ int whisper_decoder_qnn_restore(
         );
         decoder->fused_outputs[index].data.v1.id = ids->fused_output_ids[index];
     }
-    if (api->graph_retrieve(
-            context, decoder->logits_graph_name, &decoder->logits_graph
-        ) != 0U) return 0;
-    decoder->logits_input = decoder_qnn_tensor(
-        decoder->logits_tensor_names[0], QNN_TENSOR_TYPE_APP_WRITE,
-        decoder->mlp_activation_dimensions, 2U
-    );
-    decoder->logits_input.data.v1.id = ids->logits_input_id;
-    decoder->logits_output = decoder_qnn_tensor(
-        decoder->logits_tensor_names[6], QNN_TENSOR_TYPE_APP_READ,
-        decoder->logits_dimensions, 2U
-    );
-    decoder->logits_output.data.v1.id = ids->logits_output_id;
-    for (index = 0U; index < decoder->model.decoder_layers; ++index) {
+    if ((decoder->graph_mask & DECODER_OFFLOAD_LOGITS) != 0U) {
+        if (api->graph_retrieve(
+                context, decoder->logits_graph_name, &decoder->logits_graph
+            ) != 0U) return 0;
+        decoder->logits_input = decoder_qnn_tensor(
+            decoder->logits_tensor_names[0], QNN_TENSOR_TYPE_APP_WRITE,
+            decoder->mlp_activation_dimensions, 2U
+        );
+        decoder->logits_input.data.v1.id = ids->logits_input_id;
+        decoder->logits_output = decoder_qnn_tensor(
+            decoder->logits_tensor_names[6], QNN_TENSOR_TYPE_APP_READ,
+            decoder->logits_dimensions, 2U
+        );
+        decoder->logits_output.data.v1.id = ids->logits_output_id;
+    }
+    for (index = 0U; index < ids->self_layer_count; ++index) {
         if (api->graph_retrieve(
                 context, decoder->self_projection_graph_names[index],
                 &decoder->self_projection_graphs[index]
@@ -2727,11 +2754,11 @@ int whisper_decoder_qnn_restore(
         decoder->self_outputs[index].data.v1.id = ids->self_output_ids[index];
     }
     decoder->api = api;
-    decoder->cross_ready = 1;
-    decoder->mlp_ready = 1;
-    decoder->fused_ready = 1;
-    decoder->logits_ready = 1;
-    decoder->self_ready = 1;
+    decoder->cross_ready = ids->cross_layer_count != 0U;
+    decoder->mlp_ready = ids->mlp_layer_count != 0U;
+    decoder->fused_ready = ids->fused_layer_count != 0U;
+    decoder->logits_ready = (decoder->graph_mask & DECODER_OFFLOAD_LOGITS) != 0U;
+    decoder->self_ready = ids->self_layer_count != 0U;
     return 1;
 }
 
