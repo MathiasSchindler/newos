@@ -6,6 +6,8 @@
 #define WHISPER_DECODER_MAX_TOKENS WHISPER_TINY_TEXT_CONTEXT
 
 typedef void (*WhisperDecoderWrite)(const char *data, unsigned int size);
+typedef int (*WhisperDecoderCancelled)(void *context);
+enum { WHISPER_DECODER_CANCELLED = -2 };
 typedef int (*WhisperDecoderMlpOffload)(
     void *context,
     unsigned int layer,
@@ -42,6 +44,9 @@ typedef int (*WhisperDecoderSelfAttentionOffload)(
     unsigned long long *execute_ticks
 );
 typedef struct WhisperDecoder WhisperDecoder;
+void whisper_decoder_set_cancellation(
+    WhisperDecoder *decoder, WhisperDecoderCancelled cancelled, void *context
+);
 
 typedef struct WhisperDecoderNpuCalls {
     unsigned long long maximum_ticks;

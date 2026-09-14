@@ -88,10 +88,61 @@ graph variant reached 2,073,598,736 bytes and failed DSP weight-buffer mapping a
 context restore. Mode-specific contexts avoid the unused graph variants; the
 smaller models retain their existing all-variant contexts.
 
-On the current 16 GB Surface Laptop and QAIRT 2.50 runtime, Medium
-`fused,self,logits` still fails context restore after pruning: QNN estimates
-2,857,368,320 bytes of context memory and reports that no process domain is
-available. This mode is not a supported Medium deployment on this machine.
+On the current 16 GB Surface Laptop and QAIRT 2.50 runtime, a single Medium
+`fused,self,logits` context fails restore after pruning. A fresh runtime process
+reproduces the failure, so builder leftovers are not its sole cause. QNN estimates
+2,857,368,320 bytes of context memory; this is an estimate, not a measured hardware
+limit. Debug logs show successful host-side weight mappings followed by DSP
+deserialization error 5005 on each attempted process domain.
+
+The loader now selectively restores Medium modes with NPU self-attention into
+separate decoder and frontend/encoder contexts, using the same FP16 cache binary.
+The full decoder subset restores with an estimated 1,956.58 MiB requirement;
+the frontend/encoder subset needs an estimated 768.42 MiB. On this machine QNN
+places the decoder on PD 0, first attempts the encoder on PD 0, then successfully
+retries on PD 2. Both contexts remain resident across audio windows and are freed
+at shutdown. No quantization or per-window context reload is required. The QNN
+log adapter defers only known placement-retry errors until restore returns. A
+successful retry produces one recovery warning in normal mode and no diagnostic
+in `--quiet` mode. A failed restore replays the buffered errors; unrelated errors
+remain visible immediately. The retry itself still occurs: reversing context
+order and enabling I/O estimation did not eliminate it on this SDK.
+
+An isolated build is available under `build/memory-candidate/`; the deployed
+`build/npu_probe.exe` and default `cross,mlp` mode are unchanged. The I/O-reuse
+experiment lowered the single-context estimate by about 97 MiB but did not fix
+deserialization. V81-only extended-uDMA mapping is not applicable to the V73
+graphs used here. Closing applications or increasing system RAM has not been
+demonstrated to resolve this process-domain constraint.
+
+The split-context candidate completed the five-minute fixture with 12 windows,
+1,352 tokens, 106,704 NPU self-attention submissions, and exit zero. Its transcript
+SHA-256 matches both earlier five-minute modes. One sample measured 167.286 s
+elapsed, 92.063 CPU-seconds, and 3.44 GiB peak resident memory, versus the earlier
+`fused,logits` sample's 167.359 s and 106.375 CPU-seconds. This establishes working
+full FP16 offload, not a repeatably measured latency improvement. Host-call duty
+was 76.78%; it is not hardware occupancy. Results are in
+`data/medium-memory-investigation/full-5min/`.
+
+Ctrl+C and Ctrl+Break request cooperative cancellation. The console handler only
+sets an atomic flag; the inference thread checks it between decoder steps and
+frontend/encoder stages, then releases its workers, graphs, contexts, and backend
+normally. Completed transcript windows remain on stdout; an unfinished window
+is not committed. Shutdown writes `npu_probe: interrupted; resources released.`
+to stderr and exits with status 130. Repeated interrupts continue to request the
+same orderly shutdown. An active QNN call must return before cleanup can begin;
+closing the console, ending the process in Task Manager, or a hung driver cannot
+be guaranteed graceful cleanup. The optional development-time hardware check is
+`tools/test-whisper-cancellation.py`, which sends actual Ctrl+C/Ctrl+Break events
+inside isolated Windows consoles without signalling the user's terminal.
+
+The updated candidate passes the strict 15-profile hardware regression including
+Medium `fused,self,logits`, the no-CRT/mock suite, and four actual console-event
+cases (startup Ctrl+C, decoding Ctrl+C/Ctrl+Break, and quiet long-form Ctrl+C).
+The final quiet two-window run preserves the transcript byte-for-byte and has
+empty stderr. Hardware results are under `data/medium-clean-lifecycle-validation/`
+and `data/medium-clean-lifecycle-final/`.
+
 The `cross,mlp` context restores and transcribes successfully; its first
 35.008-second two-window smoke run took 36.016 seconds and 33.641 CPU-seconds,
 with 132 generated tokens and about 2.76 GiB peak resident memory. Repetition
@@ -117,9 +168,10 @@ The final hardware regression repeated both Medium modes at 34.888 seconds /
 32.328 CPU-seconds (`cross,mlp`) and 33.581 seconds / 28.750 CPU-seconds
 (`fused,logits`), preserving each mode's first-run transcript. All six
 Tiny/Base/Small model/mode comparisons matched the original executable's
-transcript hashes and token counts. The candidate remains at
-`build/medium-candidate/npu_probe.exe`; the original binaries are unchanged.
-The candidate SHA-256 is
+transcript hashes and token counts. The main `build/npu_probe.exe` and
+`build/npu_probe_builder.exe` have now been rebuilt with support for Tiny,
+Base, Small, and Medium. The main runtime is byte-identical to the validated
+`build/medium-candidate/npu_probe.exe`, with SHA-256
 `627ecfd72c850fae237c968aed6103f98c28211c586c79b582637aadc52cca6d`.
 
 For isolated bring-up, build with
@@ -131,7 +183,8 @@ the three smaller `-l24` contexts and Medium's `cross,mlp` and `fused,logits`
 contexts, run
 `experimental/snapdragon/tools/test-whisper-medium.ps1` from the repository root.
 It defaults to the isolated candidate and existing 35-second WAV, checks
-Tiny/Base/Small transcripts against the original executable in both decoder
+Tiny/Base/Small transcripts against `-ReferenceProbePath` (the main build by
+default) in both decoder
 modes, and records Medium CPU time, elapsed time, memory, and NPU submissions
 under `data/medium-validation/`. These are hardware smoke measurements, not a
 transcription-quality benchmark. The optional `-MediumModes` array selects

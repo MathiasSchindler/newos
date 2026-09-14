@@ -8,6 +8,8 @@
 #include "whisper_encoder_qnn.h"
 #include "whisper_frontend.h"
 
+static QnnContextHandle model_encoder_context;
+
 typedef unsigned long long usize;
 
 enum {
@@ -234,6 +236,7 @@ __declspec(dllimport) int QueryPerformanceCounter(long long *value);
 __declspec(dllimport) int QueryPerformanceFrequency(long long *value);
 __declspec(dllimport) int ReadFile(void *handle, void *buffer, u32 size, u32 *read, void *overlapped);
 __declspec(dllimport) int SetConsoleOutputCP(u32 code_page);
+__declspec(dllimport) int SetConsoleCtrlHandler(int (*handler)(u32), int add);
 __declspec(dllimport) int SetStdHandle(u32 handle_id, void *handle);
 __declspec(dllimport) int FreeLibrary(void *module);
 __declspec(dllimport) void *VirtualAlloc(void *address, usize size, u32 allocation_type, u32 protect);
@@ -245,6 +248,20 @@ static void *quiet_stderr_handle;
 static void *original_stderr_handle;
 static u32 original_console_output_cp;
 static int console_output_cp_changed;
+static u32 stop_requested;
+
+static int console_control_handler(u32 event) {
+    if (event != 0U && event != 1U) return 0;
+    __atomic_store_n(&stop_requested, 1U, __ATOMIC_RELAXED);
+    return 1;
+}
+
+static int transcription_cancelled(void *context) {
+    (void)context;
+    return __atomic_load_n(&stop_requested, __ATOMIC_RELAXED) != 0U;
+}
+
+#include "whisper_qnn_log.h"
 
 static usize text_length(const char *text) {
     usize length = 0U;
@@ -3899,6 +3916,42 @@ static u32 write_model_context_cache(const QnnInterfaceV2 *api, QnnContextHandle
     return 0U;
 }
 
+static u64 create_model_contexts_from_binary(
+    const QnnInterfaceV2 *api,
+    QnnBackendHandle backend,
+    QnnDeviceHandle device,
+    QnnProfileHandle profile,
+    const void *buffer,
+    u64 binary_size,
+    const char *const *decoder_names,
+    const char *const *encoder_names,
+    QnnContextHandle *context,
+    QnnContextHandle *encoder_context
+) {
+    QnnContextConfig config = {QNN_CONTEXT_CONFIG_ENABLE_GRAPHS, {.enable_graphs = decoder_names}};
+    const QnnContextConfig *configs[] = {&config, 0};
+    u64 status;
+    *context = 0;
+    *encoder_context = 0;
+    qnn_log_begin_restore();
+    status = api->context_create_from_binary(
+        backend, device, decoder_names != 0 ? configs : 0,
+        buffer, binary_size, context, profile
+    );
+    if (status == 0U && encoder_names != 0) {
+        if (transcription_cancelled(0)) {
+            qnn_log_end_restore(status);
+            return 130U;
+        }
+        config.value.enable_graphs = encoder_names;
+        status = api->context_create_from_binary(
+            backend, device, configs, buffer, binary_size, encoder_context, profile
+        );
+    }
+    qnn_log_end_restore(status);
+    return status;
+}
+
 static u32 load_model_context_cache(
     const QnnInterfaceV2 *api,
     QnnBackendHandle backend,
@@ -3980,9 +4033,22 @@ static u32 load_model_context_cache(
         VirtualFree(buffer, 0U, 0x8000U);
         return 86U;
     }
+    const char *decoder_names[WHISPER_DECODER_QNN_MAX_GRAPHS + 1U];
+    const char *encoder_names[4];
+    int split_context = model->model_id == WHISPER_MODEL_ID_MEDIUM &&
+        (decoder_offload_mask & DECODER_OFFLOAD_SELF) != 0U;
+    if (split_context &&
+        (!whisper_decoder_qnn_graph_names(whisper_decoder_qnn, decoder_names,
+            WHISPER_DECODER_QNN_MAX_GRAPHS + 1U) ||
+         !whisper_encoder_qnn_graph_names(whisper_encoder_qnn, encoder_names, 4U))) {
+        VirtualFree(buffer, 0U, 0x8000U);
+        return 88U;
+    }
     QueryPerformanceCounter(&start_counter);
-    status = api->context_create_from_binary(
-        backend, device, 0, buffer, metadata.binary_size, context, profile
+    status = create_model_contexts_from_binary(
+        api, backend, device, profile, buffer, metadata.binary_size,
+        split_context ? decoder_names : 0, split_context ? encoder_names : 0,
+        context, &model_encoder_context
     );
     QueryPerformanceCounter(&end_counter);
     VirtualFree(buffer, 0U, 0x8000U);
@@ -3990,9 +4056,12 @@ static u32 load_model_context_cache(
     write_duration_us(
         "  contextCreateFromBinary time", (u64)(end_counter - start_counter), frequency
     );
+    if (transcription_cancelled(0)) return 130U;
     if (status != 0U) return 87U;
     if (!whisper_encoder_qnn_restore(
-            whisper_encoder_qnn, api, *context, &metadata.encoder
+            whisper_encoder_qnn, api,
+            model_encoder_context != 0 ? model_encoder_context : *context,
+            &metadata.encoder
         )) return 88U;
     if (!whisper_decoder_qnn_restore(
             whisper_decoder_qnn, api, *context, &metadata.decoder
@@ -4129,6 +4198,7 @@ static u32 run_external_wav_window(
     u32 result;
     const WhisperDecoderProfile *decoder_profile;
 
+    if (transcription_cancelled(0)) return 130U;
     QueryPerformanceCounter(&window_start);
     write_text("Whisper external WAV fast path: ");
     write_text(wav_path);
@@ -4137,8 +4207,11 @@ static u32 run_external_wav_window(
         frequency, wav_path, 0, start_sample, total_samples, 0,
         "Whisper external WAV log-mel frontend"
     );
+    if (transcription_cancelled(0)) return 130U;
     if (result == 0U) result = run_cached_model_frontend(api, frequency);
+    if (transcription_cancelled(0)) return 130U;
     if (result == 0U) result = run_cached_model_encoder(api, frequency);
+    if (transcription_cancelled(0)) return 130U;
     if (result == 0U) {
         QueryPerformanceCounter(&decoder_qnn_start);
         status = whisper_decoder_qnn_execute(
@@ -4265,7 +4338,7 @@ static u32 run_external_wav_window(
             &decoder_profile->npu_logits_calls, frequency
         );
         write_process_memory();
-        if (decoder_tokens < 0) result = 109U;
+        if (decoder_tokens < 0) result = decoder_tokens == WHISPER_DECODER_CANCELLED ? 130U : 109U;
     }
     QueryPerformanceCounter(&window_end);
     write_duration_us(
@@ -4283,7 +4356,13 @@ static void write_batch_marker(u32 index, const char *state) {
 }
 
 static void finish(u32 status) {
-    if (quiet_output && status != 0U) {
+    if (transcription_cancelled(0)) {
+        status = 130U;
+        write_raw_bytes("\n", 1U);
+        static const char message[] = "npu_probe: interrupted; resources released.\n";
+        u32 written;
+        WriteFile(original_stderr_handle, message, sizeof(message) - 1U, &written, 0);
+    } else if (quiet_output && status != 0U) {
         stdout_handle = original_stderr_handle;
         quiet_output = 0;
         write_text("npu_probe: failed (exit ");
@@ -4368,6 +4447,7 @@ void mainCRTStartup(void) {
         finish(116U);
     }
     if (quiet_output) silence_standard_error();
+    if (!SetConsoleCtrlHandler(console_control_handler, 1)) finish(118U);
     write_text("QNN HTP provider probe\n");
     write_decoder_offload_mode();
     if (!QueryPerformanceFrequency(&counter_frequency) || counter_frequency <= 0) {
@@ -4450,7 +4530,7 @@ void mainCRTStartup(void) {
 
     write_text("QNN HTP lifecycle\n");
     status = api->log_create(
-        0, quiet_output ? QNN_LOG_LEVEL_ERROR : QNN_LOG_LEVEL_WARN, &log_handle
+        qnn_log_callback, quiet_output ? QNN_LOG_LEVEL_ERROR : QNN_LOG_LEVEL_WARN, &log_handle
     );
     write_call_status("  logCreate", status);
     if (status != 0U) {
@@ -4516,6 +4596,10 @@ void mainCRTStartup(void) {
             write_text("Whisper graph cache is missing; run npu_probe.exe once without arguments.\n");
             exit_status = 107U;
         }
+        if (transcription_cancelled(0)) {
+            exit_status = 130U;
+            goto cleanup;
+        }
         if (exit_status == 0U &&
             (whisper_decoder = whisper_decoder_load_with_workers(
                 active_model, decoder_worker_count
@@ -4524,6 +4608,7 @@ void mainCRTStartup(void) {
             exit_status = 108U;
         }
         if (exit_status == 0U) {
+            whisper_decoder_set_cancellation(whisper_decoder, transcription_cancelled, 0);
             if ((decoder_offload_mask & DECODER_OFFLOAD_CROSS) != 0U) {
                 whisper_decoder_set_cross_attention_offload(
                     whisper_decoder, whisper_decoder_qnn_cross_attention_offload,
@@ -4951,6 +5036,12 @@ cleanup:
     whisper_encoder_qnn = 0;
     whisper_decoder_qnn_shutdown(whisper_decoder_qnn);
     whisper_decoder_qnn = 0;
+    if (model_encoder_context != 0) {
+        status = api->context_free(model_encoder_context, profile_handle);
+        write_call_status("  separate encoder contextFree", status);
+        model_encoder_context = 0;
+        if (status != 0U && exit_status == 0U) exit_status = 12U;
+    }
     if (context_handle != 0) {
         status = api->context_free(context_handle, profile_handle);
         write_call_status("  contextFree", status);

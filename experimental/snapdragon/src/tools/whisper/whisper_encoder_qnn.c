@@ -377,6 +377,17 @@ static u64 encoder_qnn_add_node(
     return api->graph_add_node(graph, operation);
 }
 
+u32 whisper_encoder_qnn_graph_names(
+    const WhisperEncoderQnn *encoder, const char **names, u32 capacity
+) {
+    if (encoder == 0 || names == 0 || capacity < 4U) return 0U;
+    names[0] = encoder->frontend_graph_names[0];
+    names[1] = encoder->frontend_graph_names[1];
+    names[2] = encoder->encoder_graph_name;
+    names[3] = 0;
+    return 3U;
+}
+
 WhisperEncoderQnn *whisper_encoder_qnn_create(const WhisperModelConfig *model) {
     WhisperEncoderQnn *encoder;
     u64 conv1_input_values;

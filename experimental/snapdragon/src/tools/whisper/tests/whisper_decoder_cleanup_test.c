@@ -12,6 +12,16 @@ __declspec(dllimport) int VirtualFree(void *address, usize size, u32 free_type);
 static u32 allocation_calls;
 static u32 failed_call;
 static u32 live_allocations;
+static u32 written_tokens;
+
+static int always_cancelled(void *context) {
+    return *(u32 *)context != 0U;
+}
+
+static void count_output(const char *text, u32 size) {
+    (void)text;
+    written_tokens += size;
+}
 
 int whisper_decoder_test_token_exclusions(WhisperDecoder *decoder);
 int whisper_decoder_test_prefix_cache(WhisperDecoder *decoder);
@@ -70,6 +80,13 @@ void mainCRTStartup(void) {
     if (whisper_decoder_test_gumbel_cache(decoder, 0) != 0 || live_allocations != 5U) ExitProcess(25U);
     if (whisper_decoder_test_logit_partitions(decoder) != 0) ExitProcess(26U);
     if (whisper_decoder_test_prompt_logits(decoder) != 0) ExitProcess(27U);
+    u32 cancelled = 1U;
+    unsigned short cache = 0;
+    whisper_decoder_set_cancellation(decoder, always_cancelled, &cancelled);
+    if (whisper_decoder_transcribe_with_cross_cache(
+            decoder, &cache, &cache, 32U, count_output
+        ) != WHISPER_DECODER_CANCELLED || written_tokens != 0U) ExitProcess(28U);
+    whisper_decoder_set_cancellation(decoder, 0, 0);
     whisper_decoder_shutdown(decoder);
     if (live_allocations != 0U) ExitProcess(21U);
     ExitProcess(0U);

@@ -29,7 +29,7 @@ static u16 __attribute__((used)) integer_half(u32 value) {
     return (u16)(((exponent + 15U) << 10U) + ((value - (1U << exponent)) << (10U - exponent)));
 }
 
-static u64 __attribute__((used)) log_create(void *callback, u32 level, QnnHandle *handle) {
+static u64 __attribute__((used)) log_create(QnnLogCallback callback, u32 level, QnnHandle *handle) {
     (void)callback;
     if (level < QNN_LOG_LEVEL_ERROR || level > QNN_LOG_LEVEL_DEBUG) return 0x1003U;
     *handle = &log_storage;

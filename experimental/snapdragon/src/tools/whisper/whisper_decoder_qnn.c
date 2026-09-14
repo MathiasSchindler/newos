@@ -2375,6 +2375,35 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
     return 1;
 }
 
+u32 whisper_decoder_qnn_graph_names(
+    const WhisperDecoderQnn *decoder, const char **names, u32 capacity
+) {
+    u32 count = 0U;
+    u32 per_layer;
+    u32 required;
+    if (decoder == 0 || names == 0) return 0U;
+    per_layer = ((decoder->graph_mask & DECODER_OFFLOAD_CROSS) != 0U) +
+        ((decoder->graph_mask & DECODER_OFFLOAD_MLP) != 0U) +
+        ((decoder->graph_mask & DECODER_OFFLOAD_FUSED) != 0U) +
+        2U * ((decoder->graph_mask & DECODER_OFFLOAD_SELF) != 0U);
+    required = 1U + ((decoder->graph_mask & DECODER_OFFLOAD_LOGITS) != 0U) +
+        per_layer * decoder->model.decoder_layers;
+    if (capacity <= required) return 0U;
+    names[count++] = decoder->graph_name;
+    for (u32 layer = 0U; layer < decoder->model.decoder_layers; ++layer) {
+        if (decoder->graph_mask & DECODER_OFFLOAD_CROSS) names[count++] = decoder->cross_graph_names[layer];
+        if (decoder->graph_mask & DECODER_OFFLOAD_MLP) names[count++] = decoder->mlp_graph_names[layer];
+        if (decoder->graph_mask & DECODER_OFFLOAD_FUSED) names[count++] = decoder->fused_graph_names[layer];
+        if (decoder->graph_mask & DECODER_OFFLOAD_SELF) {
+            names[count++] = decoder->self_projection_graph_names[layer];
+            names[count++] = decoder->self_attention_graph_names[layer];
+        }
+    }
+    if (decoder->graph_mask & DECODER_OFFLOAD_LOGITS) names[count++] = decoder->logits_graph_name;
+    names[count] = 0;
+    return count;
+}
+
 int whisper_decoder_qnn_build(
     WhisperDecoderQnn *decoder,
     const QnnInterfaceV2 *api,

@@ -84,6 +84,8 @@ typedef struct DecoderWeights {
 } DecoderWeights;
 
 struct WhisperDecoder {
+    WhisperDecoderCancelled cancelled;
+    void *cancel_context;
     WhisperModelConfig model;
     void *weight_allocation;
     u16 *weight_storage;
@@ -1493,6 +1495,9 @@ static int decode_attempt(
     u32 next = DECODER_EOT;
     u32 index;
     for (index = 0U; index < sizeof(prompt) / sizeof(prompt[0]); ++index) {
+        if (decoder->cancelled != 0 && decoder->cancelled(decoder->cancel_context)) {
+            return WHISPER_DECODER_CANCELLED;
+        }
         decoder->generated_tokens[position] = prompt[index];
         next = decoder_step(
             decoder, prompt[index], position,
@@ -1504,6 +1509,9 @@ static int decode_attempt(
     }
     for (index = 0U; index < maximum_tokens && next != DECODER_EOT &&
         next != DECODER_NO_SPEECH; ++index) {
+        if (decoder->cancelled != 0 && decoder->cancelled(decoder->cancel_context)) {
+            return WHISPER_DECODER_CANCELLED;
+        }
         decoder->generated_tokens[position] = (u16)next;
         next = decoder_step(
             decoder, next, position, 0, temperature, sample_seed, 1
@@ -1538,6 +1546,9 @@ static int whisper_decoder_transcribe_impl(
     if (maximum_tokens > decoder->model.text_context - PROMPT_TOKENS) {
         maximum_tokens = decoder->model.text_context -
             PROMPT_TOKENS;
+    }
+    if (decoder->cancelled != 0 && decoder->cancelled(decoder->cancel_context)) {
+        return WHISPER_DECODER_CANCELLED;
     }
     decoder->profile.encoder_normalize_ticks = 0U;
     decoder->profile.cross_cache_ticks = 0U;
@@ -1583,6 +1594,7 @@ static int whisper_decoder_transcribe_impl(
         int decoded = decode_attempt(
             decoder, maximum_tokens, temperatures[attempt], 0x51f15e5dU + attempt
         );
+        if (decoded < 0) return decoded;
         u32 count = decoded < 0 ? 0U : (u32)decoded;
         u32 penalty = repetition_penalty(
             decoder->generated_tokens + PROMPT_TOKENS, count,
@@ -1599,9 +1611,20 @@ static int whisper_decoder_transcribe_impl(
         if (penalty < 4U) break;
     }
     for (index = 0U; index < selected_count; ++index) {
+        if (decoder->cancelled != 0 && decoder->cancelled(decoder->cancel_context)) {
+            return WHISPER_DECODER_CANCELLED;
+        }
         write_token(decoder, decoder->selected_tokens[index], write_output);
     }
     return (int)selected_count;
+}
+
+void whisper_decoder_set_cancellation(
+    WhisperDecoder *decoder, WhisperDecoderCancelled cancelled, void *context
+) {
+    if (decoder == 0) return;
+    decoder->cancelled = cancelled;
+    decoder->cancel_context = context;
 }
 
 int whisper_decoder_transcribe(

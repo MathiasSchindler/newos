@@ -1,6 +1,8 @@
 #ifndef NEWOS_EXPERIMENTAL_SNAPDRAGON_QNN_ABI_H
 #define NEWOS_EXPERIMENTAL_SNAPDRAGON_QNN_ABI_H
 
+#include <stdarg.h>
+
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef signed char i8;
@@ -45,11 +47,22 @@ typedef QnnHandle QnnProfileHandle;
 typedef QnnHandle QnnContextHandle;
 typedef QnnHandle QnnGraphHandle;
 typedef QnnHandle QnnMemHandle;
+typedef void (*QnnLogCallback)(const char *format, u32 level, u64 timestamp, va_list args);
 
 typedef struct QnnBackendConfig QnnBackendConfig;
 typedef struct QnnDeviceConfig QnnDeviceConfig;
 typedef struct QnnContextConfig QnnContextConfig;
 typedef struct QnnGraphConfig QnnGraphConfig;
+
+enum { QNN_CONTEXT_CONFIG_ENABLE_GRAPHS = 5 };
+
+struct QnnContextConfig {
+    u32 option;
+    union {
+        const char *const *enable_graphs;
+        u64 reserved;
+    } value;
+};
 
 enum {
     QNN_TENSOR_TYPE_APP_WRITE = 0,
@@ -225,7 +238,7 @@ typedef struct QnnOpConfig {
 } QnnOpConfig;
 
 typedef void (*QnnUnusedFunction)(void);
-typedef u64 (*QnnLogCreate)(void *, u32, QnnLogHandle *);
+typedef u64 (*QnnLogCreate)(QnnLogCallback, u32, QnnLogHandle *);
 typedef u64 (*QnnLogFree)(QnnLogHandle);
 typedef u64 (*QnnBackendCreate)(QnnLogHandle, const QnnBackendConfig **, QnnBackendHandle *);
 typedef u64 (*QnnBackendFree)(QnnBackendHandle);

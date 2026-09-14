@@ -15,6 +15,9 @@ typedef struct WhisperEncoderQnnIds {
 } WhisperEncoderQnnIds;
 
 WhisperEncoderQnn *whisper_encoder_qnn_create(const WhisperModelConfig *model);
+u32 whisper_encoder_qnn_graph_names(
+    const WhisperEncoderQnn *encoder, const char **names, u32 capacity
+);
 int whisper_encoder_qnn_build(
     WhisperEncoderQnn *encoder,
     const QnnInterfaceV2 *api,

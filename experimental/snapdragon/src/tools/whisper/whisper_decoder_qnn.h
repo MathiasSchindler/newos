@@ -6,7 +6,8 @@
 
 enum {
     WHISPER_DECODER_QNN_MAX_OUTPUTS = 64,
-    WHISPER_DECODER_QNN_MAX_LAYERS = 24
+    WHISPER_DECODER_QNN_MAX_LAYERS = 24,
+    WHISPER_DECODER_QNN_MAX_GRAPHS = 2 + 5 * WHISPER_DECODER_QNN_MAX_LAYERS
 };
 
 enum {
@@ -53,6 +54,9 @@ typedef struct WhisperDecoderQnnIds {
 } WhisperDecoderQnnIds;
 
 WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model, u32 graph_mask);
+u32 whisper_decoder_qnn_graph_names(
+    const WhisperDecoderQnn *decoder, const char **names, u32 capacity
+);
 int whisper_decoder_qnn_build(
     WhisperDecoderQnn *decoder,
     const QnnInterfaceV2 *api,

@@ -18,6 +18,7 @@ EXPORTS
     ReadFile
     SetFilePointerEx
     SetConsoleOutputCP
+    SetConsoleCtrlHandler
     SetStdHandle
     IsProcessorFeaturePresent
     K32GetProcessMemoryInfo
