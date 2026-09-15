@@ -5,6 +5,112 @@ This directory documents freestanding Windows ARM64 experiments for the Snapdrag
 For Medium execution events, CPU accounting, latency distributions, and timeline
 capture, see [diagnostics.md](diagnostics.md).
 
+## TranslateGemma development
+
+TranslateGemma currently has pinned W4/W8 weight artifacts and a freestanding C
+tokenizer/prompt implementation. It does not yet execute the translation model.
+See [plan-translategemma.md](plan-translategemma.md) for the stage record and
+the Stage 5 numerical reference's explicit precision and RoPE contracts.
+
+With the exported Stage 4 artifacts present, the normal build and regression gate
+uses Clang/LLVM and one PowerShell entry point, with no Python or QNN dependency:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -Test
+```
+
+If PowerShell blocks repository scripts, first run
+`Set-ExecutionPolicy -Scope Process Bypass` in that terminal. This changes only
+the current process policy, not the persistent machine or user policy.
+
+This produces `build/test-gemma-tokenizer.exe`. Its C tests consume immutable,
+hashed `tokenizer.gta` and `tokenizer-fixtures.gta` files from
+`models/translategemma-4b-stage4/`. The build audits ARM64 machine type, Kernel32-only
+imports, and empty exception/CLR directories. No model weights or tokenizer data
+are embedded in the executable. The existing Whisper executable is not rebuilt
+or replaced.
+
+Only table/reference regeneration needs a development Python environment. Reuse
+the existing ignored calibration environment, creating it if absent:
+
+```powershell
+python -m venv experimental/snapdragon/build/calibration-venv
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -m pip install numpy==2.4.3 transformers==4.57.3 tokenizers==0.22.2 jinja2==3.1.6
+.\experimental\snapdragon\tools\build-gemma.ps1 -ExportReference -Test
+```
+
+NumPy is needed by the existing weight converter and Stage 3 tests, not the
+tokenizer. Table-only export from the authenticated, hash-pinned Stage 2 download
+works with Python's standard library alone:
+
+```powershell
+python experimental/snapdragon/tools/export-translategemma.py --tokenizer-only --output experimental/snapdragon/models/translategemma-4b-tokenizer
+```
+
+Use `--replace` explicitly to replace an existing export directory. Reference
+generation checks the loaded backend against the pinned tokenizer rather than
+applying automatic tokenizer rewrites. Generated manifests record versions and
+payload SHA-256 values. Python packages and PowerShell are not inference dependencies.
+
+The C API lives in `src/tools/gemma/gemma_tokenizer.h`. Keep validated artifact
+bytes alive and immutable while the tokenizer is in use. Each concurrent request
+needs its own caller-owned `GemmaTokenizerWork` (5,701,636 bytes) and output buffers;
+the table view itself is read-only and shareable. Calls allocate no memory and
+report failure with zero output count/length; discard partial buffer contents on
+failure. Input/output buffers must not overlap. Input UTF-8 is validated, input
+bytes are capped at 196608, and the complete prompt plus output budget must fit
+2048 tokens. Streaming generation is deferred to the translation runtime stage.
+
+### Numerical references
+
+Stage 5 uses the same build entry point. Once its artifacts exist, run the
+tokenizer and numerical C tests, including the no-CRT PE audit, without Python:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestNumerics
+```
+
+Full offline regeneration reads the pinned source checkpoint and actual Stage 3
+W8/W4 artifacts, records primitive/local/global layer traces and logits, and
+generates the multilingual corpus. BF16 greedy decoding is repeated for exact
+token agreement. This CPU reference is intentionally not an inference product
+or a performance benchmark; regeneration can take substantially longer than
+the C tests. It uses the existing NumPy/tokenizer reference environment:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -ExportNumerics -TestNumerics
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/export-translategemma.py --numerical-reference --verify-only
+```
+
+Output lives under `models/translategemma-4b-stage5/`. Its manifest describes the
+effective arithmetic, array dimensions, payload hashes, source identity, prompt
+IDs, generated IDs, decoded translation hashes, and repeated-BF16 status. The
+reference uses FP32 BLAS accumulation followed by explicit BF16/FP16 rounding;
+it is not asserted to be bit-identical to PyTorch or HTP kernels. In particular,
+the pinned Transformers 4.57.3 effective global RoPE factor is 1 despite the
+checkpoint's newer factor-8 field. Read the Stage 5 plan before constructing
+QNN RoPE nodes or comparing results from a newer Transformers version.
+
+Quantized FP16 overflow is preserved as a diagnostic artifact, not clipped into
+a plausible translation. A complete reference manifest can therefore have
+`quantized_generation_ready=false`; inspect each translation's `status` and
+`error`. All three acceptance prompts overflow layer 5's MLP residual addition:
+W8 reaches 73520 and W4 reaches 71568, beyond FP16's maximum 65504.
+That is a graph-precision blocker, not an accepted quantization quality delta.
+
+For a fast scalar-only development check, deliberately publish to scratch space:
+
+```powershell
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/export-translategemma.py --numerical-reference --primitives-only --output tests/tmp/gemma-numeric-primitives --replace
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestNumerics -NumericDir tests/tmp/gemma-numeric-primitives
+```
+
+Such a set has `complete=false` and cannot substitute for the full Stage 5 gate.
+The scalar fixtures cover all FP16 bit patterns, W4 nibble order and signs, W8
+dequantization, split-half RoPE, mask boundaries, KV ring offsets, and first-index
+argmax ties and invalid logits. The reusable numerical helpers have no allocation,
+OS, QNN, standard-library, or scripting dependency.
+
 ## Retained local runtime (2026-09-15)
 
 The local `build/` directory now contains only the benchmarked fused-self Medium

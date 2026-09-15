@@ -350,19 +350,23 @@ Implementation record:
 
 ## Stage 4: Freestanding tokenizer and prompt contract
 
+**Status: complete (2026-09-15).**
+
 Implement only the tokenizer and template behavior required for TranslateGemma.
 
 Actions:
 
-1. Convert the Gemma SentencePiece model into a bounded binary representation
-   suitable for direct C lookup. Prefer a generated trie plus explicit scores and
-   byte-fallback metadata over parsing protobuf at runtime.
+1. Convert the pinned BPE vocabulary, merge ranks, added tokens, and language
+   table into a bounded binary representation suitable for direct C lookup.
+   The pinned fast tokenizer uses BPE, not unigram segmentation; its JSON and
+   tokenizer configuration define the reference contract. Parse neither JSON nor
+   protobuf in the deployed C code.
 2. Implement UTF-8 validation, normalization required by the pinned tokenizer,
-   unigram segmentation, byte fallback, special tokens, and detokenization.
+   ranked BPE merging, byte fallback, special tokens, and detokenization.
 3. Implement the fixed TranslateGemma text prompt directly in C from validated
    source and target language identifiers. Do not embed a Jinja interpreter.
 4. Reject unsupported language identifiers and inputs that would exceed the
-   2048-token deployment contract.
+   2048-token deployment contract, including the prompt and reserved output budget.
 5. Compare token IDs and decoded bytes against the pinned Transformers tokenizer
    for ASCII, multilingual scripts, combining characters, malformed UTF-8,
    punctuation, and byte-fallback cases.
@@ -373,7 +377,46 @@ Exit criteria:
 - Detokenized bytes are identical and valid UTF-8.
 - Tokenization has deterministic allocation bounds and no CRT imports.
 
+Implementation record:
+
+- `src/tools/gemma/gemma_tokenizer.h/.c` provides an allocation-free table reader,
+   heap-based BPE encoder, UTF-8 decoder, and fixed text prompt builder. The
+   immutable table payload is 14,790,893 bytes; the caller-owned workspace is
+   5,701,636 bytes. Input bytes are capped at 196608 and output tokens at 2048.
+- The tokenizer defines 262145 IDs, while the model has 262208 output slots.
+   Decoding unmapped IDs fails. Source spaces normalize to U+2581; there is no
+   extra NFC/NFKC transformation. Added tokens are recognized before normalization.
+   Configured extra-special-token flags match the pinned Transformers loader.
+- Prompt generation supports the source template's 581 exact language identifiers,
+   underscore-to-hyphen normalization, Unicode whitespace trimming, and exact
+   prompt wording. The prompt token count plus requested output budget must fit
+   the deployment context. Malformed input UTF-8 is rejected; invalid generated
+   byte-fallback runs decode to the same replacement bytes as the reference.
+- `gemma_model_is_stop_token` recognizes both 1 (`<eos>`) and 106
+   (`<end_of_turn>`). Greedy reference generation must explicitly disable the
+   source generation configuration's sampling default.
+- The existing `tools/export-translategemma.py --tokenizer-only` path exports
+   tables using only Python's standard library. `--tokenizer-reference` additionally
+   requires pinned Transformers 4.57.3, Tokenizers 0.22.2, and Jinja 3.1.6 to
+   regenerate fixtures. Both artifacts are reread and hashed before an atomic
+   manifest-last publication under `models/translategemma-4b-stage4/`.
+- `tools/build-gemma.ps1 -Test` builds and executes the freestanding ARM64 C
+   runner without Python or QNN. All 7470 reference cases pass, covering every
+   added token, every supported language code, multilingual and randomized text,
+   whitespace, byte fallback, malformed input, and context/output bounds. Eighteen
+   artifact corruption checks pass, including malformed tables with recomputed hashes.
+- The build automatically audits the PE: Kernel32 is its only DLL import, with
+   no exception or CLR tables. Stage 2 and Stage 3 regressions pass, and the full
+   published Stage 3 W4/W8 artifact inventory was rehashed successfully.
+- This stage supplies the tokenizer library and test executable, not a working
+   translator. Numerical model references and QNN transformer blocks remain the
+   next work in Stages 5 and 6. Normal builds consume existing artifacts; Python
+   is neither a build prerequisite nor an inference dependency.
+
 ## Stage 5: Minimal numerical reference
+
+**Status: reference implementation and BF16 reproducibility gate complete;
+quantized full-generation gate blocked by FP16 residual overflow (2026-09-15).**
 
 Build a development-time reference that isolates model correctness from QNN
 integration. It may use Python/Transformers, but all fixtures consumed by the C
@@ -386,7 +429,8 @@ Actions:
    normalization, and vocabulary projection.
 2. Record W8A16 and W4A16 simulated outputs using the exact deployment packing and
    rounding rules.
-3. Record greedy token sequences for a small multilingual translation corpus.
+3. Record greedy token sequences for a small multilingual translation corpus,
+   explicitly setting `do_sample=False` and honoring both stop-token IDs.
 4. Add freestanding scalar checks for packing, dequantization, RoPE, mask creation,
    KV indexing, and argmax tie-breaking. Do not implement a production-speed CPU
    copy of the complete model.
@@ -396,6 +440,95 @@ Exit criteria:
 - Primitive and layer fixtures identify whether differences originate in export,
   quantization, graph composition, or generation policy.
 - Greedy BF16 output is reproducible for every acceptance sentence.
+
+Implementation contract:
+
+- `tools/translategemma-reference.py` is an offline reference module invoked by
+   the existing exporter with `--numerical-reference`. It is not linked into or
+   needed by a deployed executable. Native PyTorch is unavailable for the local
+   Windows ARM64 Python 3.14 environment; NumPy 2.4.3 provides the native BLAS
+   reference, with bounded row-wise weight conversion rather than a full FP32
+   copy of the model.
+- BF16 simulation reads original checkpoint weights, accumulates matrix products
+   in FP32, and rounds operation outputs to BF16 using ties-to-even. W8/W4 simulation
+   reads the actual Stage 3 packed weights and stored FP16 scales, accumulates in
+   FP32, and rounds activation outputs to FP16. These are explicit numerical
+   reference semantics, not claims of bit-identical PyTorch or HTP accumulation.
+- Recorded traces include embedding scaling, input/Q/K RMSNorm, Q/K/V projections,
+   split-half RoPE, visibility masks, attention scores and probabilities, grouped
+   attention output, residuals, gated GELU, complete local layer 0 and global layer
+   5, final RMSNorm, and the tied vocabulary projection. Sparse absolute positions
+   0, 1023, and 1024 exercise the local-window boundary. Array shapes, byte types,
+   semantic precision, model identity, and SHA-256 are recorded in the manifest.
+- **RoPE compatibility discrepancy:** the pinned checkpoint contains newer
+   `rope_parameters` with global linear factor 8, but pinned Transformers 4.57.3
+   reads `rope_scaling=null` and uses effective factor 1. Stage 5 explicitly
+   reproduces that pinned implementation: global theta 1000000, local theta 10000,
+   no linear scaling. Do not silently apply factor 8 in Stage 6. A change to the
+   reference implementation requires separately regenerated and reviewed baselines.
+   Stage 3's `metadata/rope` artifact preserves the checkpoint's declared factor
+   8; it is source metadata, not the effective Stage 5 execution contract. Keep
+   that distinction explicit when binding a graph or evaluating a newer backend.
+- The acceptance corpus includes the official model card's Czech-to-German
+   example, English-to-Japanese, and German-to-English with a time expression.
+   Messages use only a User role with exactly one text content entry containing
+   `type`, `source_lang_code`, `target_lang_code`, and the text to translate.
+   `apply_chat_template(..., add_generation_prompt=True)` supplies the Assistant
+   prefix. Greedy decoding honors IDs 1 and 106 and decodes only newly generated
+   tokens, as in the model card's direct-initialization example; image input and
+   unsupported alternative prompting remain out of scope.
+- `src/tools/gemma/gemma_numeric.h/.c` supplies only small allocation-free scalar
+   primitives, not a production CPU transformer: FP16 conversion, signed W4/W8
+   dequantization, split-half rotation, causal/local visibility, per-layer
+   `[head,slot,channel]` KV element offsets, and first-maximum argmax. Invalid
+   dimensions/positions/scales and nonfinite logits are rejected. Byte offsets
+   for FP16 KV storage are twice the returned element offsets; local slots wrap
+   at 1024 and global slots at 2048, with absolute positions retained for masking.
+- `build-gemma.ps1 -TestNumerics` adds the independent hashed scalar fixtures to
+   the existing C runner and PE audit. Ordinary builds/tests still need no Python,
+   NumPy, Transformers, or QNN. `-ExportNumerics` explicitly regenerates the full
+   offline corpus. `--primitives-only` exports a deliberately incomplete scalar
+   set for fast checks and never labels Stage 5 complete.
+- This three-sentence corpus is a numerical/generation regression gate, not the
+   Stage 10 multilingual quality evaluation. W4/W8 changes are reported against
+   BF16, not accepted by an invented quality threshold. The traces do not prove
+   HTP accuracy or performance; those require the Stage 6 hardware comparison.
+- A finite FP32 value outside FP16 range is a recorded numerical failure, never
+   clipped or silently promoted to another deployment precision. Quantized
+   attempts preserve the failing pre-cast FP32 activation, prompt IDs, layer and
+   operation, and error. Such a case has no invented generated sequence. The
+   manifest's `complete` flag denotes coverage of reference generation, while
+   `quantized_generation_ready` separately requires every translation to finish.
+   **Measured finding:** all three prompts overflow layer 5's MLP residual
+   addition: W8 reaches magnitude 73520 and W4 reaches 71568, beyond FP16's 65504
+   maximum. An unscaled FP16 residual stream therefore
+   needs reconsideration before constructing the full Stage 6/7 graph. Evaluate
+   explicit residual scaling or a supported wider residual precision against
+   the BF16 fixtures; changing this contract requires new W8/W4 fixtures.
+
+Validation record:
+
+- The published ignored set under `models/translategemma-4b-stage5/` contains
+   184 validated artifacts, including all three variants' primitive and complete
+   local/global layer traces, BF16 prompt/generated-token sequences, and six
+   quantified FP16 overflow diagnostics. `quantized_generation_ready=false` is
+   intentional: no W8/W4 full-model token sequences are claimed.
+- All three BF16 translations reproduced exactly on a second full cached run.
+   The manifest stores the exact Czech-to-German, English-to-Japanese, and
+   German-to-English translation bytes, hashes, and 18/4/15-token sequences
+   respectively, including each end-of-turn token. The time example produces
+   "The train is scheduled to arrive at 3:30 PM."
+- The freestanding C runner passes 323 numerical cases, including all 65536
+   FP16 bit patterns, plus the existing 7470 tokenizer and 18 corruption cases.
+   ARM64/Kernel32-only imports and empty exception/CLR tables pass the PE audit.
+- Stage 2's 12 tests and the expanded Stage 3/reference suite's nine tests pass.
+   Independent checks cover RMSNorm, closed-form grouped attention, sparse
+   local/global mask boundaries, cached-versus-full attention, actual W4/W8
+   payload mappings, diagnostic preservation, and malformed array metadata.
+- Source and all Stage 3 W4/W8 payload hashes were revalidated before generation;
+   every numerical artifact and the complete output inventory pass read-only
+   verification. This is a completed diagnostic reference milestone, not a
+   successful FP16 full-model deployment or a Stage 10 quality acceptance.
 
 ## Stage 6: QNN transformer block
 
@@ -601,7 +734,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdrago
 llvm-readobj --file-headers --coff-imports .\experimental\snapdragon\build\npu_probe.exe
 ```
 
-Later stages should add focused Gemma commands with the same separation:
+Stage 4 builds and runs entirely in C after artifact export:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -Test
+```
+
+Regenerate the pinned tokenizer tables and reference corpus only when needed:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -ExportReference -Test
+```
+
+See [README.md](README.md#translategemma-development) for the optional reference
+environment setup. Later stages should retain the same build/runtime separation;
+the following translation interface is not implemented yet:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\build-gemma.ps1

@@ -36,10 +36,89 @@ def write_safetensors(path, tensors):
 
 
 class Stage3Tests(unittest.TestCase):
+    def test_numerical_reference_mapping(self):
+        spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
+        reference = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reference)
+        reference.self_test()
+        name = "language_model.model.layers.0.self_attn.q_proj.weight"
+        values = np.arange(512, dtype=np.float32).reshape(4, 128) / 128
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_safetensors(root / "model.safetensors", {name: values})
+            (root / "model.safetensors.index.json").write_text(json.dumps({
+                "weight_map": {name: "model.safetensors"}
+            }), encoding="utf-8")
+            weights = reference.Weights(EXPORTER, root, root, "bf16")
+            first = weights.rows("layers.0.self_attn.q_proj.weight", 1, 3)
+            second = weights.rows("layers.0.self_attn.q_proj.weight", 1, 3)
+            np.testing.assert_array_equal(first, second)
+            expected = EXPORTER.bf16_to_f32((values.view(np.uint32) >> 16).astype(np.uint16))
+            np.testing.assert_array_equal(first, expected[1:3])
+            self.assertEqual(len(weights.mappings), 1)
+            weights.close()
+            self.assertEqual(len(weights.mappings), 0)
+
     def test_bf16_conversion(self):
         expected = np.array([-7.0, -0.5, 0.0, 1.0, 3.5], dtype=np.float32)
         bits = (expected.view(np.uint32) >> np.uint32(16)).astype("<u2")
         np.testing.assert_array_equal(EXPORTER.bf16_to_f32(bits), expected)
+
+    def test_numerical_manifest_shape_rejection(self):
+        spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
+        reference = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reference)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scalar, _ = reference.scalar_fixtures(EXPORTER, root / "numeric-scalars.gta")
+            recorder = reference.Recorder(EXPORTER, root)
+            recorder.array("shape-test", np.array([1.0], dtype=np.float32))
+            manifest = {"schema_version": 1, "model": {"repository": EXPORTER.REPOSITORY,
+                "revision": EXPORTER.REVISION}, "complete": False, "artifacts": [scalar, *recorder.entries]}
+            path = root / "manifest.json"
+            path.write_bytes(EXPORTER.canonical_json(manifest))
+            reference.verify_reference(EXPORTER, root, require_complete=False)
+            with self.assertRaises(ValueError):
+                reference.verify_reference(EXPORTER, root)
+            recorder.entries[0]["array_shape"] = [2 ** 64, 2 ** 64]
+            path.write_bytes(EXPORTER.canonical_json(manifest))
+            with self.assertRaises(ValueError):
+                reference.verify_reference(EXPORTER, root, require_complete=False)
+
+    def test_numerical_quantized_mapping_and_overflow(self):
+        spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
+        reference = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reference)
+        name = "language_model.model.layers.0.self_attn.q_proj.weight"
+        values = np.resize(np.arange(-7, 8, dtype=np.float32), 512).reshape(4, 128)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {}}), encoding="utf-8")
+            for bits in (4, 8):
+                variant = f"w{bits}a16"
+                directory = root / variant
+                path = directory / "weights.gta"
+                source_bits = (values.view(np.uint32) >> 16).astype("<u2")
+                spec, digest, metrics = EXPORTER.write_quantized_tensor(source_bits, name, list(values.shape), bits, path)
+                entry = EXPORTER.manifest_entry(path, directory, spec, digest, metrics)
+                (root / "manifest.json").write_bytes(EXPORTER.canonical_json({
+                    "variants": {variant: {"artifacts": [entry]}}
+                }))
+                weights = reference.Weights(EXPORTER, root, root, variant)
+                try:
+                    quantized, scales = EXPORTER.quantize_groups(values, bits)
+                    expected = quantized.astype(np.float32) * scales.astype(np.float32)[:, None]
+                    np.testing.assert_array_equal(weights.rows("layers.0.self_attn.q_proj.weight", 1, 3), expected[1:3])
+                    np.testing.assert_array_equal(weights.rows("layers.0.self_attn.q_proj.weight", 0, 1), expected[0:1])
+                    self.assertEqual(len(weights.mappings), 1)
+                finally:
+                    weights.close()
+        values = np.array([73520.0, -70000.0], dtype=np.float32)
+        with self.assertRaises(reference.ActivationOverflow) as caught:
+            reference.activation(values, "w8a16")
+        np.testing.assert_array_equal(caught.exception.values, values)
+        self.assertTrue(np.isfinite(caught.exception.values).all())
+        self.assertTrue(np.isfinite(reference.activation(values, "bf16")).all())
 
     def test_s4_quantization_and_packing(self):
         values = np.resize(np.arange(-7, 8, dtype=np.float32), 128).reshape(1, 128)

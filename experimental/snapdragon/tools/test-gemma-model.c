@@ -8,6 +8,9 @@ int main(void) {
     unsigned int sliding_layers = 0;
 
     if (!gemma_model_config_valid(config)) return 1;
+    if (!gemma_model_is_stop_token(1U) || !gemma_model_is_stop_token(106U) ||
+        gemma_model_is_stop_token(0U) || gemma_model_is_stop_token(2U) ||
+        gemma_model_is_stop_token(262208U)) return 6;
     for (layer = 0; layer < config->decoder_layers; ++layer) {
         GemmaAttentionType type = gemma_model_attention_type(config, layer);
         if (type == GEMMA_ATTENTION_FULL) ++full_layers;

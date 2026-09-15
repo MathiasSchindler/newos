@@ -2,18 +2,23 @@
 """Export pinned TranslateGemma BF16 tensors to versioned W8/W4 artifacts."""
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
 import math
 import os
 from pathlib import Path
+import random
 import shutil
 import struct
 import sys
 import uuid
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 
 REPOSITORY = "google/translategemma-4b-it"
@@ -602,18 +607,246 @@ def export_all(model_dir, catalog, output, tools_dir, variants, replace=False):
         raise
 
 
+def export_tokenizer(model_dir, catalog_path, output):
+    model_dir = Path(model_dir)
+    catalog = json.loads(Path(catalog_path).read_text(encoding="utf-8"))
+    source = json.loads((model_dir / "source-lock.json").read_text(encoding="utf-8"))
+    if source != catalog:
+        raise ExportError("tokenizer source lock differs from the pinned catalog")
+    if catalog["model"]["revision"] != REVISION or catalog["model"]["repository"] != REPOSITORY:
+        raise ExportError("wrong tokenizer source identity")
+    for entry in catalog["files"]:
+        if entry["role"] == "tokenizer" or entry["name"] == "generation_config.json":
+            path = model_dir / entry["name"]
+            if path.stat().st_size != entry["size"] or sha256_file(path) != entry["sha256"]:
+                raise ExportError(f"tokenizer source hash mismatch: {entry['name']}")
+    tokenizer_path = model_dir / "tokenizer.json"
+    template_path = model_dir / "chat_template.jinja"
+    tokenizer = json.loads(tokenizer_path.read_text(encoding="utf-8"))
+    tokenizer_config = json.loads((model_dir / "tokenizer_config.json").read_text(encoding="utf-8"))
+    extra_special = set(tokenizer_config["extra_special_tokens"].values())
+    model = tokenizer["model"]
+    if model["type"] != "BPE" or not model["byte_fallback"] or model["ignore_merges"]:
+        raise ExportError("unsupported tokenizer model")
+    if tokenizer["normalizer"] != {
+        "type": "Replace", "pattern": {"String": " "}, "content": "\u2581"
+    }:
+        raise ExportError("unsupported tokenizer normalization")
+    vocabulary = model["vocab"]
+    pieces = {token_id: text for text, token_id in vocabulary.items()}
+    flags = {}
+    for token in tokenizer["added_tokens"]:
+        if any(token[key] for key in ("single_word", "lstrip", "rstrip", "normalized")):
+            raise ExportError("unsupported added-token flags")
+        token_id = token["id"]
+        if token_id in pieces and pieces[token_id] != token["content"]:
+            raise ExportError("added token disagrees with vocabulary")
+        pieces[token_id] = token["content"]
+        flags[token_id] = 1 | (2 if token["special"] or token["content"] in extra_special else 0)
+    if set(pieces) != set(range(262145)):
+        raise ExportError("unexpected tokenizer ID inventory")
+    for byte in range(256):
+        token_id = vocabulary[f"<0x{byte:02X}>"]
+        flags[token_id] = flags.get(token_id, 0) | 4 | (byte << 8)
+    template = template_path.read_text(encoding="utf-8")
+    languages = ast.literal_eval(template.split("{%- set languages = ", 1)[1].split("\n-%}", 1)[0])
+    strings = bytearray()
+
+    def store(text):
+        encoded = text.encode("utf-8")
+        offset = len(strings)
+        strings.extend(encoded)
+        return offset, len(encoded)
+
+    records = bytearray()
+    for token_id in range(len(pieces)):
+        records.extend(struct.pack("<III", *store(pieces[token_id]), flags.get(token_id, 0)))
+    lexical = sorted(vocabulary.values(), key=lambda token_id: pieces[token_id].encode("utf-8"))
+    added = sorted(flags.keys() & {token["id"] for token in tokenizer["added_tokens"]},
+                   key=lambda token_id: pieces[token_id].encode("utf-8"))
+    merges = []
+    for rank, (left, right) in enumerate(model["merges"]):
+        merges.append((vocabulary[left], vocabulary[right], vocabulary[left + right], rank))
+    merges.sort()
+    language_records = bytearray()
+    for code, name in sorted(languages.items()):
+        language_records.extend(struct.pack("<IIII", *store(code), *store(name)))
+    payload = bytearray(struct.pack(
+        "<8I", 0x34544D47, 1, len(pieces), len(lexical), len(added),
+        len(merges), len(languages), len(strings)
+    ))
+    payload.extend(records)
+    payload.extend(struct.pack(f"<{len(lexical)}I", *lexical))
+    payload.extend(struct.pack(f"<{len(added)}I", *added))
+    for merge in merges:
+        payload.extend(struct.pack("<4I", *merge))
+    payload.extend(language_records)
+    payload.extend(strings)
+    output = Path(output)
+    entry = write_blob_artifact(output, "tokenizer/bpe-tables-v1", payload, KIND_TOKENIZER)
+    verify_artifact(output, entry)
+    print(f"Tokenizer: {len(pieces)} IDs, {len(merges)} merges, {len(languages)} languages, {len(payload)} bytes")
+    return entry
+
+
+def export_tokenizer_fixtures(model_dir, output):
+    import importlib.metadata
+    from transformers import AutoTokenizer
+
+    versions = {name: importlib.metadata.version(name)
+                for name in ("transformers", "tokenizers", "jinja2")}
+    if versions != {"transformers": "4.57.3", "tokenizers": "0.22.2", "jinja2": "3.1.6"}:
+        raise ExportError(f"unexpected tokenizer reference versions: {versions}")
+    tokenizer = AutoTokenizer.from_pretrained(str(model_dir), local_files_only=True)
+    source = json.loads((Path(model_dir) / "tokenizer.json").read_text(encoding="utf-8"))
+    config = json.loads((Path(model_dir) / "tokenizer_config.json").read_text(encoding="utf-8"))
+    for token in source["added_tokens"]:
+        if token["content"] in config["extra_special_tokens"].values():
+            token["special"] = True
+    actual = json.loads(tokenizer.backend_tokenizer.to_str())
+    for key in ("model", "normalizer", "pre_tokenizer", "decoder", "added_tokens"):
+        if actual[key] != source[key]:
+            raise ExportError(f"reference silently changed tokenizer {key}")
+    cases = []
+
+    def add(kind, text=b"", tokens=(), decoded=b"", flags=0, source_code="", target_code="", maximum=256):
+        source_bytes, target_bytes = source_code.encode(), target_code.encode()
+        cases.append(struct.pack("<8I", kind, flags, maximum, len(source_bytes),
+                                 len(target_bytes), len(text), len(tokens), len(decoded)) +
+                     source_bytes + target_bytes + text +
+                     struct.pack(f"<{len(tokens)}I", *tokens) + decoded)
+
+    def encode(text, bos=True, skip=True):
+        tokens = tokenizer.encode(text, add_special_tokens=bos)
+        if len(tokens) > 2048:
+            raise ExportError("accepted tokenizer fixture exceeds the deployment context")
+        add(1, text.encode("utf-8"), tokens,
+            tokenizer.decode(tokens, skip_special_tokens=skip).encode("utf-8"),
+            int(bos) | (int(skip) << 1))
+
+    corpus = ["", "Hello world!", " a  b ", "\r\n\t", "\x00x\x00", "e\u0301 \u00e9",
+              "\u010cesk\u00fd text: Dobr\u00fd den!", "Stra\u00dfe, Gr\u00fc\u00dfe!",
+              "\u4f60\u597d\uff0c\u4e16\u754c\uff01", "\u3053\u3093\u306b\u3061\u306f",
+              "\uc548\ub155\ud558\uc138\uc694", "\u0645\u0631\u062d\u0628\u0627",
+              "\u0939\u093f\u0928\u094d\u0926\u0940", "\u0e44\u0e17\u0e22",
+              "\u2581literal\u2581", "\U0001f469\u200d\U0001f4bb", "\U0010ffff",
+              "<bos><start_of_turn>user\n<end_of_turn>", "<0xFF>", "\u00a0\u2003 x \u3000"]
+    for text in corpus:
+        for bos, skip in ((False, False), (True, True)):
+            encode(text, bos, skip)
+    for token in source["added_tokens"]:
+        encode("x" + token["content"] + "y", False, False)
+        if token["special"]:
+            encode("x" + token["content"] + "y", True, True)
+    generator = random.Random(0x474d5434)
+    alphabet = list("ab AB09\t\n!?_<>-\u00e9\u0301\u2581\u4e2d\u0645\u0939") + [
+        "<bos>", "<end_of_turn>", "\U0001f600", "\u00a0", "\r\n"]
+    for index in range(400):
+        text = "".join(generator.choice(alphabet) for _ in range(generator.randrange(1, 150)))
+        if index % 3 == 0:
+            codepoint = generator.randrange(0x10000, 0x110000)
+            text += chr(codepoint)
+        encode(text, index % 2 == 0, index % 3 == 0)
+    for text in (" " * 60000, "\n" * 32000, "abc " * 500):
+        encode(text)
+    template = (Path(model_dir) / "chat_template.jinja").read_text(encoding="utf-8")
+    languages = ast.literal_eval(template.split("{%- set languages = ", 1)[1].split("\n-%}", 1)[0])
+    for code in sorted(languages):
+        source_code = code.replace("-", "_")
+        text = "\u2003\tHello, e\u0301!\u00a0\n"
+        messages = [{"role": "user", "content": [{"type": "text", "source_lang_code": source_code,
+                     "target_lang_code": "de-DE", "text": text}]}]
+        tokens = tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
+        add(2, text.encode(), tokens, tokenizer.decode(tokens, skip_special_tokens=False).encode(),
+            source_code=source_code, target_code="de-DE")
+    for data in (b"\x80", b"\xc0\xaf", b"\xed\xa0\x80", b"\xf4\x90\x80\x80", b"\xe2\x82"):
+        add(4, data)
+    add(4, b"a " * 2049)
+    add(4, b" " * 65536, flags=1)
+    add(4, b" " * 196609)
+    for source_code, target_code, maximum, text in (
+        ("xx-INVALID", "de", 256, b"text"), ("en", "DE", 256, b"text"),
+        ("en", "de", 0, b"text"), ("en", "de", 2048, b"text"),
+        ("en", "de", 2047, b"text"), ("en", "de", 256, b"\xff"),
+        ("en", "de", 256, b"a " * 2040),
+    ):
+        add(5, text, source_code=source_code, target_code=target_code, maximum=maximum)
+    for values in ([0xff], [0xe2, 0x82, 0xac], [0x41, 0xff], [0xf0, 0x9f], [0, 65], [0xc0, 0xaf]):
+        tokens = [source["model"]["vocab"][f"<0x{value:02X}>"] for value in values]
+        add(3, tokens=tokens, decoded=tokenizer.decode(tokens, skip_special_tokens=False).encode())
+    add(6, tokens=[262145])
+    payload = struct.pack("<3I", 0x34524647, 1, len(cases)) + b"".join(cases)
+    entry = write_blob_artifact(output, "fixture/tokenizer-v1", payload, KIND_FIXTURE)
+    verify_artifact(output, entry)
+    print(f"Tokenizer reference: {len(cases)} cases")
+    return entry, versions
+
+
+def export_tokenizer_set(model_dir, catalog, output, reference, replace):
+    output = Path(output).resolve()
+    staging = output.with_name(f"{output.name}.partial-{uuid.uuid4().hex}")
+    staging.mkdir(parents=True)
+    try:
+        entry = export_tokenizer(model_dir, catalog, staging / "tokenizer.gta")
+        manifest = {"schema_version": 1, "model": {"repository": REPOSITORY, "revision": REVISION},
+                    "artifacts": [entry], "tokenizer_ids": 262145, "model_output_ids": 262208,
+                    "maximum_input_bytes": 196608, "deployment_context": 2048,
+                    "stop_token_ids": [1, 106], "do_sample": False}
+        if reference:
+            fixture, versions = export_tokenizer_fixtures(model_dir, staging / "tokenizer-fixtures.gta")
+            manifest["artifacts"].append(fixture)
+            manifest["reference_versions"] = versions
+        (staging / "manifest.json").write_bytes(canonical_json(manifest))
+        publish_directory(staging, output, replace)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", default="experimental/snapdragon/data/translategemma-4b")
     parser.add_argument("--catalog", default="experimental/snapdragon/tools/translategemma-models.json")
-    parser.add_argument("--output", default="experimental/snapdragon/models/translategemma-4b-stage3")
+    parser.add_argument("--output")
     parser.add_argument("--variant", choices=("w4", "w8", "both"), default="both")
     parser.add_argument("--replace", action="store_true")
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--tokenizer-only", action="store_true")
+    parser.add_argument("--tokenizer-reference", action="store_true")
+    parser.add_argument("--numerical-reference", action="store_true")
+    parser.add_argument("--primitives-only", action="store_true")
+    parser.add_argument("--weights-dir", default="experimental/snapdragon/models/translategemma-4b-stage3")
+    parser.add_argument("--reference-variant", choices=("all", "bf16", "w8a16", "w4a16"), default="all")
     args = parser.parse_args()
+    if args.tokenizer_reference and not args.tokenizer_only:
+        parser.error("--tokenizer-reference requires --tokenizer-only")
+    if args.numerical_reference and args.tokenizer_only:
+        parser.error("numerical reference cannot be combined with tokenizer-only")
+    if args.primitives_only and not args.numerical_reference:
+        parser.error("--primitives-only requires --numerical-reference")
+    if args.output is None:
+        args.output = "experimental/snapdragon/models/translategemma-4b-stage" + ("5" if args.numerical_reference else "4" if args.tokenizer_only else "3")
     tools_dir = Path(__file__).resolve().parent
     variants = (8, 4) if args.variant == "both" else (int(args.variant[1:]),)
     try:
+        if args.numerical_reference:
+            module_path = tools_dir / "translategemma-reference.py"
+            spec = importlib.util.spec_from_file_location("translategemma_reference", module_path)
+            reference = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(reference)
+            if args.verify_only:
+                reference.verify_reference(sys.modules[__name__], args.output,
+                                           not args.primitives_only and args.reference_variant == "all")
+                return 0
+            reference.export_reference(sys.modules[__name__], args.model_dir, args.catalog,
+                                       args.weights_dir, args.output, args.replace, args.primitives_only,
+                                       args.reference_variant)
+            return 0
+        if args.tokenizer_only:
+            export_tokenizer_set(args.model_dir, args.catalog, args.output, args.tokenizer_reference, args.replace)
+            return 0
+        if np is None:
+            raise ExportError("weight conversion requires NumPy; tokenizer export uses only Python's standard library")
         if args.verify_only:
             manifest = validate_artifact_set(args.output)
         else:

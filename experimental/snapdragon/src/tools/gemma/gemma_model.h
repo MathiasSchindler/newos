@@ -55,6 +55,7 @@ enum {
     GEMMA_TRANSLATEGEMMA_4B_QUERY_PRE_ATTENTION_SCALAR = 256,
     GEMMA_TRANSLATEGEMMA_4B_PAD_TOKEN_ID = 0,
     GEMMA_TRANSLATEGEMMA_4B_EOS_TOKEN_ID = 1,
+    GEMMA_TRANSLATEGEMMA_4B_END_OF_TURN_TOKEN_ID = 106,
     GEMMA_TRANSLATEGEMMA_4B_BOS_TOKEN_ID = 2,
     GEMMA_TRANSLATEGEMMA_4B_FULL_ATTENTION_LAYERS = 5,
     GEMMA_TRANSLATEGEMMA_4B_SLIDING_ATTENTION_LAYERS = 29,
@@ -69,6 +70,7 @@ enum {
 #define GEMMA_TRANSLATEGEMMA_4B_TEXT_RAW_BF16_BYTES 7760526336ULL
 
 const GemmaModelConfig *gemma_model_translategemma_4b(void);
+int gemma_model_is_stop_token(unsigned int token_id);
 int gemma_model_config_valid(const GemmaModelConfig *config);
 GemmaAttentionType gemma_model_attention_type(
     const GemmaModelConfig *config,

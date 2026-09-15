@@ -59,6 +59,11 @@ const GemmaModelConfig *gemma_model_translategemma_4b(void) {
     return &translategemma_4b_config;
 }
 
+int gemma_model_is_stop_token(unsigned int token_id) {
+    return token_id == GEMMA_TRANSLATEGEMMA_4B_EOS_TOKEN_ID ||
+        token_id == GEMMA_TRANSLATEGEMMA_4B_END_OF_TURN_TOKEN_ID;
+}
+
 static int string_equal(const char *left, const char *right) {
     if (left == 0 || right == 0) return 0;
     while (*left != '\0' && *left == *right) {
