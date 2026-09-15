@@ -80,6 +80,12 @@ typedef i32 (*DecoderRpcMemToFd)(void *allocation);
 
 struct WhisperDecoderQnn {
     u32 graph_mask;
+    int self_fusion;
+    QnnTensor self_cache_inputs[WHISPER_DECODER_QNN_MAX_LAYERS][4];
+    u32 self_key_update_dimensions[3];
+    u32 self_value_update_dimensions[3];
+    u32 self_cache_bank[WHISPER_DECODER_QNN_MAX_LAYERS];
+    i32 self_positions[1024];
     WhisperModelConfig model;
     u32 output_count;
     void *runtime_allocation;
@@ -157,7 +163,7 @@ struct WhisperDecoderQnn {
     QnnTensor *fused_registered[
         DECODER_QNN_FUSED_TENSORS + DECODER_QNN_FUSED_PARAMETER_TENSORS
     ];
-    QnnMemHandle cache_handles[WHISPER_DECODER_QNN_MAX_OUTPUTS * 2U];
+    QnnMemHandle cache_handles[WHISPER_DECODER_QNN_MAX_OUTPUTS * 3U];
     QnnTensor norm_weight_tensor;
     QnnTensor norm_bias_tensor;
     QnnTensor norm_output_tensor;
@@ -279,7 +285,7 @@ struct WhisperDecoderQnn {
 };
 
 _Static_assert(sizeof(((WhisperDecoderQnn *)0)->cache_handles) /
-    sizeof(QnnMemHandle) >= WHISPER_DECODER_QNN_MAX_LAYERS * 4U,
+    sizeof(QnnMemHandle) >= WHISPER_DECODER_QNN_MAX_LAYERS * 6U,
     "Shared cross/self K/V handles must cover every decoder layer");
 
 static int append_text(char *output, u32 capacity, u32 *used, const char *text) {
@@ -1069,6 +1075,7 @@ WhisperDecoderQnn *whisper_decoder_qnn_create(const WhisperModelConfig *model, u
     decoder = VirtualAlloc(0, sizeof(*decoder), 0x3000U, 0x04U);
     if (decoder == 0) return 0;
     decoder->graph_mask = graph_mask;
+    decoder->self_fusion = WHISPER_SELF_FUSION_ENABLED(model, graph_mask);
     decoder->model = *model;
     decoder->output_count = model->decoder_layers * 2U;
     decoder->runtime_allocation = VirtualAlloc(
@@ -1174,7 +1181,7 @@ static QnnTensor decoder_qnn_tensor(
 static void decoder_qnn_release_shared_cache(WhisperDecoderQnn *decoder) {
     u32 index;
     if (decoder->api != 0) {
-        for (index = 0U; index < decoder->output_count * 2U; ++index) {
+        for (index = 0U; index < decoder->output_count * (decoder->self_fusion ? 3U : 2U); ++index) {
             if (decoder->cache_handles[index] != 0) {
                 (void)decoder->api->mem_deregister(
                     &decoder->cache_handles[index], 1U
@@ -1197,6 +1204,8 @@ static void decoder_qnn_release_shared_cache(WhisperDecoderQnn *decoder) {
         decoder->model.width;
     decoder->self_keys_cache = 0;
     decoder->self_values_cache = 0;
+    for (index = 0U; index < decoder->model.decoder_layers; ++index) decoder->self_cache_bank[index] = 0U;
+    decoder->self_mask_valid = 0;
 }
 
 static int decoder_qnn_register_shared_cache(WhisperDecoderQnn *decoder) {
@@ -1210,7 +1219,7 @@ static int decoder_qnn_register_shared_cache(WhisperDecoderQnn *decoder) {
     u64 self_layer_values = (u64)decoder->model.text_context * decoder->model.width;
     u64 self_layer_bytes = self_layer_values * sizeof(u16);
     u64 self_cache_bytes = self_layer_bytes * decoder->model.decoder_layers;
-    u64 total_bytes = cache_bytes * 2U + self_cache_bytes * 2U;
+    u64 total_bytes = cache_bytes * 2U + self_cache_bytes * (decoder->self_fusion ? 4U : 2U);
     i32 fd;
     u32 index;
     if (decoder->shared_cache_ready) return 1;
@@ -1256,13 +1265,14 @@ static int decoder_qnn_register_shared_cache(WhisperDecoderQnn *decoder) {
             goto unavailable;
         }
     }
-    for (index = 0U; index < decoder->output_count; ++index) {
-        u32 layer = index / 2U;
+    for (index = 0U; index < decoder->output_count * (decoder->self_fusion ? 2U : 1U); ++index) {
+        u32 bank = index / decoder->output_count;
+        u32 layer = (index % decoder->output_count) / 2U;
         u32 handle_index = decoder->output_count + index;
         descriptor.shape.rank = 3U;
         descriptor.shape.dimensions = (index & 1U) == 0U
             ? decoder->self_key_dimensions : decoder->self_value_dimensions;
-        htp_descriptor.config.shared_buffer.offset = cache_bytes * 2U +
+        htp_descriptor.config.shared_buffer.offset = cache_bytes * 2U + bank * self_cache_bytes * 2U +
             ((index & 1U) == 0U
                 ? layer * self_layer_bytes
                 : self_cache_bytes + layer * self_layer_bytes);
@@ -2040,6 +2050,48 @@ static int __attribute__((noinline)) decoder_qnn_build_logits(
     return 1;
 }
 
+static int decoder_qnn_build_self_cache_update(
+    WhisperDecoderQnn *decoder, const QnnInterfaceV2 *api, u32 layer,
+    QnnTensor *key, QnnTensor *value, QnnTensor *keys, QnnTensor *values
+) {
+    QnnGraphHandle graph = decoder->self_attention_graphs[layer];
+    QnnTensor *inputs = decoder->self_cache_inputs[layer];
+    QnnTensor updates[2];
+    QnnParam axis = {0};
+    decoder->self_key_update_dimensions[0] = decoder->model.attention_heads;
+    decoder->self_key_update_dimensions[1] = decoder->model.width / decoder->model.attention_heads;
+    decoder->self_key_update_dimensions[2] = 1U;
+    decoder->self_value_update_dimensions[0] = decoder->model.attention_heads;
+    decoder->self_value_update_dimensions[1] = 1U;
+    decoder->self_value_update_dimensions[2] = decoder->model.width / decoder->model.attention_heads;
+    inputs[0] = decoder_qnn_tensor("old_keys", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_key_dimensions, 3U);
+    inputs[1] = decoder_qnn_tensor("old_values", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_value_dimensions, 3U);
+    inputs[2] = decoder_qnn_tensor("key_positions", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_key_update_dimensions, 3U);
+    inputs[3] = decoder_qnn_tensor("value_positions", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_value_update_dimensions, 3U);
+    inputs[2].data.v1.data_type = inputs[3].data.v1.data_type = QNN_DATATYPE_INT_32;
+    updates[0] = decoder_qnn_tensor("key_update", QNN_TENSOR_TYPE_NATIVE, decoder->self_key_update_dimensions, 3U);
+    updates[1] = decoder_qnn_tensor("value_update", QNN_TENSOR_TYPE_NATIVE, decoder->self_value_update_dimensions, 3U);
+    for (u32 index = 0U; index < 4U; ++index) {
+        if (api->tensor_create_graph_tensor(graph, &inputs[index]) != 0U) return 0;
+    }
+    for (u32 index = 0U; index < 2U; ++index) {
+        if (api->tensor_create_graph_tensor(graph, &updates[index]) != 0U) return 0;
+    }
+    if (decoder_qnn_add_graph_node(api, graph, "key_reshape", "Reshape", key, 0, 0,
+            1U, &updates[0], 0, 0U) != 0U ||
+        decoder_qnn_add_graph_node(api, graph, "value_reshape", "Reshape", value, 0, 0,
+            1U, &updates[1], 0, 0U) != 0U) return 0;
+    axis.type = QNN_PARAMTYPE_SCALAR;
+    axis.name = "axis";
+    axis.value.scalar.data_type = QNN_DATATYPE_UINT_32;
+    axis.value.scalar.value.uint32_value = 2U;
+    if (decoder_qnn_add_graph_node(api, graph, "key_insert", "ScatterElements",
+            &inputs[0], &inputs[2], &updates[0], 3U, keys, &axis, 1U) != 0U) return 0;
+    axis.value.scalar.value.uint32_value = 1U;
+    return decoder_qnn_add_graph_node(api, graph, "value_insert", "ScatterElements",
+        &inputs[1], &inputs[3], &updates[1], 3U, values, &axis, 1U) == 0U;
+}
+
 static int __attribute__((noinline)) decoder_qnn_build_self_attention(
     WhisperDecoderQnn *decoder,
     const QnnInterfaceV2 *api,
@@ -2096,7 +2148,8 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
         }
         *attention_parameter = (QnnParam){0};
         if (api->graph_create(
-                context, decoder->self_projection_graph_names[layer], 0,
+                context, decoder->self_fusion ? decoder->self_attention_graph_names[layer] :
+                    decoder->self_projection_graph_names[layer], 0,
                 &decoder->self_projection_graphs[layer]
             ) != 0U) return -1;
         projection[SELF_PROJECTION_INPUT] = decoder_qnn_tensor(
@@ -2170,6 +2223,11 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
             decoder->self_projection_tensor_names[layer][SELF_V_OUTPUT],
             QNN_TENSOR_TYPE_APP_READ, decoder->mlp_activation_dimensions, 2U
         );
+        if (decoder->self_fusion) {
+            projection[SELF_Q_HEADS].data.v1.type = QNN_TENSOR_TYPE_NATIVE;
+            projection[SELF_K_OUTPUT].data.v1.type = QNN_TENSOR_TYPE_NATIVE;
+            projection[SELF_V_OUTPUT].data.v1.type = QNN_TENSOR_TYPE_NATIVE;
+        }
         projection_parameters[0].type = QNN_PARAMTYPE_SCALAR;
         projection_parameters[0].name = "epsilon";
         projection_parameters[0].value.scalar.data_type = QNN_DATATYPE_FLOAT_32;
@@ -2235,11 +2293,13 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
             &projection[SELF_V_WEIGHT], &projection[SELF_V_BIAS], 3U,
             &projection[SELF_V_OUTPUT], 0, 0U);
 #undef ADD_SELF_PROJECTION_NODE
-        if (api->graph_finalize(
+        if (!decoder->self_fusion && api->graph_finalize(
                 decoder->self_projection_graphs[layer], 0, 0
             ) != 0U) return -1;
 
-        if (api->graph_create(
+        if (decoder->self_fusion) {
+            decoder->self_attention_graphs[layer] = decoder->self_projection_graphs[layer];
+        } else if (api->graph_create(
                 context, decoder->self_attention_graph_names[layer], 0,
                 &decoder->self_attention_graphs[layer]
             ) != 0U) return -1;
@@ -2314,7 +2374,13 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
             decoder->head_perm;
         attention_parameter->value.tensor.data.v1.memory.client_buffer.data_size =
             sizeof(decoder->head_perm);
+        if (decoder->self_fusion) {
+            attention[SELF_QUERY] = projection[SELF_Q_HEADS];
+            attention[SELF_KEYS].data.v1.type = QNN_TENSOR_TYPE_APP_READ;
+            attention[SELF_VALUES].data.v1.type = QNN_TENSOR_TYPE_APP_READ;
+        }
         for (index = 0U; index < DECODER_QNN_SELF_ATTENTION_TENSORS; ++index) {
+            if (decoder->self_fusion && index == SELF_QUERY) continue;
             if (api->tensor_create_graph_tensor(
                     decoder->self_attention_graphs[layer], &attention[index]
                 ) != 0U) return -1;
@@ -2323,6 +2389,9 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
                 decoder->self_attention_graphs[layer],
                 &attention_parameter->value.tensor
             ) != 0U) return -1;
+    if (decoder->self_fusion && !decoder_qnn_build_self_cache_update(
+        decoder, api, layer, &projection[SELF_K_OUTPUT], &projection[SELF_V_OUTPUT],
+        &attention[SELF_KEYS], &attention[SELF_VALUES])) return -1;
 #define ADD_SELF_ATTENTION_NODE(node_index, type, input0, input1, input2, count, output, params, param_count) \
         if (decoder_qnn_add_graph_node( \
                 api, decoder->self_attention_graphs[layer], \
@@ -2368,6 +2437,12 @@ static int __attribute__((noinline)) decoder_qnn_build_self_attention(
             ids_out->self_value_input_ids[layer] = attention[SELF_VALUES].data.v1.id;
             ids_out->self_mask_input_ids[layer] = attention[SELF_MASK].data.v1.id;
             ids_out->self_output_ids[layer] = attention[SELF_OUTPUT].data.v1.id;
+            if (decoder->self_fusion) {
+                ids_out->self_key_output_ids[layer] = decoder->self_cache_inputs[layer][0].data.v1.id;
+                ids_out->self_value_output_ids[layer] = decoder->self_cache_inputs[layer][1].data.v1.id;
+                ids_out->self_query_output_ids[layer] = decoder->self_cache_inputs[layer][2].data.v1.id;
+                ids_out->self_query_input_ids[layer] = decoder->self_cache_inputs[layer][3].data.v1.id;
+            }
         }
     }
     if (ids_out != 0) ids_out->self_layer_count = decoder->model.decoder_layers;
@@ -2385,7 +2460,7 @@ u32 whisper_decoder_qnn_graph_names(
     per_layer = ((decoder->graph_mask & DECODER_OFFLOAD_CROSS) != 0U) +
         ((decoder->graph_mask & DECODER_OFFLOAD_MLP) != 0U) +
         ((decoder->graph_mask & DECODER_OFFLOAD_FUSED) != 0U) +
-        2U * ((decoder->graph_mask & DECODER_OFFLOAD_SELF) != 0U);
+        (decoder->self_fusion ? 1U : 2U) * ((decoder->graph_mask & DECODER_OFFLOAD_SELF) != 0U);
     required = 1U + ((decoder->graph_mask & DECODER_OFFLOAD_LOGITS) != 0U) +
         per_layer * decoder->model.decoder_layers;
     if (capacity <= required) return 0U;
@@ -2395,7 +2470,7 @@ u32 whisper_decoder_qnn_graph_names(
         if (decoder->graph_mask & DECODER_OFFLOAD_MLP) names[count++] = decoder->mlp_graph_names[layer];
         if (decoder->graph_mask & DECODER_OFFLOAD_FUSED) names[count++] = decoder->fused_graph_names[layer];
         if (decoder->graph_mask & DECODER_OFFLOAD_SELF) {
-            names[count++] = decoder->self_projection_graph_names[layer];
+            if (!decoder->self_fusion) names[count++] = decoder->self_projection_graph_names[layer];
             names[count++] = decoder->self_attention_graph_names[layer];
         }
     }
@@ -2721,10 +2796,10 @@ int whisper_decoder_qnn_restore(
         decoder->logits_output.data.v1.id = ids->logits_output_id;
     }
     for (index = 0U; index < ids->self_layer_count; ++index) {
-        if (api->graph_retrieve(
+        if ((!decoder->self_fusion && api->graph_retrieve(
                 context, decoder->self_projection_graph_names[index],
                 &decoder->self_projection_graphs[index]
-            ) != 0U || api->graph_retrieve(
+            ) != 0U) || api->graph_retrieve(
                 context, decoder->self_attention_graph_names[index],
                 &decoder->self_attention_graphs[index]
             ) != 0U) return 0;
@@ -2781,6 +2856,26 @@ int whisper_decoder_qnn_restore(
             QNN_TENSOR_TYPE_APP_READ, decoder->mlp_activation_dimensions, 2U
         );
         decoder->self_outputs[index].data.v1.id = ids->self_output_ids[index];
+        if (decoder->self_fusion) {
+            QnnTensor *inputs = decoder->self_cache_inputs[index];
+            decoder->self_key_update_dimensions[0] = decoder->model.attention_heads;
+            decoder->self_key_update_dimensions[1] = decoder->model.width / decoder->model.attention_heads;
+            decoder->self_key_update_dimensions[2] = 1U;
+            decoder->self_value_update_dimensions[0] = decoder->model.attention_heads;
+            decoder->self_value_update_dimensions[1] = 1U;
+            decoder->self_value_update_dimensions[2] = decoder->model.width / decoder->model.attention_heads;
+            inputs[0] = decoder_qnn_tensor("old_keys", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_key_dimensions, 3U);
+            inputs[1] = decoder_qnn_tensor("old_values", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_value_dimensions, 3U);
+            inputs[2] = decoder_qnn_tensor("key_positions", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_key_update_dimensions, 3U);
+            inputs[3] = decoder_qnn_tensor("value_positions", QNN_TENSOR_TYPE_APP_WRITE, decoder->self_value_update_dimensions, 3U);
+            inputs[0].data.v1.id = ids->self_key_output_ids[index];
+            inputs[1].data.v1.id = ids->self_value_output_ids[index];
+            inputs[2].data.v1.id = ids->self_query_output_ids[index];
+            inputs[3].data.v1.id = ids->self_query_input_ids[index];
+            inputs[2].data.v1.data_type = inputs[3].data.v1.data_type = QNN_DATATYPE_INT_32;
+            decoder->self_key_inputs[index].data.v1.type = QNN_TENSOR_TYPE_APP_READ;
+            decoder->self_value_inputs[index].data.v1.type = QNN_TENSOR_TYPE_APP_READ;
+        }
     }
     decoder->api = api;
     decoder->cross_ready = ids->cross_layer_count != 0U;
@@ -3046,6 +3141,66 @@ int whisper_decoder_qnn_logits_offload(
     return 1;
 }
 
+static int decoder_qnn_self_fused_offload(
+    WhisperDecoderQnn *decoder, u32 layer, u32 position,
+    const float *hidden, float *projected, u64 *execute_ticks
+) {
+    u32 source = decoder->self_cache_bank[layer];
+    u32 destination = source ^ 1U;
+    u32 input_handle = decoder->output_count * (1U + source) + layer * 2U;
+    u32 output_handle = decoder->output_count * (1U + destination) + layer * 2U;
+    u32 vector_bytes = decoder->model.width * sizeof(u16);
+    QnnTensor inputs[6] = {decoder->self_projection_inputs[layer],
+        decoder->self_cache_inputs[layer][0], decoder->self_cache_inputs[layer][1],
+        decoder->self_cache_inputs[layer][2], decoder->self_cache_inputs[layer][3],
+        decoder->self_mask_inputs[layer]};
+    QnnTensor outputs[3] = {decoder->self_outputs[layer],
+        decoder->self_key_inputs[layer], decoder->self_value_inputs[layer]};
+    long long start;
+    long long end;
+    u64 status;
+    for (u32 index = 0U; index < decoder->model.width; ++index) {
+        decoder->mlp_input_buffer[index] = whisper_frontend_float_to_half(hidden[index]);
+        decoder->self_positions[index] = (i32)position;
+    }
+    if (!decoder->self_mask_valid || decoder->self_mask_position != position) {
+        for (u32 index = 0U; index < decoder->model.attention_heads * decoder->model.text_context; ++index) {
+            decoder->self_mask_buffer[index] = index % decoder->model.text_context <= position ? 0U : 0xfbffU;
+        }
+        decoder->self_mask_position = position;
+        decoder->self_mask_valid = 1;
+    }
+    inputs[0].data.v1.memory.client_buffer.data = decoder->mlp_input_buffer;
+    inputs[0].data.v1.memory.client_buffer.data_size = vector_bytes;
+    for (u32 index = 1U; index < 3U; ++index) {
+        inputs[index].data.v1.memory_type = QNN_TENSORMEMTYPE_MEMHANDLE;
+        inputs[index].data.v1.memory.memory_handle = decoder->cache_handles[input_handle + index - 1U];
+        outputs[index].data.v1.memory_type = QNN_TENSORMEMTYPE_MEMHANDLE;
+        outputs[index].data.v1.memory.memory_handle = decoder->cache_handles[output_handle + index - 1U];
+    }
+    for (u32 index = 3U; index < 5U; ++index) {
+        inputs[index].data.v1.memory.client_buffer.data = decoder->self_positions;
+        inputs[index].data.v1.memory.client_buffer.data_size = decoder->model.width * sizeof(i32);
+    }
+    inputs[5].data.v1.memory.client_buffer.data = decoder->self_mask_buffer;
+    inputs[5].data.v1.memory.client_buffer.data_size = decoder->model.attention_heads * decoder->model.text_context * sizeof(u16);
+    outputs[0].data.v1.memory.client_buffer.data = decoder->mlp_output_buffer;
+    outputs[0].data.v1.memory.client_buffer.data_size = vector_bytes;
+    QueryPerformanceCounter(&start);
+    status = decoder->api->graph_execute(decoder->self_attention_graphs[layer], inputs, 6U, outputs, 3U, 0, 0);
+    QueryPerformanceCounter(&end);
+    if (status != 0U) {
+        decoder->self_disabled = 1;
+        return 0;
+    }
+    decoder->self_cache_bank[layer] = destination;
+    if (execute_ticks != 0) *execute_ticks = (u64)(end - start);
+    for (u32 index = 0U; index < decoder->model.width; ++index) {
+        projected[index] = whisper_frontend_half_to_float(decoder->mlp_output_buffer[index]);
+    }
+    return 1;
+}
+
 int whisper_decoder_qnn_self_attention_offload(
     void *context,
     u32 layer,
@@ -3075,6 +3230,8 @@ int whisper_decoder_qnn_self_attention_offload(
         !decoder->shared_cache_ready || decoder->api == 0 ||
         layer >= decoder->model.decoder_layers ||
         position >= decoder->model.text_context) return 0;
+    if (decoder->self_fusion) return decoder_qnn_self_fused_offload(
+        decoder, layer, position, hidden, projected, execute_ticks);
     head_width = decoder->model.width / decoder->model.attention_heads;
     vector_bytes = decoder->model.width * sizeof(u16);
     mask_bytes = decoder->model.attention_heads * decoder->model.text_context *
@@ -3160,7 +3317,7 @@ int whisper_decoder_qnn_self_attention_offload(
         projected[index] =
             whisper_frontend_half_to_float(decoder->mlp_output_buffer[index]);
     }
-    return 1;
+    return 2;
 
 unavailable:
     decoder->self_disabled = 1;

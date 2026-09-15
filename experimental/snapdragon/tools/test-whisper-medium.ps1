@@ -1,7 +1,7 @@
 param(
     [string]$ProbePath = 'experimental/snapdragon/build/medium-candidate/npu_probe.exe',
     [string]$ReferenceProbePath = 'experimental/snapdragon/build/npu_probe.exe',
-    [string]$WavPath = 'experimental/snapdragon/build/long-form-35s.wav',
+    [string]$WavPath = 'experimental/snapdragon/data/long-form-35s.wav',
     [string]$OutputDirectory = 'experimental/snapdragon/data/medium-validation',
     [ValidateSet('cross,mlp', 'fused,logits', 'fused,self,logits')]
     [string[]]$MediumModes = @('cross,mlp', 'fused,logits')

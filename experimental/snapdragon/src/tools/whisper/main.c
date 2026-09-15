@@ -290,6 +290,8 @@ static int initialize_model_context_paths(const WhisperModelConfig *model) {
     u32 local_used = 0U;
     char mode_suffix[] = "-m00";
     const char *mode = "";
+    const char *layout = WHISPER_SELF_FUSION_ENABLED(model, decoder_offload_mask)
+        ? "-self-fused-v1-encoder-fp16-l24.qnnctx" : "-encoder-fp16-l24.qnnctx";
     if (model->model_id == WHISPER_MODEL_ID_MEDIUM) {
         mode_suffix[2] = "0123456789abcdef"[decoder_offload_mask >> 4U];
         mode_suffix[3] = "0123456789abcdef"[decoder_offload_mask & 15U];
@@ -306,7 +308,7 @@ static int initialize_model_context_paths(const WhisperModelConfig *model) {
             &primary_used, mode
         ) && append_path_text(
             model_context_cache_primary, sizeof(model_context_cache_primary),
-            &primary_used, "-encoder-fp16-l24.qnnctx"
+            &primary_used, layout
         ) && append_path_text(
             model_context_cache_local, sizeof(model_context_cache_local),
             &local_used, "whisper-"
@@ -318,7 +320,7 @@ static int initialize_model_context_paths(const WhisperModelConfig *model) {
             &local_used, mode
         ) && append_path_text(
             model_context_cache_local, sizeof(model_context_cache_local),
-            &local_used, "-encoder-fp16-l24.qnnctx"
+            &local_used, layout
         );
 }
 

@@ -48,6 +48,31 @@ hosted and freestanding builds.
 - `bignum.*` — fixed-capacity arbitrary-precision arithmetic used by math-oriented tools
 - `math.*` — dependency-free binary64 elementary, trigonometric, hyperbolic, rounding, and power helpers; see [math](math.md) for the supported numerical profile
 
+### Windows ARM64 stack probing
+
+[`src/arch/aarch64/windows/chkstk.S`](../../src/arch/aarch64/windows/chkstk.S)
+provides the compiler's `__chkstk` helper without a CRT. Both the native Windows
+build and the Snapdragon experiment link this object. Its COMDAT section can be
+discarded when no function needs it.
+
+Under the [Windows ARM64 ABI](https://learn.microsoft.com/en-us/cpp/build/arm64-windows-abi-conventions#stack),
+the allocation size arrives in `x15`, in units of 16 bytes. The helper reads
+downward from SP in 4096-byte steps and probes the remaining tail. It preserves
+`x15`, SP, and all registers except the scratch registers `x16` and `x17` and
+condition flags. The caller adjusts SP after the helper returns. This is a
+special compiler calling convention, not an ordinary C function interface.
+
+Probing allows Windows to commit successive guard pages; it neither allocates a
+separate stack nor catches stack exhaustion. Do not replace it with a no-op or
+disable probing merely to resolve a freestanding link failure. Stack protection
+cookies (`-fno-stack-protector`) are independent of stack-growth probing.
+
+Run `./tests/windows/test-arm64-stack-probe.ps1` on Windows ARM64 with Clang.
+The no-CRT tests cover argument-register and SP preservation, zero/subpage/exact
+page/tail sizes, 128 KiB growth on fresh threads, and a compiler-generated large
+frame, with and without LTO. A test-only no-op control must fail the commitment
+check. Both positive executables import only KERNEL32.
+
 ## CONTRIBUTOR BOUNDARIES
 
 - Put genuinely reusable, libc-independent helpers here.

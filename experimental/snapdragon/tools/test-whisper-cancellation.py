@@ -67,9 +67,9 @@ def run_case(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--probe', type=pathlib.Path,
-                        default=pathlib.Path('experimental/snapdragon/build/memory-candidate/npu_probe.exe'))
+                        default=pathlib.Path('experimental/snapdragon/build/npu_probe.exe'))
     parser.add_argument('--wav', type=pathlib.Path,
-                        default=pathlib.Path('experimental/snapdragon/build/long-form-35s.wav'))
+                        default=pathlib.Path('experimental/snapdragon/data/long-form-35s.wav'))
     parser.add_argument('--output', type=pathlib.Path,
                         default=pathlib.Path('tests/tmp/whisper-cancellation'))
     parser.add_argument('--phase', choices=['startup', 'decode', 'quiet'])

@@ -2,6 +2,8 @@ param(
     [string]$Compiler = "clang",
     [string]$BuildDir = "experimental/snapdragon/build",
     [switch]$DebugSymbols,
+    [switch]$SelfFusionProbe,
+    [switch]$SelfFusionCandidate,
     [switch]$Clean
 )
 
@@ -9,6 +11,13 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 Push-Location $repoRoot
 try {
+    if (($SelfFusionCandidate -or $SelfFusionProbe) -and -not $PSBoundParameters.ContainsKey('BuildDir')) {
+        $BuildDir = if ($SelfFusionCandidate) { 'experimental/snapdragon/build/self-fusion-candidate' } else { 'experimental/snapdragon/build/self-fusion-probe' }
+    }
+    if ($SelfFusionCandidate -and
+        [IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
+        throw 'The experimental candidate must use a separate build directory'
+    }
     $compilerCommand = Get-Command $Compiler -ErrorAction SilentlyContinue
     if (-not $compilerCommand) { throw "Could not find Clang: $Compiler" }
     $compilerPath = $compilerCommand.Source
@@ -30,6 +39,11 @@ try {
     & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/directml.def -l "$BuildDir/libdirectml.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the DirectML import library" }
 
+    $stackProbeObject = "$BuildDir/chkstk.obj"
+    & $compilerPath --target=aarch64-w64-windows-gnu -c `
+        src/arch/aarch64/windows/chkstk.S -o $stackProbeObject
+    if ($LASTEXITCODE -ne 0) { throw "Failed to build the ARM64 Windows stack probe" }
+
     $flags = @(
         "--target=aarch64-w64-windows-gnu", "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Oz",
         "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-unwind-tables",
@@ -38,10 +52,14 @@ try {
         "-Iexperimental/snapdragon/src/tools/probe",
         "-Iexperimental/snapdragon/src/tools/whisper"
     )
+    if ($SelfFusionCandidate) {
+        if ($SelfFusionProbe) { throw 'Choose either the full candidate or the one-layer probe' }
+        $flags += '-DWHISPER_SELF_FUSION=1'
+    }
     $linkFlags = @(
         "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
-        "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32", "-ldxcore", "-ld3d12", "-ldirectml"
+        "-Wl,--stack,1048576", $stackProbeObject, "-L$BuildDir", "-lkernel32", "-ldxcore", "-ld3d12", "-ldirectml"
     )
     & $compilerPath @flags experimental/snapdragon/src/tools/probe/main.c @linkFlags -o "$BuildDir/probe.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build probe.exe" }
@@ -50,7 +68,7 @@ try {
     $npuLinkFlags = @(
         "-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections",
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
-        "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32"
+        "-Wl,--stack,1048576", $stackProbeObject, "-L$BuildDir", "-lkernel32"
     )
     if ($DebugSymbols) {
         $flags = @($flags | Where-Object { $_ -notin @('-fno-unwind-tables', '-fno-asynchronous-unwind-tables') })
@@ -71,6 +89,20 @@ try {
         "src/shared/runtime/concurrency.c",
         "src/platform/windows/thread.c"
     )
+    if ($SelfFusionProbe) {
+        $probeSources = @($npuSources | Where-Object {
+            $_ -notin @(
+                'experimental/snapdragon/src/tools/whisper/main.c',
+                'experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c'
+            )
+        })
+        & $compilerPath @flags '-Werror' `
+            experimental/snapdragon/src/tools/whisper/benchmarks/self_fusion_probe.c `
+            @probeSources @npuLinkFlags -o "$BuildDir/self-fusion-probe.exe"
+        if ($LASTEXITCODE -ne 0) { throw "Failed to build self-fusion-probe.exe" }
+        Write-Output "Built $BuildDir/self-fusion-probe.exe"
+        return
+    }
     & $compilerPath @flags "-DWHISPER_RUNTIME_ONLY" `
         "-Wno-unused-function" "-Wno-unused-variable" @npuSources `
         @npuLinkFlags -o "$BuildDir/npu_probe.exe"

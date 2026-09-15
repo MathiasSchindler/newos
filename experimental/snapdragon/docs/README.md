@@ -5,6 +5,37 @@ This directory documents freestanding Windows ARM64 experiments for the Snapdrag
 For Medium execution events, CPU accounting, latency distributions, and timeline
 capture, see [diagnostics.md](diagnostics.md).
 
+## Retained local runtime (2026-09-15)
+
+The local `build/` directory now contains only the benchmarked fused-self Medium
+`npu_probe.exe`, its `whisper-medium-m1c-self-fused-v1-encoder-fp16-l24.qnnctx`,
+and the matching QNN runtime, DSP files, licenses, and version manifest.
+Run from the repository root:
+
+```powershell
+.\experimental\snapdragon\build\npu_probe.exe .\experimental\snapdragon\data\long-form-35s.wav
+```
+
+Medium and `fused,self,logits` are implicit defaults. The executable still needs
+the existing exported artifacts under `models/`; `build/` alone is not a portable
+distribution. All source models and saved reports were retained. Other models
+and offload modes require regenerating their removed contexts.
+
+Cleanup reduced `build/` from 11,207,142,797 to 1,685,382,549 bytes. Four console
+cancellation cases passed; transcription before and after removal matched the
+35-second reference, with 6,384 fused self-attention submissions and no CPU self
+fallback. Inventory and verification logs are in
+`data/build-cleanup-20260915/`, including the preserved `diagnostics-symbols/`
+and `bitcast-symbols/` executable/PDB pairs. Historical paths in benchmark and
+trace reports describe the original runs, not the current deployment.
+
+Build defaults have not changed: use `tools/build.ps1 -SelfFusionCandidate` to
+rebuild this variant in its isolated directory, then copy its `npu_probe.exe`
+into `build/` while preserving the matching fused context and QNN runtime.
+Do not use `-Clean` on the retained runtime directory. Repeating historical
+multi-variant benchmarks requires rebuilding their binaries and contexts;
+`benchmark-whisper-self-fusion.ps1 -ReportOnly` still uses the saved results.
+
 ## Inventory
 
 Run the PowerShell inventory from the repository root:
@@ -39,7 +70,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdrago
 python .\experimental\snapdragon\tools\calibrate-whisper-tiny-mlp.py
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model tiny
 .\experimental\snapdragon\build\npu_probe_builder.exe --model=tiny
-.\experimental\snapdragon\build\npu_probe.exe .\experimental\snapdragon\build\long-form-35s.wav
+.\experimental\snapdragon\build\npu_probe.exe .\experimental\snapdragon\data\long-form-35s.wav
 ```
 
 For Whisper Base, fetch and export its pinned checkpoint, build its independent QNN context, and select it at runtime:
@@ -48,7 +79,7 @@ For Whisper Base, fetch and export its pinned checkpoint, build its independent 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\fetch-whisper-base.ps1
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model base
 .\experimental\snapdragon\build\npu_probe_builder.exe --model=base
-.\experimental\snapdragon\build\npu_probe.exe --model=base .\experimental\snapdragon\build\long-form-35s.wav
+.\experimental\snapdragon\build\npu_probe.exe --model=base .\experimental\snapdragon\data\long-form-35s.wav
 ```
 
 Whisper Small follows the same model-specific path:
@@ -57,7 +88,7 @@ Whisper Small follows the same model-specific path:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdragon\tools\fetch-whisper-small.ps1
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model small
 .\experimental\snapdragon\build\npu_probe_builder.exe --model=small
-.\experimental\snapdragon\build\npu_probe.exe --model=small .\experimental\snapdragon\build\long-form-35s.wav
+.\experimental\snapdragon\build\npu_probe.exe --model=small .\experimental\snapdragon\data\long-form-35s.wav
 ```
 
 Medium is the default model, with `--decoder-offload=fused,self,logits` as the default offload mode. Explicit `--model` and `--decoder-offload` flags override their respective defaults independently. Cache files and QNN graph names are model-specific, so other models never restore an incompatible context.
@@ -71,7 +102,7 @@ and model-specific context with:
 .\experimental\snapdragon\tools\fetch-whisper-medium.ps1
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe .\experimental\snapdragon\tools\export-whisper-decoder.py --model medium
 .\experimental\snapdragon\build\npu_probe_builder.exe --model=medium
-.\experimental\snapdragon\build\npu_probe.exe --model=medium .\experimental\snapdragon\build\long-form-35s.wav
+.\experimental\snapdragon\build\npu_probe.exe --model=medium .\experimental\snapdragon\data\long-form-35s.wav
 ```
 
 The 24-layer context metadata layout uses `whisper-<model>-encoder-fp16-l24.qnnctx`
@@ -159,7 +190,7 @@ and MLP plus final vocabulary projection:
 
 ```powershell
 .\experimental\snapdragon\build\npu_probe_builder.exe --model=medium --decoder-offload=fused,logits
-.\experimental\snapdragon\build\npu_probe.exe --model=medium --decoder-offload=fused,logits .\experimental\snapdragon\build\long-form-35s.wav
+.\experimental\snapdragon\build\npu_probe.exe --model=medium --decoder-offload=fused,logits .\experimental\snapdragon\data\long-form-35s.wav
 ```
 
 Its first matched-clip smoke run took 29.123 seconds and 25.484 CPU-seconds,

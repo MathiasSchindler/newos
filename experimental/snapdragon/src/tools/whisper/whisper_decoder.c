@@ -717,15 +717,16 @@ static int self_attention(
     u32 index;
     u64 cache_offset = ((u64)layer * model->text_context + position) * model->width;
     *npu_execute_ticks = 0U;
-    if (decoder->self_attention_offload != 0 &&
+    int offload_calls = decoder->self_attention_offload != 0 ?
         decoder->self_attention_offload(
             decoder->self_attention_offload_context, layer, position,
             decoder->hidden, decoder->projected, npu_execute_ticks
-        )) {
+        ) : 0;
+    if (offload_calls > 0) {
         for (index = 0U; index < model->width; ++index) {
             decoder->hidden[index] += decoder->projected[index];
         }
-        return 1;
+        return offload_calls;
     }
     layer_norm(
         decoder->hidden, item->self_norm_weight, item->self_norm_bias,
@@ -1174,7 +1175,7 @@ static u32 decoder_step(
         if (index != 0U) {
             record_npu_calls(
                 decoder, &decoder->profile.npu_self_attention_calls,
-                npu_execute_ticks, 2U
+                npu_execute_ticks, index
             );
             decoder->profile.npu_self_attention_ticks += (u64)(end - start);
         } else {

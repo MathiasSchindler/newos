@@ -4,6 +4,14 @@
 #include "qnn_abi.h"
 #include "whisper_model.h"
 
+#ifndef WHISPER_SELF_FUSION
+#define WHISPER_SELF_FUSION 0
+#endif
+
+#define WHISPER_SELF_FUSION_ENABLED(model, mask) \
+    (WHISPER_SELF_FUSION && (model)->model_id == whisper_model_medium()->model_id && \
+     ((mask) & DECODER_OFFLOAD_SELF) != 0U)
+
 enum {
     WHISPER_DECODER_QNN_MAX_OUTPUTS = 64,
     WHISPER_DECODER_QNN_MAX_LAYERS = 24,

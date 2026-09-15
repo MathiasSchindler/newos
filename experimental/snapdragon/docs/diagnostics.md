@@ -1,5 +1,13 @@
 # Medium diagnostics
 
+Local deployment was consolidated on 2026-09-15 after the benchmarks below.
+The fused Medium runtime is now deployed; obsolete contexts and build variants
+were removed. See [the retained runtime instructions](README.md#retained-local-runtime-2026-09-15).
+The historical `build/diagnostics-symbols` and `build/bitcast-symbols` executable/PDB
+pairs are archived under `data/build-cleanup-20260915/` with the same directory
+names. Use those archived paths for saved-trace symbolization; live capture
+requires restaging the matching runtime and context or rebuilding a symbol image.
+
 The collected five-minute comparisons and graph/CPU breakdowns are in
 [`../data/medium-diagnostics/long/report.md`](../data/medium-diagnostics/long/report.md).
 Raw captures live alongside that report in the ignored data tree; retain them
@@ -190,7 +198,8 @@ fixture. The five-minute transcript retains SHA-256
 `a609b84717a2e1699d94a53a353a25e1b3dd2151425552095d81208ee0632dd0`,
 with 1,352 generated tokens, 2,848 steps, and 625 prefix-reused steps. The small
 short-clip wall-time difference should not be treated as a robust speedup. The
-long result is one paired observation, not a repeated performance estimate.
+long result above is the initial paired observation; the repeated follow-up
+below supersedes it as the current performance estimate.
 
 Five-minute total NPU host-call time was 126.732 s before and 131.222 s after.
 The observed elapsed improvement therefore did not depend on faster graph calls;
@@ -218,7 +227,271 @@ checks durations before inference: `bundestag-hearing-300s-30s-f32.wav` is 30 s,
 `bundestag-hearing-16k-mono-f32.wav` is 6,420 s. These are sequential warmed
 measurements, not controlled cold-start measurements.
 
-## CPU stacks and scheduling
+## Repeated bitcast follow-up (2026-09-15)
+
+Two more alternating five-minute pairs and one optimized basic-profile run
+completed with unchanged executable/runtime/audio identities, transcripts,
+decoder work counts, and graph submissions. The original pair plus these two
+pairs give three uninstrumented runs per variant. The profiled run is excluded
+from performance statistics. Raw measurements and the complete graph breakdown
+are in [`../data/bitcast-followup-20260915/report.md`](../data/bitcast-followup-20260915/report.md),
+with structured results in `comparison.json` alongside it.
+
+| Five-minute pair | Before elapsed s | After elapsed s | Before CPU s | After CPU s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 (after/before) | 170.691 | 157.347 | 98.250 | 51.469 |
+| 2 (before/after) | 162.852 | 131.938 | 81.734 | 36.813 |
+| 3 (after/before) | 163.070 | 148.164 | 88.109 | 45.453 |
+
+Median elapsed time decreased **9.14%**, from 163.070 to 148.164 seconds.
+Median process CPU decreased **48.41%**, from 88.109 to 45.453 CPU-seconds.
+All three pairs improved, but elapsed reductions range from 7.82% to 18.98%:
+this remains a small sequential, warmed sample with substantial runtime
+variation. Median NPU host-call totals were almost unchanged, 126.732 versus
+126.804 seconds. Do not attribute the unusually fast second optimized run
+entirely to the bitcast change.
+
+The optimized basic-profile run took 150.800 seconds and 49.031 CPU-seconds.
+It recorded 277,996 intervals and 7,932 device events without drops, graph/API
+errors, or thread-sampling errors. Bookkeeping measured 141.837 ms. Its elapsed
+time is 1.78% above the optimized uninstrumented median, but one such comparison
+does not isolate instrumentation overhead from run variation.
+
+Token intervals account for 40.938 CPU-seconds, including 15.438 in selection
+(31.5% of total process CPU). Token accounting includes 16.031 kernel CPU-seconds.
+These are process counters and thread snapshots, not a new function-level CPU
+profile. The old pre-bitcast ETL must not be used to rank current CPU hotspots.
+
+| Decoder family | Calls | Host total s | Sampled host median us | Sampled accelerator excluding waits median us | Paired difference median us |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Self projection | 53,352 | 31.031 | 525.6 | 164.0 | 362.2 |
+| Self attention | 53,352 | 27.030 | 480.7 | 110.0 | 368.9 |
+| Fused cross/MLP | 53,352 | 57.891 | 992.0 | 608.0 | 368.1 |
+| Logits | 2,776 | 7.973 | 2728.0 | 2160.0 | 586.3 |
+
+Per-layer families each have 432 device samples; logits has 22. Paired differences
+are not simply RPC costs or guaranteed removable time. Host-call duration still
+does not measure hardware occupancy, DDR bandwidth, or thermal throttling.
+
+**Next experiment:** prototype a single-layer fused self-projection/attention
+graph with a supported on-NPU KV-cache update. The current
+`whisper_decoder_qnn_self_attention_offload` executes projection, updates the
+shared key/value caches on the CPU, then executes attention. A successful fusion
+could eliminate one submission per executed layer (53,352 submissions in this
+fixture), but cannot be implemented as a simple graph concatenation. First
+validate cache-update operator support, exact causal/cache behavior, FP16 output
+equivalence, and memory placement on one layer; only then regenerate and measure
+the full Medium context. Retain the existing cache and implementation until those
+checks pass. No graph or runtime changes were made during this follow-up.
+
+No fresh privileged WPR recording was made. A separate optimized symbol build
+and matching runtime are staged under `build/bitcast-symbols`; the preserved
+pre-optimization symbol image is unchanged. For updated function-level CPU
+sampling, run the following from an administrator PowerShell after checking that
+no other WPR recording is active:
+
+```powershell
+wpr -status
+wpr -start GeneralProfile -filemode
+try {
+  .\experimental\snapdragon\build\bitcast-symbols\npu_probe.exe --diagnostics=trace --diagnostics-output=tests/tmp/medium-bitcast-wpr.csv .\experimental\snapdragon\data\bundestag-hearing-5min-16k-mono-f32.wav
+} finally {
+  wpr -stop tests/tmp/medium-bitcast-cpu.etl
+}
+```
+
+Keep this system-wide trace local. The normal executable remains unchanged;
+the optimized release candidate is still `build/bitcast-after/npu_probe.exe`.
+
+## One-layer self fusion (2026-09-15)
+
+The isolated [`self_fusion_probe.c`](../src/tools/whisper/benchmarks/self_fusion_probe.c)
+now combines Medium layer-zero self projection, KV insertion, and attention into
+one QNN graph. It reuses the existing private builder and actual trained FP16
+weights via textual inclusion; production graph code and context caches are
+unchanged. The probe loads and validates the complete self-attention artifact
+before restricting graph construction to one layer. Its tensor-index mappings
+must track the private builder; tensor-count assertions detect count changes,
+not reorderings.
+
+On Snapdragon X Elite with QAIRT 2.50.0.260828 (QNN core 2.39, HTP 5.50), dynamic
+INT32 `ScatterElements` indices work for both FP16 cache layouts: keys
+`[16,64,448]` on axis 2 and values `[16,448,64]` on axis 1. Two separate capability
+tests check boundaries, repeated insertion, and every untouched cache value.
+The fused graph keeps projected Q/K/V native and inserts K/V on the NPU before
+attention, removing one host submission and the CPU KV-copy loop per layer.
+The CPU still prepares indices and the causal mask.
+
+The split baseline uses registered FastRPC caches, as production does. The fused
+path uses distinct registered input/output cache banks, swapping them after each
+step; it does not assume in-place tensor aliasing. Each run checks **1,352 cases**:
+three complete 448-position sweeps, then positions 0, 1, 2, 7, 127, 447, 0, 1.
+Caches remain populated between sweeps, exercising masked stale future entries
+and overwrites. Every key/value element and every final attention-output FP16 bit
+matches the split reference. This is split/fused equivalence on deterministic
+inputs, not an independent attention oracle or transcript-quality test.
+
+Execution order alternates each step. QPC intervals include either projection,
+CPU cache insertion, and attention, or the single fused execution. Tensor binding,
+input/mask/index preparation, and full-cache comparisons are outside the intervals.
+The first 16 positions of each sweep are excluded, leaving 432 samples per row.
+Reported microseconds are truncated integers; median uses the two middle samples.
+
+| Build/run | Sweep | Split median us | Fused median us | Split mean us | Fused mean us |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Initial shared-cache harness | 1 | 725 | 522 | 930 | 632 |
+| Initial shared-cache harness | 2 | 692 | 506 | 892 | 592 |
+| Initial shared-cache harness | 3 | 709 | 510 | 877 | 635 |
+| Reproducible release build | 1 | 677 | 489 | 899 | 624 |
+| Reproducible release build | 2 | 587 | 425 | 689 | 507 |
+| Reproducible release build | 3 | 629 | 479 | 872 | 603 |
+| Final guards/cleanup build | 1 | 531 | 398 | 675 | 525 |
+| Final guards/cleanup build | 2 | 530 | 391 | 719 | 504 |
+| Final guards/cleanup build | 3 | 525 | 384 | 671 | 480 |
+
+All three runs passed correctness and memory/context/device/backend teardown.
+The final build's median of sweep medians is 530 -> 391 us (**26.2% lower**).
+Within-sweep reductions span roughly 24-29% across the runs. Absolute latency
+varies substantially, and the first harness uses a different linker flag set;
+do not pool these as nine independent production measurements. Full logs,
+including p95 and maximum latency, are retained under
+`../data/self-fusion-20260915/`. The final executable imports only KERNEL32;
+QNN/FastRPC remain dynamically loaded vendor dependencies.
+
+Reproduce from the repository root on Windows ARM64 with Clang and the existing
+exported Medium artifacts. Stage a matched QAIRT runtime, including DSP SO/CAT
+files, beside the probe. For this workspace the validated runtime is in
+`build/bitcast-after`:
+
+```powershell
+& ./experimental/snapdragon/tools/build.ps1 -SelfFusionProbe -BuildDir experimental/snapdragon/build/self-fusion-probe
+Get-ChildItem experimental/snapdragon/build/bitcast-after -File |
+  Where-Object { $_.Extension -in @('.dll', '.so', '.cat') } |
+  Copy-Item -Destination experimental/snapdragon/build/self-fusion-probe
+& ./experimental/snapdragon/build/self-fusion-probe/self-fusion-probe.exe
+if ($LASTEXITCODE -ne 0) { throw 'Self-fusion validation failed' }
+```
+
+Do not run concurrent inference during measurement. The probe rebuilds only its
+isolated graphs in memory, never serializes or overwrites a production context,
+and fails on any graph error or bit mismatch. Normal build behavior is unchanged
+when `-SelfFusionProbe` is absent.
+
+**Decision:** proceed to an opt-in full-Medium candidate, retaining the split
+implementation and original context. One KV bank is 1.75 MiB per layer; ping-pong
+adds **42 MiB** across 24 layers and introduces full-cache read/write traffic.
+The one-layer harness allocates 5.25 MiB for baseline plus two fused banks.
+Next gates are full-context build/restore and memory placement, retry/reset and
+prefix-reuse correctness, unchanged transcript/work counts, then alternating
+five-minute wall-time and process-CPU measurements. No full-model context was
+regenerated or deployed here. CPU savings, hardware occupancy, device execution
+time, DDR traffic, and end-to-end speedup are not established by this probe.
+
+## Full-Medium self-fusion candidate (2026-09-15)
+
+The one-layer experiment above has now been integrated into an **opt-in** Medium
+candidate. `tools/build.ps1 -SelfFusionCandidate` defines `WHISPER_SELF_FUSION=1`
+and defaults to `build/self-fusion-candidate`, leaving the normal executable
+untouched. Other models and Medium modes without `self` retain their split graph
+behavior. The original split implementation remains available in normal builds.
+
+Each Medium self layer now executes projection, native Q/K/V, two cache insertion
+nodes, and attention in one graph. Each layer independently tracks its current
+registered cache bank, advancing only after successful execution. Skipped prefix
+steps do not advance banks; repeated positions and new windows overwrite the
+current position while future cache entries remain causally masked. The self
+offload callback returns the number of graph submissions (zero on unavailable,
+one fused, two split), keeping diagnostic work counts accurate.
+
+The candidate has a distinct context filename,
+`whisper-medium-m1c-self-fused-v1-encoder-fp16-l24.qnnctx`. Its decoder graph list
+contains 50 graphs instead of 74; encoder graphs still restore into a separate
+context through the existing placement path. The candidate metadata reuses the
+otherwise unused projection/query ID slots for old K/V and position inputs;
+therefore the candidate and split caches must never be renamed interchangeably.
+The original context hash is checked before and after measurement.
+
+The generated candidate context is 1,561,096,016 bytes, versus 1,562,037,952 for
+the split context. The application shared cache grows by 42 MiB for the second
+self KV bank. Context size and peak process memory are different measurements;
+runtime allocation and placement can offset that extra application allocation.
+The full context has passed build, selective restore, and frontend/encoder
+execution. The integrated one-layer harness additionally passed 1,352 bit-exact
+KV/output cases through restored tensor IDs and the production callback.
+
+Reproduce the already-prepared benchmark from the repository root:
+
+```powershell
+./experimental/snapdragon/tools/benchmark-whisper-self-fusion.ps1 -ValidateOnly
+./experimental/snapdragon/tools/benchmark-whisper-self-fusion.ps1 -OutputDirectory experimental/snapdragon/data/self-fusion-medium-repeat
+```
+
+Preparation uses `tools/build.ps1 -BuildDir experimental/snapdragon/build/self-fusion-baseline`
+and `tools/build.ps1 -SelfFusionCandidate`, with matching QAIRT DLL/SO/CAT files
+beside each binary. Build the separate candidate context once using
+`build/self-fusion-candidate/npu_probe_builder.exe --model=medium --decoder-offload=fused,self,logits`.
+This builder invocation runs capability probes before full-context generation;
+none of that preparation time belongs in the inference comparison.
+
+The runner performs a 35.008-second split/fused correctness pair, then three
+five-minute pairs ordered split/fused, fused/split, split/fused. Diagnostics are
+off. It rejects changed transcripts, work counts, executable hashes, runtime
+hash mismatches, graph errors, CPU self fallback, and incorrect self submission
+counts. Process wall time includes loading, restore, transcription, and cleanup.
+Use `-ReportOnly` to regenerate the report without inference. Raw results,
+inventory, and the paired report are under
+[`../data/self-fusion-medium-20260915/`](../data/self-fusion-medium-20260915/).
+
+### Measured results
+
+All eight runs passed, including all six five-minute runs. Each long run has
+12 windows, 1,352 generated tokens, 2,848 decoder steps and 625 prefix-reused
+steps. The transcript SHA-256 remains
+`a609b84717a2e1699d94a53a353a25e1b3dd2151425552095d81208ee0632dd0`.
+Self submissions fall from 106,704 to 53,352; fused cross/MLP submissions remain
+53,352 and logits submissions remain 2,776. No CPU self fallback or graph
+execution errors were accepted.
+
+| Five-minute pair | Split wall s | Fused wall s | Split CPU s | Fused CPU s |
+| --- | ---: | ---: | ---: | ---: |
+| 1 (split/fused) | 149.091 | 127.170 | 49.672 | 39.922 |
+| 2 (fused/split) | 147.120 | 126.753 | 48.313 | 40.000 |
+| 3 (split/fused) | 150.075 | 127.428 | 49.391 | 41.438 |
+| Median | 149.091 | 127.170 | 49.391 | 40.000 |
+
+Median wall time is **14.70% lower**, and median process CPU is **19.01% lower**.
+Paired wall reductions range from 13.84% to 15.09%; paired CPU reductions range
+from 16.10% to 19.63%. Median self graphExecute host time falls from 58.102 s
+to 38.556 s (33.64%). Context restore also improves, from 3.099 s to 1.566 s;
+the end-to-end improvement should not all be attributed to steady-state decoder
+execution. The 35.008-second gate matched 132 tokens and 214 reused steps, with
+28.159 -> 22.554 s wall and 14.828 -> 11.734 CPU-seconds.
+
+Median peak resident memory is 3,688,652,800 -> 3,680,378,880 bytes, and median
+peak private commitment is 1,457,618,944 -> 1,451,384,832 bytes. Thus these runs
+show no net process-memory increase despite the additional 42 MiB application
+cache. This does not prove that the additional cache is free: the total includes
+QNN allocation and context-placement effects, and no DDR traffic was measured.
+
+The matched split executable SHA-256 is
+`2d7457e01aa1c773ae423cec72d56ca1537f2332c0472e26ed24bbc1a61c1d5a`;
+the fused candidate is
+`e8dca312c36e671d665a329b2cf019f34010ad7daa3b7c536d2190622879f9f2`.
+The fused context SHA-256 is
+`38718e18021aa963677e593527f9b14e3f0f0a63eecfcc8145880db684b20979`.
+All binary, runtime and context hashes were rechecked after measurement.
+The baseline mock suite, integrated one-layer hardware test, full candidate
+build/restore, and no-CRT import checks passed. Build logs and raw inference
+output are retained beside the [generated report](../data/self-fusion-medium-20260915/report.md).
+
+**Decision:** the candidate improves both requested performance metrics on this
+fixture and remains available for opt-in use. Normal deployment and the original
+context are unchanged. These are three sequential warmed pairs on one recording,
+not broad transcription-quality validation, cold-start statistics, or proof of
+higher hardware NPU occupancy. Validate additional audio and candidate
+cancellation/failure handling before promoting it to the default deployment.
+
+## CPU stacks and scheduling (pre-bitcast capture)
 
 The user captured an elevated WPR trace on 2026-09-15 after installing Windows
 ADK. The saved `tests/tmp/medium-cpu.etl` spans 54.680 seconds and reports zero
