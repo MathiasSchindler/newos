@@ -2,13 +2,15 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$WavPath,
     [ValidateSet('tiny', 'base', 'small', 'medium')]
-    [string]$Model = 'small',
+    [string]$Model = 'medium',
     [int]$DecoderWorkers = 0,
     [string]$ProbePath,
     [ValidateSet('cpu', 'all', 'cross', 'mlp', 'self', 'logits',
         'cross,mlp', 'cross,mlp,logits', 'cross,mlp,self',
         'fused', 'fused,logits', 'fused,self', 'fused,self,logits')]
-    [string]$DecoderOffload = 'cross,mlp',
+    [string]$DecoderOffload = 'fused,self,logits',
+    [ValidateSet('off', 'trace', 'basic', 'detailed')]
+    [string]$Diagnostics = 'off',
     [string]$OutputDirectory
 )
 
@@ -48,6 +50,10 @@ $audioSeconds = [double]::Parse(
 )
 
 $arguments = "--model=$Model --decoder-offload=$DecoderOffload"
+if ($Diagnostics -ne 'off') {
+    $diagnosticsPath = Join-Path $OutputDirectory 'diagnostics.csv'
+    $arguments += ' --diagnostics=' + $Diagnostics + ' "--diagnostics-output=' + $diagnosticsPath + '"'
+}
 if ($DecoderWorkers -gt 0) { $arguments += " --decoder-workers=$DecoderWorkers" }
 $arguments += ' "' + $WavPath + '"'
 $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -62,12 +68,61 @@ $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
 $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
 $process = New-Object System.Diagnostics.Process
 $process.StartInfo = $startInfo
+if ($Diagnostics -ne 'off' -and -not ('WhisperThreadSampler' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+public sealed class WhisperThreadSampler : IDisposable {
+    public readonly List<string> Rows = new List<string>();
+    public int Errors;
+    private readonly Process process;
+    private readonly Timer timer;
+    private readonly object gate = new object();
+    public WhisperThreadSampler(Process target) {
+        process = target;
+        Rows.Add("qpc,thread_id,user_100ns,kernel_100ns,state,wait_reason");
+        timer = new Timer(Sample, null, 0, 250);
+    }
+    private void Sample(object unused) {
+        if (!Monitor.TryEnter(gate)) return;
+        try {
+            process.Refresh();
+            if (process.HasExited) return;
+            foreach (ProcessThread thread in process.Threads) {
+                try {
+                    var state = thread.ThreadState;
+                    string reason = state == System.Diagnostics.ThreadState.Wait ? thread.WaitReason.ToString() : "";
+                    Rows.Add(Stopwatch.GetTimestamp() + "," + thread.Id + "," +
+                        thread.UserProcessorTime.Ticks + "," + thread.PrivilegedProcessorTime.Ticks +
+                        "," + state + "," + reason);
+                } catch { ++Errors; }
+                finally { thread.Dispose(); }
+            }
+        } catch { ++Errors; }
+        finally { Monitor.Exit(gate); }
+    }
+    public void Dispose() {
+        using (var finished = new ManualResetEvent(false)) {
+            timer.Dispose(finished);
+            finished.WaitOne();
+        }
+    }
+}
+'@
+}
 $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 if (-not $process.Start()) { throw 'Could not start npu_probe.exe.' }
+$sampler = if ($Diagnostics -ne 'off') { [WhisperThreadSampler]::new($process) } else { $null }
 $stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 $process.WaitForExit()
 $stopwatch.Stop()
+if ($sampler) {
+    $sampler.Dispose()
+    [System.IO.File]::WriteAllLines((Join-Path $OutputDirectory 'threads.csv'), $sampler.Rows, $utf8NoBom)
+}
 $exitCode = $process.ExitCode
 $cpuSeconds = $process.TotalProcessorTime.TotalSeconds
 $stdoutText = $stdoutTask.Result
@@ -184,6 +239,11 @@ $minimumDecoderSteps = $generatedTokens + 4L * $windowCount
 
 $summary = [ordered]@{
     model = $Model
+    diagnostics = $Diagnostics
+    probe_sha256 = (Get-FileHash -LiteralPath $probe -Algorithm SHA256).Hash.ToLowerInvariant()
+    wav_sha256 = (Get-FileHash -LiteralPath $WavPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    thread_sampling_interval_ms = if ($sampler) { 250 } else { 0 }
+    thread_sampling_errors = if ($sampler) { $sampler.Errors } else { 0 }
     decoder_offload = $DecoderOffload
     transcript_sha256 = $transcriptSha256
     wav = $WavPath

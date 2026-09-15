@@ -15,6 +15,7 @@ EXPORTS
     GetStdHandle
     QueryPerformanceCounter
     QueryPerformanceFrequency
+    GetProcessTimes
     ReadFile
     SetFilePointerEx
     SetConsoleOutputCP

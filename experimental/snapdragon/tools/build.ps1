@@ -1,6 +1,7 @@
 param(
     [string]$Compiler = "clang",
     [string]$BuildDir = "experimental/snapdragon/build",
+    [switch]$DebugSymbols,
     [switch]$Clean
 )
 
@@ -51,6 +52,12 @@ try {
         "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text",
         "-Wl,--stack,1048576", "-L$BuildDir", "-lkernel32"
     )
+    if ($DebugSymbols) {
+        $flags = @($flags | Where-Object { $_ -notin @('-fno-unwind-tables', '-fno-asynchronous-unwind-tables') })
+        $flags += @('-g', '-gcodeview', '-funwind-tables', '-fasynchronous-unwind-tables')
+        $npuLinkFlags = @($npuLinkFlags | Where-Object { $_ -ne '-Wl,-s' })
+        $npuLinkFlags += '-Wl,--pdb='
+    }
     $npuSources = @(
         "experimental/snapdragon/src/tools/whisper/main.c",
         "experimental/snapdragon/src/tools/whisper/whisper_artifact.c",

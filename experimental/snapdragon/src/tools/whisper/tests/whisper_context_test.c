@@ -142,7 +142,80 @@ static int test_medium_restore(u32 mask, u32 expected_graphs) {
     return !restored;
 }
 
+static u32 profile_creates, profile_frees, profile_executes, profile_reads;
+static int profile_should_sample;
+static u64 test_profile_create(QnnBackendHandle backend, u32 level, QnnProfileHandle *profile) {
+    (void)backend;
+    if (level != 1U && level != 2U) return 1U;
+    ++profile_creates;
+    *profile = (void *)(usize)11U;
+    return 0U;
+}
+static u64 test_profile_free(QnnProfileHandle profile) {
+    if (profile != (void *)(usize)11U) return 1U;
+    ++profile_frees;
+    return 0U;
+}
+static u64 test_profile_execute(QnnGraphHandle graph, const QnnTensor *inputs, u32 input_count,
+    QnnTensor *outputs, u32 output_count, QnnProfileHandle profile, QnnHandle signal) {
+    (void)graph; (void)inputs; (void)input_count;
+    (void)outputs; (void)output_count; (void)signal;
+    ++profile_executes;
+    return (profile != 0) != profile_should_sample;
+}
+static u64 test_profile_events(QnnProfileHandle profile, const u64 **events, u32 *count) {
+    static const u64 root = 7U;
+    if (profile != (void *)(usize)11U) return 1U;
+    ++profile_reads;
+    *events = &root; *count = 1U;
+    return 0U;
+}
+static u64 test_profile_children(u64 event, const u64 **events, u32 *count) {
+    static const u64 child = 8U;
+    *events = &child; *count = event == 7U ? 1U : 0U;
+    return 0U;
+}
+static u64 test_profile_data(u64 event, QnnProfileEventData *data) {
+    *data = (QnnProfileEventData){(u32)event, 1U, 42U, "quoted,\"event\""};
+    return 0U;
+}
+static int test_execution_diagnostics(void) {
+    QnnInterfaceV2 api = {0};
+    api.profile_create = test_profile_create;
+    api.profile_free = test_profile_free;
+    api.graph_execute = test_profile_execute;
+    api.profile_get_events = test_profile_events;
+    api.profile_get_sub_events = test_profile_children;
+    api.profile_get_event_data = test_profile_data;
+    diagnostics_level = 1U;
+    diagnostics_copy(diagnostics_path, sizeof(diagnostics_path), "tests/tmp/whisper-profile-test.csv");
+    active_model = whisper_model_medium();
+    if (!diagnostics_initialize(&api, 0, 10000000U, 0U)) return 0;
+    diagnostics_graph_count = 1U;
+    diagnostics_graphs[0].handle = (void *)(usize)3U;
+    diagnostics_copy(diagnostics_graphs[0].name, 128U, "test_graph");
+    for (u32 index = 1U; index <= 128U; ++index) {
+        profile_should_sample = index == 1U || index == 127U;
+        if (diagnostics_execute((void *)(usize)3U, 0, 0U, 0, 0U, 0, 0) != 0U) return 0;
+    }
+    if (profile_creates != 1U || profile_reads != 2U || profile_executes != 128U ||
+        diagnostics_event_count != 4U || diagnostics_event_records[1].parent != 0U) return 0;
+    diagnostics_level = 2U;
+    profile_should_sample = 1;
+    if (diagnostics_execute((void *)(usize)3U, 0, 0U, 0, 0U, 0, 0) != 0U || profile_reads != 2U) return 0;
+    diagnostics_record_count = DIAGNOSTICS_RECORD_CAPACITY;
+    if (diagnostics_begin(1U, 0U, 0U, 0U) != ~0U || diagnostics_dropped != 1U) return 0;
+    diagnostics_record_count = 129U;
+    diagnostics_release_profile();
+    diagnostics_finish();
+    diagnostics_level = 0U;
+    return profile_frees == 1U && !diagnostics_io_failed && diagnostics_errors == 0U;
+}
+
 void mainCRTStartup(void) {
+    _Static_assert(sizeof(QnnProfileEventData) == 24U, "QNN profile event ABI size");
+    _Static_assert(__builtin_offsetof(QnnProfileEventData, identifier) == 16U, "QNN profile identifier offset");
+    if (!test_execution_diagnostics()) ExitProcess(11U);
     if (console_control_handler(2U) != 0 || transcription_cancelled(0)) ExitProcess(7U);
     if (!console_control_handler(0U) || !transcription_cancelled(0)) ExitProcess(8U);
     __atomic_store_n(&stop_requested, 0U, __ATOMIC_RELAXED);

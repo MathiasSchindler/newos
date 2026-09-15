@@ -7,6 +7,10 @@
 
 typedef void (*WhisperDecoderWrite)(const char *data, unsigned int size);
 typedef int (*WhisperDecoderCancelled)(void *context);
+typedef void (*WhisperDecoderTrace)(
+    void *context, unsigned int phase, unsigned int begin,
+    unsigned int position, unsigned int layer
+);
 enum { WHISPER_DECODER_CANCELLED = -2 };
 typedef int (*WhisperDecoderMlpOffload)(
     void *context,
@@ -44,6 +48,7 @@ typedef int (*WhisperDecoderSelfAttentionOffload)(
     unsigned long long *execute_ticks
 );
 typedef struct WhisperDecoder WhisperDecoder;
+void whisper_decoder_set_trace(WhisperDecoder *decoder, WhisperDecoderTrace trace, void *context);
 void whisper_decoder_set_cancellation(
     WhisperDecoder *decoder, WhisperDecoderCancelled cancelled, void *context
 );

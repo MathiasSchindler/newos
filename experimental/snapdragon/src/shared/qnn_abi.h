@@ -246,6 +246,15 @@ typedef u64 (*QnnDeviceCreate)(QnnLogHandle, const QnnDeviceConfig **, QnnDevice
 typedef u64 (*QnnDeviceFree)(QnnDeviceHandle);
 typedef u64 (*QnnProfileCreate)(QnnBackendHandle, u32, QnnProfileHandle *);
 typedef u64 (*QnnProfileFree)(QnnProfileHandle);
+typedef struct QnnProfileEventData {
+    u32 type;
+    u32 unit;
+    u64 value;
+    const char *identifier;
+} QnnProfileEventData;
+typedef u64 (*QnnProfileGetEvents)(QnnProfileHandle, const u64 **, u32 *);
+typedef u64 (*QnnProfileGetSubEvents)(u64, const u64 **, u32 *);
+typedef u64 (*QnnProfileGetEventData)(u64, QnnProfileEventData *);
 typedef u64 (*QnnContextCreate)(QnnBackendHandle, QnnDeviceHandle, const QnnContextConfig **, QnnContextHandle *);
 typedef u64 (*QnnContextGetBinarySize)(QnnContextHandle, u64 *);
 typedef u64 (*QnnContextGetBinary)(QnnContextHandle, void *, u64, u64 *);
@@ -299,9 +308,9 @@ typedef struct QnnInterfaceV2 {
     QnnLogFree log_free;
     QnnProfileCreate profile_create;
     QnnUnusedFunction profile_set_config;
-    QnnUnusedFunction profile_get_events;
-    QnnUnusedFunction profile_get_sub_events;
-    QnnUnusedFunction profile_get_event_data;
+    QnnProfileGetEvents profile_get_events;
+    QnnProfileGetSubEvents profile_get_sub_events;
+    QnnProfileGetEventData profile_get_event_data;
     QnnUnusedFunction profile_get_extended_event_data;
     QnnProfileFree profile_free;
     QnnMemRegister mem_register;

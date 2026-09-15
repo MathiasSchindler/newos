@@ -186,6 +186,12 @@ try {
         $result = Invoke-Probe $caseDirectory
         Assert-Case $name $result[0] $case[2] $result[1] $case[3] $case[4]
         if ($define -eq "QNN_MOCK_SUCCESS") {
+            if ($result[1] -notmatch 'decoder offload: self,logits,fused') {
+                throw 'Default decoder offload flags changed unexpectedly'
+            }
+            $overrideResult = Invoke-Probe $caseDirectory @('--model=tiny', '--decoder-offload=cross,mlp')
+            Assert-Case 'explicit model/offload override' $overrideResult[0] 107 `
+                $overrideResult[1] 'decoder offload: cross,mlp' 'decoder offload: self,logits,fused'
             $quietResult = Invoke-Probe $caseDirectory @("--quiet")
             if ($quietResult[0] -ne 107 -or
                 $quietResult[1] -notmatch 'npu_probe: failed \(exit 107\).*model context unavailable' -or

@@ -8,6 +8,9 @@ import threading
 
 def run_case(args):
     command = [str(args.probe), '--model=medium', '--decoder-offload=fused,self,logits']
+    if args.diagnostics != 'off':
+        command += ['--diagnostics=' + args.diagnostics,
+                    '--diagnostics-output=' + str(args.output / f'{args.phase}-{args.event}.csv')]
     if args.phase == 'quiet':
         command += ['--quiet', str(args.wav)]
         marker = b''
@@ -71,6 +74,7 @@ def main():
                         default=pathlib.Path('tests/tmp/whisper-cancellation'))
     parser.add_argument('--phase', choices=['startup', 'decode', 'quiet'])
     parser.add_argument('--event', type=int, choices=[0, 1], default=0)
+    parser.add_argument('--diagnostics', choices=['off', 'trace', 'basic', 'detailed'], default='off')
     args = parser.parse_args()
     args.probe = args.probe.resolve()
     args.wav = args.wav.resolve()
@@ -82,7 +86,8 @@ def main():
     for phase, event in [('startup', 0), ('decode', 0), ('decode', 1), ('quiet', 0)]:
         command = [sys.executable, str(pathlib.Path(__file__).resolve()),
                    '--probe', str(args.probe), '--wav', str(args.wav),
-                   '--output', str(args.output), '--phase', phase, '--event', str(event)]
+                   '--output', str(args.output), '--phase', phase, '--event', str(event),
+                   '--diagnostics', args.diagnostics]
         result = subprocess.run(command, creationflags=subprocess.CREATE_NEW_CONSOLE,
                                 capture_output=True, timeout=90)
         print(result.stdout.decode('utf-8', errors='replace'), end='')

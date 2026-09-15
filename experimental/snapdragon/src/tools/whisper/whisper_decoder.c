@@ -85,6 +85,8 @@ typedef struct DecoderWeights {
 
 struct WhisperDecoder {
     WhisperDecoderCancelled cancelled;
+    WhisperDecoderTrace trace;
+    void *trace_context;
     void *cancel_context;
     WhisperModelConfig model;
     void *weight_allocation;
@@ -1154,12 +1156,14 @@ static u32 decoder_step(
     LogitContext logit_context;
     long long start;
     long long end;
+    if (decoder->trace) decoder->trace(decoder->trace_context, 0U, 1U, position, ~0U);
     if (restore_prefix_hidden(decoder, token, position)) goto select_next_token;
     for (index = 0U; index < model->width; ++index) {
         decoder->hidden[index] = whisper_frontend_half_to_float(embedding[index]) +
             whisper_frontend_half_to_float(position_values[index]);
     }
     for (layer = 0U; layer < model->decoder_layers; ++layer) {
+        if (decoder->trace) decoder->trace(decoder->trace_context, 1U, 1U, position, layer);
         QueryPerformanceCounter(&start);
         index = (u32)self_attention(
             decoder, layer, position, &decoder->weights.layers[layer],
@@ -1177,6 +1181,8 @@ static u32 decoder_step(
             decoder->profile.self_attention_ticks += (u64)(end - start);
         }
         fused_cross_mlp = 0;
+        if (decoder->trace) decoder->trace(decoder->trace_context, 1U, 0U, position, layer);
+        if (decoder->trace) decoder->trace(decoder->trace_context, 2U, 1U, position, layer);
         if (decoder->fused_cross_mlp_offload != 0) {
             QueryPerformanceCounter(&start);
             fused_cross_mlp = decoder->fused_cross_mlp_offload(
@@ -1229,14 +1235,17 @@ static u32 decoder_step(
                 decoder->profile.feed_forward_ticks += (u64)(end - start);
             }
         }
+        if (decoder->trace) decoder->trace(decoder->trace_context, 2U, 0U, position, layer);
     }
     cache_prefix_hidden(decoder, token, position);
 select_next_token:
     if (!select_output) {
         ++decoder->profile.decoder_steps;
+        if (decoder->trace) decoder->trace(decoder->trace_context, 0U, 0U, position, ~0U);
         return DECODER_EOT;
     }
     npu_execute_ticks = 0U;
+    if (decoder->trace) decoder->trace(decoder->trace_context, 3U, 1U, position, ~0U);
     QueryPerformanceCounter(&start);
     if (decoder->logits_offload != 0 && decoder->logits_offload(
             decoder->logits_offload_context, decoder->hidden,
@@ -1256,6 +1265,8 @@ select_next_token:
             decoder->weights.decoder_norm_bias, decoder->normalized, model->width
         );
     }
+    if (decoder->trace) decoder->trace(decoder->trace_context, 3U, 0U, position, ~0U);
+    if (decoder->trace) decoder->trace(decoder->trace_context, 4U, 1U, position, ~0U);
     logit_context.decoder = decoder;
     logit_context.offloaded_logits = offloaded_logits;
     logit_context.gumbel_values = temperature > 0.0f
@@ -1293,6 +1304,8 @@ select_next_token:
     QueryPerformanceCounter(&end);
     decoder->profile.logits_ticks += (u64)(end - start);
     decoder->profile.decoder_steps += 1U;
+    if (decoder->trace) decoder->trace(decoder->trace_context, 4U, 0U, position, ~0U);
+    if (decoder->trace) decoder->trace(decoder->trace_context, 0U, 0U, position, ~0U);
     return best;
 }
 
@@ -1617,6 +1630,12 @@ static int whisper_decoder_transcribe_impl(
         write_token(decoder, decoder->selected_tokens[index], write_output);
     }
     return (int)selected_count;
+}
+
+void whisper_decoder_set_trace(WhisperDecoder *decoder, WhisperDecoderTrace trace, void *context) {
+    if (decoder == 0) return;
+    decoder->trace = trace;
+    decoder->trace_context = context;
 }
 
 void whisper_decoder_set_cancellation(

@@ -1,8 +1,8 @@
 param(
     [string]$WavPath,
     [ValidateSet('tiny', 'base', 'small', 'medium')]
-    [string]$Model = 'small',
-    [string[]]$Modes = @('cross,mlp', 'fused', 'fused,self,logits'),
+    [string]$Model = 'medium',
+    [string[]]$Modes = @('cross,mlp', 'fused,logits', 'fused,self,logits'),
     [ValidateRange(1, 20)]
     [int]$Repetitions = 3,
     [int]$DecoderWorkers = 0,

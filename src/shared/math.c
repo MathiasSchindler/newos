@@ -1,27 +1,19 @@
 #include "math.h"
 
 static unsigned long long math_double_bits(double value) {
-    unsigned long long bits = 0ULL;
-    unsigned char *destination = (unsigned char *)&bits;
-    const unsigned char *source = (const unsigned char *)&value;
-    unsigned int index;
-
-    for (index = 0U; index < 8U; ++index) {
-        destination[index] = source[index];
-    }
-    return bits;
+    union {
+        double value;
+        unsigned long long bits;
+    } representation = { .value = value };
+    return representation.bits;
 }
 
 static double math_bits_double(unsigned long long bits) {
-    double value = 0.0;
-    unsigned char *destination = (unsigned char *)&value;
-    const unsigned char *source = (const unsigned char *)&bits;
-    unsigned int index;
-
-    for (index = 0U; index < 8U; ++index) {
-        destination[index] = source[index];
-    }
-    return value;
+    union {
+        double value;
+        unsigned long long bits;
+    } representation = { .bits = bits };
+    return representation.value;
 }
 
 int math_is_nan(double value) {

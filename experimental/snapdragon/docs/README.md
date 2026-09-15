@@ -2,6 +2,9 @@
 
 This directory documents freestanding Windows ARM64 experiments for the Snapdragon X Elite. Probe source and import definitions live under `src/`, scripts under `tools/`, and downloaded or generated model assets under the ignored `models/` directory. The native probe uses no C runtime, SDK headers, or bundled runtime libraries.
 
+For Medium execution events, CPU accounting, latency distributions, and timeline
+capture, see [diagnostics.md](diagnostics.md).
+
 ## Inventory
 
 Run the PowerShell inventory from the repository root:
@@ -57,7 +60,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\experimental\snapdrago
 .\experimental\snapdragon\build\npu_probe.exe --model=small .\experimental\snapdragon\build\long-form-35s.wav
 ```
 
-Small is the current default because its multilingual transcription quality is materially better. Cache files and QNN graph names are model-specific, so Tiny and Base never restore an incompatible context.
+Medium is the default model, with `--decoder-offload=fused,self,logits` as the default offload mode. Explicit `--model` and `--decoder-offload` flags override their respective defaults independently. Cache files and QNN graph names are model-specific, so other models never restore an incompatible context.
 
 Whisper Medium uses the same FP16 path with width 1024, 16 attention heads,
 and 24 encoder and decoder layers. Prepare its pinned multilingual checkpoint
@@ -78,7 +81,8 @@ for `cross,mlp`, and `whisper-medium-m18-encoder-fp16-l24.qnnctx` for
 `fused,logits`. Use the same offload option when building and transcribing.
 Rebuild each selected model's context when upgrading from the 16-layer executable;
 the old unsuffixed caches are neither loaded nor overwritten. Model weight bundles
-retain the version-2 artifact format. Small remains the default model.
+retain the version-2 artifact format. With no model/offload flags, the builder and
+runtime select Medium's `-m1c-` context (`fused,self,logits`).
 
 Medium's source checkpoint is 3,055,544,304 bytes; its FP16 decoder weights alone
 occupy about 871 MiB. QNN contexts, graph compiler allocations, caches, and retained
@@ -108,8 +112,8 @@ in `--quiet` mode. A failed restore replays the buffered errors; unrelated error
 remain visible immediately. The retry itself still occurs: reversing context
 order and enabling I/O estimation did not eliminate it on this SDK.
 
-An isolated build is available under `build/memory-candidate/`; the deployed
-`build/npu_probe.exe` and default `cross,mlp` mode are unchanged. The I/O-reuse
+The main `build/npu_probe.exe` and the isolated `build/memory-candidate/` build
+default to Medium with `fused,self,logits`. The I/O-reuse
 experiment lowered the single-context estimate by about 97 MiB but did not fix
 deserialization. V81-only extended-uDMA mapping is not applicable to the V73
 graphs used here. Closing applications or increasing system RAM has not been
@@ -161,17 +165,17 @@ and MLP plus final vocabulary projection:
 Its first matched-clip smoke run took 29.123 seconds and 25.484 CPU-seconds,
 with about 2.91 GiB peak resident memory. It generated 137 tokens rather than
 132 in `cross,mlp`; the transcript changes with offload precision. These single
-runs are not a repeated performance comparison. Small and `cross,mlp` remain
-the defaults; use `--model=medium --decoder-offload=fused,logits` explicitly.
+runs are not a repeated performance comparison. Use `--decoder-offload=fused,logits`
+explicitly to select this lower-memory mode instead of full decoder offload.
 
 The final hardware regression repeated both Medium modes at 34.888 seconds /
 32.328 CPU-seconds (`cross,mlp`) and 33.581 seconds / 28.750 CPU-seconds
 (`fused,logits`), preserving each mode's first-run transcript. All six
 Tiny/Base/Small model/mode comparisons matched the original executable's
-transcript hashes and token counts. The main `build/npu_probe.exe` and
-`build/npu_probe_builder.exe` have now been rebuilt with support for Tiny,
-Base, Small, and Medium. The main runtime is byte-identical to the validated
-`build/medium-candidate/npu_probe.exe`, with SHA-256
+transcript hashes and token counts. That earlier deployment of the main
+`build/npu_probe.exe` and `build/npu_probe_builder.exe` added support for Tiny,
+Base, Small, and Medium. Its runtime matched the then-validated
+`build/medium-candidate/npu_probe.exe`, with historical SHA-256
 `627ecfd72c850fae237c968aed6103f98c28211c586c79b582637aadc52cca6d`.
 
 For isolated bring-up, build with
@@ -190,7 +194,17 @@ under `data/medium-validation/`. These are hardware smoke measurements, not a
 transcription-quality benchmark. The optional `-MediumModes` array selects
 additional mode-specific contexts to test.
 
-The stable decoder default is `--decoder-offload=cross,mlp`. Use `cpu`, `all`, or a comma-separated subset of `cross`, `mlp`, `self`, `logits`, and `fused` for controlled measurements. `fused` replaces separate cross-attention and MLP graphs and cannot be combined with `cross` or `mlp`. Stateful self-attention and final projection remain experimental because they have not passed the Small wall-time gate.
+The decoder default is `--decoder-offload=fused,self,logits`, selected for full NPU decoder offload and reduced CPU work, not a guaranteed latency advantage. Use `cpu`, `all`, or a comma-separated subset of `cross`, `mlp`, `self`, `logits`, and `fused` for controlled measurements. `fused` replaces separate cross-attention and MLP graphs and cannot be combined with `cross` or `mlp`. To restore the former defaults, pass `--model=small --decoder-offload=cross,mlp`.
+
+From `experimental/snapdragon`, the normal invocation is now:
+
+```powershell
+.\build\npu_probe.exe --quiet .\data\bundestag-hearing-16k-mono-f32.wav
+```
+
+A WAV argument is still required for transcription; invoking the runtime without
+an input prints usage. Build the default context with `build/npu_probe_builder.exe`
+if it has not been prepared yet.
 
 Pass a 16 kHz mono float32 WAV as the first argument to transcribe the complete track through the cached frontend and encoder. For conversion, retries, resumable records, and richer reports, use the development-time driver:
 
@@ -277,7 +291,7 @@ For CPU-first Small transcription, explicitly select the measured high-offload p
 .\experimental\snapdragon\build\npu_probe.exe --model=small --decoder-offload=fused,self,logits <compatible.wav>
 ```
 
-Rebuild the executable with `tools/build.ps1` before using the decoder work-reuse changes; existing QNN contexts remain compatible. Three interleaved five-minute before/after pairs in this mode reduced median CPU-seconds from 70.91 to 27.17 and elapsed time from 75.83 to 57.24 seconds, with identical transcripts. Median NPU host-call duty rose from 59.35% to 78.69%; it is not a hardware occupancy measurement. Optional exact sampling caching increases private commitment by roughly 94 MB. See [benchmark.md](benchmark.md) for binary identities, variability, and validation. The default remains `cross,mlp`: changing the offload mode itself can change model output, even though these work-reuse changes preserve each tested mode's transcript.
+Rebuild the executable with `tools/build.ps1` before using the decoder work-reuse changes; existing QNN contexts remain compatible. Three interleaved five-minute before/after pairs in this mode reduced median CPU-seconds from 70.91 to 27.17 and elapsed time from 75.83 to 57.24 seconds, with identical transcripts. Median NPU host-call duty rose from 59.35% to 78.69%; it is not a hardware occupancy measurement. Optional exact sampling caching increases private commitment by roughly 94 MB. See [benchmark.md](benchmark.md) for binary identities, variability, and validation. Changing the offload mode itself can change model output, even though these work-reuse changes preserve each tested mode's transcript.
 
 On the Surface Laptop 7 used for bring-up:
 

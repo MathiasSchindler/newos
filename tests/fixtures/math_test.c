@@ -4,6 +4,37 @@ static int close_to(double actual, double expected, double tolerance) {
     return math_abs(actual - expected) <= tolerance;
 }
 
+static double from_bits(unsigned long long bits) {
+    double value;
+    unsigned char *destination = (unsigned char *)&value;
+    const unsigned char *source = (const unsigned char *)&bits;
+    unsigned int index;
+    for (index = 0U; index < sizeof(value); ++index) destination[index] = source[index];
+    return value;
+}
+
+static unsigned long long to_bits(double value) {
+    unsigned long long bits;
+    unsigned char *destination = (unsigned char *)&bits;
+    const unsigned char *source = (const unsigned char *)&value;
+    unsigned int index;
+    for (index = 0U; index < sizeof(bits); ++index) destination[index] = source[index];
+    return bits;
+}
+
+static int check_bit_pattern(unsigned long long bits) {
+    unsigned long long magnitude = bits & 0x7fffffffffffffffULL;
+    double value = from_bits(bits);
+    if (to_bits(math_abs(value)) != magnitude) return 0;
+    if (to_bits(math_copy_sign(value, -1.0)) != (magnitude | 0x8000000000000000ULL)) return 0;
+    if (to_bits(math_copy_sign(value, 1.0)) != magnitude) return 0;
+    if (math_sign_bit(value) != (int)(bits >> 63U)) return 0;
+    if (math_is_nan(value) != (magnitude > 0x7ff0000000000000ULL)) return 0;
+    if (math_is_infinite(value) != (magnitude == 0x7ff0000000000000ULL)) return 0;
+    if (math_is_finite(value) != (magnitude < 0x7ff0000000000000ULL)) return 0;
+    return 1;
+}
+
 int main(void) {
     double sinh_one;
     double cosh_one;
@@ -13,6 +44,24 @@ int main(void) {
     double nan = math_nan();
     double fraction;
     int binary_exponent;
+    static const unsigned long long patterns[] = {
+        0ULL, 0x8000000000000000ULL, 1ULL, 0x8000000000000001ULL,
+        0x000fffffffffffffULL, 0x0010000000000000ULL,
+        0x7fefffffffffffffULL, 0xffefffffffffffffULL,
+        0x7ff0000000000000ULL, 0xfff0000000000000ULL,
+        0x7ff0000000000001ULL, 0xfff0000000000001ULL,
+        0x7ff8123456789abcULL, 0xfff8123456789abcULL
+    };
+    unsigned long long random_bits = 0x123456789abcdef0ULL;
+    unsigned int pattern_index;
+
+    for (pattern_index = 0U; pattern_index < sizeof(patterns) / sizeof(patterns[0]); ++pattern_index) {
+        if (!check_bit_pattern(patterns[pattern_index])) return 49;
+    }
+    for (pattern_index = 0U; pattern_index < 65536U; ++pattern_index) {
+        random_bits = random_bits * 6364136223846793005ULL + 1442695040888963407ULL;
+        if (!check_bit_pattern(random_bits)) return 50;
+    }
 
     if (!math_is_nan(nan) || math_is_nan(1.0)) return 1;
     if (!math_is_infinite(infinity) || !math_is_infinite(-infinity)) return 2;

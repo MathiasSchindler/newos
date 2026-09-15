@@ -150,7 +150,9 @@ static int gemma_stage1_probe;
 #endif
 static u32 decoder_worker_count;
 
-static u32 decoder_offload_mask = DECODER_OFFLOAD_CROSS | DECODER_OFFLOAD_MLP;
+static u32 decoder_offload_mask = DECODER_OFFLOAD_FUSED | DECODER_OFFLOAD_SELF | DECODER_OFFLOAD_LOGITS;
+static u32 diagnostics_level;
+static char diagnostics_path[512] = "whisper-diagnostics.csv";
 
 typedef struct WavManifestReader {
     void *handle;
@@ -467,6 +469,29 @@ static const char *first_command_argument(void) {
             active_model = whisper_model_small();
             continue;
         }
+        if (argument_equals(external_wav_path, "--diagnostics=basic")) {
+            diagnostics_level = 1U;
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--diagnostics=detailed")) {
+            diagnostics_level = 2U;
+            continue;
+        }
+        if (argument_equals(external_wav_path, "--diagnostics=trace")) {
+            diagnostics_level = 3U;
+            continue;
+        }
+        if (argument_has_prefix(external_wav_path, "--diagnostics-output=")) {
+            u32 index = 0U;
+            const char *path = external_wav_path + sizeof("--diagnostics-output=") - 1U;
+            while (path[index] != '\0' && index + 1U < sizeof(diagnostics_path)) {
+                diagnostics_path[index] = path[index];
+                ++index;
+            }
+            diagnostics_path[index] = '\0';
+            if (index == 0U || path[index] != '\0') { command_argument_error = 1; return 0; }
+            continue;
+        }
         if (argument_equals(external_wav_path, "--model=medium")) {
             active_model = whisper_model_medium();
             continue;
@@ -649,6 +674,8 @@ static void write_u64(u64 value) {
     } while (value != 0U);
     while (used != 0U) write_bytes(&digits[--used], 1U);
 }
+
+#include "whisper_diagnostics.h"
 
 static void write_duration_us(const char *name, u64 ticks, u64 frequency);
 
@@ -4199,14 +4226,20 @@ static u32 run_external_wav_window(
     const WhisperDecoderProfile *decoder_profile;
 
     if (transcription_cancelled(0)) return 130U;
+    if (diagnostics_level != 0U) {
+        ++diagnostics_window;
+        diagnostics_position = ~0U;
+    }
     QueryPerformanceCounter(&window_start);
     write_text("Whisper external WAV fast path: ");
     write_text(wav_path);
     write_text("\n");
+    u32 frontend_trace = diagnostics_begin(2U, ~0U, 5U, ~0U);
     result = run_whisper_log_mel_frontend(
         frequency, wav_path, 0, start_sample, total_samples, 0,
         "Whisper external WAV log-mel frontend"
     );
+    diagnostics_end(frontend_trace, result);
     if (transcription_cancelled(0)) return 130U;
     if (result == 0U) result = run_cached_model_frontend(api, frequency);
     if (transcription_cancelled(0)) return 130U;
@@ -4426,7 +4459,7 @@ void mainCRTStartup(void) {
 
     stdout_handle = GetStdHandle(0xfffffff5U);
     original_stderr_handle = GetStdHandle(0xfffffff4U);
-    active_model = whisper_model_small();
+    active_model = whisper_model_medium();
     if (GetConsoleMode(stdout_handle, &console_mode)) {
         original_console_output_cp = GetConsoleOutputCP();
         if (original_console_output_cp != 0U && original_console_output_cp != 65001U) {
@@ -4438,7 +4471,7 @@ void mainCRTStartup(void) {
     if (command_argument_error) {
 #if defined(WHISPER_RUNTIME_ONLY)
         static const char usage[] =
-            "Usage: npu_probe.exe [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
+            "Usage: npu_probe.exe [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--diagnostics=trace|basic|detailed] [--diagnostics-output=path.csv] [--quiet] <wav-path>\n";
 #else
         static const char usage[] =
             "Usage: npu_probe_builder.exe [--gemma-stage1] [--model=tiny|base|small|medium] [--decoder-workers=1..32] [--decoder-offload=cpu|all|cross,mlp,self,logits,fused] [--quiet] <wav-path>\n";
@@ -4545,6 +4578,14 @@ void mainCRTStartup(void) {
         goto cleanup;
     }
 
+    if (diagnostics_level != 0U) {
+        if (!diagnostics_initialize(api, backend_handle, (u64)counter_frequency, (u64)process_start_counter)) {
+            exit_status = 119U;
+            goto cleanup;
+        }
+        api = &diagnostics_api;
+    }
+
     status = api->device_create(log_handle, 0, &device_handle);
     write_call_status("  deviceCreate", status);
     if (status != 0U) {
@@ -4609,6 +4650,7 @@ void mainCRTStartup(void) {
         }
         if (exit_status == 0U) {
             whisper_decoder_set_cancellation(whisper_decoder, transcription_cancelled, 0);
+            if (diagnostics_level != 0U) whisper_decoder_set_trace(whisper_decoder, diagnostics_decoder_trace, 0);
             if ((decoder_offload_mask & DECODER_OFFLOAD_CROSS) != 0U) {
                 whisper_decoder_set_cross_attention_offload(
                     whisper_decoder, whisper_decoder_qnn_cross_attention_offload,
@@ -5030,6 +5072,7 @@ void mainCRTStartup(void) {
 #endif
 cleanup:
     QueryPerformanceCounter(&cleanup_start_counter);
+    diagnostics_release_profile();
     whisper_decoder_shutdown(whisper_decoder);
     whisper_decoder = 0;
     whisper_encoder_qnn_shutdown(whisper_encoder_qnn);
@@ -5079,6 +5122,8 @@ cleanup:
         (u64)counter_frequency
     );
     if (quiet_stderr_handle != 0) CloseHandle(quiet_stderr_handle);
+    diagnostics_finish();
+    if (diagnostics_io_failed && exit_status == 0U) exit_status = 119U;
     finish(exit_status);
 }
 
