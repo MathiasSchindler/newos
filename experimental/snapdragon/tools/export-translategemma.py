@@ -814,26 +814,37 @@ def main():
     parser.add_argument("--tokenizer-only", action="store_true")
     parser.add_argument("--tokenizer-reference", action="store_true")
     parser.add_argument("--numerical-reference", action="store_true")
+    parser.add_argument("--block-reference", action="store_true")
+    parser.add_argument("--prompt-reference", action="store_true")
     parser.add_argument("--primitives-only", action="store_true")
     parser.add_argument("--weights-dir", default="experimental/snapdragon/models/translategemma-4b-stage3")
     parser.add_argument("--reference-variant", choices=("all", "bf16", "w8a16", "w4a16"), default="all")
     args = parser.parse_args()
     if args.tokenizer_reference and not args.tokenizer_only:
         parser.error("--tokenizer-reference requires --tokenizer-only")
-    if args.numerical_reference and args.tokenizer_only:
+    if sum((args.numerical_reference, args.block_reference, args.prompt_reference, args.tokenizer_only)) > 1:
+        parser.error("select only one reference/export mode")
+    if (args.numerical_reference or args.block_reference or args.prompt_reference) and args.tokenizer_only:
         parser.error("numerical reference cannot be combined with tokenizer-only")
     if args.primitives_only and not args.numerical_reference:
         parser.error("--primitives-only requires --numerical-reference")
     if args.output is None:
-        args.output = "experimental/snapdragon/models/translategemma-4b-stage" + ("5-v2" if args.numerical_reference else "4" if args.tokenizer_only else "3")
+        args.output = "experimental/snapdragon/models/translategemma-4b-stage" + ("7" if args.prompt_reference else "6" if args.block_reference else "5-v2" if args.numerical_reference else "4" if args.tokenizer_only else "3")
     tools_dir = Path(__file__).resolve().parent
     variants = (8, 4) if args.variant == "both" else (int(args.variant[1:]),)
     try:
-        if args.numerical_reference:
+        if args.numerical_reference or args.block_reference or args.prompt_reference:
             module_path = tools_dir / "translategemma-reference.py"
             spec = importlib.util.spec_from_file_location("translategemma_reference", module_path)
             reference = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(reference)
+            if args.block_reference or args.prompt_reference:
+                if args.verify_only:
+                    reference.verify_reference(sys.modules[__name__], args.output, require_complete=False)
+                else:
+                    reference.export_block_reference(sys.modules[__name__], args.model_dir, args.catalog,
+                                                     args.weights_dir, args.output, args.replace, args.prompt_reference)
+                return 0
             if args.verify_only:
                 reference.verify_reference(sys.modules[__name__], args.output,
                                            not args.primitives_only and args.reference_variant == "all")

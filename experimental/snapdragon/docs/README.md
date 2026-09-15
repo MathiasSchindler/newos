@@ -115,7 +115,66 @@ The published version-2 corpus contains 184 verified artifacts. W8 matches all
 three BF16 token sequences exactly, with no overflow. W4 stays finite but has
 degraded Czech output, a repetitive Japanese `token_limit` response, and changed
 German-to-English text. Its quality/generation gate remains blocked. Proceed
-with W8 full-block QNN comparison first; finite W4 arithmetic is not acceptance.
+with W8 first when evaluating full-model QNN generation; finite W4 arithmetic
+is not translation acceptance. Stage 6 local/global block checks now pass both
+W8 and W4 as described below.
+
+### QNN Block Validation
+
+Stage 6 builds a separate no-CRT ARM64 runner and tests local layer 0 and global
+layer 5 in W8 then W4, using the actual Stage 3 weights and v2 scaled residual
+contract. Normal builds/tests use Clang/LLVM, PowerShell, and QNN, without Python:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestBlocks -TestNumerics
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestBlocks -BlockBits 8 -BlockLayers 0
+```
+
+The dedicated binary, binding files, and per-block/cleanup logs live in
+`build/gemma-block/`. Signed QNN `.dll`, DSP `.so`, and `.cat` files are copied
+from the selected build directory; keep catalogs with the DSP libraries.
+Production Whisper binaries and contexts are not overwritten. The runner
+requires the tested QNN core 2.39 API and imports only Kernel32 statically.
+
+Generate the small cached-block reference set once with the existing offline
+NumPy environment; this does not regenerate the full translation corpus:
+
+```powershell
+$env:OPENBLAS_NUM_THREADS = '4'
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --block-reference --replace
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --block-reference --verify-only
+```
+
+The 209 artifacts in `models/translategemma-4b-stage6/` cover two three-token
+executions per block, sparse positions crossing the local-window boundary,
+runtime RoPE positions, and prior KV consumption. All four hardware cases pass
+20 intermediate comparisons per step, masked-zero checks, shared-memory guards,
+cached-row influence/restoration, and deterministic warm replay. Five injected
+failure stages pass cleanup checks. The retained diagnostic outputs and internal
+KV expansion make these correctness graphs, not the final prompt/decode design.
+The [Stage 6 report](plan-translategemma.md#stage-6-qnn-transformer-block) records
+tolerances, timing results, fixture limits, and remaining full-model obligations.
+
+### Prompt Processor Bring-up
+
+Stage 7 is in progress, not accepted. The 128-token, 34-layer W4 graph for the
+512 context bucket finalizes and restores, but execution currently fails with
+HTP DMA error 1100. No full-model KV/logit, padding, or throughput success is
+claimed. See the [Stage 7 status](plan-translategemma.md#stage-7-prompt-processor)
+for the recorded failure and remaining isolation work.
+
+```powershell
+$env:OPENBLAS_NUM_THREADS = '4'
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --prompt-reference --replace
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket 512
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket 512
+```
+
+The two hardware commands currently fail intentionally at the unpassed execution
+gate. Restore-only requires the context written by the build command. The
+context, bindings, and log remain separate under `build/gemma-block/`.
+
+### Independent Numerical Checks
 
 Optional independent development checks reuse the existing test file:
 

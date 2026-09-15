@@ -597,6 +597,11 @@ Validation record:
 
 Prove one local and one global decoder block before constructing all 34 layers.
 
+Status: implemented and hardware-validated on 2026-09-15, Snapdragon X Elite,
+QAIRT 2.50 / QNN core 2.39. Both W8A16 and W4A16 pass local layer 0 and global
+layer 5 block gates. This is block arithmetic acceptance, not W4 translation
+quality acceptance or a full-depth prompt/decode implementation.
+
 Actions:
 
 1. Build W8A16 graphs first and compare all meaningful intermediate outputs.
@@ -618,10 +623,126 @@ Exit criteria:
 - The warmed block result is deterministic and all failure paths release handles
   in reverse order.
 
+Implementation and reproducible gate:
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestBlocks -TestNumerics
+```
+
+The tool-private `src/tools/gemma/gemma_block.h/.c` builds a fixed three-token
+graph with runtime positions and masks, in-graph split-half RoPE, four KV heads,
+eight query heads, 2048 past slots, and three current slots. It retains the v2
+scaled residual contract. W8 needs QNN's standard axis-scale-offset encoding;
+the bit-width encoding is rejected for W8 on this backend. W4 uses the proven
+S8 container with bit width 4 and output-channel scales. Stored matrix metadata
+declares quantization axis 1; both variants are transposed for QNN MatMul.
+
+The dedicated Kernel32-only ARM64 runner validates artifact identity and SHA-256,
+then creates/finalizes once per block. It registers four page-aligned regions in
+one FastRPC allocation: past K, past V, current K, and current V. Guard padding
+and read-only cache fingerprints are checked after every execution. Only the new
+three-token rows are copied inside shared storage, 12288 bytes per step; no
+complete cache travels through ordinary application buffers. Local slots wrap
+modulo 1024; global slots use absolute positions below 2048. Concat/head expansion
+still materializes tensors inside HTP; this is not a zero-DDR production graph.
+
+The offline fixture set contains 209 hashed artifacts, generated through
+`export-translategemma.py --block-reference` into
+`models/translategemma-4b-stage6/`. It uses actual W8/W4 weights and the existing
+NumPy 2.4.3 reference, without full-model generation. Both layers receive the
+same three embedded token IDs `[2, 9259, 1902]`, at positions `[0, 1023, 1024]`
+then `[1025, 1026, 2047]` with cached K/V. Layer 5 is intentionally tested in
+isolation, not with layer 4's output. `complete=false` describes the absence of
+the full Stage 5 corpus in this block-only publication, not a failed block gate.
+
+Twenty meaningful taps per step are compared, including visible attention scores
+mapped from physical cache slots and softmax probabilities. All masked
+probabilities must be zero. The fixed gate requires
+`sum(error^2) <= 0.000625 * sum(reference^2) + 0.000001 * element_count`
+and `max_abs_error <= 0.15 * max_abs_reference + 0.02`, plus finite outputs.
+Thus the relative RMSE budget is 2.5% with a 0.001 absolute RMS floor. All observed
+tap relative MSEs were below 19 ppm (relative RMSE below 0.44%); final block
+outputs were below 3 ppm. Folded FP16 norm gains and backend GELU/softmax arithmetic
+are tolerance-checked against the FP32-accumulating, explicitly rounded oracle,
+not asserted to be kernel-bit-identical.
+
+Each step has three warm replays with matching fingerprints for every tapped
+output. Masking out past rows must change attention; restoring the mask must
+reproduce it. Five injected failures after context creation, graph construction,
+finalization, partial registration, and execution all return failure with zero
+cleanup errors. Registered handles are released before their backing allocation;
+the context is freed before weight/tensor storage, then device/backend/log and
+loaded modules are released. FastRPC's free API itself has no status return.
+
+Measured final gate (construction includes artifact reads, hashing and transpose;
+warm median covers six replays, no power-mode control):
+
+| Block | Construction s | Finalize s | First ms | Warm Median ms |
+|---|---:|---:|---:|---:|
+| W8 local 0 | 1.181 | 2.940 | 16.49 | 11.30 |
+| W8 global 5 | 1.031 | 2.802 | 16.58 | 12.11 |
+| W4 local 0 | 0.820 | 2.629 | 14.09 | 10.19 |
+| W4 global 5 | 0.839 | 2.609 | 14.52 | 10.29 |
+
+Logs and binding files are under `build/gemma-block/`; the runner has 74 graph
+tensors with diagnostic outputs retained. DDR traffic was not measured because
+no hardware traffic counter was requested. These figures do not establish the
+Stage 7/8 performance targets. Full/deep caches, all-layer composition, prompt
+padding, serialized restore, and full-model HTP generation remain later gates.
+The production Whisper executable/context and historical reference sets are
+unchanged. The build also passes tokenizer 7470, corruption 18, numeric scalar
+323, and ARM64 no-CRT PE audits.
+
 ## Stage 7: Prompt processor
 
 Create a fixed-shape prompt path that amortizes weight traffic across many input
 tokens.
+
+Status (2026-09-15): implementation in progress, hardware execution blocked.
+The shape-aware block builder supports 128-token chunks and 512/1024/2048 buckets,
+unique layer names, internal hidden connections, and final-token vocabulary
+projection. The existing no-CRT runner now composes all 34 W4 layers into one
+graph. The 512 bucket constructed in 28.50 seconds, finalized in 126.05 seconds,
+and serialized to 1966771776 QNN bytes plus an application envelope. Disk restore
+passed in 1.08 seconds. Construction-only weight buffers are released before
+restore; no BF16/W8 artifact variant is loaded for this path.
+
+Execution of the restored graph fails on this HTP runtime with
+`Dma execution failed on the skel side`, result 1100, transport error 0.
+Restore-only replay reproduces it. A temporary diagnostic using raw views of
+the same shared buffers also returned 1100, so the failure is not confined to
+registered-memory bindings. That retry was removed; there is no silent fallback.
+Cleanup reports zero errors. The cause is not yet established: graph size,
+128-token operations, and the large vocabulary projection require isolation
+with smaller composed graphs before choosing a measured partition count.
+
+Reproduce the current failure (not an acceptance command):
+
+```powershell
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket 512
+.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket 512
+```
+
+The first command builds and stores `build/gemma-block/prompt-512.gmb.context`;
+the second requires that context and avoids rebuilding/finalizing the graph.
+The envelope retains graph/tensor names and IDs, dimensions, model repository
+and pinned revision, W4/chunk/bucket metadata, QNN core/backend versions, and
+SHA-256 covering metadata and binary. Fresh-process restore is exercised, but
+corruption/malformed-envelope tests remain pending.
+
+Offline `export-translategemma.py --prompt-reference` publishes 77 verified
+artifacts under `models/translategemma-4b-stage7/`: full-depth W4 K/V for a
+256-token deterministic sequence, embeddings, local/global RoPE tables, and
+logits at tokens 253 and 256. Earlier positions of the full causal run provide
+the unpadded 253-token reference. The runner's registered K/V output path,
+253-token padded comparison, all-layer retained-row/logit checks, deterministic
+256-token repeats, and 300 tokens/s gate are implemented but **not hardware
+validated**, because execution fails before producing outputs. Larger buckets
+have not been finalized or executed. Stage 7 exit criteria remain unmet.
+
+Existing Stage 6 local/global W8/W4 hardware checks, five failure-cleanup probes,
+7470 tokenizer cases, 18 corruption cases, 323 numerical scalars, and no-CRT PE
+audits still pass after the builder changes. Twelve Python reference tests pass.
 
 Actions:
 

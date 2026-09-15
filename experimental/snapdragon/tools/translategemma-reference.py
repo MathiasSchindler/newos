@@ -562,6 +562,76 @@ def verify_reference(exporter, output, require_complete=True):
     return manifest
 
 
+def export_block_reference(exporter, model_dir, catalog, weights_dir, output, replace, prompt=False):
+    if np.__version__ != "2.4.3":
+        raise ValueError("block reference requires NumPy 2.4.3")
+    validate_checkpoint_rope(model_dir)
+    self_test()
+    output = Path(output).resolve()
+    staging = output.with_name(f"{output.name}.partial-{uuid.uuid4().hex}")
+    staging.mkdir(parents=True)
+    try:
+        exporter.validate_source(Path(exporter.__file__).parent, catalog, model_dir, staging / "source-audit.json")
+        exporter.validate_artifact_set(weights_dir)
+        scalar, count = scalar_fixtures(exporter, staging / "numeric-scalars.gta")
+        recorder = Recorder(exporter, staging)
+        for variant in (("w4a16",) if prompt else ("w8a16", "w4a16")):
+            weights = Weights(exporter, model_dir, weights_dir, variant)
+            try:
+                if prompt:
+                    engine = Reference(weights, residual_scale=32)
+                    token_ids = ([2, 9259, 1902] * 86)[:256]
+                    hidden = weights.embedding(token_ids, 32)
+                    recorder.array("prompt/input", hidden, variant)
+                    recorder.array("prompt/token-ids", token_ids, "absolute-positions")
+                    for local in (True, False):
+                        cosine, sine = engine.rope(np.arange(2048), local)
+                        kind = "local" if local else "global"
+                        recorder.array(f"prompt/{kind}-cos", cosine[:, :128], variant)
+                        recorder.array(f"prompt/{kind}-sin", sine[:, :128], variant)
+                    class PromptRecorder:
+                        def array(self, name, values, semantic_dtype):
+                            if name.rsplit("/", 1)[1] in ("k-rope", "v-projection"):
+                                recorder.array("prompt/" + name.split("/", 1)[1], values, semantic_dtype)
+                    for layer in range(34):
+                        hidden = engine.layer(hidden, np.arange(256), layer, PromptRecorder())
+                        print(f"Recorded prompt layer {layer}", flush=True)
+                    for valid in (253, 256):
+                        normalized = engine.norm(hidden[valid - 1:valid], "norm.weight", input_scale=32)
+                        logits = weights.linear(normalized, "embed_tokens.weight", 262208)
+                        recorder.array(f"prompt/logits-{valid}", logits, variant)
+                    continue
+                embedded = weights.embedding([2, 9259, 1902], 32)
+                for layer in (0, 5):
+                    engine = Reference(weights, residual_scale=32)
+                    prefix = f"{variant}/layer-{layer}/"
+                    cosine, sine = engine.rope(np.arange(2048), layer == 0)
+                    recorder.array(prefix + "cos-table", cosine[:, :128], variant)
+                    recorder.array(prefix + "sin-table", sine[:, :128], variant)
+                    for step, positions in enumerate(([0, 1023, 1024], [1025, 1026, 2047])):
+                        class StepRecorder:
+                            def array(self, name, values, semantic_dtype):
+                                recorder.array(prefix + f"step-{step}/" + name.rsplit("/", 1)[1], values, semantic_dtype)
+                        recorder.array(prefix + f"step-{step}/positions", positions, "absolute-positions")
+                        engine.layer(embedded, positions, layer, StepRecorder(), cache=True)
+                    print(f"Recorded cached block {variant} layer {layer}", flush=True)
+            finally:
+                weights.close()
+        manifest = {"schema_version": 2, "execution_contract": EXECUTION_CONTRACT,
+            "model": {"repository": exporter.REPOSITORY, "revision": exporter.REVISION},
+            "purpose": "stage7-prompt" if prompt else "stage6-block-cache", "complete": False, "scalar_cases": count,
+            "source_sha256": exporter.sha256_file(__file__),
+            "source_audit_sha256": exporter.sha256_file(staging / "source-audit.json"),
+            "weights_manifest_sha256": exporter.sha256_file(Path(weights_dir) / "manifest.json"),
+            "artifacts": [scalar, *recorder.entries]}
+        (staging / "manifest.json").write_bytes(exporter.canonical_json(manifest))
+        verify_reference(exporter, staging, require_complete=False)
+        exporter.publish_directory(staging, output, replace)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def export_reference(exporter, model_dir, catalog, weights_dir, output, replace,
                      primitives_only=False, selected_variant="all"):
     if np.__version__ != "2.4.3":

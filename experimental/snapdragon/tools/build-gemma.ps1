@@ -6,6 +6,12 @@ param(
     [switch]$ExportReference,
     [switch]$TestNumerics,
     [switch]$ExportNumerics,
+    [switch]$TestBlocks,
+    [switch]$TestPrompt,
+    [switch]$RestorePrompt,
+    [ValidateSet(512, 1024, 2048)][int]$PromptBucket = 512,
+    [ValidateSet(4, 8)][int[]]$BlockBits = @(8, 4),
+    [ValidateSet(0, 5)][int[]]$BlockLayers = @(0, 5),
     [string]$NumericDir = 'experimental/snapdragon/models/translategemma-4b-stage5-v2',
     [string]$Python = 'experimental/snapdragon/build/calibration-venv/Scripts/python.exe'
 )
@@ -39,7 +45,7 @@ try {
         '--target=aarch64-w64-windows-gnu', '-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-Oz',
         '-ffreestanding', '-fno-builtin', '-fno-stack-protector', '-fno-unwind-tables',
         '-fno-asynchronous-unwind-tables', '-ffunction-sections', '-fdata-sections', '-flto',
-        '-Isrc/shared', '-Iexperimental/snapdragon/src/tools/gemma',
+        '-Isrc/shared', '-Iexperimental/snapdragon/src/shared', '-Iexperimental/snapdragon/src/tools/gemma',
         '-nostdlib', '-fuse-ld=lld', '-Wl,-e,mainCRTStartup', '-Wl,-s', '-Wl,--gc-sections',
         '-Wl,--icf=safe', '-Wl,--no-insert-timestamp', '-Wl,/merge:.rdata=.text',
         '-Wl,--stack,1048576', "$BuildDir/gemma-chkstk.obj", "-L$BuildDir", '-lkernel32'
@@ -61,6 +67,33 @@ try {
         throw "Tokenizer no-CRT PE contract failed`n$audit"
     }
     Write-Output "Built $binary; ARM64, Kernel32 only, no exception or CLR tables"
+    if ($TestBlocks -or $TestPrompt) {
+        $blockDir = Join-Path $BuildDir 'gemma-block'
+        New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
+        $blockBinary = Join-Path $blockDir 'test-gemma-block.exe'
+        & $compilerPath @flags experimental/snapdragon/tools/test-gemma-block.c `
+            experimental/snapdragon/src/tools/gemma/gemma_block.c `
+            experimental/snapdragon/src/tools/gemma/gemma_model.c `
+            experimental/snapdragon/src/tools/gemma/gemma_artifact.c `
+            experimental/snapdragon/src/tools/gemma/gemma_numeric.c src/shared/crypto/sha256.c -o $blockBinary
+        if ($LASTEXITCODE -ne 0) { throw 'Block runner compilation failed' }
+        $blockAudit = & $readObj --file-headers --coff-imports $blockBinary | Out-String
+        $blockImports = @([regex]::Matches($blockAudit, '(?m)^\s*Name: (.+\.dll)\s*$'))
+        if ($LASTEXITCODE -ne 0 -or $blockAudit -notmatch 'IMAGE_FILE_MACHINE_ARM64' -or
+            $blockImports.Count -ne 1 -or $blockImports[0].Groups[1].Value.Trim() -ine 'KERNEL32.dll' -or
+            $blockAudit -notmatch 'ExceptionTableRVA: 0x0\b' -or $blockAudit -notmatch 'CLRRuntimeHeaderRVA: 0x0\b') {
+            throw 'Block runner PE contract failed'
+        }
+        Get-ChildItem -LiteralPath $BuildDir -File | Where-Object { $_.Extension -in '.dll', '.so', '.cat' } |
+            Copy-Item -Destination $blockDir -Force
+        if ($TestBlocks) {
+            & "$PSScriptRoot/test-gemma-block.ps1" -Binary $blockBinary -Bits $BlockBits -Layers $BlockLayers -TestCleanup
+        }
+        if ($TestPrompt) {
+            & "$PSScriptRoot/test-gemma-block.ps1" -Binary $blockBinary -PromptBucket $PromptBucket `
+                -FixtureDir experimental/snapdragon/models/translategemma-4b-stage7 -RestorePrompt:$RestorePrompt
+        }
+    }
     if ($Test -or $TestNumerics) {
         $testArguments = @("$ModelDir/tokenizer.gta", "$ModelDir/tokenizer-fixtures.gta")
         if ($TestNumerics) {
