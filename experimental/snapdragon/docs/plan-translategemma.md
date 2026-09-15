@@ -415,8 +415,8 @@ Implementation record:
 
 ## Stage 5: Minimal numerical reference
 
-**Status: reference implementation and BF16 reproducibility gate complete;
-quantized full-generation gate blocked by FP16 residual overflow (2026-09-15).**
+**Status: RoPE and scaled-residual contract resolved; W4 generation/quality
+remains blocked by degraded output and a token-limit failure (2026-09-15).**
 
 Build a development-time reference that isolates model correctness from QNN
 integration. It may use Python/Transformers, but all fixtures consumed by the C
@@ -460,15 +460,24 @@ Implementation contract:
    5, final RMSNorm, and the tied vocabulary projection. Sparse absolute positions
    0, 1023, and 1024 exercise the local-window boundary. Array shapes, byte types,
    semantic precision, model identity, and SHA-256 are recorded in the manifest.
-- **RoPE compatibility discrepancy:** the pinned checkpoint contains newer
-   `rope_parameters` with global linear factor 8, but pinned Transformers 4.57.3
-   reads `rope_scaling=null` and uses effective factor 1. Stage 5 explicitly
-   reproduces that pinned implementation: global theta 1000000, local theta 10000,
-   no linear scaling. Do not silently apply factor 8 in Stage 6. A change to the
-   reference implementation requires separately regenerated and reviewed baselines.
-   Stage 3's `metadata/rope` artifact preserves the checkpoint's declared factor
-   8; it is source metadata, not the effective Stage 5 execution contract. Keep
-   that distinction explicit when binding a graph or evaluating a newer backend.
+- **RoPE contract, version 2:** the checkpoint's `rope_parameters` is
+   authoritative: global theta 1000000 with linear factor 8, local theta 10000
+   with factor 1. Divide global inverse frequencies by 8 before multiplying by
+   absolute positions. Stock Transformers 5.17.0/PyTorch 2.14.0 confirms this
+   interpretation, including positions 0, 1, 1023, 1024, and 2047. Stage 3's
+   `metadata/rope` now agrees with execution. The earlier schema-1 reference
+   reproduced Transformers 4.57.3 ignoring this field; its factor-1 artifacts
+   remain historical diagnostics and are rejected by current verification.
+- **Residual contract, version 2:** BF16 remains unscaled. W8/W4 store the
+   residual stream as `hidden / 32` in FP16. Divide the embedding multiplier and
+   post-attention/post-MLP RMSNorm gains by 32 *before* casting to FP16. Input,
+   pre-MLP, and final RMSNorm use epsilon `1e-6 / 1024 = 9.765625e-10` and their
+   original gains. Q/K RMSNorm, projections, attention, and KV remain unscaled.
+   This preserves the real-arithmetic model, not identical finite-precision
+   rounding. Do not cast an unscaled branch first, or change epsilon only after
+   FP16 conversion. The vocabulary projection receives the final unscaled norm.
+   Cross-variant residual-output errors are reported after multiplying W8/W4
+   stored outputs by 32; logits are compared directly.
 - The acceptance corpus includes the official model card's Czech-to-German
    example, English-to-Japanese, and German-to-English with a time expression.
    Messages use only a User role with exactly one text content entry containing
@@ -499,21 +508,72 @@ Implementation contract:
    operation, and error. Such a case has no invented generated sequence. The
    manifest's `complete` flag denotes coverage of reference generation, while
    `quantized_generation_ready` separately requires every translation to finish.
-   **Measured finding:** all three prompts overflow layer 5's MLP residual
-   addition: W8 reaches magnitude 73520 and W4 reaches 71568, beyond FP16's 65504
-   maximum. An unscaled FP16 residual stream therefore
-   needs reconsideration before constructing the full Stage 6/7 graph. Evaluate
-   explicit residual scaling or a supported wider residual precision against
-   the BF16 fixtures; changing this contract requires new W8/W4 fixtures.
+   A quantized response exhausting 64 tokens is retained with its actual IDs,
+   decoded bytes, residual maximum, and `status=token_limit`; readiness stays
+   false. BF16 must still terminate and reproduce exactly. No token-budget
+   extension or quality waiver is applied to repetitive output.
+   **Root-cause confirmation:** stock upstream decoder layers independently
+   reproduce the Czech prompt's unscaled layer-5 MLP residual overflow at W8
+   73520 and W4 71568. BF16 stays finite. The optional x64 Windows oracle runs
+   under emulation, isolated from native ARM64 calibration; it is development
+   tooling only. Its stock Linear additionally rounds dequantized weights to
+   FP16, so this is independent failure reproduction, not HTP bit parity.
+   The full-depth BF16 prompt peak is 296224. Divisor 32 gives more than fourfold
+   headroom against 65504; scaled W8/W4 prompt peaks are 9344.28125/8977.46875.
+   All three prompts reach finite vocabulary logits. This measured corpus bound
+   is not a proof for every possible 2048-token input.
+- The optional `--residual-bound-audit` scans every mapped embedding row and
+   bounds each post-norm channel by `sqrt(2560) * abs(1 + weight) / 32` across
+   all 68 residual additions. Including FP16 relative rounding and subnormal
+   allowances, the envelopes are W8 34446.264 and W4 34446.281, below 65504.
+   This input-independent residual bound assumes finite branch inputs and
+   exact-real RMSNorm; FP32/HTP normalization error and projection overflow
+   remain outside its scope. The report is preserved under
+   `models/translategemma-residual-bound-audit.json`.
+- HTP core 2.39 / QAIRT 2.50 accepts FP32 add IO but does not preserve a residual
+   sum of +/-73728. Wider IO types alone are therefore not a fix. The model-width
+   `[3,2560]` FP16 add/RMSNorm probe passes with divisor 32, including a large
+   residual, epsilon-sensitive small values, and zero. These are capability
+   checks; Stage 6 must still compare actual folded norm gains and full blocks.
+- The existing `test-translategemma-stage3.py` has optional `--torch-oracle` and
+   `--residual-audit` modes. The former pins torch 2.14.0 and Transformers 5.17.0;
+   the latter uses native NumPy and the existing tokenizer environment. Reports
+   live in ignored `models/translategemma-precision-oracle.json` and
+   `models/translategemma-residual-audit.json`. The x64 oracle report records
+   the upstream module hash, checkpoint configuration hash, and exact prompt IDs.
+- A separate `--residual-rounding-audit` compares W4's Japanese prompt with
+   scaled FP16 versus diagnostic FP32 residual/branch outputs, keeping the same
+   quantized projection weights. Both select first tokens `[220844,37307]`;
+   the wide stream peaks at 287257.65625. The observed early generation
+   divergence therefore persists without scaled FP16 residual storage. This
+   two-token comparison does not claim identical complete responses or solve
+   quantization quality. No production FP32/CPU fallback is introduced.
 
 Validation record:
 
-- The published ignored set under `models/translategemma-4b-stage5/` contains
+- The version-2 set publishes 184 verified artifacts. All three BF16 sequences
+   replay exactly, and W8 matches all three BF16 token sequences byte for byte
+   (18/4/15 tokens including stop). All nine attempts remain numerically finite.
+   W4 terminates the Czech and German examples with changed text, but its
+   Japanese case reaches the token limit: `complete=true` denotes diagnostic
+   coverage, while `quantized_generation_ready=false` correctly remains set.
+   Recorded residual maxima are BF16 296224, W8 9344.28125, W4 8977.46875.
+   The final generation run took 3246 seconds; no timing claim for inference
+   follows from this offline reference run. All artifact hashes/inventory,
+   12 Python regressions, 323 C scalar cases, 7470 tokenizer cases, 18 corruption
+   cases, and the Kernel32-only ARM64 PE audit pass after publication.
+- Version 2 eliminates the observed residual overflow without clipping or a
+   CPU fallback. W4 still gives degraded Czech-to-German wording and repeats a
+   romanized greeting in the Japanese case until the 64-token limit. The actual
+   response is retained as a failed generation diagnostic, not a translation
+   acceptance. Continue Stage 6 with W8 first; investigate W4 quantization
+   quality separately rather than changing RoPE back or relaxing stop criteria.
+- The historical ignored set under `models/translategemma-4b-stage5/` contains
    184 validated artifacts, including all three variants' primitive and complete
    local/global layer traces, BF16 prompt/generated-token sequences, and six
    quantified FP16 overflow diagnostics. `quantized_generation_ready=false` is
    intentional: no W8/W4 full-model token sequences are claimed.
-- All three BF16 translations reproduced exactly on a second full cached run.
+- In that historical set, all three BF16 translations reproduced exactly on a second full cached run.
    The manifest stores the exact Czech-to-German, English-to-Japanese, and
    German-to-English translation bytes, hashes, and 18/4/15-token sequences
    respectively, including each end-of-turn token. The time example produces
@@ -521,14 +581,17 @@ Validation record:
 - The freestanding C runner passes 323 numerical cases, including all 65536
    FP16 bit patterns, plus the existing 7470 tokenizer and 18 corruption cases.
    ARM64/Kernel32-only imports and empty exception/CLR tables pass the PE audit.
-- Stage 2's 12 tests and the expanded Stage 3/reference suite's nine tests pass.
+- Stage 2's 12 tests passed at initial publication; the expanded Stage 3/reference
+   suite's 12 tests pass after the contract correction and token-limit handling.
    Independent checks cover RMSNorm, closed-form grouped attention, sparse
    local/global mask boundaries, cached-versus-full attention, actual W4/W8
    payload mappings, diagnostic preservation, and malformed array metadata.
 - Source and all Stage 3 W4/W8 payload hashes were revalidated before generation;
    every numerical artifact and the complete output inventory pass read-only
-   verification. This is a completed diagnostic reference milestone, not a
-   successful FP16 full-model deployment or a Stage 10 quality acceptance.
+   verification at initial publication. New artifacts use schema 2 under
+   `models/translategemma-4b-stage5-v2/`; both Python verification and the
+   Python-free C build entry point reject old or conflicting execution contracts.
+   Neither diagnostic coverage nor finite generation is Stage 10 quality acceptance.
 
 ## Stage 6: QNN transformer block
 
@@ -537,8 +600,8 @@ Prove one local and one global decoder block before constructing all 34 layers.
 Actions:
 
 1. Build W8A16 graphs first and compare all meaningful intermediate outputs.
-2. Replace projections with W4A16 while retaining FP16 residual streams,
-   normalization, attention, and KV storage.
+2. Replace projections with W4A16 while retaining the version-2 FP16 residual
+   stream (`hidden / 32`), compensated normalization, attention, and KV storage.
 3. Fold RoPE into Q/K preparation and use four KV heads with eight query heads.
 4. Supply a fixed-size causal mask and a runtime position input. Avoid rebuilding
    or finalizing graphs per position.

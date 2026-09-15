@@ -35,7 +35,9 @@ try {
         @("RotaryEmbedding", "(?s)Stage 1 RotaryEmbedding.*result: supported and exact"),
         @("direct GQA fallback", "(?s)Stage 1 GroupQueryAttention.*result: direct op unavailable; primitive composition required"),
         @("grouped causal attention", "(?s)Stage 1 grouped attention composition.*result: graph fallback grouped heads and causal masking accepted"),
-        @("shared KV", "(?s)Stage 1 shared KV.*result: model-shaped shared KV registered, used, and exact")
+        @("shared KV", "(?s)Stage 1 shared KV.*result: model-shaped shared KV registered, used, and exact"),
+        @("FP32 residual range report", "(?s)FP32 residual range probe.*result: FP32 (IO does not preserve residual range|residual unavailable|add preserves)"),
+        @("scaled residual RMSNorm", "(?s)scaled FP16 residual and RMSNorm.*result: scaled residual range and compensated RMSNorm epsilon accepted")
     )
     foreach ($check in $checks) {
         if ($output -notmatch $check[1]) {

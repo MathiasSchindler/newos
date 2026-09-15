@@ -82,21 +82,66 @@ the C tests. It uses the existing NumPy/tokenizer reference environment:
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/export-translategemma.py --numerical-reference --verify-only
 ```
 
-Output lives under `models/translategemma-4b-stage5/`. Its manifest describes the
+Output lives under `models/translategemma-4b-stage5-v2/`. Its manifest describes the
 effective arithmetic, array dimensions, payload hashes, source identity, prompt
 IDs, generated IDs, decoded translation hashes, and repeated-BF16 status. The
 reference uses FP32 BLAS accumulation followed by explicit BF16/FP16 rounding;
-it is not asserted to be bit-identical to PyTorch or HTP kernels. In particular,
-the pinned Transformers 4.57.3 effective global RoPE factor is 1 despite the
-checkpoint's newer factor-8 field. Read the Stage 5 plan before constructing
-QNN RoPE nodes or comparing results from a newer Transformers version.
+it is not asserted to be bit-identical to PyTorch or HTP kernels. Version 2 uses
+the checkpoint's global linear RoPE factor 8 (local factor 1), independently
+confirmed with Transformers 5.17.0. The old factor-1 schema remains preserved in
+`models/translategemma-4b-stage5/` but is rejected by current verification.
+
+W8/W4 residuals are stored as `hidden / 32`. Embedding and post-norm gains are
+divided before FP16 rounding; pre/final RMSNorm epsilon is `1e-6 / 1024`.
+BF16 remains unscaled. The HTP model-width scaled-add/RMSNorm probe passes,
+including small values sensitive to epsilon. Plain FP32 add IO did not preserve
+out-of-FP16-range sums on this runtime, so it is not a substitute for scaling.
+The Stage 5 plan defines the exact arithmetic and Stage 6 validation obligations.
 
 Quantized FP16 overflow is preserved as a diagnostic artifact, not clipped into
 a plausible translation. A complete reference manifest can therefore have
 `quantized_generation_ready=false`; inspect each translation's `status` and
-`error`. All three acceptance prompts overflow layer 5's MLP residual addition:
-W8 reaches 73520 and W4 reaches 71568, beyond FP16's maximum 65504.
-That is a graph-precision blocker, not an accepted quantization quality delta.
+`error`. The historical unscaled failures (layer 5, W8 73520 and W4 71568) were
+independently reproduced with stock PyTorch decoder layers. With divisor 32,
+all full-depth acceptance prompts reach finite logits. Finite generation alone
+does not establish translation quality or full-block HTP accuracy.
+Responses that exhaust the 64-token budget are preserved with `status=token_limit`
+and their actual generated tokens; they are not successful translations and
+keep `quantized_generation_ready=false`. BF16 still requires exact terminated
+replay. W4's observed Japanese early-token divergence also persists with a
+diagnostic FP32 residual stream, independent of scaled FP16 storage.
+
+The published version-2 corpus contains 184 verified artifacts. W8 matches all
+three BF16 token sequences exactly, with no overflow. W4 stays finite but has
+degraded Czech output, a repetitive Japanese `token_limit` response, and changed
+German-to-English text. Its quality/generation gate remains blocked. Proceed
+with W8 full-block QNN comparison first; finite W4 arithmetic is not acceptance.
+
+Optional independent development checks reuse the existing test file:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --torch-oracle
+$env:OPENBLAS_NUM_THREADS = '4'
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-audit
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-rounding-audit
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-bound-audit
+```
+
+The first command requires the isolated x64 Python 3.14 environment with torch
+2.14.0, Transformers 5.17.0, and NumPy 2.4.3. It runs under Windows emulation,
+not in the production path; ordinary build/test/export does not require it.
+
+For an isolated HTP capability build, keep the signed runtime together:
+
+```powershell
+.\experimental\snapdragon\tools\build.ps1 -BuildDir experimental/snapdragon/build/gemma-precision-probe
+Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in @('.dll', '.so', '.cat') } | Copy-Item -Destination experimental/snapdragon/build/gemma-precision-probe
+.\experimental\snapdragon\tools\test-gemma-stage1.ps1 -BuildDir experimental/snapdragon/build/gemma-precision-probe -SkipBuild
+```
+
+The `.cat` files are required alongside the DSP `.so` files. Omitting them can
+force QNN onto the user-driver path, where the existing RMSNorm capability test
+fails. This separate build leaves the retained production Whisper binary intact.
 
 For a fast scalar-only development check, deliberately publish to scratch space:
 

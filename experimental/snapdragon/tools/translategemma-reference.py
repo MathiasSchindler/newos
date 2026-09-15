@@ -22,6 +22,22 @@ CORPUS = [
     ("de", "en", "Der Zug kommt um 15:30 Uhr an."),
 ]
 
+EXECUTION_CONTRACT = {
+    "global_rope": {"type": "linear", "theta": 1000000, "factor": 8},
+    "local_rope": {"type": "default", "theta": 10000, "factor": 1},
+    "residual": {"storage": "activation-dtype", "bf16_divisor": 1, "quantized_divisor": 32,
+                 "pre_norm_epsilon": 9.765625e-10, "post_norm_gain_divisor": 32},
+}
+
+
+def validate_checkpoint_rope(model_dir):
+    config = json.loads((Path(model_dir) / "config.json").read_text(encoding="utf-8"))["text_config"]
+    if config.get("rope_scaling") is not None or config.get("rope_theta") != 1000000 or \
+            config.get("rope_local_base_freq") != 10000 or config.get("rope_parameters") != {
+                "full_attention": {"factor": 8.0, "rope_type": "linear"},
+                "sliding_attention": {"rope_type": "default"}}:
+        raise ValueError("checkpoint RoPE contract changed")
+
 
 class ActivationOverflow(ValueError):
     def __init__(self, values, variant):
@@ -45,6 +61,18 @@ def activation(values, variant):
     if not np.isfinite(result).all():
         raise ActivationOverflow(values, variant)
     return result
+
+
+def generation_status(variant, generated, maximum=64):
+    if not generated or len(generated) > maximum or any(token < 0 or token >= 262145 for token in generated):
+        raise ValueError("invalid generated reference sequence")
+    if any(token in (1, 106) for token in generated[:-1]):
+        raise ValueError("reference continued past a stop token")
+    if generated[-1] in (1, 106):
+        return "ok"
+    if variant == "bf16" or len(generated) != maximum:
+        raise ValueError("acceptance translation did not reach a stop token")
+    return "token_limit"
 
 
 class Weights:
@@ -120,11 +148,11 @@ class Weights:
         except ValueError as error:
             raise ValueError(f"projection {name}: {error}") from error
 
-    def embedding(self, ids):
+    def embedding(self, ids, residual_scale=1):
         rows = np.stack([self.rows("embed_tokens.weight", int(token), int(token) + 1)[0] for token in ids])
         rows = activation(rows, self.variant)
         scale = activation(np.float32(2560 ** 0.5), self.variant)
-        return activation(rows * scale, self.variant)
+        return activation(rows * (scale / np.float32(residual_scale)), self.variant)
 
 
 class Recorder:
@@ -151,25 +179,34 @@ class Recorder:
 
 
 class Reference:
-    def __init__(self, weights):
+    def __init__(self, weights, global_rope_factor=8, residual_scale=1):
+        if global_rope_factor not in (1, 8):
+            raise ValueError("unsupported global RoPE factor")
+        if residual_scale not in (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024):
+            raise ValueError("residual scale must be a supported power of two")
         self.weights = weights
         self.variant = weights.variant
+        self.global_rope_factor = global_rope_factor
+        self.residual_scale = residual_scale
+        self.residual_max = 0.0
         self.cache = {}
 
     def cast(self, values):
         return activation(values, self.variant)
 
-    def norm(self, values, name):
+    def norm(self, values, name, input_scale=1, output_scale=1):
         weight = self.weights.rows(name)
-        output = values / np.sqrt(np.mean(values * values, axis=-1, keepdims=True, dtype=np.float32) + np.float32(1e-6))
+        epsilon = np.float32(1e-6 / (input_scale * input_scale))
+        output = values / np.sqrt(np.mean(values * values, axis=-1, keepdims=True, dtype=np.float32) + epsilon)
         try:
-            return self.cast(output * (np.float32(1) + weight))
+            return self.cast(output * ((np.float32(1) + weight) / np.float32(output_scale)))
         except ValueError as error:
             raise ValueError(f"RMSNorm {name}: {error}") from error
 
     def rope(self, positions, local):
         theta = np.float32(10000 if local else 1000000)
         inverse = np.float32(1) / theta ** (np.arange(0, 256, 2, dtype=np.float32) / np.float32(256))
+        inverse /= np.float32(1 if local else self.global_rope_factor)
         angles = np.asarray(positions, dtype=np.float32)[:, None] * inverse[None, :]
         angles = np.concatenate((angles, angles), axis=-1)
         return self.cast(np.cos(angles)), self.cast(np.sin(angles))
@@ -177,6 +214,10 @@ class Reference:
     def rotate(self, values, cosine, sine):
         rotated = np.concatenate((-values[..., 128:], values[..., :128]), axis=-1)
         return self.cast(self.cast(values * cosine[None, :, :]) + self.cast(rotated * sine[None, :, :]))
+
+    def residual(self, values):
+        self.residual_max = max(self.residual_max, float(np.max(np.abs(values))))
+        return self.cast(values)
 
     def layer(self, hidden, positions, layer, recorder=None, cache=False):
         stem = f"layers.{layer}."
@@ -189,7 +230,7 @@ class Reference:
 
         record("input", hidden)
         residual = hidden
-        normalized = record("input-rmsnorm", self.norm(hidden, stem + "input_layernorm.weight"))
+        normalized = record("input-rmsnorm", self.norm(hidden, stem + "input_layernorm.weight", input_scale=self.residual_scale))
         query = self.weights.linear(normalized, stem + "self_attn.q_proj.weight", 2048).reshape(-1, 8, 256).transpose(1, 0, 2)
         key = self.weights.linear(normalized, stem + "self_attn.k_proj.weight", 1024).reshape(-1, 4, 256).transpose(1, 0, 2)
         value = self.weights.linear(normalized, stem + "self_attn.v_proj.weight", 1024).reshape(-1, 4, 256).transpose(1, 0, 2)
@@ -228,11 +269,12 @@ class Reference:
         attention = record("gqa", self.cast(probabilities @ expanded_value).transpose(1, 0, 2).reshape(-1, 2048))
         projected = record("attention-output", self.weights.linear(attention, stem + "self_attn.o_proj.weight", 2560))
         try:
-            hidden = record("attention-residual", self.cast(residual + self.norm(projected, stem + "post_attention_layernorm.weight")))
+            hidden = record("attention-residual", self.residual(residual + self.norm(projected,
+                stem + "post_attention_layernorm.weight", output_scale=self.residual_scale)))
         except ActivationOverflow as error:
             raise ValueError(f"attention residual addition: {error}") from error
         residual = hidden
-        normalized = record("pre-mlp-rmsnorm", self.norm(hidden, stem + "pre_feedforward_layernorm.weight"))
+        normalized = record("pre-mlp-rmsnorm", self.norm(hidden, stem + "pre_feedforward_layernorm.weight", input_scale=self.residual_scale))
         gate = record("gate-projection", self.weights.linear(normalized, stem + "mlp.gate_proj.weight", 10240))
         up = record("up-projection", self.weights.linear(normalized, stem + "mlp.up_proj.weight", 10240))
         gelu = self.cast(np.float32(0.5) * gate * (np.float32(1) + np.tanh(np.float32((2 / np.pi) ** 0.5) *
@@ -241,13 +283,14 @@ class Reference:
         gated = record("gated-gelu", self.cast(gelu * up))
         down = record("mlp", self.weights.linear(gated, stem + "mlp.down_proj.weight", 2560))
         try:
-            return record("output", self.cast(residual + self.norm(down, stem + "post_feedforward_layernorm.weight")))
+            return record("output", self.residual(residual + self.norm(down,
+                stem + "post_feedforward_layernorm.weight", output_scale=self.residual_scale)))
         except ActivationOverflow as error:
             raise ValueError(f"MLP residual addition: {error}") from error
 
     def forward(self, ids, positions):
         try:
-            hidden = self.weights.embedding(ids)
+            hidden = self.residual(self.weights.embedding(ids, self.residual_scale))
         except ValueError as error:
             raise ValueError(f"scaled embedding: {error}") from error
         for layer in range(34):
@@ -255,11 +298,12 @@ class Reference:
                 hidden = self.layer(hidden, positions, layer, cache=True)
             except ValueError as error:
                 raise ValueError(f"decoder layer {layer}: {error}") from error
-        final = self.norm(hidden[-1:], "norm.weight")
+        final = self.norm(hidden[-1:], "norm.weight", input_scale=self.residual_scale)
         return self.weights.linear(final, "embed_tokens.weight", 262208)[0]
 
     def generate(self, prompt, maximum):
         self.cache.clear()
+        self.residual_max = 0.0
         generated = []
         logits = self.forward(prompt, np.arange(len(prompt)))
         for step in range(maximum):
@@ -291,6 +335,7 @@ def scalar_fixtures(exporter, path):
     for local in (True, False):
         for position in (0, 1, 1023, 1024, 2047):
             frequency = 1.0 / (10000.0 if local else 1000000.0) ** (np.arange(128, dtype=np.float64) * 2 / 256)
+            frequency /= 1 if local else 8
             angles = np.tile(position * frequency, 2)
             cosine, sine = np.cos(angles).astype(np.float32), np.sin(angles).astype(np.float32)
             values = (np.arange(256, dtype=np.float32) - 128) / 128
@@ -394,7 +439,7 @@ def self_test():
 def verify_reference(exporter, output, require_complete=True):
     root = Path(output)
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1 or manifest.get("model") != {
+    if manifest.get("schema_version") != 2 or manifest.get("execution_contract") != EXECUTION_CONTRACT or manifest.get("model") != {
         "repository": exporter.REPOSITORY, "revision": exporter.REVISION
     } or (require_complete and manifest.get("complete") is not True):
         raise ValueError("incomplete or wrong-model numerical reference manifest")
@@ -465,10 +510,14 @@ def verify_reference(exporter, output, require_complete=True):
                 if prompt.tolist() != record["prompt_ids"]:
                     raise ValueError("failed-case prompt artifact differs from manifest")
                 continue
-            if record.get("status") != "ok":
+            if record.get("status") not in ("ok", "token_limit") or \
+                    generation_status(variant, record["generated_ids"]) != record["status"]:
                 raise ValueError("unknown translation reference status")
-            if not record["generated_ids"] or record["generated_ids"][-1] not in (1, 106) or \
-                    len(record["prompt_ids"]) + len(record["generated_ids"]) > 2048 or \
+            maximum = record.get("stored_residual_max")
+            if not isinstance(maximum, (int, float)) or not math.isfinite(maximum) or maximum < 0 or \
+                    (variant != "bf16" and maximum > 65504):
+                raise ValueError("invalid successful residual range record")
+            if len(record["prompt_ids"]) + len(record["generated_ids"]) > 2048 or \
                     (variant == "bf16" and not record["bf16_repeated_exactly"]):
                 raise ValueError("translation termination or reproducibility gate failed")
             if hashlib.sha256(record["translation"].encode()).hexdigest() != record["output_sha256"]:
@@ -500,6 +549,8 @@ def verify_reference(exporter, output, require_complete=True):
                         raise ValueError("cross-variant fixture shapes differ")
                     baseline = np.frombuffer((root / baseline_entry["path"]).read_bytes()[256:], dtype="<f4").astype(np.float64)
                     candidate = np.frombuffer((root / candidate_entry["path"]).read_bytes()[256:], dtype="<f4").astype(np.float64)
+                    if name == "output":
+                        candidate *= EXECUTION_CONTRACT["residual"]["quantized_divisor"]
                     difference = candidate - baseline
                     rmse = float(np.sqrt(np.mean(difference ** 2)))
                     maximum = float(np.max(np.abs(difference)))
@@ -522,20 +573,23 @@ def export_reference(exporter, model_dir, catalog, weights_dir, output, replace,
     started = time.perf_counter()
     try:
         scalar, scalar_count = scalar_fixtures(exporter, staging / "numeric-scalars.gta")
-        manifest = {"schema_version": 1, "model": {"repository": exporter.REPOSITORY, "revision": exporter.REVISION},
+        manifest = {"schema_version": 2, "execution_contract": EXECUTION_CONTRACT,
+                "model": {"repository": exporter.REPOSITORY, "revision": exporter.REVISION},
                     "backend": "NumPy float32 accumulation with explicit BF16/FP16 operation-boundary rounding",
                     "numpy": np.__version__, "python": platform.python_version(), "machine": platform.machine(),
                     "blas_threads": os.environ.get("OPENBLAS_NUM_THREADS"),
                     "source_sha256": exporter.sha256_file(__file__), "scalar_cases": scalar_count,
                     "artifacts": [scalar], "complete": False,
                     "arithmetic": {"rmsnorm": "float32, (1 + weight), round output",
-                        "rope": "split-half; local theta=10000; global theta=1000000; effective factor=1",
-                        "rope_discrepancy": "Transformers 4.57.3 ignores checkpoint rope_parameters factor=8 and uses rope_scaling=null",
+                        "rope": "split-half; local theta=10000 factor=1; global theta=1000000 linear factor=8",
+                        "rope_discrepancy": "checkpoint rope_parameters is authoritative; historical schema 1 reproduced Transformers 4.57.3's ignored factor",
                         "quantized": "actual Stage 3 S4/S8 payloads with stored FP16 per-output-channel scales; FP32 dot then FP16 output",
+                        "residual": "quantized hidden = original hidden / 32; embedding and post-norm gains divided before FP16 cast; pre/final RMSNorm epsilon = 1e-6 / 1024",
                         "bf16": "original BF16 weights; FP32 dot then BF16 output; not native PyTorch kernel bit parity",
                         "attention": "8 query / 4 KV heads, score scale 1/16, causal local distance <1024",
                         "greedy": "first maximum, do_sample=False, stop IDs [1,106], output excludes prompt"}}
         if not primitives_only:
+            validate_checkpoint_rope(model_dir)
             print("Validating source and W4/W8 artifacts...", flush=True)
             exporter.validate_source(Path(exporter.__file__).parent, catalog, model_dir, staging / "source-audit.json")
             exporter.validate_artifact_set(weights_dir)
@@ -548,16 +602,17 @@ def export_reference(exporter, model_dir, catalog, weights_dir, output, replace,
             variants = ("bf16", "w8a16", "w4a16") if selected_variant == "all" else (selected_variant,)
             for variant in variants:
                 print(f"Recording {variant} primitives and local/global layers...", flush=True)
-                reference = Reference(Weights(exporter, model_dir, weights_dir, variant))
+                residual_scale = 1 if variant == "bf16" else EXECUTION_CONTRACT["residual"]["quantized_divisor"]
+                reference = Reference(Weights(exporter, model_dir, weights_dir, variant), residual_scale=residual_scale)
                 ids = tokenizer.encode("Hello world!", add_special_tokens=True)[:3]
-                embedded = reference.weights.embedding(ids)
+                embedded = reference.weights.embedding(ids, residual_scale)
                 recorder.array(variant + "/embedding-ids", ids, "token-ids")
                 recorder.array(variant + "/embedding", embedded, variant)
                 positions = np.array([0, 1023, 1024], dtype=np.uint32)
                 recorder.array(variant + "/positions", positions, "absolute-positions")
                 for layer in (0, 5):
                     result = reference.layer(embedded.copy(), positions, layer, recorder)
-                    final = reference.norm(result, "norm.weight")
+                    final = reference.norm(result, "norm.weight", input_scale=residual_scale)
                     recorder.array(f"{variant}/layer-{layer}/final-rmsnorm", final, variant)
                     logits = reference.weights.linear(final[-1:], "embed_tokens.weight", 262208)
                     recorder.array(f"{variant}/layer-{layer}/vocabulary-projection", logits, variant)
@@ -585,8 +640,7 @@ def export_reference(exporter, model_dir, catalog, weights_dir, output, replace,
                             "bf16_repeated_exactly": False})
                         print(f"  RECORDED NUMERICAL FAILURE: {error}", flush=True)
                         continue
-                    if generated[-1] not in (1, 106):
-                        raise ValueError("acceptance translation did not reach a stop token")
+                    status = generation_status(variant, generated, maximum)
                     if variant == "bf16":
                         repeated = reference.generate(prompt, maximum)
                         if repeated != generated:
@@ -596,7 +650,9 @@ def export_reference(exporter, model_dir, catalog, weights_dir, output, replace,
                     translation = tokenizer.decode(generated, skip_special_tokens=True)
                     generation_records.append({"variant": variant, "source": source, "target": target,
                         "text": text, "prompt_ids": prompt, "generated_ids": generated, "translation": translation,
-                        "status": "ok",
+                        "status": status,
+                        "error": "generation reached 64-token limit without a stop token" if status == "token_limit" else None,
+                        "stored_residual_max": reference.residual_max,
                         "output_sha256": hashlib.sha256(translation.encode()).hexdigest(),
                         "bf16_repeated_exactly": variant == "bf16"})
                     print(f"  {len(generated)} tokens: {json.dumps(translation, ensure_ascii=True)}", flush=True)

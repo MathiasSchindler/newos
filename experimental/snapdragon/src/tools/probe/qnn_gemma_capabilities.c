@@ -1153,6 +1153,159 @@ cleanup:
     return result;
 }
 
+static u32 run_scaled_residual(
+    const QnnInterfaceV2 *api,
+    QnnContextHandle context
+) {
+    u32 dimensions[2] = {3U, GEMMA_HIDDEN_WIDTH};
+    u32 weight_dimensions[1] = {GEMMA_HIDDEN_WIDTH};
+    u32 axes_dimensions[1] = {1U};
+    u32 axes_data[1] = {1U};
+    u16 left[3U * GEMMA_HIDDEN_WIDTH] = {0U};
+    u16 right[3U * GEMMA_HIDDEN_WIDTH] = {0U};
+    u16 sum[3U * GEMMA_HIDDEN_WIDTH] = {0U};
+    u16 normalized[3U * GEMMA_HIDDEN_WIDTH] = {0U};
+    u16 gain[GEMMA_HIDDEN_WIDTH];
+    QnnTensor inputs[2];
+    QnnTensor outputs[2];
+    QnnTensor norm_inputs[2];
+    QnnParam parameters[2] = {0};
+    QnnGraphHandle graph = 0;
+    u64 status;
+    u32 index;
+
+    write_text("TranslateGemma scaled FP16 residual and RMSNorm [3,2560], divisor 32\n");
+    for (index = 0U; index < GEMMA_HIDDEN_WIDTH; ++index) {
+        u16 sign = index % 2U ? 0x8000U : 0U;
+        left[index] = (u16)(0x6400U | sign);
+        right[index] = (u16)(0x6500U | sign);
+        left[GEMMA_HIDDEN_WIDTH + index] = (u16)(0x0400U | sign);
+        gain[index] = 0x3c00U;
+    }
+    status = api->graph_create(context, "gemma_scaled_residual", 0, &graph);
+    if (status != 0U) return 220U;
+    inputs[0] = make_plain_tensor("scaled_left", QNN_TENSOR_TYPE_APP_WRITE,
+        QNN_DATATYPE_FLOAT_16, dimensions, 2U);
+    inputs[1] = make_plain_tensor("scaled_right", QNN_TENSOR_TYPE_APP_WRITE,
+        QNN_DATATYPE_FLOAT_16, dimensions, 2U);
+    outputs[0] = make_plain_tensor("scaled_sum", QNN_TENSOR_TYPE_APP_READ,
+        QNN_DATATYPE_FLOAT_16, dimensions, 2U);
+    outputs[1] = make_plain_tensor("scaled_normalized", QNN_TENSOR_TYPE_APP_READ,
+        QNN_DATATYPE_FLOAT_16, dimensions, 2U);
+    norm_inputs[1] = make_plain_tensor("scaled_gain", QNN_TENSOR_TYPE_STATIC,
+        QNN_DATATYPE_FLOAT_16, weight_dimensions, 1U);
+    norm_inputs[1].data.v1.memory.client_buffer.data = gain;
+    norm_inputs[1].data.v1.memory.client_buffer.data_size = sizeof(gain);
+    parameters[0].type = QNN_PARAMTYPE_SCALAR;
+    parameters[0].name = "epsilon";
+    parameters[0].value.scalar.data_type = QNN_DATATYPE_FLOAT_32;
+    parameters[0].value.scalar.value.float_value = 9.765625e-10f;
+    parameters[1].type = QNN_PARAMTYPE_TENSOR;
+    parameters[1].name = "axes";
+    parameters[1].value.tensor = make_plain_tensor("scaled_axes", QNN_TENSOR_TYPE_STATIC,
+        QNN_DATATYPE_UINT_32, axes_dimensions, 1U);
+    parameters[1].value.tensor.data.v1.memory.client_buffer.data = axes_data;
+    parameters[1].value.tensor.data.v1.memory.client_buffer.data_size = sizeof(axes_data);
+    for (index = 0U; index < 2U && status == 0U; ++index) {
+        status = api->tensor_create_graph_tensor(graph, &inputs[index]);
+        if (status == 0U) status = api->tensor_create_graph_tensor(graph, &outputs[index]);
+    }
+    if (status == 0U) status = api->tensor_create_graph_tensor(graph, &norm_inputs[1]);
+    if (status == 0U) status = api->tensor_create_graph_tensor(graph, &parameters[1].value.tensor);
+    if (status == 0U) status = add_node(api, graph, "scaled_add", "ElementWiseAdd",
+        inputs, 2U, &outputs[0], 1U, 0, 0U);
+    norm_inputs[0] = outputs[0];
+    if (status == 0U) status = add_node(api, graph, "scaled_norm", "RmsNorm",
+        norm_inputs, 2U, &outputs[1], 1U, parameters, 2U);
+    if (status == 0U) status = api->graph_finalize(graph, 0, 0);
+    write_status("  graphFinalize", status);
+    if (status != 0U) return 221U;
+    inputs[0].data.v1.memory.client_buffer.data = left;
+    inputs[0].data.v1.memory.client_buffer.data_size = sizeof(left);
+    inputs[1].data.v1.memory.client_buffer.data = right;
+    inputs[1].data.v1.memory.client_buffer.data_size = sizeof(right);
+    outputs[0].data.v1.memory.client_buffer.data = sum;
+    outputs[0].data.v1.memory.client_buffer.data_size = sizeof(sum);
+    outputs[1].data.v1.memory.client_buffer.data = normalized;
+    outputs[1].data.v1.memory.client_buffer.data_size = sizeof(normalized);
+    status = api->graph_execute(graph, inputs, 2U, outputs, 2U, 0, 0);
+    write_status("  graphExecute", status);
+    if (status != 0U) return 222U;
+    for (index = 0U; index < 3U * GEMMA_HIDDEN_WIDTH; ++index) {
+        float expected = half_to_float(left[index]) + half_to_float(right[index]);
+        float denominator = index < GEMMA_HIDDEN_WIDTH ? 2304.0f :
+            (index < 2U * GEMMA_HIDDEN_WIDTH ? 0.000068570111f : 0.00003125f);
+        if (half_to_float(sum[index]) != expected ||
+            !(absolute_float(half_to_float(normalized[index]) - expected / denominator) <= 0.003f)) {
+            write_text("  scaled residual/epsilon mismatch at element ");
+            write_u32(index);
+            write_text("\n");
+            return 223U;
+        }
+    }
+    write_text("  result: scaled residual range and compensated RMSNorm epsilon accepted\n");
+    return 0U;
+}
+
+static u32 run_residual_precision(
+    const QnnInterfaceV2 *api,
+    QnnContextHandle context
+) {
+    u32 dimensions[2] = {1U, GEMMA_HIDDEN_WIDTH};
+    float left[GEMMA_HIDDEN_WIDTH];
+    float right[GEMMA_HIDDEN_WIDTH];
+    float output[GEMMA_HIDDEN_WIDTH];
+    QnnTensor inputs[2];
+    QnnTensor outputs[1];
+    QnnGraphHandle graph = 0;
+    u64 status;
+    u32 index;
+
+    write_text("TranslateGemma FP32 residual range probe\n");
+    status = api->graph_create(context, "gemma_residual_fp32", 0, &graph);
+    if (status != 0U) return 210U;
+    inputs[0] = make_plain_tensor("residual_left", QNN_TENSOR_TYPE_APP_WRITE,
+        QNN_DATATYPE_FLOAT_32, dimensions, 2U);
+    inputs[1] = make_plain_tensor("residual_right", QNN_TENSOR_TYPE_APP_WRITE,
+        QNN_DATATYPE_FLOAT_32, dimensions, 2U);
+    outputs[0] = make_plain_tensor("residual_sum", QNN_TENSOR_TYPE_APP_READ,
+        QNN_DATATYPE_FLOAT_32, dimensions, 2U);
+    status = api->tensor_create_graph_tensor(graph, &inputs[0]);
+    if (status == 0U) status = api->tensor_create_graph_tensor(graph, &inputs[1]);
+    if (status == 0U) status = api->tensor_create_graph_tensor(graph, &outputs[0]);
+    if (status == 0U) status = add_node(api, graph, "residual_add", "ElementWiseAdd",
+        inputs, 2U, outputs, 1U, 0, 0U);
+    write_status("  graphAddNode FP32 add", status);
+    if (status == 0U) status = api->graph_finalize(graph, 0, 0);
+    write_status("  graphFinalize", status);
+    if (status != 0U) {
+        write_text("  result: FP32 residual unavailable; explicit scaling required\n");
+        return 0U;
+    }
+    for (index = 0U; index < GEMMA_HIDDEN_WIDTH; ++index) {
+        left[index] = index % 2U ? -32768.0f : 32768.0f;
+        right[index] = index % 2U ? -40960.0f : 40960.0f;
+        output[index] = 0.0f;
+    }
+    inputs[0].data.v1.memory.client_buffer.data = left;
+    inputs[0].data.v1.memory.client_buffer.data_size = sizeof(left);
+    inputs[1].data.v1.memory.client_buffer.data = right;
+    inputs[1].data.v1.memory.client_buffer.data_size = sizeof(right);
+    outputs[0].data.v1.memory.client_buffer.data = output;
+    outputs[0].data.v1.memory.client_buffer.data_size = sizeof(output);
+    status = api->graph_execute(graph, inputs, 2U, outputs, 1U, 0, 0);
+    write_status("  graphExecute", status);
+    if (status != 0U) return 211U;
+    for (index = 0U; index < GEMMA_HIDDEN_WIDTH; ++index) {
+        if (output[index] != left[index] + right[index]) {
+            write_text("  result: FP32 IO does not preserve residual range; explicit scaling required\n");
+            return 0U;
+        }
+    }
+    write_text("  result: FP32 add preserves +/-73728; normalization chain still requires validation\n");
+    return 0U;
+}
+
 u32 qnn_gemma_stage1_probe(
     const QnnInterfaceV2 *api,
     QnnContextHandle context
@@ -1166,5 +1319,7 @@ u32 qnn_gemma_stage1_probe(
     if (result == 0U) result = run_group_query_attention(api, context);
     if (result == 0U) result = run_group_query_attention_composition(api, context);
     if (result == 0U) result = run_shared_kv(api, context);
+    if (result == 0U) result = run_residual_precision(api, context);
+    if (result == 0U) result = run_scaled_residual(api, context);
     return result;
 }

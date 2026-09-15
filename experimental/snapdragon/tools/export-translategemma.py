@@ -825,7 +825,7 @@ def main():
     if args.primitives_only and not args.numerical_reference:
         parser.error("--primitives-only requires --numerical-reference")
     if args.output is None:
-        args.output = "experimental/snapdragon/models/translategemma-4b-stage" + ("5" if args.numerical_reference else "4" if args.tokenizer_only else "3")
+        args.output = "experimental/snapdragon/models/translategemma-4b-stage" + ("5-v2" if args.numerical_reference else "4" if args.tokenizer_only else "3")
     tools_dir = Path(__file__).resolve().parent
     variants = (8, 4) if args.variant == "both" else (int(args.variant[1:]),)
     try:

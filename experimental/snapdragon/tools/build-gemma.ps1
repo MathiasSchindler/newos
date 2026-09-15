@@ -6,7 +6,7 @@ param(
     [switch]$ExportReference,
     [switch]$TestNumerics,
     [switch]$ExportNumerics,
-    [string]$NumericDir = 'experimental/snapdragon/models/translategemma-4b-stage5',
+    [string]$NumericDir = 'experimental/snapdragon/models/translategemma-4b-stage5-v2',
     [string]$Python = 'experimental/snapdragon/build/calibration-venv/Scripts/python.exe'
 )
 
@@ -63,7 +63,19 @@ try {
     Write-Output "Built $binary; ARM64, Kernel32 only, no exception or CLR tables"
     if ($Test -or $TestNumerics) {
         $testArguments = @("$ModelDir/tokenizer.gta", "$ModelDir/tokenizer-fixtures.gta")
-        if ($TestNumerics) { $testArguments += "$NumericDir/numeric-scalars.gta" }
+        if ($TestNumerics) {
+            $manifest = Get-Content -LiteralPath "$NumericDir/manifest.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+            $contract = $manifest.execution_contract
+            if ($manifest.schema_version -ne 2 -or $contract.global_rope.factor -ne 8 -or
+                $contract.global_rope.theta -ne 1000000 -or $contract.global_rope.type -ne 'linear' -or
+                $contract.local_rope.factor -ne 1 -or $contract.local_rope.theta -ne 10000 -or
+                $contract.local_rope.type -ne 'default' -or $contract.residual.bf16_divisor -ne 1 -or
+                $contract.residual.quantized_divisor -ne 32 -or $contract.residual.post_norm_gain_divisor -ne 32 -or
+                $contract.residual.pre_norm_epsilon -ne 9.765625e-10 -or $contract.residual.storage -ne 'activation-dtype') {
+                throw 'Numerical fixtures do not use the checkpoint RoPE/scaled-residual v2 contract'
+            }
+            $testArguments += "$NumericDir/numeric-scalars.gta"
+        }
         & $binary @testArguments
         if ($LASTEXITCODE -ne 0) { throw 'Tokenizer tests failed' }
     }
