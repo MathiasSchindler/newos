@@ -10,6 +10,15 @@ param(
     [switch]$TestPrompt,
     [switch]$RestorePrompt,
     [switch]$Translate,
+    [switch]$ProfileTranslate,
+    [switch]$BuildDecode,
+    [switch]$BuildBundle,
+    [switch]$TestEnvelope,
+    [switch]$ScalarHash,
+    [switch]$RowMajorProjections,
+    [switch]$FullyConnected,
+    [switch]$NpuSelection,
+    [switch]$TestSelection,
     [ValidateSet(512, 1024, 2048)][int]$PromptBucket = 512,
     [ValidateSet(4, 8)][int[]]$BlockBits = @(8, 4),
     [ValidateSet(0, 5)][int[]]$BlockLayers = @(0, 5),
@@ -44,6 +53,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'ARM64 stack probe compilation failed' }
     $flags = @(
         '--target=aarch64-w64-windows-gnu', '-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-Oz',
+        '-march=armv8-a+crypto', '-DNEWOS_CRYPTO_SHA256_ENABLE_ARM_SHA=1',
         '-ffreestanding', '-fno-builtin', '-fno-stack-protector', '-fno-unwind-tables',
         '-fno-asynchronous-unwind-tables', '-ffunction-sections', '-fdata-sections', '-flto',
         '-Isrc/shared', '-Iexperimental/snapdragon/src/shared', '-Iexperimental/snapdragon/src/tools/gemma',
@@ -52,6 +62,10 @@ try {
         '-Wl,--stack,1048576', "$BuildDir/gemma-chkstk.obj", "-L$BuildDir", '-lkernel32'
     )
     $binary = "$BuildDir/test-gemma-tokenizer.exe"
+    if ($ScalarHash) { $flags += '-DNEWOS_CRYPTO_SHA256_DISABLE_ARM_SHA=1' }
+    if ($RowMajorProjections) { $flags += '-DGEMMA_ROW_MAJOR_PROJECTIONS=1' }
+    if ($FullyConnected) { $flags += '-DGEMMA_ROW_MAJOR_PROJECTIONS=1'; $flags += '-DGEMMA_FULLY_CONNECTED=1' }
+    if ($NpuSelection) { $flags += '-DGEMMA_NPU_SELECTION=1' }
     & $compilerPath @flags experimental/snapdragon/tools/test-gemma-tokenizer.c `
         experimental/snapdragon/src/tools/gemma/gemma_model.c `
         experimental/snapdragon/src/tools/gemma/gemma_artifact.c `
@@ -68,9 +82,12 @@ try {
         throw "Tokenizer no-CRT PE contract failed`n$audit"
     }
     Write-Output "Built $binary; ARM64, Kernel32 only, no exception or CLR tables"
-    if ($Translate) {
-        $translateBinary = Join-Path $BuildDir 'translate.exe'
-        & $compilerPath @flags experimental/snapdragon/src/tools/gemma/translate.c `
+    if ($Translate -or $ProfileTranslate) {
+        $translateName = if ($ProfileTranslate) { 'translate-profile.exe' } else { 'translate.exe' }
+        $translateBinary = Join-Path $BuildDir $translateName
+        $translateFlags = @('-O2')
+        if ($ProfileTranslate) { $translateFlags += '-DGEMMA_TRANSLATE_PROFILE' }
+        & $compilerPath @flags @translateFlags experimental/snapdragon/src/tools/gemma/translate.c `
             experimental/snapdragon/src/tools/gemma/gemma_block.c `
             experimental/snapdragon/src/tools/gemma/gemma_model.c `
             experimental/snapdragon/src/tools/gemma/gemma_artifact.c `
@@ -87,7 +104,7 @@ try {
         }
         Write-Output "Built $translateBinary; ARM64, Kernel32 only, no exception or CLR tables"
     }
-    if ($TestBlocks -or $TestPrompt) {
+    if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $TestEnvelope -or $TestSelection) {
         $blockDir = Join-Path $BuildDir 'gemma-block'
         New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
         $blockBinary = Join-Path $blockDir 'test-gemma-block.exe'
@@ -106,6 +123,22 @@ try {
         }
         Get-ChildItem -LiteralPath $BuildDir -File | Where-Object { $_.Extension -in '.dll', '.so', '.cat' } |
             Copy-Item -Destination $blockDir -Force
+        if ($TestSelection) {
+            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') selection-regression
+            if ($LASTEXITCODE -ne 0) { throw 'NPU selection regression failed' }
+        }
+        if ($BuildDecode) {
+            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-decode-512
+            if ($LASTEXITCODE -ne 0) { throw 'Decode context build failed' }
+        }
+        if ($BuildBundle) {
+            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-bundle-512
+            if ($LASTEXITCODE -ne 0) { throw 'Shared-weight bundle build failed' }
+        }
+        if ($TestEnvelope) {
+            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') envelope-regression
+            if ($LASTEXITCODE -ne 0) { throw 'Prompt/decode envelope tests failed' }
+        }
         if ($TestBlocks) {
             & "$PSScriptRoot/test-gemma-block.ps1" -Binary $blockBinary -Bits $BlockBits -Layers $BlockLayers -TestCleanup
         }

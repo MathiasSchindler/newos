@@ -82,9 +82,10 @@ static void crypto_sha256_transform_arm(CryptoSha256Context *ctx, const unsigned
 
 #define SHA256_ARM_ROUND(message, index) \
     do { \
+        uint32x4_t previous_state0 = state0; \
         tmp = vaddq_u32((message), vld1q_u32(g_sha256_k + (index))); \
         state0 = vsha256hq_u32(state0, state1, tmp); \
-        state1 = vsha256h2q_u32(state1, state0, tmp); \
+        state1 = vsha256h2q_u32(state1, previous_state0, tmp); \
     } while (0)
 #define SHA256_ARM_SCHED(message, next1, next2, next3) \
     do { \
@@ -224,14 +225,12 @@ void crypto_sha256_update(CryptoSha256Context *ctx, const unsigned char *data, s
 
     ctx->bit_count += (unsigned long long)len * 8ULL;
 
-    if (ctx->buffer_len == 0U) {
-        while (len - offset >= CRYPTO_SHA256_BLOCK_SIZE) {
+    while (offset < len) {
+        if (ctx->buffer_len == 0U && len - offset >= CRYPTO_SHA256_BLOCK_SIZE) {
             crypto_sha256_transform(ctx, data + offset);
             offset += CRYPTO_SHA256_BLOCK_SIZE;
+            continue;
         }
-    }
-
-    while (offset < len) {
         size_t space = CRYPTO_SHA256_BLOCK_SIZE - ctx->buffer_len;
         size_t chunk = (len - offset < space) ? (len - offset) : space;
 

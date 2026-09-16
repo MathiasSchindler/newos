@@ -359,9 +359,9 @@ static int finish_bytes(unsigned char *output, unsigned int capacity, unsigned i
     return 1;
 }
 
-int gemma_tokenizer_decode(const GemmaTokenizer *tokenizer,
+static int decode_prefix(const GemmaTokenizer *tokenizer,
     const unsigned int *tokens, unsigned int count, int skip_special,
-    unsigned char *text, unsigned int capacity, unsigned int *size) {
+    unsigned char *text, unsigned int capacity, unsigned int *size, int final) {
     unsigned int index, used = 0, byte_start = NO_TOKEN;
     if (!size) return 0;
     *size = 0;
@@ -390,9 +390,24 @@ int gemma_tokenizer_decode(const GemmaTokenizer *tokenizer,
             } else if (!append(text, capacity, &used, bytes + offset++, 1)) return 0;
         }
     }
-    if (byte_start != NO_TOKEN && !finish_bytes(text, capacity, &used, byte_start)) return 0;
+    if (byte_start != NO_TOKEN) {
+        if (!final) used = byte_start;
+        else if (!finish_bytes(text, capacity, &used, byte_start)) return 0;
+    }
     *size = used;
     return 1;
+}
+
+int gemma_tokenizer_decode(const GemmaTokenizer *tokenizer,
+    const unsigned int *tokens, unsigned int count, int skip_special,
+    unsigned char *text, unsigned int capacity, unsigned int *size) {
+    return decode_prefix(tokenizer, tokens, count, skip_special, text, capacity, size, 1);
+}
+
+int gemma_tokenizer_decode_stable(const GemmaTokenizer *tokenizer,
+    const unsigned int *tokens, unsigned int count, int skip_special,
+    unsigned char *text, unsigned int capacity, unsigned int *size) {
+    return decode_prefix(tokenizer, tokens, count, skip_special, text, capacity, size, 0);
 }
 
 static unsigned int text_length(const char *text) {

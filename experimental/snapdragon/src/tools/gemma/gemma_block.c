@@ -23,7 +23,7 @@ static int qualified_name(GemmaBlock *block, GemmaBlockTensor *entry, const char
 u32 gemma_block_tensor(GemmaBlock *block, const char *name, u32 type, u32 dtype,
                        const u32 *dimensions, u32 rank, void *buffer) {
     u32 index, id = block->count;
-    u64 bytes = dtype == QNN_DATATYPE_FLOAT_16 ? 2U : 4U;
+    u64 bytes = dtype == QNN_DATATYPE_BOOL_8 ? 1U : dtype == QNN_DATATYPE_FLOAT_16 ? 2U : 4U;
     GemmaBlockTensor *entry;
     if (block->error) return 0;
     if (id >= GEMMA_BLOCK_TENSORS || !rank || rank > 4U) { block->error = 1; return 0; }
@@ -41,7 +41,8 @@ u32 gemma_block_tensor(GemmaBlock *block, const char *name, u32 type, u32 dtype,
     }
     if (block->internal && type == QNN_TENSOR_TYPE_APP_READ &&
         !(block->internal == 2 && same_name(name, "k-rmsnorm")) &&
-        !same_name(name, "k-rope") && !same_name(name, "v-projection") && !same_name(name, "logits"))
+        !same_name(name, "k-rope") && !same_name(name, "v-projection") && !same_name(name, "logits") &&
+        !same_name(name, "selected-token") && !same_name(name, "finite-logits"))
         type = QNN_TENSOR_TYPE_NATIVE;
     for (index = 0; index < rank; ++index) {
         if (!dimensions[index]) { block->error = 3; return 0; }
@@ -105,6 +106,9 @@ u32 gemma_block_projection(GemmaBlock *block, u32 input, const char *suffix,
     u32 output_dimensions[2] = {block->tokens, rows};
     QnnTensor weight = {0};
     GemmaBlockTensor *entry;
+#ifdef GEMMA_ROW_MAJOR_PROJECTIONS
+    dimensions[0] = rows; dimensions[1] = width;
+#endif
     if (block->error) return 0;
     source = block->host.weight(block->host.user, suffix, &header);
     if (!source || header.rank != 2 || header.dimensions[0] != rows || header.dimensions[1] != width ||
@@ -126,7 +130,11 @@ u32 gemma_block_projection(GemmaBlock *block, u32 input, const char *suffix,
                 value = (source[offset / 2] >> ((offset & 1) * 4)) & 15;
                 if (value >= 8) value -= 16;
             } else value = ((const i8 *)source)[offset];
+#ifdef GEMMA_ROW_MAJOR_PROJECTIONS
+            transposed[offset] = (i8)value;
+#else
             transposed[(u64)column * rows + row] = (i8)value;
+#endif
         }
     }
     weight_id = block->count++;
@@ -143,6 +151,9 @@ u32 gemma_block_projection(GemmaBlock *block, u32 input, const char *suffix,
     weight.data.v1.quantize_params.quantization_encoding = QNN_QUANTIZATION_ENCODING_BW_AXIS_SCALE_OFFSET;
     weight.data.v1.quantize_params.encoding.bw_axis_scale_offset.bitwidth = block->bits;
     weight.data.v1.quantize_params.encoding.bw_axis_scale_offset.axis = 1;
+#ifdef GEMMA_ROW_MAJOR_PROJECTIONS
+    weight.data.v1.quantize_params.encoding.bw_axis_scale_offset.axis = 0;
+#endif
     weight.data.v1.quantize_params.encoding.bw_axis_scale_offset.element_count = rows;
     weight.data.v1.quantize_params.encoding.bw_axis_scale_offset.scales = scales;
     if (block->bits == 8) {
@@ -151,6 +162,9 @@ u32 gemma_block_projection(GemmaBlock *block, u32 input, const char *suffix,
         for (row = 0; row < rows; ++row) { pairs[row].scale = scales[row]; pairs[row].offset = 0; }
         weight.data.v1.quantize_params.quantization_encoding = QNN_QUANTIZATION_ENCODING_AXIS_SCALE_OFFSET;
         weight.data.v1.quantize_params.encoding.axis_scale_offset.axis = 1;
+    #ifdef GEMMA_ROW_MAJOR_PROJECTIONS
+        weight.data.v1.quantize_params.encoding.axis_scale_offset.axis = 0;
+    #endif
         weight.data.v1.quantize_params.encoding.axis_scale_offset.scale_offset_count = rows;
         weight.data.v1.quantize_params.encoding.axis_scale_offset.scale_offsets = pairs;
     }
@@ -160,8 +174,20 @@ u32 gemma_block_projection(GemmaBlock *block, u32 input, const char *suffix,
     block->error = block->api->tensor_create_graph_tensor(block->graph, &entry->tensor);
     if (block->error) block->host.status(suffix, block->error);
     output_id = gemma_block_tensor(block, name, QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_16, output_dimensions, 2, 0);
-    { u32 inputs[2] = {input, weight_id};
-      return gemma_block_node(block, name, "MatMul", inputs, 2, output_id, 0, 0); }
+        { u32 inputs[2] = {input, weight_id};
+    #ifdef GEMMA_FULLY_CONNECTED
+          return gemma_block_node(block, name, "FullyConnected", inputs, 2, output_id, 0, 0);
+    #elif defined(GEMMA_ROW_MAJOR_PROJECTIONS)
+        QnnParam transpose_weight = {0};
+        transpose_weight.type = QNN_PARAMTYPE_SCALAR;
+        transpose_weight.name = "transpose_in1";
+        transpose_weight.value.scalar.data_type = QNN_DATATYPE_BOOL_8;
+        transpose_weight.value.scalar.value.uint32_value = 1;
+        return gemma_block_node(block, name, "MatMul", inputs, 2, output_id, &transpose_weight, 1);
+    #else
+        return gemma_block_node(block, name, "MatMul", inputs, 2, output_id, 0, 0);
+    #endif
+        }
 }
 
 static u32 tensor(GemmaBlock *block, const char *name, u32 type, const u32 *shape, u32 rank) {
@@ -350,6 +376,47 @@ int gemma_block_build_shape(GemmaBlock *block, const QnnInterfaceV2 *api, QnnCon
     return block->error == 0;
 }
 
+int gemma_block_select(GemmaBlock *block, u32 logits) {
+    const u32 result_shape[] = {1}, vocab_shape[] = {1, 262208}, axes[] = {1};
+    QnnParam reduce_axis = parameter_tensor(block, "selection-axes", "axes", axes, 1);
+    u32 max_value = tensor(block, "maximum-logit", QNN_TENSOR_TYPE_NATIVE, result_shape, 1);
+    gemma_block_node(block, "maximum-logit", "ReduceMax", &logits, 1, max_value, &reduce_axis, 1);
+    u32 matches = gemma_block_tensor(block, "maximum-matches", QNN_TENSOR_TYPE_NATIVE,
+                                    QNN_DATATYPE_BOOL_8, vocab_shape, 2, 0);
+    u32 equality[] = {logits, max_value};
+    gemma_block_node(block, "maximum-matches", "ElementWiseEqual", equality, 2, matches, 0, 0);
+    u32 *indices = block->host.allocate(block->host.user, 262208 * sizeof(u32));
+    u32 *sentinel = block->host.allocate(block->host.user, sizeof(u32));
+    if (!indices || !sentinel) { block->error = 8; return 0; }
+    for (u32 index = 0; index < 262208; ++index) indices[index] = index;
+    *sentinel = 262208;
+    u32 index_tensor = gemma_block_tensor(block, "token-indices", QNN_TENSOR_TYPE_STATIC,
+                                         QNN_DATATYPE_INT_32, vocab_shape, 2, indices);
+    u32 sentinel_tensor = gemma_block_tensor(block, "token-sentinel", QNN_TENSOR_TYPE_STATIC,
+                                            QNN_DATATYPE_INT_32, result_shape, 1, sentinel);
+    u32 candidates = gemma_block_tensor(block, "candidate-indices", QNN_TENSOR_TYPE_NATIVE,
+                                        QNN_DATATYPE_INT_32, vocab_shape, 2, 0);
+    u32 choose[] = {matches, index_tensor, sentinel_tensor};
+    gemma_block_node(block, "candidate-indices", "ElementWiseSelect", choose, 3, candidates, 0, 0);
+    u32 best = gemma_block_tensor(block, "selected-token", QNN_TENSOR_TYPE_APP_READ,
+                                 QNN_DATATYPE_INT_32, result_shape, 1, 0);
+    gemma_block_node(block, "selected-token", "ReduceMin", &candidates, 1, best, &reduce_axis, 1);
+    u16 *maximum = block->host.allocate(block->host.user, sizeof(u16));
+    if (!maximum) { block->error = 8; return 0; }
+    *maximum = 0x7bff;
+    u32 limit = gemma_block_tensor(block, "finite-limit", QNN_TENSOR_TYPE_STATIC,
+                                  QNN_DATATYPE_FLOAT_16, result_shape, 1, maximum);
+    u32 magnitude = unary(block, "logit-magnitude", "ElementWiseAbs", logits, vocab_shape, 2);
+    u32 valid = gemma_block_tensor(block, "logit-valid", QNN_TENSOR_TYPE_NATIVE,
+                                  QNN_DATATYPE_BOOL_8, vocab_shape, 2, 0);
+    u32 comparison[] = {magnitude, limit};
+    gemma_block_node(block, "logit-valid", "ElementWiseLessEqual", comparison, 2, valid, 0, 0);
+    u32 numeric_valid = unary(block, "logit-valid-half", "Cast", valid, vocab_shape, 2);
+    u32 finite = tensor(block, "finite-logits", QNN_TENSOR_TYPE_APP_READ, result_shape, 1);
+    gemma_block_node(block, "finite-logits", "ReduceMin", &numeric_valid, 1, finite, &reduce_axis, 1);
+    return block->error == 0;
+}
+
 int gemma_block_logits(GemmaBlock *block) {
     u32 input = block->count - 1, last, selected, logits;
     const u32 index_shape[1] = {1}, hidden_shape[2] = {1, 2560};
@@ -368,5 +435,8 @@ int gemma_block_logits(GemmaBlock *block) {
     block->tokens = 1;
     logits = gemma_block_projection(block, selected, "embed_tokens.weight", "logits", 2560, 262208);
     (void)logits;
+#ifdef GEMMA_NPU_SELECTION
+    return gemma_block_select(block, logits);
+#endif
     return block->error == 0;
 }

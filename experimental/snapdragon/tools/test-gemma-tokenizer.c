@@ -102,6 +102,20 @@ done:
     return data;
 }
 
+static int stable_prefixes(const GemmaTokenizer *tokenizer, const unsigned int *input,
+                           unsigned int count, int skip_special,
+                           const unsigned char *expected, unsigned int expected_size) {
+    unsigned int previous = 0;
+    for (unsigned int prefix = 0; prefix <= count; ++prefix) {
+        unsigned int size;
+        if (!gemma_tokenizer_decode_stable(tokenizer, input, prefix, skip_special, decoded, sizeof(decoded), &size) ||
+            size < previous || size > expected_size || !equal(decoded, expected, size) ||
+            !gemma_utf8_valid(decoded, size)) return 0;
+        previous = size;
+    }
+    return 1;
+}
+
 static int fixtures(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *work,
                     const unsigned char *artifact, unsigned int size) {
     GemmaArtifactHeader header;
@@ -114,6 +128,22 @@ static int fixtures(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *work,
         read_u32(artifact + 256U) != 0x34524647U || read_u32(artifact + 260U) != 1U) return 1;
     case_count = read_u32(artifact + 264U);
     if (!case_count || case_count > 100000U) return 2;
+    {
+        unsigned int split[] = {tokenizer->byte_ids[0xc3], 1, tokenizer->byte_ids[0xbc], 2};
+        unsigned int malformed[] = {tokenizer->byte_ids['A'], tokenizer->byte_ids[0xff], 2};
+        unsigned int incomplete[] = {tokenizer->byte_ids[0xc3]};
+        const unsigned char valid[] = {0xc3, 0xbc};
+        const unsigned char replacements[] = {0xef, 0xbf, 0xbd, 0xef, 0xbf, 0xbd};
+        unsigned int output_size;
+        if (!stable_prefixes(tokenizer, split, 4, 1, valid, sizeof(valid)) ||
+            !stable_prefixes(tokenizer, malformed, 3, 1, replacements, sizeof(replacements)) ||
+            !stable_prefixes(tokenizer, incomplete, 1, 1, replacements, 3) ||
+            !gemma_tokenizer_decode(tokenizer, split, 4, 1, decoded, sizeof(decoded), &output_size) ||
+            output_size != sizeof(valid) || !equal(decoded, valid, sizeof(valid)) ||
+            !gemma_tokenizer_decode(tokenizer, malformed, 3, 1, decoded, sizeof(decoded), &output_size) ||
+            output_size != sizeof(replacements) || !equal(decoded, replacements, sizeof(replacements))) return 15;
+        report("PASS byte-fallback streaming cases: ", 3);
+    }
     for (current_case = 0; current_case < case_count; ++current_case) {
         unsigned int kind, flags, maximum, source_size, target_size, input_size, expected_count, expected_size;
         unsigned int count = 0, output_size = 0, index;
@@ -145,6 +175,7 @@ static int fixtures(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *work,
             success = gemma_tokenizer_decode(tokenizer, decode_tokens, expected_count, flags & 2U, decoded, sizeof(decoded), &output_size);
             if (kind == 6U) { if (success || output_size) return 5; continue; }
             if (!success || output_size != expected_size || !equal(decoded, expected_text, expected_size)) return 6;
+            if (!stable_prefixes(tokenizer, decode_tokens, expected_count, flags & 2U, expected_text, expected_size)) return 16;
             continue;
         } else return 7;
         if (kind == 4U || kind == 5U) { if (success || count) return 8; continue; }
@@ -160,6 +191,7 @@ static int fixtures(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *work,
         if (!gemma_tokenizer_decode(tokenizer, tokens, count, flags & 2U, decoded, sizeof(decoded), &output_size) ||
             output_size != expected_size || !equal(decoded, expected_text, expected_size) ||
             !gemma_utf8_valid(decoded, output_size)) return 11;
+        if (!stable_prefixes(tokenizer, tokens, count, flags & 2U, expected_text, expected_size)) return 16;
         if (output_size && gemma_tokenizer_decode(tokenizer, tokens, count, flags & 2U,
                                                 decoded, output_size - 1U, &output_size)) return 12;
         if (count && kind == 1U && gemma_tokenizer_encode(tokenizer, work, input, input_size,
@@ -205,6 +237,43 @@ void mainCRTStartup(void) {
     unsigned char *table = 0, *reference = 0;
     GemmaTokenizerWork *work = 0;
     GemmaTokenizer tokenizer;
+    {
+        static const char *messages[] = {"", "abc", "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"};
+        static const char *expected[] = {
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        };
+        static const char hex[] = "0123456789abcdef";
+        for (unsigned int test = 0; test < 3; ++test) {
+            CryptoSha256Context hash; unsigned char digest[32];
+            crypto_sha256_init(&hash);
+            for (unsigned int offset = 0; messages[test][offset]; ++offset)
+                crypto_sha256_update(&hash, (const unsigned char *)messages[test] + offset, 1);
+            crypto_sha256_final(&hash, digest);
+            for (unsigned int byte = 0; byte < 32; ++byte)
+                if (hex[digest[byte] >> 4] != expected[test][byte * 2] || hex[digest[byte] & 15] != expected[test][byte * 2 + 1]) {
+                    report("SHA-256 known-answer failure: ", test); goto done;
+                }
+        }
+        report("PASS SHA-256 known-answer cases: ", 3);
+        {
+            unsigned char data[1000], digest[32]; CryptoSha256Context hash;
+            const char *million = "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0";
+            for (unsigned int index = 0; index < sizeof(data); ++index) data[index] = 'a';
+            crypto_sha256_init(&hash);
+            crypto_sha256_update(&hash, data, 1);
+            for (unsigned int block_index = 0; block_index < 999; ++block_index)
+                crypto_sha256_update(&hash, data, sizeof(data));
+            crypto_sha256_update(&hash, data, 999);
+            crypto_sha256_final(&hash, digest);
+            for (unsigned int byte = 0; byte < 32; ++byte)
+                if (hex[digest[byte] >> 4] != million[byte * 2] || hex[digest[byte] & 15] != million[byte * 2 + 1]) {
+                    report("SHA-256 split million-byte failure: ", 1); goto done;
+                }
+            report("PASS SHA-256 split million-byte vector: ", 1);
+        }
+    }
     if (!gemma_model_is_stop_token(1U) || !gemma_model_is_stop_token(106U) ||
         gemma_model_is_stop_token(0U) || gemma_model_is_stop_token(2U)) goto done;
     if (!parse_arguments()) { report("Usage: test-gemma-tokenizer.exe tokenizer.gta tokenizer-fixtures.gta; error ", 1); goto done; }

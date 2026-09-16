@@ -48,6 +48,9 @@ int gemma_tokenizer_encode(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *
 int gemma_tokenizer_decode(const GemmaTokenizer *tokenizer,
     const unsigned int *tokens, unsigned int count, int skip_special,
     unsigned char *text, unsigned int capacity, unsigned int *size);
+int gemma_tokenizer_decode_stable(const GemmaTokenizer *tokenizer,
+    const unsigned int *tokens, unsigned int count, int skip_special,
+    unsigned char *text, unsigned int capacity, unsigned int *size);
 int gemma_tokenizer_prompt(const GemmaTokenizer *tokenizer, GemmaTokenizerWork *work,
     const char *source_language, const char *target_language,
     const unsigned char *text, unsigned int size, unsigned int maximum_new_tokens,

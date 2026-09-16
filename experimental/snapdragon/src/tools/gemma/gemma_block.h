@@ -44,5 +44,6 @@ u32 gemma_block_projection(GemmaBlock *, u32, const char *, const char *, u32, u
 int gemma_block_build(GemmaBlock *, const QnnInterfaceV2 *, QnnContextHandle, GemmaBlockHost, u32);
 int gemma_block_build_shape(GemmaBlock *, const QnnInterfaceV2 *, QnnContextHandle, GemmaBlockHost, u32, u32, u32);
 int gemma_block_logits(GemmaBlock *);
+int gemma_block_select(GemmaBlock *, u32);
 
 #endif

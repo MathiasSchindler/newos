@@ -27,7 +27,9 @@ Observed output: `Good day, my name is Hase. I know nothing.`
 
 This is an experimental row-W4, greedy, text-only NPU prototype, not Stage 8
 performance or translation-quality acceptance. It restores the existing verified
-128-row Stage 7 graph and masks 127 rows for each decode step. Prompt plus reserved
+128-row Stage 7 graph for prefill. One-off calls also use it for decode to avoid
+loading a second context; `--decode` explicitly selects the dedicated one-row
+decoder. `--batch` selects one-row decoding automatically. Prompt plus reserved
 output must fit 512 tokens; `--max-tokens` defaults to 64 (allowed 1..256). Stop
 tokens are omitted. Exit 0 means a nonempty EOS-terminated result, exit 1 means
 failure, and exit 2 means the output budget was exhausted; partial output is still
@@ -47,22 +49,332 @@ and `../models/translategemma-4b-stage4/tokenizer.gta`. The binding references t
 existing validated W4 embedding and Stage 7 RoPE artifacts using absolute ASCII
 paths. `--bindings PATH` and `--tokenizer PATH` override defaults. Model asset
 paths must remain ASCII; source text supports Unicode. The build does not export
-weights or create a missing QNN context.
+weights or create a missing QNN context with `-Translate` alone. Build the
+one-row context once using `build-gemma.ps1 -BuildDecode`; it writes
+`build/gemma-block/prompt-512.gmb.decode.context` (1,964,562,520 bytes). It is
+validated independently against a one-row I/O schema and SHA-256 digest.
 
-The 12-case bounded CLI/NPU check is
+The 20-case bounded CLI/NPU check is
 `experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --hardware`.
 Without `--hardware`, only request validation runs. Results are saved beside the
-executable in `translate-test-results.json`. Hardware cases cover the sentence
+executable in `translate-optimized-test-results.json`. Hardware cases cover the sentence
 above, greeting, embedded quotes, German umlaut output, truncation, and successful
-QNN cleanup; malformed requests are rejected before context restore.
+QNN cleanup; malformed initial requests are rejected before context restore.
+Additional cases cover batch isolation, EOF without a newline, batch truncation,
+invalid UTF-8 in a subsequent request, opt-in QNN profiling, and per-step
+KV/logit parity against the padded graph for both 89- and 196-token prompts.
 
-On this Snapdragon X Elite, the sentence took 16.54 seconds wall time: context
+Before optimization, on this Snapdragon X Elite, the sentence took 16.54 seconds wall time: context
 creation from validated binary 1.10 seconds, prefill 0.25 seconds, and 12 decode
 steps 2.93 seconds (about 4.1 steps/s). File loading, complete payload hashing, and
-other startup work account for most remaining latency. This is not a persistent
-service or an optimized one-token graph. The earlier 253-token incremental probe
+other startup work accounted for most remaining latency. The earlier 253-token incremental probe
 passed all 34 layers' KV and final-logit tolerances. The stopped CPU quality sweep
 and its preserved results were not restarted or changed.
+
+## Prototype profile (2026-09-16)
+
+This section records the **pre-optimization baseline**; current results and
+commands are in the optimization section below. The baseline report remains
+unchanged. The current profile task tests three explicit one-row runs, three
+automatic one-off runs, and a three-request resident batch.
+
+Build with `build-gemma.ps1 -ProfileTranslate`, or run the VS Code task
+`TranslateGemma profile` to build and measure three sequential invocations. This
+creates a separate `build/translate-profile.exe`, leaving `translate.exe`
+unchanged. `test-translate.py --profile` checks identical output/token IDs,
+successful cleanup, phase accounting, and agreement with parent-process wall
+time. Raw measurements are in `build/translate-profile-results.json`; normal CLI
+test results are not overwritten. Profiling uses QueryPerformanceCounter and
+keeps the freestanding ARM64/Kernel32-only contract. Normal builds compile out
+the counters.
+
+Three runs of the Hase sentence (89 prompt tokens, 12 text tokens plus EOS) took
+16.31..16.94 seconds wall time. Median in-process time was 16.51 seconds, with the
+first selected token at 12.93 seconds. Filesystem caches were not flushed, power
+settings were unchanged, and every invocation loaded a fresh QNN context.
+
+| Measured region | Median time |
+| --- | ---: |
+| Context payload SHA-256 | 8.794 s |
+| Embedding and RoPE artifact validation/hashing | 1.414 s |
+| Context allocation/read | 0.673 s |
+| Embedding and RoPE file reads | 0.134 s |
+| QNN context creation from validated binary | 1.012 s |
+| Prefill graphExecute (89 valid rows of 128) | 0.233 s |
+| Decode graphExecute (12 calls, one valid row each) | 2.781 s |
+| Decode embedding/mask preparation, all calls | 0.064 s |
+| Decode guards/KV copying, all calls | 0.011 s |
+| Argmax, 13 selections | 0.037 s |
+| Cleanup | 0.578 s |
+
+These selected regions omit smaller startup work; medians need not sum exactly.
+The raw report also contains parent regions (`restore_total`, `embedding_load`,
+`buffers`); do not add their nested read/hash measurements a second time.
+Exclusive phase accounting covered at least 98% of each invocation.
+
+About 62% of elapsed time is integrity hashing, using the scalar SHA-256 path
+under `-Oz`. Actual file reads are much smaller. QNN graph calls occupy about
+18% of the complete invocation, explaining the brief high-NPU-usage interval.
+Within generation, about 96% is already inside the blocking QNN call, not Python,
+tokenization, mask construction, or KV copying. Typical decode calls took
+230..234 ms, with one 299 ms outlier across the three runs. A graph call is host
+wall time including QNN dispatch/transfers/synchronization; this profile does
+not measure DSP kernel time, hardware utilization, DDR traffic, or per-op costs.
+
+Optimization priorities based on these measurements:
+
+1. Validate and enable an ARM SHA-256 implementation, preserving every integrity
+   check. The repository has an opt-in ARM path, but this build does not enable
+   it; known-answer and corruption tests are prerequisites, not an assumed pass.
+2. Keep the validated context, embeddings and tokenizer resident for multiple
+   requests, amortizing hashing/loading/cleanup instead of repeating them.
+3. Build a dedicated one-row decode graph. Current prefill and decode calls cost
+   almost the same despite 89 versus one valid token. Masked rows still have
+   fixed-shape computation; a 128x speedup must not be inferred because weight
+   bandwidth and dispatch costs remain.
+4. Profile QNN operations/transfers once that graph exists. Host preparation and
+   argmax are secondary targets (roughly 0.11 seconds across this generation).
+
+No optimization, integrity bypass, model change, or quality-campaign restart was
+performed in this profiling pass. Existing translation-quality limitations remain.
+
+## Implemented optimizations (2026-09-16)
+
+- Enabled ARM SHA instructions in the Snapdragon-specific build, fixed the
+   accelerated SHA round's original-state dependency, and kept full blocks on
+   the direct hashing path after a partial header. No integrity checks were
+   removed. Scalar and ARM SHA both pass empty, abc, multi-block, and split-update
+   million-byte known-answer vectors plus existing artifact tests.
+- Added resident `--batch` mode: UTF-8 input, one nonempty source line per request,
+   fixed `--from`/`--to`, EOF ends the process. Tokenizer, embeddings, QNN contexts,
+   RoPE tables and registered buffers stay loaded; request scratch memory is
+   released and KV state is reset between translations. Output is flushed directly
+   after each request. Blank/invalid/over-budget input fails the batch with exit 1;
+   any truncated result makes its final status 2. Generated text may itself contain
+   newlines, so stdout is not a structured response protocol. This is a piped-input
+   mode, not an interactive Unicode-console REPL.
+- Added a validated one-row decode context and valid-prefix KV handoff from
+   prefill. Both graphs stay resident in batch mode. `--decode` forces this path;
+   `--padded-decode` retains the single-graph reference path. Default one-off calls
+   use one context because loading the extra roughly 1.96 GB context costs more
+   than it saves on the measured short sentence. A one-token output budget also
+   skips the unused decode context.
+- Built translator host code with `-O2`: mask preparation, cache clearing/copying,
+   and argmax overhead fell substantially. No dependency or numerical contract was
+   changed. Windows no-CRT ARM64/Kernel32-only audits still pass.
+
+Example resident usage from PowerShell (stdin must be UTF-8):
+
+```powershell
+$OutputEncoding = [Text.UTF8Encoding]::new($false)
+@('Guten Tag.', 'Die Tür ist offen.', 'Guten Tag.') | .\experimental\snapdragon\build\translate.exe --from de --to en --batch
+```
+
+Final profile on this machine, same Hase sentence and unchanged power settings:
+
+| Measurement | Baseline | Optimized |
+| --- | ---: | ---: |
+| One-off median wall time | 16.52 s | 8.00 s |
+| One-off context hashing | 8.79 s | 1.04 s |
+| One-off first token selected (median) | 12.93 s | 4.19 s |
+| QNN decode call, dedicated graph | 232 ms padded | 148 ms one-row |
+| Resident request, after startup | unavailable | 2.07..2.11 s |
+
+The three optimized one-off runs ranged from 7.84 to 9.29 seconds; cache state
+was not forced cold. Explicit two-context one-off mode took about 13.13 seconds
+in-process, so it is deliberately not the default. Three resident requests took
+16.37 seconds total including both-context startup and cleanup. Decode throughput
+is about 6.6 generated steps/s including host work (about 6.8 QNN calls/s), not the
+Stage 8 target of 10+ tokens/s. Quality remains the same experimental row-W4 model.
+
+Further investigation performed after those optimizations:
+
+- Read-only memory-mapped context loading was measured and rejected: 13.77 s
+   median versus 13.05 s buffered for explicit two-context runs. Page faults moved
+   into the hashing phase and negated copy savings. The mapping code was removed.
+- `--qnn-profile` samples QNN basic events for the first prefill and decode calls.
+   A decode sample reported 143.8 ms accelerator time excluding wait in a 148.2 ms
+   QNN call, with four HVX threads. This supports a device-work bottleneck rather
+   than large CPU/RPC gaps; it does not establish DDR bandwidth, HMX utilization,
+   frequency, or individual operator cost. Profiling output is on stderr and
+   disabled by default. `--verify-decode` runs both graphs at every decode step
+   and checks all layers' KV rows and logits using unchanged tolerances; it is
+   diagnostic, not a benchmark mode.
+- The next substantial candidates are a combined context with shared weights
+   (avoiding duplicate restore/storage), detailed per-operator profiling to locate
+   expensive MatMuls/head/attention transforms, and measured QNN performance-mode
+   tuning with power/thermal tracking. More CPU-loop tuning alone cannot remove
+   the measured accelerator cost. No global power settings were changed.
+
+Current raw reports: `build/translate-optimized-profile-results.json` and
+`build/translate-optimized-test-results.json`. The original baseline reports and
+stopped quality campaign remain untouched. Gates passed: 20 CLI/hardware cases,
+15 stepwise all-layer KV/logit comparisons, 150 prompt/decode envelope corruption
+cases, 7,470 tokenizer cases, 18 tokenizer corruptions, 323 numerical scalar
+fixtures, scalar and ARM SHA known-answer vectors, strict compilation and PE
+audits. Build integrity gates with `-Test -TestEnvelope -TestNumerics`; add
+`-ScalarHash -Test` to check the scalar hash path without deploying it.
+
+## Streaming and renewed profiling (2026-09-16)
+
+The translator now writes stable decoded text as tokens arrive, on both consoles
+and UTF-8 pipes. Use `--quiet` for translated text only:
+
+```powershell
+.\experimental\snapdragon\build\translate.exe --quiet --from de --to en 'Guten Tag.'
+```
+
+`--no-stream` restores whole-result buffering. Both modes append one newline per
+request. Streaming holds trailing byte-fallback runs until decoding is stable,
+so incomplete UTF-8 never becomes premature replacement characters. Final output
+matches the existing decoder, including its malformed-byte replacement rules.
+Quiet mode suppresses application diagnostics and backend stderr through cleanup;
+use exit status 0 for completion, 1 for failure, and 2 for a token-limit result.
+Omit quiet mode when diagnosing failures. A failure after streaming starts can
+leave partial text; token-limit results are also partial translations. Pipe
+consumers may introduce their own buffering. Quiet mode also suppresses profiling.
+
+Three interleaved streamed/buffered runs of the same Hase sentence, quiet mode:
+
+| Measurement | Streamed | Buffered |
+| --- | ---: | ---: |
+| Median first stdout byte | 4.06 s | 6.80 s |
+| Median process wall time | 7.57 s | 7.46 s |
+| First-to-last stdout byte span | 2.84-2.85 s | under 0.2 ms |
+
+This is a responsiveness improvement, not evidence of faster token generation.
+Startup variation exceeds the output cost. A separate three-run instrumented
+one-row profile measured 0.554 ms total output work for the sentence, 147 ms per
+decode execution, and 13.6 ms total CPU argmax work. Three resident requests took
+2.031-2.047 s each, including prefill, with decode calls at 144.6-149.8 ms.
+Two-context startup remains expensive: median combined context read/hash/create
+times were 2.30/2.17/2.48 s; cleanup was 1.12 s. Filesystem cache and machine state
+affect these numbers; they are not a cold-start benchmark. Integrity checks remain
+enabled, and no power settings were changed.
+
+`--qnn-profile-detailed` requests QNN level 2 and samples the first prefill and
+decode executions. It produced 1,444 events per sample from the existing cached
+graphs. The decode sample reported 609.0 million accelerator cycles. Dominant
+depth-1 operation groups were:
+
+| Graph event group | Million cycles | Fraction of accelerator cycles |
+| --- | ---: | ---: |
+| GELU-labelled events, 34 layers | 134.2 | 22.0% |
+| MLP up projections, 34 layers | 133.7 | 22.0% |
+| MLP down projections, 34 layers | 110.4 | 18.1% |
+| Vocabulary projection | 101.7 | 16.7% |
+| Attention QK products, 34 layers | 32.7 | 5.4% |
+
+These are backend event attributions, not isolated source-node timings. In
+particular, gate-projection events are absent and the graph places GELU immediately
+after that projection, so the GELU label may include fused projection work. Do not
+infer that standalone activation math costs 22%. Detailed profiling adds overhead;
+its cycle shares must not be converted to unprofiled milliseconds or treated as
+HMX utilization, DDR bandwidth, or clock-frequency measurements.
+
+Highest-value next experiments:
+
+1. A combined prefill/decode context with shared weights, to reduce duplicate
+   reads, hashing, restore work and memory pressure. Deferring decode restore until
+   after the first streamed token could improve explicit `--decode` first-output
+   latency even without reducing total work.
+2. Inspect backend placement/fusion for gate/up/down projections, then benchmark
+   a paired gate/up projection or supported fused MLP representation against the
+   existing numerical oracle. The MLP groups account for about 62% of this sample.
+3. Benchmark the full-vocabulary matrix-vector kernel and weight layout. Merely
+   moving argmax onto the NPU does not remove the expensive projection; vocabulary
+   pruning would change behavior and is not an equivalent optimization.
+4. Test supported QNN performance settings with power/thermal measurements. More
+   CPU-loop tuning alone cannot remove the dominant device work.
+
+No graph/quantization changes were made in this pass. W4 quality limitations and
+the stopped quality campaign are unchanged; production Whisper is untouched.
+Validation passed: 7,470 tokenizer fixtures with stable-prefix checks on every
+successful case, three explicit byte-fallback streaming cases, 18 corruptions,
+four SHA vectors, 20 existing CLI/hardware cases (including 15 all-layer KV/logit
+parity steps), and 12 quiet/streaming/detailed-profile cases. The freestanding
+build still imports only Kernel32 and has no exception or CLR tables.
+
+Reproduce with `test-translate.py --streaming`, `--hardware`, and `--profile` after
+building the corresponding normal/profile binaries. Reports are
+`build/translate-streaming-results.json`, `build/translate-streaming-test-results.json`,
+and `build/translate-streaming-profile-results.json`; earlier reports are preserved.
+
+## Shared-weight and NPU-first implementation (2026-09-16)
+
+The installed translator automatically uses `gemma-block/prompt-512.gmb.bundle.context`
+when available for requests reserving more than one output token. The bundle
+contains both 128-row prefill and one-row decode graphs with QNN HTP weight sharing
+enabled. Its binary payload is 1,980,047,360 bytes, versus roughly 1.96 GB for each
+of the previous independent contexts. Both graph schemas, exact model/runtime
+identity, payload length and SHA-256 are checked before restore. An installed but
+invalid bundle fails rather than silently falling back. Explicit `--bundle`
+requires it; `--decode` and `--padded-decode` retain independent-context references.
+Single-token requests retain the previous single-context path.
+
+Both bundled graphs reuse the registered past-KV memory. This removes about 68 MiB
+of duplicate cache storage and the CPU prefill-to-decode cache copy. Current KV
+rows still require CPU insertion into the cache; embedding preparation, masks,
+tokenization and integrity hashing also remain host-side. This is not an entirely
+CPU-free inference path.
+
+Greedy selection and finite-logit validation now execute on the NPU by default in
+bundle mode, in a small separate graph built once per process. The backend's
+`Argmax` failed the first-maximum tie rule (all-zero input selected ID 65472), so
+the implementation uses ReduceMax, equality, index selection and ReduceMin instead.
+Tests cover ties, final vocabulary ID, NaN and both infinities. `--verify-decode`
+cross-checks against the CPU selector, and compares all-layer KV rows and logits.
+`--cpu-selection` selects the lower-dispatch-overhead reference. Full logits are
+still exposed by the model graph for diagnostics, so their transfer is not removed.
+
+Measurements on this machine, subject to cache and background-load variation:
+
+- The first shared bundle measured 6.28 s median for the Hase sentence versus the
+   earlier independent one-row path's 10.99 s. This gain is primarily loading and
+   shared storage, not a faster matrix kernel.
+- Final deployed NPU-selection runs measured 6.50 s median in quiet streaming
+   tests, and 6.88 s in the explicit bundle test. First output was about 4.05 s
+   and 4.37 s respectively. The prior quiet single-context median was 7.57 s;
+   these are separate passes, not a controlled same-time A/B comparison.
+- Final resident requests took 2.046-2.064 s; model decode remains about 147 ms.
+   Graph-side selection costs about 3-4 ms per token including dispatch, versus
+   roughly 1-1.5 ms for CPU selection. It reduces CPU scanning, not wall time.
+   Its per-process graph construction adds about 0.35 s of startup work.
+- One bundle restore reads/hashes/creates once. Representative final timings were
+   0.67/1.07/1.18 s, with cache transfer bookkeeping below 0.2 ms per request.
+
+Projection experiments covered both the MLP and vocabulary head. Row-major W4
+weights plus MatMul `transpose_in1` passed local/global block oracles and full
+translation checks, but detailed decode cycles stayed about 610 million versus
+609 million before. This layout is used by the installed bundle, without a claimed
+kernel speedup. `FullyConnected` also passed block gates, but its full-model first
+graph finalization exceeded eleven minutes and was stopped; it is not deployed.
+`-FullyConnected` remains an explicit experimental build switch. Fused/paired MLP
+projection and a genuinely faster vocabulary kernel remain unimplemented targets.
+
+`--performance` requests a process-scoped HTP performance vote, released during
+cleanup. Three interleaved batches per mode showed essentially unchanged resident
+latency (about 2.04 s/request), so it is not enabled by default. No Windows-wide
+power policy was changed. Power draw and thermal telemetry were not measured;
+no efficiency or sustained-frequency improvement is claimed.
+
+Rebuild the bundle with `build-gemma.ps1 -RowMajorProjections -BuildBundle` after
+preparing the existing prompt binding and QNN runtime files. Normal `-Translate`
+builds consume the installed bundle. `-NpuSelection -BuildBundle` is an experimental
+in-model selector variant, not the deployed separate-selector artifact. The build
+can log a QNN weight-mapping warning while holding construction graphs; the saved
+bundle was separately restored and executed successfully in fresh processes.
+
+Gates passed: 150 legacy envelope plus 14 bundle corruption cases, four file-level
+bundle truncation/corruption cases, six NPU selector cases, local/global W4 block
+oracles and cleanup injection, 20 deployed CLI cases, 12 streaming/quiet cases,
+full bundle multi-chunk/Unicode/original-context checks, 7,470 tokenizer fixtures,
+18 tokenizer corruptions, 323 numeric fixtures, four SHA vectors, strict compiler
+checks and Kernel32-only/no-CRT PE audits. Quality campaigns remain stopped and
+Whisper is unchanged. Reports: `build/translate-bundle-results.json`, current
+`build/translate-streaming-*.json`, and
+`build/row-major/translate-performance-results.json`. The streaming-named reports
+are refreshed by their test modes; they are not immutable historical snapshots.
 
 ## Feasibility baseline
 

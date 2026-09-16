@@ -230,6 +230,120 @@
 			"command": "clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -fsyntax-only experimental/snapdragon/tools/test-gemma-block.c; if ($LASTEXITCODE -ne 0) { throw 'Normal runner compile failed' }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; & ./experimental/snapdragon/build/translate.exe --from en --to de --max-tokens 16 'The door is open.'; if ($LASTEXITCODE -ne 0) { throw 'Console test failed' }",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma profile compile",
+			"type": "shell",
+			"command": "clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -DGEMMA_TRANSLATE_PROFILE -fsyntax-only experimental/snapdragon/src/tools/gemma/translate.c; if ($LASTEXITCODE -ne 0) { throw 'Profile compile failed' }; clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -fsyntax-only experimental/snapdragon/tools/test-gemma-block.c; if ($LASTEXITCODE -ne 0) { throw 'Normal runner compile failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma profile",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -ProfileTranslate; if ($LASTEXITCODE -ne 0) { throw 'Profile build failed' }; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --profile; if ($LASTEXITCODE -ne 0) { throw 'Profile checks failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma profiling static gates",
+			"type": "shell",
+			"command": "clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -fsyntax-only experimental/snapdragon/src/tools/gemma/translate.c; if ($LASTEXITCODE -ne 0) { throw 'Normal translator compile failed' }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma accelerated hash gates",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate -Test; if ($LASTEXITCODE -ne 0) { throw 'Accelerated hash tests failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma build decode context",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDecode; if ($LASTEXITCODE -ne 0) { throw 'Decode context build failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma optimized build",
+			"type": "shell",
+			"command": "Get-Process test-gemma-block -ErrorAction SilentlyContinue; Get-Item experimental/snapdragon/build/gemma-block/prompt-512.gmb.decode.context | Select-Object Length,LastWriteTime; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate; if ($LASTEXITCODE -ne 0) { throw 'Optimized build failed' }; & ./experimental/snapdragon/build/translate.exe --from de --to en 'Guten Tag.'; if ($LASTEXITCODE -ne 0) { throw 'Optimized greeting failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma QNN execution profile",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate; if ($LASTEXITCODE -ne 0) { throw 'Build failed' }; & ./experimental/snapdragon/build/translate.exe --from de --to en --qnn-profile 'Guten Tag.' 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object experimental/snapdragon/build/translate-qnn-profile.log; if ($LASTEXITCODE -ne 0) { throw 'QNN profile failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma optimization integrity gates",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -ScalarHash -Test; if ($LASTEXITCODE -ne 0) { throw 'Scalar tests failed' }; & ([scriptblock]::Create($source)) -Translate -Test -TestEnvelope -TestNumerics; if ($LASTEXITCODE -ne 0) { throw 'Integrity tests failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma streaming integration",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --streaming; if ($LASTEXITCODE -ne 0) { throw 'Streaming checks failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma detailed profile summary",
+			"type": "shell",
+			"command": "$runs = Get-Content experimental/snapdragon/build/translate-streaming-results.json -Raw -Encoding UTF8 | ConvertFrom-Json; $detail = ($runs | Where-Object name -eq 'qnn-detailed').stderr; foreach ($sample in ($detail -split 'QNN_SAMPLE ' | Select-Object -Skip 1)) { Write-Output ($sample -split '\\n')[0]; $events = [regex]::Matches($sample, 'QNN_EVENT (.*?) type=(\\d+) unit=(\\d+) value=(\\d+) depth=(\\d+)') | ForEach-Object { [PSCustomObject]@{ Name=$_.Groups[1].Value; Type=[int]$_.Groups[2].Value; Unit=[int]$_.Groups[3].Value; Value=[long]$_.Groups[4].Value; Depth=[int]$_.Groups[5].Value } }; Write-Output ('Events: {0}' -f $events.Count); $events | Sort-Object Value -Descending | Select-Object -First 30 | Format-Table -AutoSize | Out-String -Width 200 }; $profile = Get-Content experimental/snapdragon/build/translate-streaming-profile-results.json -Raw | ConvertFrom-Json; ($profile | Where-Object name -eq 'profile-batch').stderr -split '\\n' | Select-String 'request us|PROFILE (first|decode|output|argmax|prefill)' | Out-String",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma shared-weight candidate build",
+			"type": "shell",
+			"command": "Copy-Item experimental/snapdragon/build/gemma-block/prompt-512.gmb experimental/snapdragon/build/row-major/gemma-block/prompt-512.gmb; Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in '.dll', '.so', '.cat' } | Copy-Item -Destination experimental/snapdragon/build/row-major -Force; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir experimental/snapdragon/build/row-major -RowMajorProjections -BuildBundle -Translate; if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma bundle hardware validation",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --binary experimental/snapdragon/build/row-major/translate.exe --bundle; if ($LASTEXITCODE -ne 0) { throw 'Bundle validation failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma NPU selection compile",
+			"type": "shell",
+			"command": "clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -DGEMMA_NPU_SELECTION=1 -fsyntax-only experimental/snapdragon/src/tools/gemma/gemma_block.c; if ($LASTEXITCODE -ne 0) { throw 'Selection compile failed' }; Get-Content experimental/snapdragon/build/row-major/gemma-block/w4a16-layer-5.log -Encoding Unicode | Select-Object -Last 7",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma fully-connected selection bundle",
+			"type": "shell",
+			"command": "New-Item -ItemType Directory -Force experimental/snapdragon/build/fully-connected/gemma-block | Out-Null; Copy-Item experimental/snapdragon/build/gemma-block/prompt-512.gmb experimental/snapdragon/build/fully-connected/gemma-block/prompt-512.gmb; Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in '.dll', '.so', '.cat' } | Copy-Item -Destination experimental/snapdragon/build/fully-connected -Force; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir experimental/snapdragon/build/fully-connected -FullyConnected -NpuSelection -BuildBundle -Translate; if ($LASTEXITCODE -ne 0) { throw 'Selection bundle build failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma shared KV validation",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --binary experimental/snapdragon/build/row-major/translate.exe --bundle; if ($LASTEXITCODE -ne 0) { throw 'Shared KV validation failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma performance results",
+			"type": "shell",
+			"command": "Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'python.exe','translate.exe','test-gemma-block.exe' -and $_.CommandLine -match 'test-translate|row-major|fully-connected' } | Select-Object ProcessId,Name,CommandLine | Format-List; if (Test-Path experimental/snapdragon/build/row-major/translate-performance-results.json) { Get-Content experimental/snapdragon/build/row-major/translate-performance-results.json -Raw | ConvertFrom-Json | Select-Object name,request_us,wall_seconds | Format-Table -AutoSize }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma selector runtime build",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir experimental/snapdragon/build/row-major -Translate; if ($LASTEXITCODE -ne 0) { throw 'Runtime build failed' }; Get-Content experimental/snapdragon/build/row-major/translate-performance-results.json -Raw | ConvertFrom-Json | Select-Object name,request_us,wall_seconds | Format-Table -AutoSize; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --binary experimental/snapdragon/build/row-major/translate.exe --bundle; if ($LASTEXITCODE -ne 0) { throw 'NPU selector integration failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma shared bundle deployment gates",
+			"type": "shell",
+			"command": "Copy-Item experimental/snapdragon/build/row-major/gemma-block/prompt-512.gmb.bundle.context experimental/snapdragon/build/gemma-block/prompt-512.gmb.bundle.context; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate -Test -TestNumerics -TestEnvelope -TestSelection; if ($LASTEXITCODE -ne 0) { throw 'Freestanding gates failed' }; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --hardware; if ($LASTEXITCODE -ne 0) { throw 'Deployment integration failed' }",
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma deployed bundle final validation",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --bundle; if ($LASTEXITCODE -ne 0) { throw 'Final bundle checks failed' }",
+			"problemMatcher": []
 		}
 	]
 }
