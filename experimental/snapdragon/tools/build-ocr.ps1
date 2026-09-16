@@ -3,10 +3,12 @@ param(
     [string]$BuildDir = 'experimental/snapdragon/build/ocr',
     [string]$ModelDir = 'experimental/snapdragon/models/glm-ocr',
     [string]$TokenizerDir = 'experimental/snapdragon/models/glm-ocr-tokenizer-v2',
+    [string]$ImageDir = 'experimental/snapdragon/models/glm-ocr-images-v2',
     [switch]$Download,
     [switch]$Verify,
     [switch]$Test,
-    [switch]$TestTokenizer
+    [switch]$TestTokenizer,
+    [switch]$TestImages
 )
 
 $ErrorActionPreference = 'Stop'
@@ -277,10 +279,15 @@ try {
     )
     $binary = Join-Path $BuildDir 'ocr-model.exe'
     $sources = @('experimental/snapdragon/src/tools/ocr/ocr_model.c', 'src/shared/crypto/sha256.c')
-    if ($TestTokenizer) {
+    if ($TestTokenizer -or $TestImages) {
         $binary = Join-Path $BuildDir 'ocr-tokenizer-test.exe'
         $flags += '-DOCR_TOKENIZER_TEST'
         $sources += @('experimental/snapdragon/src/tools/ocr/ocr_tokenizer.c', 'experimental/snapdragon/src/tools/ocr/ocr_tokenizer_test.c')
+    }
+    if ($TestImages) {
+        $binary = Join-Path $BuildDir 'ocr-image-test.exe'
+        $flags += @('-DOCR_IMAGE_TEST', '-fno-math-errno', '-ffp-contract=off')
+        $sources += 'experimental/snapdragon/src/tools/ocr/ocr_image.c'
     }
     & $compilerPath @flags @sources -o $binary
     if ($LASTEXITCODE -ne 0) { throw 'OCR native build failed' }
@@ -299,6 +306,10 @@ try {
     if ($TestTokenizer) {
         & $binary --test-tokenizer "$TokenizerDir/tokenizer.got" "$TokenizerDir/tokenizer-fixtures.got"
         if ($LASTEXITCODE -ne 0) { throw 'OCR native tokenizer tests failed' }
+    }
+    if ($TestImages) {
+        & $binary --test-images "$ImageDir/image-fixtures.got" "$ImageDir/position-fixtures.got"
+        if ($LASTEXITCODE -ne 0) { throw 'OCR native image tests failed' }
     }
     if ($Download -or $Verify) { Stage-Model }
 } finally {

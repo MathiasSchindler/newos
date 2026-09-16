@@ -27,6 +27,15 @@ decoding and single-image task prompts, verified against 180,712 reference cases
 
 This consumes offline-generated `models/glm-ocr-tokenizer-v2/` artifacts without
 Python in the native build/test path. It does not yet perform OCR or execute on the NPU.
+Stage 3 adds RGB uint8 resize, normalization, patch packing and single-image mRoPE
+positions, verified against the real Transformers/PyTorch image processor:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestImages -TestTokenizer -Test
+```
+
+This uses `models/glm-ocr-images-v2/` and builds a separate no-CRT image test binary.
+Image-file decoding and neural-network/NPU execution are still pending.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 

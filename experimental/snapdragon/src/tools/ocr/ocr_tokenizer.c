@@ -17,16 +17,19 @@ static int compare(const unsigned char *left, unsigned int left_size, const unsi
 int ocr_artifact(const unsigned char *data, unsigned int size, unsigned int kind) {
     static const char identity[] = "2e85a62840ccac27daa451df36c736c4636b8628"
         "9f4a549a14a96217569648aa7627c6674ad94fe9" "04b9992511183247d5115f176a5b9f0360a36a1c";
+    static const char image_identity[] = "2e85a62840ccac27daa451df36c736c4636b8628"
+        "308553695af766b3e3d05e68279d2c690e73273e" "bdc21c05f82f7a5f3a4bd4caa74f4bf81365fdd7";
+    const char *source_identity = kind == 3 || kind == 4 ? image_identity : identity;
     static const char hex[] = "0123456789abcdef";
     unsigned char hash[32];
     CryptoSha256Context context;
-    if (!data || size < 128 || size > 64U * 1024U * 1024U ||
+    if (!data || size < 128 || size > (kind == 3 ? 256U : 64U) * 1024U * 1024U ||
         compare(data, 8, (const unsigned char *)"GLMOCR2\0", 8) ||
         load32(data + 8) != 1 || load32(data + 12) != kind || load32(data + 16) != size - 128) return 0;
     for (unsigned int index = 20; index < 32; ++index) if (data[index]) return 0;
     for (unsigned int index = 92; index < 96; ++index) if (data[index]) return 0;
     for (unsigned int index = 0; index < 60; ++index)
-        if (hex[data[32 + index] >> 4] != identity[index * 2] || hex[data[32 + index] & 15] != identity[index * 2 + 1]) return 0;
+        if (hex[data[32 + index] >> 4] != source_identity[index * 2] || hex[data[32 + index] & 15] != source_identity[index * 2 + 1]) return 0;
     crypto_sha256_init(&context);
     crypto_sha256_update(&context, data, 96);
     crypto_sha256_update(&context, data + 128, size - 128);

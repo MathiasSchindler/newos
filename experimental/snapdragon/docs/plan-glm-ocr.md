@@ -210,16 +210,135 @@ The reference constructs 16 text layers and explicitly ignores unexpected layer
    decode must apply the resulting position delta to physical cache positions.
 - Preserve both generation stop IDs **59246 and 59253**. Neither configured
    131072 positions nor processor size fields establish tested deployment limits.
-   Image resize/patch ordering and floating-point accuracy remain unvalidated.
+   Stage 3 below validates image resize/packing and single-image positions;
+   neural-network floating-point accuracy remains unvalidated.
+
+## Stage 3: RGB preprocessing and position oracle (complete)
+
+The tool-private `src/tools/ocr/ocr_image.{h,c}` now implements the CPU-side
+single-image input contract, without OS headers, allocation, libc or external
+production libraries. This is an input-processing milestone, not model inference.
+
+- `ocr_image_shape`: aspect-preserving smart resize, factor 28, ties-to-even
+   rounding, the reference's minimum-dimension expansion and aspect-ratio check.
+   The configured 12544/9633792 limits are **temporal pixel-volume budgets**, not
+   edge lengths. Even a single image is budgeted with temporal factor 2.
+- `ocr_image_resize`: packed RGB uint8 input with explicit positive row stride,
+   antialiased separable Keys bicubic filtering. Double-precision coefficient
+   generation, per-axis integer weight precision and uint8 rounding/clamping
+   between horizontal and vertical passes match the pinned CPU reference. Plain
+   floating bicubic followed by one final rounding is not the same operation.
+- `ocr_image_patchify`: CLIP normalization and direct patch output. A 256-value
+   lookup per channel avoids repeating normalization arithmetic for each pixel
+   and its temporal duplicate. The order is spatial block row/column, local 2x2
+   patch row/column, channel, two temporal copies, 14x14 patch pixels.
+   Output shape is `[grid_h * grid_w, 1176]`, FP32, and `grid_t = 1`.
+- `ocr_image_positions`: exact temporal/height/width positions for one contiguous
+   image-token span and surrounding text, modality IDs and mRoPE delta. Integrates
+   with all three native task prompts and optional no-thinking mode. A later decode
+   step must use physical cache position plus this delta; no KV cache exists yet.
+
+### Build and oracle
+
+Normal build/test requires only Clang/LLVM and the existing generated artifacts:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestImages -TestTokenizer -Test
+```
+
+This builds `build/ocr/ocr-image-test.exe`; it does not replace the verifier or
+tokenizer-only binary. Native invocation is
+`--test-images IMAGE_FIXTURES POSITION_FIXTURES`. The existing test reader is reused.
+ARM64, Kernel32-only imports, no CRT, no exception/CLR tables remain audited.
+`-ffp-contract=off` preserves reference arithmetic; `-fno-math-errno` allows the
+geometry square root to use hardware without introducing a libm dependency.
+
+Offline regeneration:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-images
+```
+
+The image oracle reuses the existing x64 Python 3.14 environment with PyTorch
+2.14.0, Transformers 5.17.0 and NumPy 2.4.3. Only missing optional packages were
+installed separately under `build/ocr-oracle/`: torchvision 0.29.0 and Pillow
+12.3.0. They are made visible only by the image export path. Existing Whisper,
+Gemma and calibration environments were not changed. To reproduce this separate
+development-only installation using the existing pip:
+
+```powershell
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -m pip install --target experimental/snapdragon/build/ocr-oracle --platform win_amd64 --python-version 3.14 --implementation cp --abi cp314 --only-binary=:all: --no-deps torchvision==0.29.0 pillow==12.3.0
+```
+
+Do not repeat installation over an existing directory to upgrade it. The exporter
+rejects version/source drift. Pinned sources: the actual image processor, backend,
+torchvision resize module and GLM-OCR position implementation. PyTorch source
+commit is `08187d9e0fba026dc8217405802ab5381dc88d90`; the uint8 filtering contract
+was checked against its `aten/src/ATen/native/cpu/UpSampleKernel.cpp`. Hashes are
+recorded in the generated manifests. The oracle directly calls the real processor
+and position methods, with no model instantiation or weight load.
+
+The document fixtures render original German/English test text using the installed
+Windows Segoe UI font; its file hash is recorded, not the font redistributed.
+These are synthetic document-like pages, not held-out scans or an OCR quality corpus.
+
+Artifacts: ignored `models/glm-ocr-images-v2/`, containing `image-fixtures.got`,
+`position-fixtures.got`, `manifest.json`, `positions-manifest.json`. Image artifacts
+bind the pinned preprocessor/model config identities in their hashed header.
+The earlier `glm-ocr-images-v1` directory is a superseded diagnostic export.
+`--image-output` and build `-ImageDir` select another artifact directory;
+`--export-positions` regenerates only the small position fixture set.
+Existing differing fixture files are never overwritten. Use the VS Code tasks
+`GLM-OCR image oracle export` and `GLM-OCR native image tests` for process-scoped
+PowerShell policy bypass without a persistent policy change.
+
+### Verified results
+
+Windows ARM64, Clang 22:
+
+- 1,015 geometry cases, including half-factor rounding, tiny/narrow images,
+   aspect-ratio rejection, oversized pages and deterministic random dimensions.
+- 34 complete pixel cases: coordinate patterns, random RGB, black/white edges,
+   text pages, 90-degree rotation, padding and a 3200x2400 page exceeding the budget.
+- **21,652,512 resized RGB channel values byte-identical** to the oracle.
+- **43,305,024 FP32 patch values with zero measured absolute error**; regression
+   gate is absolute error <= `1e-6`, with NaN/Inf rejected.
+- All 34 pixel cases repeated with nonpacked source row strides.
+- 42 prompt/mRoPE cases: exact token IDs, three position axes, modality IDs and
+   delta, including 180x134 pre-merge grids (6030 image tokens).
+- 213 image negative checks plus 168 position negative checks. Existing 180,712
+   tokenizer fixtures, 35 tokenizer negative checks and 46 verifier regressions pass.
+
+### Limits and next boundary
+
+Geometry accepts nonzero source dimensions <=10000 and reference aspect ratio
+<=200. Resize additionally bounds source area at 16 million pixels. Caller-owned,
+nonoverlapping input, horizontal scratch and output buffers must remain valid for
+the call. Scratch needs `source_height * target_width * 3` bytes; resized output
+needs `target_height * target_width * 3` bytes. Insufficient input, stride or buffer
+capacity returns 0. The API does not infer BGR, RGBA, bottom-up images or orientation.
+
+Patchify requires factor-28 dimensions and at most 4,816,896 output pixels. Its
+capacity is in **float elements**, requiring `6 * target_height * target_width`.
+Positions require one image, no padding/video, <=8192 sequence tokens, `3 * count`
+integer positions and `count` modality bytes. These are input API bounds, not
+verified model-context capacity. Failure may leave output partial; discard it.
+
+The diagnostic executable reserves large static fixture/output arrays to compare
+the entire large page. Production image code has only bounded stack scratch and
+caller-owned buffers. It directly writes normalized model-order patches, but
+resize remains a scalar correctness baseline with no measured latency claim.
+No external image library enters the native path. PNG/JPEG decoding, EXIF handling,
+PDF rasterization, scanned-page quality, neural-network tensor taps and HTP graphs
+remain subsequent work. Learned computation has not silently moved to the CPU.
 
 ## Next stages
 
 1. **Execution contract and tokenizer: completed above.** Initial source audit and
    bounded tokenizer are verified; image and numerical contracts remain below.
-2. **Image preprocessing and numerical oracle.** Define BGR/RGB, normalization,
-   aspect ratio, patch packing, spatial merging and image-token positions exactly.
-   Produce immutable fixtures from real and synthetic images, including narrow,
-   rotated and padded shapes. Test existing project image decoders before reuse.
+2. **RGB preprocessing and positions: completed above.** Image-file decoder reuse
+   and real scan fixtures remain separate integration work. Extend the numerical
+   oracle to learned-layer taps before claiming a correct model forward pass.
    PDF rasterization is a separate feature, not an implicit external dependency.
 3. **HTP capability and precision probes.** Isolated QNN graphs for patch projection,
    vision attention/axial RoPE, merger, text attention/mRoPE, norms, SiLU and KV
@@ -241,7 +360,8 @@ The reference constructs 16 text layers and explicitly ignores unexpected layer
    vision, prefill, decode, CPU time, copies, context size and peak memory. Optimize
    batches, buckets, graph fusion and caching using those measurements.
 
-Current status: source acquisition, verification and bounded native tokenizer/prompt
-runtime. No image-to-text inference, NPU graph, FP16 accuracy, PDF support or OCR
+Current status: source acquisition, verification, bounded native tokenizer/prompt
+runtime, RGB resize/normalization/patch packing and single-image positions.
+No image-to-text inference, NPU graph, FP16 accuracy, PDF support or OCR
 quality acceptance is claimed. No previous Whisper or TranslateGemma campaign
 is restarted.
