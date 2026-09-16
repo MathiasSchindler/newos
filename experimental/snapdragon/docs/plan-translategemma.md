@@ -698,25 +698,40 @@ unchanged. The build also passes tokenizer 7470, corruption 18, numeric scalar
 Create a fixed-shape prompt path that amortizes weight traffic across many input
 tokens.
 
-Status (2026-09-15): implementation in progress, hardware execution blocked.
+Status (2026-09-16): the 512-bucket prompt gate passes, including fresh-process
+restore. The 1024/2048 buckets remain unvalidated.
 The shape-aware block builder supports 128-token chunks and 512/1024/2048 buckets,
 unique layer names, internal hidden connections, and final-token vocabulary
 projection. The existing no-CRT runner now composes all 34 W4 layers into one
-graph. The 512 bucket constructed in 28.50 seconds, finalized in 126.05 seconds,
-and serialized to 1966771776 QNN bytes plus an application envelope. Disk restore
-passed in 1.08 seconds. Construction-only weight buffers are released before
+graph. The corrected 512 context is serialized with an application envelope;
+fresh-process QNN restoration took 1.60 seconds, excluding file IO and envelope
+hash verification. Construction-only weight buffers are released before
 restore; no BF16/W8 artifact variant is loaded for this path.
 
-Execution of the restored graph fails on this HTP runtime with
-`Dma execution failed on the skel side`, result 1100, transport error 0.
-Restore-only replay reproduces it. A temporary diagnostic using raw views of
-the same shared buffers also returned 1100, so the failure is not confined to
-registered-memory bindings. That retry was removed; there is no silent fallback.
-Cleanup reports zero errors. The cause is not yet established: graph size,
-128-token operations, and the large vocabulary projection require isolation
-with smaller composed graphs before choosing a measured partition count.
+The original DMA failure (result 1100, transport error 0) reproduces with only
+two blocks using separate runtime position tensors. Sharing one position input
+across all layers lets the complete restored graph execute. Independent
+128-token blocks and the full vocabulary projection also execute, so neither
+graph size nor the vocabulary projection explains that minimal failure.
+Local/global cosine, sine, and mask inputs are shared within their attention
+class; borrowed descriptors are not rebound or serialized twice.
 
-Reproduce the current failure (not an acceptance command):
+Execution then exposed a separate position-lookup error: direct INT32 and UINT32
+application inputs selected the next cosine/sine row in the 128-token probe,
+producing about 24870 ppm relative MSE. Changing index rank or supplying unit
+quantization metadata did not help. FP32 application inputs followed by an
+explicit graph Cast to INT32 return the correct rows. All supported positions
+are exactly representable in FP32. The final-token selector uses the same
+conversion. The original fused RotaryEmbedding is retained: both fused and
+explicit arithmetic pass with corrected inputs, so the fused operator was not
+the numerical cause. The exact backend-internal conversion defect is unknown.
+
+The prompt gate first runs two independent blocks sharing only positions,
+checks equal finite outputs at positions 0..127 and 128..255, and compares
+rotated keys against split-half FP16 arithmetic using actual normalized keys.
+Both primitive comparisons report below 1 ppm relative MSE; cleanup passes.
+
+Run the corrected graph and restore gates:
 
 ```powershell
 .\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket 512
@@ -725,7 +740,8 @@ Reproduce the current failure (not an acceptance command):
 
 The first command builds and stores `build/gemma-block/prompt-512.gmb.context`;
 the second requires that context and avoids rebuilding/finalizing the graph.
-The envelope retains graph/tensor names and IDs, dimensions, model repository
+Envelope version 4 rejects older integer-input contexts. The envelope retains
+graph/tensor names and IDs, dimensions, model repository
 and pinned revision, W4/chunk/bucket metadata, QNN core/backend versions, and
 SHA-256 covering metadata and binary. Fresh-process restore is exercised, but
 corruption/malformed-envelope tests remain pending.
@@ -736,9 +752,19 @@ artifacts under `models/translategemma-4b-stage7/`: full-depth W4 K/V for a
 logits at tokens 253 and 256. Earlier positions of the full causal run provide
 the unpadded 253-token reference. The runner's registered K/V output path,
 253-token padded comparison, all-layer retained-row/logit checks, deterministic
-256-token repeats, and 300 tokens/s gate are implemented but **not hardware
-validated**, because execution fails before producing outputs. Larger buckets
-have not been finalized or executed. Stage 7 exit criteria remain unmet.
+256-token repeats, and 300 tokens/s gate all pass for the 512 bucket. Every
+retained KV row in all 34 layers passes the unchanged Stage 6 tolerances for
+both 253 and 256 valid tokens. Fresh-process replay reports key relative MSE
+up to 52 ppm, value relative MSE up to 116 ppm, and logit relative MSE of 53 ppm
+(253 tokens) and 22 ppm (256 tokens). Guard checks, three deterministic warm
+replays, and cleanup pass. Warm median throughput was 358 tokens/s after build
+and restore, and 352 tokens/s in the separate restore-only process, above the
+300 tokens/s gate. These are runner wall-clock measurements, not DDR traffic
+measurements or a power-controlled benchmark.
+
+The 512-bucket exit criteria pass. Larger buckets have not been finalized or
+executed, malformed-envelope coverage remains pending, and the independent
+Stage 5 W4 translation-quality gate is still blocked.
 
 Existing Stage 6 local/global W8/W4 hardware checks, five failure-cleanup probes,
 7470 tokenizer cases, 18 corruption cases, 323 numerical scalars, and no-CRT PE

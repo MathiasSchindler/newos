@@ -12,6 +12,7 @@ typedef struct GemmaBlockTensor {
     char name[80];
     void *buffer;
     u32 bytes;
+    u32 borrowed;
 } GemmaBlockTensor;
 
 typedef struct GemmaBlockHost {
@@ -33,6 +34,7 @@ typedef struct GemmaBlock {
     u32 internal;
     char prefix[16];
     const QnnTensor *hidden_input;
+    const QnnTensor *shared_inputs[4];
     u64 error;
 } GemmaBlock;
 

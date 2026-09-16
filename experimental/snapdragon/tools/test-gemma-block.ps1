@@ -67,6 +67,12 @@ foreach ($bit in $Bits) {
 			$logPath = Join-Path $outputDir ('prompt-{0}.log' -f $PromptBucket)
 		}
 		$ErrorActionPreference = 'Continue'
+		if ($PromptBucket) {
+			& $binaryPath $bindingPath position-regression 2>&1 | ForEach-Object { $_.ToString() } |
+				Tee-Object -FilePath (Join-Path $outputDir 'position-regression.log')
+			$regressionCode = $LASTEXITCODE
+			if ($regressionCode -ne 0) { throw ('Position regression failed: exit {0}' -f $regressionCode) }
+		}
 		& $binaryPath @runnerArguments 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath
 		$exitCode = $LASTEXITCODE
 		$ErrorActionPreference = 'Stop'

@@ -157,11 +157,15 @@ tolerances, timing results, fixture limits, and remaining full-model obligations
 
 ### Prompt Processor Bring-up
 
-Stage 7 is in progress, not accepted. The 128-token, 34-layer W4 graph for the
-512 context bucket finalizes and restores, but execution currently fails with
-HTP DMA error 1100. No full-model KV/logit, padding, or throughput success is
-claimed. See the [Stage 7 status](plan-translategemma.md#stage-7-prompt-processor)
-for the recorded failure and remaining isolation work.
+The Stage 7 gate passes for the 512 context bucket. The 128-token, 34-layer W4
+graph shares one runtime position input across layers and uses FP32 index
+inputs with an internal Cast to avoid HTP integer-input lookup errors.
+Fresh-process restore passes all-layer KV/logit tolerances, padding, guards,
+deterministic replay, and the throughput gate at 352 input tokens/s. Existing
+Stage 6 gates also pass. The 1024/2048 buckets and malformed-envelope tests
+remain unvalidated; Stage 5 W4 translation quality remains independently blocked.
+See the [Stage 7 status](plan-translategemma.md#stage-7-prompt-processor) for the
+isolation results and version 4 context contract.
 
 ```powershell
 $env:OPENBLAS_NUM_THREADS = '4'

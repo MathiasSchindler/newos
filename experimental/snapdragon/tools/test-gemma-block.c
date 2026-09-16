@@ -152,7 +152,7 @@ static const void *fixture(const char *suffix, u32 step, u32 *size) {
     *size = (u32)header.payload_size; return data;
 }
 static GemmaBlockTensor *find_tensor(const char *name) {
-    u32 index; for (index = 0; index < block.count; ++index) if (equal(block.tensors[index].name, name)) return &block.tensors[index];
+    u32 index; for (index = 0; index < block.count; ++index) if (equal(block.tensors[index].name + length(block.prefix), name)) return &block.tensors[index];
     return 0;
 }
 static u16 half(float value) { union { _Float16 value; u16 bits; } result; result.value = (_Float16)value; return result.bits; }
@@ -207,7 +207,7 @@ static int prepare_step(u32 step) {
     if (!positions || size != 12 || !fill_fixture("input", step)) return 0;
     for (query = 0; query < 3; ++query)
         if (positions[query] >= GEMMA_BLOCK_CACHE || (query && positions[query] <= positions[query - 1])) return 0;
-    memcpy(find_tensor("positions")->buffer, positions, 12);
+    for (query = 0; query < 3; ++query) ((float *)find_tensor("positions")->buffer)[query] = (float)positions[query];
     for (head = 0; head < 8; ++head) for (query = 0; query < 3; ++query) for (key = 0; key < 2051; ++key) {
         u32 key_position = key < 2048 ? cache_positions[key] : positions[key - 2048];
         int visible = key_position != 0xffffffffU && gemma_numeric_visible(layer, positions[query], key_position);
@@ -217,11 +217,11 @@ static int prepare_step(u32 step) {
 }
 static void cache_new_rows(void) {
     const u16 *key = find_tensor("k-rope")->buffer, *value = find_tensor("v-projection")->buffer;
-    const u32 *positions = find_tensor("positions")->buffer;
+    const float *positions = find_tensor("positions")->buffer;
     u16 *past_key = find_tensor("past-key")->buffer, *past_value = find_tensor("past-value")->buffer;
     u32 token, head, capacity = layer == 0 ? 1024 : 2048;
     for (token = 0; token < 3; ++token) {
-        u32 slot = positions[token] % capacity;
+        u32 slot = (u32)positions[token] % capacity;
         for (head = 0; head < 4; ++head) {
             memcpy(past_key + (head * 2048 + slot) * 256, key + (head * 3 + token) * 256, 512);
             memcpy(past_value + (head * 2048 + slot) * 256, value + (head * 3 + token) * 256, 512);
@@ -266,7 +266,7 @@ static int compare(u32 step) {
 static int compare_attention(u32 step) {
     u32 bytes, head, query, column, tap, keys = step ? 6U : 3U;
     const u32 *old_positions = fixture("positions", 0, &bytes);
-    const u32 *positions = find_tensor("positions")->buffer;
+    const float *positions = find_tensor("positions")->buffer;
     const u16 *mask = find_tensor("mask")->buffer;
     static const char *names[2] = {"attention-scores", "attention-softmax"};
     if (!old_positions || bytes != 12) return 0;
@@ -344,6 +344,97 @@ static void log_callback(const char *format, u32 level, u64 timestamp, va_list a
     }
 }
 
+static int position_regression(const QnnInterfaceV2 *api, QnnContextHandle context, GemmaBlockHost host) {
+    QnnTensor inputs[16], outputs[6];
+    GemmaBlock *blocks[2] = {&block, &prompt_blocks[1]};
+    GemmaArtifactHeader header;
+    u32 inputs_used = 0, outputs_used = 0, block_index, index, step;
+    u64 code, previous_key = 0;
+    const float *embedding = artifact("fixture/prompt/input", &header);
+    if (!embedding || header.payload_size != 256U * 2560U * 4U) return 0;
+    join(weight_prefix, "language_model.model.layers.0.", "");
+    code = api->graph_create(context, "gemma_position_regression", 0, &block.graph);
+    if (code) return 0;
+    for (block_index = 0; block_index < 2; ++block_index) {
+        GemmaBlock *current = blocks[block_index];
+        current->graph = block.graph; current->internal = 2;
+        join(current->prefix, block_index ? "second." : "first.", "");
+        if (block_index) current->shared_inputs[0] = &block.tensors[1].tensor;
+        if (!gemma_block_build_shape(current, api, context, host, 4, 128, 512)) return 0;
+    }
+    code = api->graph_finalize(block.graph, 0, 0);
+    if (code) { status("position regression finalize", code); return 0; }
+    for (block_index = 0; block_index < 2; ++block_index) {
+        GemmaBlock *current = blocks[block_index];
+        for (index = 0; index < current->count; ++index) {
+            GemmaBlockTensor *entry = &current->tensors[index];
+            const char *name = entry->name + length(current->prefix);
+            u32 element;
+            if (entry->borrowed || (entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_WRITE &&
+                entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_READ)) continue;
+            entry->buffer = allocate(0, entry->bytes); if (!entry->buffer) return 0;
+            entry->tensor.data.v1.memory.client_buffer.data = entry->buffer;
+            entry->tensor.data.v1.memory.client_buffer.data_size = entry->bytes;
+            if (equal(name, "input")) for (element = 0; element < 128 * 2560; ++element)
+                ((u16 *)entry->buffer)[element] = half(embedding[element]);
+            if (equal(name, "cos-table") || equal(name, "sin-table")) {
+                const float *table = artifact(equal(name, "cos-table") ? "fixture/prompt/local-cos" : "fixture/prompt/local-sin", &header);
+                if (!table || header.payload_size != 2048U * 128U * 4U) return 0;
+                for (element = 0; element < 512 * 128; ++element) ((u16 *)entry->buffer)[element] = half(table[element]);
+            }
+            if (entry->tensor.data.v1.type == QNN_TENSOR_TYPE_APP_WRITE) {
+                if (inputs_used == 16) return 0;
+                inputs[inputs_used++] = entry->tensor;
+            } else {
+                if (outputs_used == 6) return 0;
+                outputs[outputs_used++] = entry->tensor;
+            }
+        }
+    }
+    if (inputs_used != 13 || outputs_used != 6 || !blocks[1]->tensors[1].borrowed ||
+        blocks[1]->tensors[1].tensor.data.v1.id != block.tensors[1].tensor.data.v1.id) return 0;
+    for (step = 0; step < 2; ++step) {
+        float *positions = find_tensor("positions")->buffer;
+        u64 key_hash;
+        for (index = 0; index < 128; ++index) positions[index] = step * 128 + index;
+        code = api->graph_execute(block.graph, inputs, inputs_used, outputs, outputs_used, 0, 0);
+        if (code) { status("position regression execute", code); return 0; }
+        for (index = 0; index < 3; ++index) {
+            QnnClientBuffer *first = &outputs[index].data.v1.memory.client_buffer;
+            QnnClientBuffer *second = &outputs[index + 3].data.v1.memory.client_buffer;
+            u32 element;
+            if (first->data_size != second->data_size) return 0;
+            for (element = 0; element < first->data_size / 2; ++element) {
+                u16 actual = ((const u16 *)first->data)[element];
+                if ((actual & 0x7c00U) == 0x7c00U || actual != ((const u16 *)second->data)[element]) return 0;
+            }
+        }
+        key_hash = fingerprint(find_tensor("k-rope")->buffer, 4 * 128 * 256 * 2);
+        {
+            const u16 *normalized = find_tensor("k-rmsnorm")->buffer;
+            const u16 *rotated = find_tensor("k-rope")->buffer;
+            const u16 *cosine = find_tensor("cos-table")->buffer, *sine = find_tensor("sin-table")->buffer;
+            double error_sum = 0, reference_sum = 0;
+            for (index = 0; index < 4 * 128 * 256; ++index) {
+                u32 column = index % 256, token = (index / 256) % 128;
+                float other = gemma_numeric_f16(normalized[index - column + (column + 128) % 256]);
+                float expected = gemma_numeric_f16(half(gemma_numeric_f16(normalized[index]) * gemma_numeric_f16(cosine[(u32)positions[token] * 128 + column % 128]))) +
+                    gemma_numeric_f16(half((column < 128 ? -other : other) * gemma_numeric_f16(sine[(u32)positions[token] * 128 + column % 128])));
+                float error;
+                expected = gemma_numeric_f16(half(expected));
+                error = gemma_numeric_f16(rotated[index]) - expected;
+                error_sum += (double)error * error; reference_sum += (double)expected * expected;
+            }
+            status("RoPE primitive relative MSE ppm", (u64)(1e6 * error_sum / (reference_sum + 1e-20)));
+            if (error_sum > 0.000625 * reference_sum + 0.000001 * 4 * 128 * 256) return 0;
+        }
+        if (step && key_hash == previous_key) return 0;
+        previous_key = key_hash;
+    }
+    text("PASS shared-position two-block regression\n");
+    return 1;
+}
+
 static int prompt_build(const QnnInterfaceV2 *api, QnnContextHandle context, GemmaBlockHost host, u32 bucket) {
     QnnGraphHandle graph = 0; u32 index; u64 started = now(), code;
     code = api->graph_create(context, "gemma_prompt", 0, &graph);
@@ -356,7 +447,19 @@ static int prompt_build(const QnnInterfaceV2 *api, QnnContextHandle context, Gem
         join(weight_prefix, "language_model.model.layers.", layer_text);
         join(current->prefix, "layer-", suffix);
         current->graph = graph; current->internal = 1;
-        if (index) current->hidden_input = &prompt_blocks[index - 1].tensors[prompt_blocks[index - 1].count - 1].tensor;
+        if (index && index != 5) {
+            u32 owner = (index + 1) % 6 ? 0 : 5, tensor_index;
+            static const char *names[4] = {"positions", "cos-table", "sin-table", "mask"};
+            for (tensor_index = 0; tensor_index < prompt_blocks[owner].count; ++tensor_index) {
+                GemmaBlockTensor *entry = &prompt_blocks[owner].tensors[tensor_index]; u32 shared_index;
+                for (shared_index = 0; shared_index < 4; ++shared_index)
+                    if (equal(entry->name + 9, names[shared_index])) current->shared_inputs[shared_index] = &entry->tensor;
+            }
+        }
+        if (index) {
+            current->shared_inputs[0] = &prompt_blocks[0].tensors[1].tensor;
+            current->hidden_input = &prompt_blocks[index - 1].tensors[prompt_blocks[index - 1].count - 1].tensor;
+        }
         if (!gemma_block_build_shape(current, api, context, host, bits, 128, bucket)) return 0;
         status("prompt layer built", index);
     }
@@ -387,6 +490,9 @@ static const float *prompt_expected_key[34], *prompt_expected_value[34], *prompt
 static u64 prompt_shared_bytes;
 
 static GemmaBlockTensor *prompt_tensor(u32 layer_index, const char *name) {
+    if (equal(name, "positions")) layer_index = 0;
+    else if (equal(name, "cos-table") || equal(name, "sin-table") || equal(name, "mask"))
+        layer_index = (layer_index + 1) % 6 ? 0 : 5;
     GemmaBlock *current = &prompt_blocks[layer_index]; u32 index;
     for (index = 0; index < current->count; ++index)
         if (equal(current->tensors[index].name + 9, name)) return &current->tensors[index];
@@ -420,7 +526,7 @@ static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
     PromptHeader *header = &prompt_header;
     join(path, binding_path, ".context");
     if (prompt_blocks[0].count) {
-    header->magic = 0x37504d47; header->version = 1; header->bucket = bucket; header->tokens = 128; header->bits = 4;
+    header->magic = 0x37504d47; header->version = 4; header->bucket = bucket; header->tokens = 128; header->bits = 4;
     header->qnn = runtime_version;
     join(header->repository, gemma_model_translategemma_4b()->repository, "");
     join(header->revision, gemma_model_translategemma_4b()->revision, "");
@@ -428,7 +534,7 @@ static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
     for (layer_index = 0; layer_index < 34; ++layer_index) for (index = 0; index < prompt_blocks[layer_index].count; ++index) {
         GemmaBlockTensor *entry = &prompt_blocks[layer_index].tensors[index];
         PromptIo *descriptor;
-        if (entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_WRITE && entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_READ) continue;
+        if (entry->borrowed || (entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_WRITE && entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_READ)) continue;
         if (header->count == 320) return 0;
         descriptor = &header->io[header->count++];
         descriptor->layer = layer_index; descriptor->id = entry->tensor.data.v1.id;
@@ -468,7 +574,7 @@ static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
     if (file == (void *)(u64)-1) { ok = 0; goto done; }
     ok = transfer_file(file, header, sizeof(*header), 0) && transfer_file(file, binary, bytes, 0);
     if (!CloseHandle(file)) ok = 0;
-    if (!ok || header->binary_size != bytes || header->magic != 0x37504d47 || header->version != 1 ||
+    if (!ok || header->binary_size != bytes || header->magic != 0x37504d47 || header->version != 4 ||
         header->bucket != bucket || header->tokens != 128 || header->bits != 4 || header->count > 320 ||
         !equal(header->repository, gemma_model_translategemma_4b()->repository) ||
         !equal(header->revision, gemma_model_translategemma_4b()->revision) || !equal(header->graph, "gemma_prompt")) { ok = 0; goto done; }
@@ -593,7 +699,7 @@ static int prompt_execute(const QnnInterfaceV2 *api, u32 bucket, u32 valid, int 
         for (element = 0; element < 128 * 2560; ++element)
             embedding[element] = element < count * 2560 ? half(prompt_embedding[start * 2560 + element]) : 0;
         for (layer_index = 0; layer_index < 34; ++layer_index) {
-            u32 *positions = prompt_tensor(layer_index, "positions")->buffer;
+            float *positions = prompt_tensor(layer_index, "positions")->buffer;
             u16 *mask = prompt_tensor(layer_index, "mask")->buffer;
             for (row = 0; row < 128; ++row) positions[row] = row < count ? start + row : 0;
             for (head = 0; head < 8; ++head) for (row = 0; row < 128; ++row) for (key = 0; key < bucket + 128; ++key) {
@@ -603,7 +709,7 @@ static int prompt_execute(const QnnInterfaceV2 *api, u32 bucket, u32 valid, int 
                 mask[(head * 128 + row) * (bucket + 128) + key] = visible ? 0 : 0xfbffU;
             }
         }
-        *(u32 *)prompt_tensor(33, "last-token")->buffer = count - 1;
+        *(float *)prompt_tensor(33, "last-token")->buffer = (float)(count - 1);
         code = api->graph_execute(prompt_blocks[0].graph, prompt_inputs, prompt_input_count, prompt_outputs, prompt_output_count, 0, 0);
         if (code) { status("prompt execute", code); return 0; }
         for (layer_index = 0; layer_index < 34; ++layer_index) {
@@ -623,8 +729,9 @@ static int prompt_execute(const QnnInterfaceV2 *api, u32 bucket, u32 valid, int 
     if (verify) {
         for (layer_index = 0; layer_index < 34; ++layer_index) {
             status("prompt compare layer", layer_index);
-            if (!prompt_compare("key", prompt_tensor(layer_index, "past-key")->buffer, prompt_expected_key[layer_index], 4, valid, bucket, 256, 256) ||
-                !prompt_compare("value", prompt_tensor(layer_index, "past-value")->buffer, prompt_expected_value[layer_index], 4, valid, bucket, 256, 256)) return 0;
+            int key_ok = prompt_compare("key", prompt_tensor(layer_index, "past-key")->buffer, prompt_expected_key[layer_index], 4, valid, bucket, 256, 256);
+            int value_ok = prompt_compare("value", prompt_tensor(layer_index, "past-value")->buffer, prompt_expected_value[layer_index], 4, valid, bucket, 256, 256);
+            if (!key_ok || !value_ok) return 0;
         }
         if (!prompt_compare("logits", prompt_tensor(33, "logits")->buffer, prompt_logits[valid == 256], 1, 1, 1, 1, 262208)) return 0;
     }
@@ -642,7 +749,7 @@ void mainCRTStartup(void) {
     Providers get_providers; RpcAlloc rpc_alloc; RpcFd rpc_fd; u32 count, index, step, result = 1, cleanup_errors = 0, prompt_bucket = 0;
     u64 code, started; GemmaBlockHost host = {0, allocate, weight, status};
     if (!read_bindings() || !QueryPerformanceFrequency(&frequency)) goto cleanup;
-    text("Gemma Stage 6 W"); number(bits); text(" layer "); number(layer); text("\n");
+    text(layer == 34 ? "Gemma Stage 7 W" : "Gemma Stage 6 W"); number(bits); text(" layer "); number(layer); text("\n");
     module = LoadLibraryA("QnnHtp.dll"); if (!module) goto cleanup;
     get_providers = (Providers)GetProcAddress(module, "QnnInterface_getProviders");
     if (!get_providers || get_providers(&providers, &count)) goto cleanup;
@@ -655,6 +762,10 @@ void mainCRTStartup(void) {
     code = api->backend_create(log, 0, &backend); if (code) goto cleanup;
     code = api->device_create(log, 0, &device); if (code) goto cleanup;
     code = api->context_create(backend, device, 0, &context); if (code) goto cleanup;
+    if (layer == 34 && equal(failure_point, "position-regression")) {
+        result = position_regression(api, context, host) ? 0 : 1;
+        goto cleanup;
+    }
     if (layer == 34) {
         int restore_only = failure_point[0] == 'r';
         prompt_bucket = equal(failure_point, "prompt-512") || equal(failure_point, "restore-512") ? 512 :
@@ -769,6 +880,7 @@ cleanup:
     status("cleanup errors", cleanup_errors);
     if (cleanup_errors) result = 1;
     if (!result && layer != 34) text("PASS block intermediates, cached rows, guard regions and warm determinism\n");
-    if (!result && layer == 34) text("PASS prompt restore, KV/logits, padding, determinism and throughput\n");
+    if (!result && layer == 34) text(equal(failure_point, "position-regression") ? "PASS position regression cleanup\n" :
+        "PASS prompt restore, KV/logits, padding, determinism and throughput\n");
     status("block runner result", result); ExitProcess(result);
 }

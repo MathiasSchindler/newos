@@ -29,7 +29,18 @@ u32 gemma_block_tensor(GemmaBlock *block, const char *name, u32 type, u32 dtype,
     if (id >= GEMMA_BLOCK_TENSORS || !rank || rank > 4U) { block->error = 1; return 0; }
     entry = &block->tensors[id];
     if (!qualified_name(block, entry, name)) { block->error = 2; return 0; }
+    if (type == QNN_TENSOR_TYPE_APP_WRITE) {
+        u32 shared_index = same_name(name, "positions") ? 0 : same_name(name, "cos-table") ? 1 :
+            same_name(name, "sin-table") ? 2 : same_name(name, "mask") ? 3 : 4;
+        if (shared_index < 4 && block->shared_inputs[shared_index]) {
+            entry->tensor = *block->shared_inputs[shared_index];
+            entry->borrowed = 1;
+            ++block->count;
+            return id;
+        }
+    }
     if (block->internal && type == QNN_TENSOR_TYPE_APP_READ &&
+        !(block->internal == 2 && same_name(name, "k-rmsnorm")) &&
         !same_name(name, "k-rope") && !same_name(name, "v-projection") && !same_name(name, "logits"))
         type = QNN_TENSOR_TYPE_NATIVE;
     for (index = 0; index < rank; ++index) {
@@ -280,11 +291,14 @@ int gemma_block_build_shape(GemmaBlock *block, const QnnInterfaceV2 *api, QnnCon
     if (block->hidden_input) {
         GemmaBlockTensor *entry = &block->tensors[block->count++];
         entry->tensor = *block->hidden_input;
-        entry->dimensions[0] = tokens; entry->dimensions[1] = 2560;
-        entry->tensor.data.v1.dimensions = entry->dimensions;
+        entry->borrowed = 1;
         hidden = 0;
     } else hidden = tensor(block, "input", QNN_TENSOR_TYPE_APP_WRITE, hidden_shape, 2);
-    position = gemma_block_tensor(block, "positions", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_INT_32, position_shape, 2, 0);
+    position = gemma_block_tensor(block, "positions", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_32, position_shape, 2, 0);
+    {
+        u32 integer_position = gemma_block_tensor(block, "position-indices", QNN_TENSOR_TYPE_NATIVE, QNN_DATATYPE_INT_32, position_shape, 2, 0);
+        position = gemma_block_node(block, "position-indices", "Cast", &position, 1, integer_position, 0, 0);
+    }
     cosine = tensor(block, "cos-table", QNN_TENSOR_TYPE_APP_WRITE, rope_shape, 2);
     sine = tensor(block, "sin-table", QNN_TENSOR_TYPE_APP_WRITE, rope_shape, 2);
     mask = tensor(block, "mask", QNN_TENSOR_TYPE_APP_WRITE, scores_shape, 3);
@@ -341,7 +355,11 @@ int gemma_block_logits(GemmaBlock *block) {
     const u32 index_shape[1] = {1}, hidden_shape[2] = {1, 2560};
     u32 inputs[2]; QnnParam axis = scalar("axis", QNN_DATATYPE_INT_32, 0);
     last = gemma_block_tensor(block, "last-token", QNN_TENSOR_TYPE_APP_WRITE,
-                             QNN_DATATYPE_INT_32, index_shape, 1, 0);
+                             QNN_DATATYPE_FLOAT_32, index_shape, 1, 0);
+    {
+        u32 integer_last = gemma_block_tensor(block, "last-index", QNN_TENSOR_TYPE_NATIVE, QNN_DATATYPE_INT_32, index_shape, 1, 0);
+        last = gemma_block_node(block, "last-index", "Cast", &last, 1, integer_last, 0, 0);
+    }
     selected = tensor(block, "last-hidden", QNN_TENSOR_TYPE_NATIVE, hidden_shape, 2);
     inputs[0] = input; inputs[1] = last;
     gemma_block_node(block, "last-hidden", "Gather", inputs, 2, selected, &axis, 1);
