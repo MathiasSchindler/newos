@@ -1,5 +1,8 @@
 #include "../../shared/qnn_abi.h"
 #include "ocr_tokenizer.h"
+#ifdef OCR_VISION_RUN
+#include "ocr_image.h"
+#endif
 
 __declspec(dllimport) void *LoadLibraryExW(const unsigned short *, void *, u32);
 __declspec(dllimport) void *GetProcAddress(void *, const char *);
@@ -18,15 +21,15 @@ static u32 load32(const u8 *data) {
     return data[0] | (u32)data[1] << 8 | (u32)data[2] << 16 | (u32)data[3] << 24;
 }
 
-static u32 read_fixtures(const unsigned short *path) {
+static u32 read_blob(const unsigned short *path, u8 *data, u32 capacity) {
     void *file = CreateFileW(path,0x80000000U,1,0,3,0x08000080U,0);
     long long size = 0;
     u32 total = 0, received;
     int valid = 0;
     if (file == (void *)~0ULL) return 0;
-    if (!GetFileSizeEx(file,&size) || size < 132 || (u64)size > sizeof(fixture_data)) goto done;
+    if (!GetFileSizeEx(file,&size) || size < 132 || (u64)size > capacity) goto done;
     while (total < (u32)size) {
-        if (!ReadFile(file,fixture_data+total,(u32)size-total,&received,0) || !received) goto done;
+        if (!ReadFile(file,data+total,(u32)size-total,&received,0) || !received) goto done;
         total += received;
     }
     u8 extra;
@@ -35,6 +38,10 @@ static u32 read_fixtures(const unsigned short *path) {
 done:
     if (!CloseHandle(file)) valid = 0;
     return valid ? total : 0;
+}
+
+static u32 read_fixtures(const unsigned short *path) {
+    return read_blob(path,fixture_data,sizeof(fixture_data));
 }
 
 static int output_good = 1;
@@ -48,7 +55,9 @@ static int capture_tensor(u32 block_index, const char *suffix, const void *data,
         if (length >= 32700) return 0;
         path[length] = capture_directory[length]; ++length;
     }
-    path[length++] = '\\'; path[length++] = '0'+block_index;
+    path[length++] = '\\';
+    if (block_index >= 10) path[length++] = '0'+block_index/10;
+    path[length++] = '0'+block_index%10;
     for (u32 index = 0; suffix[index]; ++index) path[length++] = (unsigned char)suffix[index];
     path[length] = 0;
     void *file = CreateFileW(path,0x40000000U,0,0,1,0x80,0);
@@ -243,7 +252,7 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     return 1;
 }
 
-#ifdef OCR_MATRIX_RESIDUAL
+#if defined(OCR_MATRIX_RESIDUAL) || defined(OCR_FUSE_DOWN_RESIDUAL) || defined(OCR_FUSE_ATTENTION_RESIDUAL)
 #define OCR_ATTENTION_TENSORS 160
 #else
 #define OCR_ATTENTION_TENSORS 128
@@ -265,6 +274,18 @@ typedef struct {
 
 static u16 attention_output[4456448];
 static u16 chain_input[131072];
+#ifdef OCR_FUSE_DOWN_RESIDUAL
+static u16 fused_down_weight[5152*1024];
+#endif
+#ifdef OCR_FUSE_DOWN_RESIDUAL_BLOCK0
+static u16 fused_block0_down_weight[5152*1024];
+#endif
+#ifdef OCR_FUSE_ATTENTION_RESIDUAL
+static u16 fused_attention_weight[2080*1024];
+#endif
+#if defined(OCR_FUSE_DOWN_RESIDUAL) || defined(OCR_FUSE_ATTENTION_RESIDUAL)
+static u16 fused_down_ones[128*32];
+#endif
 #ifdef OCR_CAPTURE_INTERNALS
 static u16 internal_output[3674112];
 static u16 internal_previous[3674112];
@@ -373,6 +394,29 @@ static QnnParam attention_axis(const char *name, u32 axis) {
     return result;
 }
 
+#if defined(OCR_FUSE_DOWN_RESIDUAL) || defined(OCR_FUSE_ATTENTION_RESIDUAL)
+static u32 attention_project_residual(OcrAttentionGraph *builder, u32 values, u32 residual, u32 weight, u32 bias, u32 tokens, u16 *storage) {
+    u32 source_width = builder->tensors[weight].data.v1.dimensions[0];
+    u32 joined_width = source_width+1024+32;
+    const u16 *weight_values = builder->tensors[weight].data.v1.memory.client_buffer.data;
+    const u16 *bias_values = builder->tensors[bias].data.v1.memory.client_buffer.data;
+    for (u32 row = 0; row < joined_width; ++row)
+        for (u32 column = 0; column < 1024; ++column)
+            storage[row*1024+column] = row < source_width ? weight_values[row*1024+column] :
+                row < source_width+1024 ? (row-source_width == column ? 0x3c00 : 0) : row == source_width+1024 ? bias_values[column] : 0;
+    for (u32 index = 0; index < tokens*32; ++index) fused_down_ones[index] = index%32 ? 0 : 0x3c00;
+    u32 joined_shape[2] = {tokens,joined_width}, weight_shape[2] = {joined_width,1024};
+    u32 ones_shape[2] = {tokens,32}, output_shape[2] = {tokens,1024};
+    u32 weight_tensor = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,weight_shape,storage);
+    u32 ones_tensor = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,ones_shape,fused_down_ones);
+    u32 joined_ids[3] = {values,residual,ones_tensor};
+    QnnParam concat_axis = attention_axis("axis",1);
+    u32 joined = attention_op(builder,"Concat",joined_ids,3,2,joined_shape,QNN_DATATYPE_FLOAT_16,0,&concat_axis,1);
+    u32 ids[2] = {joined,weight_tensor};
+    return attention_op(builder,"MatMul",ids,2,2,output_shape,QNN_DATATYPE_FLOAT_16,1,0,0);
+}
+#endif
+
 static u32 attention_norm(OcrAttentionGraph *builder, u32 input, u32 gamma, u32 rank, const u32 *shape, u32 *axis) {
     u32 one[1] = {1}, ids[2] = {input,gamma};
     u32 axis_id = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,one,axis);
@@ -394,6 +438,7 @@ static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 
 }
 
 static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block, u32 tokens, u32 block_index, u16 *next_input) {
+    if ((tokens != 64 && tokens != 128) || block_index >= 24 || (!references && (!full_block || !next_input))) return 0;
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
     u32 flat[2] = {tokens,1024}, fused[2] = {tokens,3072}, heads[3] = {tokens,16,64}, batched[3] = {16,tokens,64};
     u32 key_shape[3] = {16,64,tokens}, score_shape[3] = {16,tokens,tokens};
@@ -535,8 +580,15 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     product = attention_op(&builder,"MatMul",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,0,0,0);
     ids[0] = product; ids[1] = proj_bias;
     taps[9] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
-    ids[0] = input; ids[1] = taps[9];
-    taps[10] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+#ifdef OCR_FUSE_ATTENTION_RESIDUAL
+    if (block_index == 1) {
+        taps[10] = attention_project_residual(&builder,taps[8],input,proj_weight,proj_bias,tokens,fused_attention_weight);
+    } else
+#endif
+    {
+        ids[0] = input; ids[1] = taps[9];
+        taps[10] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    }
     if (full_block) {
         u32 second_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
         taps[11] = attention_norm(&builder,taps[10],second_gamma,2,flat,&scalar_axis);
@@ -574,8 +626,21 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         u32 down_product = attention_op(&builder,"MatMul",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,0,0,0);
         ids[0] = down_product; ids[1] = down_bias;
         taps[16] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
-        ids[0] = taps[10]; ids[1] = taps[16];
-        taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+#ifdef OCR_FUSE_DOWN_RESIDUAL
+    int fuse_down = block_index == 1;
+    u16 *fused_storage = fused_down_weight;
+#ifdef OCR_FUSE_DOWN_RESIDUAL_BLOCK0
+    fuse_down = 1;
+    if (block_index == 0) fused_storage = fused_block0_down_weight;
+#endif
+    if (fuse_down) {
+        taps[17] = attention_project_residual(&builder,taps[15],taps[10],down_weight,down_bias,tokens,fused_storage);
+        } else
+#endif
+        {
+            ids[0] = taps[10]; ids[1] = taps[16];
+            taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+        }
     }
 #ifdef OCR_MATRIX_RESIDUAL
     if (block_index == 1 && full_block) {
@@ -612,12 +677,14 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     static const char *const names[] = {"norm1","qkv","q_norm","k_norm","q_rope","k_rope","scores","probabilities","context","projection","residual",
         "norm2","gate","up","silu","gated","down","block_output"};
     int good = 1;
-    for (u32 run = 0; run < 3; ++run) {
+    for (u32 run = 0; run < (references ? 3U : 1U); ++run) {
         for (u32 index = 0; index < total_elements; ++index) attention_output[index] = 0x7e00;
     #ifdef OCR_CAPTURE_INTERNALS
         for (u32 index = 0; index < internal_elements; ++index) internal_output[index] = 0x7e00;
     #endif
         if (!checked("attention_execute",api->graph_execute(builder.graph,&source_tensor,1,outputs,output_count,execution_profile,0))) return 0;
+        for (u32 index = 0; index < total_elements; ++index)
+            if ((attention_output[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision activation\n"); return 0; }
     #ifdef OCR_CAPTURE_INTERNALS
         for (u32 index = 0; index < internal_elements; ++index) {
             if ((internal_output[index] & 0x7c00) == 0x7c00 || (run && internal_output[index] != internal_previous[index])) {
@@ -641,7 +708,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
             if (!(sum >= 0.997f && sum <= 1.003f)) { text("FAIL probability row sum\n"); return 0; }
         }
         text("PASS probability range and row sums\n");
-        for (u32 scope = 0; scope < 2; ++scope) {
+        for (u32 scope = 0; references && scope < 2; ++scope) {
             text(scope ? "candidate_fp32\n" : "original_fp32\n"); offset = 0;
             for (u32 tap = 0; tap < tap_count; ++tap) {
                 float maximum = 0; u32 failures = 0, elements = attention_elements(tap,tokens);
@@ -716,8 +783,9 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         text("FAIL internal tensor capture\n"); return 0;
     }
 #endif
-    text(full_block ? (good ? "PASS learned vision block taps\n" : "FAIL learned vision block taps\n") :
-                     (good ? "PASS learned vision attention taps\n" : "FAIL learned vision attention taps\n"));
+    if (!references) text("PASS vision block execution; numerical acceptance not asserted\n");
+    else text(full_block ? (good ? "PASS learned vision block taps\n" : "FAIL learned vision block taps\n") :
+                          (good ? "PASS learned vision attention taps\n" : "FAIL learned vision attention taps\n"));
     if (good && next_input) {
         for (u32 index = 0; index < tokens*1024; ++index) next_input[index] = attention_output[tap_offsets[17]+index];
         text("PASS unchanged FP16 block output handed to next block\n");
@@ -828,7 +896,196 @@ static int addition(const QnnInterfaceV2 *api, QnnContextHandle context, u32 wid
     return 1;
 }
 
-int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture) {
+#ifdef OCR_VISION_RUN
+static OcrPreparedImage vision_image;
+static u8 vision_shared[2508960];
+static u8 vision_constants[33585408+128*512];
+static u8 vision_hashes[26][32];
+static u16 vision_pixels[128*1176];
+static u16 vision_tail_output[128*1024+2*32*1536];
+
+static int vision_asset(const unsigned short *directory, u32 index, int remember) {
+    unsigned short path[32768];
+    u32 length = 0;
+    if (!directory || index >= 26) return 0;
+    while (directory[length]) {
+        if (length >= 32700) return 0;
+        path[length] = directory[length]; ++length;
+    }
+    path[length++] = '\\';
+    char block_name[] = "block-00.got";
+    block_name[6] = '0'+index/10; block_name[7] = '0'+index%10;
+    const char *name = index < 24 ? block_name : index == 24 ? "shared.got" : "tail.got";
+    for (u32 offset = 0; name[offset]; ++offset) path[length++] = (unsigned char)name[offset];
+    path[length] = 0;
+    u32 size = read_fixtures(path), kind = index < 24 ? 10 : index == 24 ? 11 : 12;
+    u32 expected_size = index < 24 ? 33585572 : index == 24 ? sizeof(vision_shared) : 59780256;
+    if (size != expected_size || !ocr_artifact(fixture_data,size,kind) ||
+        (index < 24 && load32(fixture_data+160) != index)) return 0;
+    static const char source_sha[] = "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815";
+    static const char hex[] = "0123456789abcdef";
+    for (u32 offset = 0; offset < 32; ++offset) {
+        u8 value = fixture_data[128+offset];
+        if (hex[value >> 4] != source_sha[offset*2] || hex[value & 15] != source_sha[offset*2+1]) return 0;
+        if (remember) vision_hashes[index][offset] = fixture_data[96+offset];
+        else if (vision_hashes[index][offset] != fixture_data[96+offset]) return 0;
+    }
+    u32 begin = index < 24 ? 164 : 160;
+    u32 half_end = index == 24 ? 160+2410496 : size;
+    for (u32 offset = begin; offset < half_end; offset += 2)
+        if ((fixture_data[offset+1] & 0x7c) == 0x7c) return 0;
+    if (index == 24) {
+        for (u32 offset = half_end; offset < size; offset += 4) {
+            union {u32 bits; float value;} coefficient;
+            coefficient.bits = load32(fixture_data+offset);
+            if (!(coefficient.value >= -1 && coefficient.value <= 1)) return 0;
+        }
+        for (u32 offset = 0; offset < size; ++offset) vision_shared[offset] = fixture_data[offset];
+    }
+    return 1;
+}
+
+int ocr_vision_check(const unsigned short *directory) {
+    for (u32 index = 0; index < 26; ++index)
+        if (!vision_asset(directory,index,1)) { text("FAIL vision weight artifact\n"); return 0; }
+    text("PASS all 26 vision weight artifacts\n");
+    return 1;
+}
+
+static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, u32 input_elements,
+                            const u32 *ids, u32 count, u16 *destination) {
+    if (!builder->good || count > 8 || !checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0))) return 0;
+    QnnTensor outputs[8], source_tensor = builder->tensors[input];
+    u32 total = 0;
+    source_tensor.data.v1.memory.client_buffer.data = source;
+    source_tensor.data.v1.memory.client_buffer.data_size = input_elements*2;
+    for (u32 index = 0; index < count; ++index) {
+        outputs[index] = builder->tensors[ids[index]];
+        u32 elements = 1;
+        for (u32 axis = 0; axis < outputs[index].data.v1.rank; ++axis) elements *= outputs[index].data.v1.dimensions[axis];
+        outputs[index].data.v1.memory.client_buffer.data = destination+total;
+        outputs[index].data.v1.memory.client_buffer.data_size = elements*2;
+        total += elements;
+    }
+    for (u32 index = 0; index < total; ++index) destination[index] = 0x7e00;
+    if (!checked("vision_execute",builder->api->graph_execute(builder->graph,&source_tensor,1,outputs,count,execution_profile,0))) return 0;
+    for (u32 index = 0; index < total; ++index)
+        if ((destination[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision output\n"); return 0; }
+    const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
+    if (builder->api->profile_get_events(execution_profile,&events,&event_count) ||
+        !profile_events(builder->api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
+    checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
+    return 1;
+}
+
+static u32 vision_linear(OcrAttentionGraph *builder, u32 input, u32 rows, u32 width, u32 outputs, u8 **constants, int bias, int tap) {
+    u32 shape[2] = {rows,outputs}, matrix[2] = {width,outputs}, channels[1] = {outputs};
+    u32 ids[2] = {input,attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,matrix,*constants)};
+    *constants += width*outputs*2;
+    u32 result = attention_op(builder,"MatMul",ids,2,2,shape,QNN_DATATYPE_FLOAT_16,bias ? 0 : tap,0,0);
+    if (bias) {
+        ids[0] = result; ids[1] = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,channels,*constants);
+        *constants += outputs*2;
+        result = attention_op(builder,"ElementWiseAdd",ids,2,2,shape,QNN_DATATYPE_FLOAT_16,tap,0,0);
+    }
+    return result;
+}
+
+static int vision_patch(const QnnInterfaceV2 *api, QnnContextHandle context, u32 tokens) {
+    OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
+    if (!checked("vision_patch_graph",api->graph_create(context,"vision_patch",0,&builder.graph))) return 0;
+    u32 shape[2] = {tokens,1176};
+    u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,shape,0);
+    u8 *constants = vision_shared+160;
+    u32 output = vision_linear(&builder,input,tokens,1176,1024,&constants,1,1);
+    for (u32 index = 0; index < tokens*1176; ++index) {
+        union {u16 bits; _Float16 value;} converted;
+        converted.value = (_Float16)vision_image.patches[index];
+        if ((converted.bits & 0x7c00) == 0x7c00) return 0;
+        vision_pixels[index] = converted.bits;
+    }
+    return capture_tensor(0,".patches.f32",vision_image.patches,tokens*1176*4) &&
+        vision_execution(&builder,input,vision_pixels,tokens*1176,&output,1,chain_input) &&
+        capture_tensor(0,".patch.f16",chain_input,tokens*2048);
+}
+
+static int vision_tail(const QnnInterfaceV2 *api, QnnContextHandle context, u32 tokens) {
+    OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
+    if (!checked("vision_tail_graph",api->graph_create(context,"vision_tail",0,&builder.graph))) return 0;
+    u32 flat[2] = {tokens,1024}, width[1] = {1024}, axis = 1;
+    u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
+    u8 *constants = fixture_data+160;
+    u32 gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
+    u32 normalized = attention_norm(&builder,input,gamma,2,flat,&axis);
+    u32 grouped[2] = {tokens/4,4096}, merged[2] = {tokens/4,1536}, wide[2] = {tokens/4,4608};
+    u32 packed = attention_op(&builder,"Reshape",&normalized,1,2,grouped,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 downsample = vision_linear(&builder,packed,tokens/4,4096,1536,&constants,1,1);
+    u32 projected = vision_linear(&builder,downsample,tokens/4,1536,1536,&constants,0,0);
+    u32 channels[1] = {1536}, one_shape[1] = {1};
+    u32 layer_inputs[3] = {projected,attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,channels,constants),0}; constants += 3072;
+    layer_inputs[2] = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,channels,constants); constants += 3072;
+    u32 axis_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,one_shape,&axis);
+    QnnParam parameters[2] = {0};
+    parameters[0].name = "epsilon"; parameters[0].type = QNN_PARAMTYPE_SCALAR;
+    parameters[0].value.scalar.data_type = QNN_DATATYPE_FLOAT_32; parameters[0].value.scalar.value.float_value = 1e-5f;
+    parameters[1].name = "axes"; parameters[1].type = QNN_PARAMTYPE_TENSOR; parameters[1].value.tensor = builder.tensors[axis_tensor];
+    u32 layer = attention_op(&builder,"LayerNorm",layer_inputs,3,2,merged,QNN_DATATYPE_FLOAT_16,0,parameters,2);
+    u32 activated = attention_op(&builder,"Gelu",&layer,1,2,merged,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 gate = vision_linear(&builder,activated,tokens/4,1536,4608,&constants,0,0);
+    u32 up = vision_linear(&builder,activated,tokens/4,1536,4608,&constants,0,0);
+    _Float16 zero = 0, one = 1;
+    u32 zero_id = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,one_shape,&zero);
+    u32 one_id = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,one_shape,&one);
+    u32 absolute = attention_op(&builder,"ElementWiseAbs",&gate,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 negative = attention_op(&builder,"ElementWiseNeg",&absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 decay = attention_op(&builder,"ElementWiseExp",&negative,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 ids[2] = {decay,one_id};
+    u32 divisor = attention_op(&builder,"ElementWiseAdd",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = gate; ids[1] = zero_id;
+    u32 minimum = attention_op(&builder,"ElementWiseMinimum",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 numerator = attention_op(&builder,"ElementWiseExp",&minimum,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = numerator; ids[1] = divisor;
+    u32 factor = attention_op(&builder,"ElementWiseDivide",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = gate; ids[1] = factor;
+    u32 silu = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = silu; ids[1] = up;
+    u32 gated = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 output = vision_linear(&builder,gated,tokens/4,4608,1536,&constants,0,1);
+    u32 output_ids[3] = {normalized,downsample,output};
+    if (constants != fixture_data+59780256 || !vision_execution(&builder,input,chain_input,tokens*1024,output_ids,3,vision_tail_output)) return 0;
+    return capture_tensor(24,".postnorm.f16",vision_tail_output,tokens*2048) &&
+        capture_tensor(25,".downsample.f16",vision_tail_output+tokens*1024,tokens/4*3072) &&
+        capture_tensor(26,".features.f16",vision_tail_output+tokens*1024+tokens/4*1536,tokens/4*3072);
+}
+
+static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
+                           QnnContextHandle *context, const unsigned short *directory) {
+    u32 tokens = vision_image.shape.grid_height*vision_image.shape.grid_width;
+    if (!vision_patch(api,*context,tokens)) return 0;
+    ocr_image_release(&vision_image);
+    for (u32 index = 0; index < 25; ++index) {
+        if (!checked("vision_context_free",api->context_free(*context,0))) return 0;
+        *context = 0;
+        if (!vision_asset(directory,index < 24 ? index : 25,0) ||
+            !checked("vision_context_create",api->context_create(backend,device,0,context))) return 0;
+        if (index == 24) return vision_tail(api,*context,tokens);
+        u32 prefix = 6299904;
+        for (u32 offset = 0; offset < prefix; ++offset) vision_constants[offset] = fixture_data[164+offset];
+        const u8 *rope = vision_shared+160+2410496+(tokens == 128 ? 64*512 : 0);
+        for (u32 offset = 0; offset < tokens*512; ++offset) vision_constants[prefix+offset] = rope[offset];
+        for (u32 offset = prefix; offset < 33585408; ++offset) vision_constants[offset+tokens*512] = fixture_data[164+offset];
+        if (!attention_probe(api,*context,(u8 *)chain_input,vision_constants,0,1,tokens,index,chain_input)) return 0;
+    }
+    return 0;
+}
+#endif
+
+#ifdef OCR_TEXT_DECODER
+#include "ocr_prefill.c"
+#endif
+
+static int htp_run(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture, const unsigned short *image_path,
+                    const unsigned short *text_directory, u32 task) {
     capture_directory = capture;
     void *module = 0;
     QnnBackendHandle backend = 0;
@@ -841,8 +1098,25 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, 
     int good = 0, clean = 1;
     output_good = 1;
     execution_profile = 0;
-    u32 fixture_size = read_fixtures(fixtures);
-    u32 kind = fixture_size >= 128 ? load32(fixture_data+12) : 0;
+    (void)text_directory; (void)task;
+    u32 fixture_size = 0, kind = 0;
+#ifdef OCR_VISION_RUN
+    if (image_path) {
+        if (!capture || !ocr_image_load(image_path,&vision_image)) { text("FAIL vision image input\n"); return 0; }
+        if (vision_image.shape.grid_height != 8 || (vision_image.shape.grid_width != 8 && vision_image.shape.grid_width != 16) ||
+            !ocr_vision_check(fixtures)) { text("FAIL vision bucket or weights\n"); goto done; }
+        checked("vision_grid_height",vision_image.shape.grid_height); checked("vision_grid_width",vision_image.shape.grid_width);
+    #ifdef OCR_TEXT_DECODER
+        if (text_directory && !prefill_check(text_directory)) { text("FAIL text weights\n"); goto done; }
+        prefill_grid_width = vision_image.shape.grid_width;
+    #endif
+    } else
+#else
+    (void)image_path;
+#endif
+    {
+    fixture_size = read_fixtures(fixtures);
+    kind = fixture_size >= 128 ? load32(fixture_data+12) : 0;
     if ((kind != 5 && kind != 6 && kind != 7 && kind != 8 && kind != 9) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
     if (kind >= 6 && kind <= 9) {
         static const char source_sha[] = "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815";
@@ -854,6 +1128,7 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, 
             }
     }
     if (!primitives(0,0,fixture_size,kind)) { text("FAIL HTP fixture structure\n"); return 0; }
+    }
     module = LoadLibraryExW(library,0,0x1100);
     if (!module) { text("FAIL loading explicit HTP library\n"); goto done; }
     get_providers = (QnnInterfaceGetProviders)GetProcAddress(module,"QnnInterface_getProviders");
@@ -873,13 +1148,42 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, 
     if (!checked("backend_create",api->backend_create(0,0,&backend)) || !checked("device_create",api->device_create(0,0,&device)) ||
         !checked("context_create",api->context_create(backend,device,0,&context))) goto done;
     if (!checked("profile_create",api->profile_create(backend,2,&execution_profile))) goto done;
+    #ifdef OCR_VISION_RUN
+    if (image_path) good = vision_forward(api,backend,device,&context,fixtures);
+    else
+    #endif
     good = addition(api,context,1024,"ocr_vision_add") && addition(api,context,1536,"ocr_text_add") && primitives(api,context,fixture_size,kind);
+#ifdef OCR_TEXT_DECODER
+    if (good && text_directory) good = prefill_forward(api,backend,device,&context,text_directory,task);
+#endif
 done:
     if (context && !checked("context_free",api->context_free(context,0))) clean = 0;
     if (execution_profile && !checked("profile_free",api->profile_free(execution_profile))) clean = 0;
     if (device && !checked("device_free",api->device_free(device))) clean = 0;
     if (backend && !checked("backend_free",api->backend_free(backend))) clean = 0;
     if (module && !FreeLibrary(module)) clean = 0;
-    text(good && clean ? "PASS OCR HTP probe\n" : "FAIL OCR HTP probe\n");
+#ifdef OCR_VISION_RUN
+    ocr_image_release(&vision_image);
+#endif
+    if (text_directory) text(good && clean ? "PASS multimodal text prefill; precision unaccepted, no token generation\n" : "FAIL multimodal text prefill\n");
+    else if (image_path) text(good && clean ? "PASS full vision execution; precision unaccepted, no text decoding\n" : "FAIL full vision execution\n");
+    else text(good && clean ? "PASS OCR HTP probe\n" : "FAIL OCR HTP probe\n");
     return good && clean && output_good;
 }
+
+int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture) {
+    return htp_run(library,fixtures,capture,0,0,0);
+}
+
+#ifdef OCR_VISION_RUN
+int ocr_vision_run(const unsigned short *library, const unsigned short *weights, const unsigned short *image, const unsigned short *capture) {
+    return htp_run(library,weights,capture,image,0,0);
+}
+#endif
+
+#ifdef OCR_TEXT_DECODER
+int ocr_prefill_run(const unsigned short *library, const unsigned short *vision_weights, const unsigned short *text_weights,
+                     const unsigned short *image, const unsigned short *capture, u32 task) {
+    return htp_run(library,vision_weights,capture,image,text_weights,task);
+}
+#endif

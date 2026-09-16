@@ -1360,12 +1360,677 @@ accumulation errors. Default inference arithmetic, source weights and numerical
 tolerances remain unchanged. Further work should localize the remaining output
 errors and upstream score errors separately, not repeat correction blindly.
 
+### Remaining chain error localization
+
+The `GLM-OCR remaining chain error analysis` task applies the pinned conditional
+oracle to the completed matrix-residual capture, comparing with the instrumented
+uncorrected control. It writes `chain-boundary-analysis.json` in
+`build/ocr-chain-matrix-residual-group256/`. No native graph, source weight or
+tolerance changes are part of this investigation. The exporter additionally
+decomposes the Block-1 MLP at each failing output and checks its FP64 reconstruction
+against the matched-input oracle. Both the boundary and local decompositions
+close with zero measured error. These are ordered, signed effects, not independent
+percentages or runtime predictions.
+
+All eighteen Block-1 taps pass when compared with an oracle supplied exactly the
+captured Block-1 input. This does not mean zero local error: inherited and local
+errors are individually below the gate but combine beyond it. The handoff is
+bit-exact, ruling out a changed transfer buffer in this run.
+
+For the ten score failures, Block-0 propagated and Block-1 local effects have the
+same sign at every failing index. The Block-0 term is larger in six cases; the
+Block-1 term in four. Threshold excess ranges from 0.37% to 39.33%, so these are
+not all infinitesimal boundary disagreements. At the worst normalized score,
+index 45338, the error is -0.004783705 versus an allowed 0.003433464:
+
+| Signed contribution at score 45338 | Error |
+| --- | ---: |
+| Initial input/weight cast | -0.000089675 |
+| Ideal Block-0 handoff rounding | -0.000187568 |
+| Block-0 execution propagated | -0.002794795 |
+| Block-1 local execution | -0.001711667 |
+
+Within that local term, the path through QKV contributes -0.000961029, Q/K
+normalization -0.000625768, RoPE -0.000097456 and the final QK dot/output rounding
+only -0.000027413. Across the ten failures, mean absolute dot/output contribution
+is 0.000012979. Removing just the last dot rounding is therefore not a plausible
+general fix. Offline unrounded normalization/RoPE/dot from observed QKV leaves
+three original score failures; also reconstructing QKV from observed norm1 leaves
+one. These counterfactuals localize accumulated representation loss, not an
+implemented wider-precision HTP path.
+
+The two final-output failures are 17.89% and 19.46% over their respective limits:
+
+| Signed output contribution | Index 12136 (token 11, channel 872) | Index 48323 (token 47, channel 195) |
+| --- | ---: | ---: |
+| Initial input/weight cast | -0.000392675 | +0.000416994 |
+| Ideal handoff rounding | +0.000536919 | -0.000226736 |
+| Block-0 execution propagated | -0.001715183 | +0.001671314 |
+| Block-1 local execution | -0.002751112 | +0.002048731 |
+| Total error | -0.004322052 | +0.003910303 |
+| Allowed magnitude | 0.003666142 | 0.003273417 |
+
+At index 12136 the native final sum is exactly `2.5 - 2.37109375 = 0.12890625`.
+At index 48323 it is exactly `2.7421875 - 2.68359375 = 0.05859375`.
+The last addition introduces no error at either point. The oracle-based
+cancellation factors are approximately 36.6 and 99.2: small operand errors matter
+much more relative to their small difference.
+
+The new local MLP decomposition identifies the larger Block-1 terms as the
+residual operand directly (-0.001157045/+0.000538826), that operand propagated
+through the MLP (-0.000350292/+0.000804588), and local down-projection output
+(-0.000973434/+0.000614248). SiLU contributes only
+-0.000127025/+0.000156480 after the matrix-residual correction.
+The first residual additions and both down-projection outputs match correct
+nearest-even FP16 rounding from their observed operands. In particular, FP64
+down projections -2.3701203157233977 and -2.684207998134184 correctly round to
+-2.37109375 and -2.68359375. The first lies only about 0.000003128 from the
+midpoint between neighboring FP16 values, making the result sensitive to small
+upstream changes. This is evidence of finite representation precision, not a
+wrong rounding decision at that projection.
+
+The next useful precision target is therefore the residual/projection values
+before cancellation and the accumulated Block-0/QKV/norm path, not another
+SiLU quotient iteration or a wider final addition alone. A higher-precision
+representation or later rounding would need a measured native implementation;
+declaring tensors FP32 is not proof. Only two of the 24 vision blocks have been
+chained here, so the low failure count does not establish full-encoder accuracy.
+The existing isolated-RoPE control analysis also passes the extended analyzer.
+
+### Late down-projection and residual rounding
+
+An offline all-output probe first computes the Block-1 down projection in FP64
+from observed gated values and fixture FP16 weights, adds the observed residual
+operand, then rounds only the final sum to FP16. This predicts one remaining
+original/candidate output violation instead of two; it does not predict a fully
+passing chain. The hardware experiment implements this bounded proposal without
+changing earlier arithmetic.
+
+`build-ocr.ps1 -FuseDownResidual` enables `OCR_FUSE_DOWN_RESIDUAL` and requires
+internal captures. It affects only the Block-1 final output. The graph concatenates
+`[gated, residual, 1, zeros]` and multiplies by `[down_weight; I; down_bias; zeros]`.
+Its shapes are `[tokens,5152]` and `[5152,1024]`, including 31 zero padding rows
+after the bias row. All tensor interfaces remain FP16; no CPU neural arithmetic
+or silent fallback is introduced. The original down-projection tap remains an
+independent diagnostic output, so the experiment deliberately duplicates work
+and adds approximately 10 MiB of constant storage. It is not a latency optimization.
+
+Tasks `GLM-OCR late residual capture` and `GLM-OCR late residual analysis`
+use `build/ocr-chain-late-residual/` and compare with
+`build/ocr-chain-matrix-residual-group256/`. They retain the previous split RoPE
+and matrix-residual SiLU settings. The native executable SHA-256 is
+`ee7768967c7472f2814345362f98217263f4294fe5d591fbebb2c38040afa1ce`;
+its ARM64 Kernel32-only/no-CRT audit passes. The 64-token hardware graph finalizes,
+executes three times, records positive accelerator profiles and cleans up.
+Internal captures are finite and bit-repeatable.
+
+The analyzer verifies fixture/executable/capture hashes and identical runtime and
+control settings. Both inputs, every Block-0 tap, all Block-1 taps through the
+diagnostic down projection, and all internal captures in both blocks are
+bit-identical to control. Only Block 1's final output changes: 15,944 values.
+There are no new original/candidate threshold violations. Original/candidate
+score counts remain ten/seven because their computation precedes the changed path.
+
+| Output measurement | Previous matrix-residual path | Late-rounding HTP path |
+| --- | ---: | ---: |
+| Original output violations | 2 | 1 |
+| Candidate output violations | 2 | 1 |
+| Original output RMSE | 0.001084375442 | 0.001087702344 |
+| Candidate output RMSE | 0.001055530955 | 0.001058229537 |
+
+The HTP final output matches the FP64-then-FP16 reference in 65,500/65,536 values,
+versus 49,588 matches for the previous separate-rounding output. Maximum deviation
+from that rounded reference is 0.00048828125. This verifies that the changed graph
+substantially preserves precision through the sum; it does not establish exact
+single rounding everywhere or a documented physical accumulator width.
+
+| Index | Original oracle | Previous HTP | Late-rounding HTP and rounded FP64 reference | Allowed error |
+| --- | ---: | ---: | ---: | ---: |
+| 12136 | 0.1332283020 | 0.1289062500 | 0.1298828125 | 0.0036661415 |
+| 48323 | 0.0546834469 | 0.0585937500 | 0.0579833984 | 0.0032734172 |
+
+Index 12136 now passes with error -0.0033454895. Index 48323 improves but remains
+outside tolerance: error +0.0032999516 exceeds the limit by 0.0000265343,
+approximately 0.81%. It already fails in the ideal late-rounding reference, so
+another implementation of that same final sum alone is not sufficient. Earlier
+residual/activation errors and the unchanged scores still require upstream work.
+The slightly higher global RMSE also prevents interpreting fewer violations as
+uniformly improved accuracy.
+
+The native full-chain gate deliberately still returns failure. The original
+standard graph and tolerances remain unchanged; no general deployment or complete
+encoder acceptance is claimed. Only this 64-token late-rounding chain was measured.
+Default 128-token receipt/German HTP examples, the complete native verifier,
+tokenizer, RGB/position tests and the existing control boundary analysis pass.
+For the fused path, analyzer fields comparing the final output to the old rounded
+down/residual taps are explicitly marked as counterfactual differences, not the
+error of a separate final Add operator.
+
+### Late attention residual: more accurate locally, rejected by chain gate
+
+The next isolated experiment applies the same augmented-MatMul construction to
+Block 1's attention projection plus incoming residual, before norm2 and the MLP.
+`-FuseAttentionResidual` requires `-FuseDownResidual`; both remain opt-in.
+The tool-private `attention_project_residual` helper now serves both sums, with
+separate constant buffers. The attention matrix is `[2080,1024]`, concatenating
+the 1024-row projection, 1024-row identity, bias and 31 zero padding rows.
+The original attention projection remains a diagnostic tap. This adds roughly
+4 MiB of constants and duplicates projection work; it is not a speed claim.
+
+Tasks `GLM-OCR attention residual capture` and `GLM-OCR attention residual analysis`
+write `build/ocr-chain-attention-residual/`, comparing to the preserved
+`build/ocr-chain-late-residual/` control. The executable SHA-256 is
+`ea16c0c75e886a4fe54b8e9dadf6a11613074e4a499e8f0bacf431b72375f5de`.
+The 64-token HTP graph finalizes and executes three times with finite,
+bit-repeatable internal captures, positive accelerator profiling and successful
+cleanup. The ARM64 Kernel32-only/no-CRT audit passes.
+
+Hash-checked control comparisons verify both inputs, all Block-0 taps/internals,
+Block-1 taps through attention projection and all four Softmax internals as
+bit-identical. Changes begin at the first residual sum, as intended. SiLU/MLP
+internals now legitimately change, so they are not claimed to be bit-identical
+or suitable for a same-operand quotient comparison.
+
+The first residual output matches FP64 projection-plus-input followed by a single
+nearest-even FP16 rounding in 65,512/65,536 values, versus 51,822 for the control.
+There are 13,714 changed residual values. Its RMSE versus the original oracle
+improves from 0.000943392861 to 0.000899957082, with no residual-tap violations.
+Final-output RMSE also improves, from 0.001087702344 to 0.001039129859
+(candidate: 0.001058229537 to 0.001009296587). Nevertheless, the required
+no-new-failures condition is violated:
+
+| Final output index | Original | Previous late-down path | Added late-attention path | Allowed error |
+| --- | ---: | ---: | ---: | ---: |
+| 35303 | -0.0164399147 | -0.0137863159 | -0.0129470825 | 0.0030821996 |
+| 48323 | 0.0546834469 | 0.0579833984 | 0.0583801270 | 0.0032734172 |
+
+Index 35303 newly fails with error +0.0034928322; index 48323 worsens to
++0.0036966801. Both are also failures of the ideal late-down reference computed
+from this run's observed operands, not merely the last MatMul's rounding mismatch.
+Final-output violations rise from one to two against each oracle. Ten original
+and seven candidate score violations remain bit-identical; all other taps pass.
+All eighteen taps still pass the matched-actual-input oracle, which remains
+diagnostic rather than original-chain acceptance.
+
+This variant is therefore rejected as a chain fix and retained only as an explicit
+diagnostic option. The previous late-down-only capture remains intact. Local
+single-rounding accuracy and lower global RMSE do not guarantee fewer errors after
+nonlinear propagation and cancellation. Further work should address inherited
+Block-0 error and residual representation across stages instead of treating these
+individual failing indices as tuning targets. No tolerance, source weight or
+default graph changes were made. The prior late-down analysis, standard 128-token
+receipt/German HTP examples and native verifier/tokenizer/image/position tests
+pass with the updated source. No full encoder or OCR-quality acceptance is claimed.
+
+### Block-0 late down rounding: output passes, score gate regresses
+
+The next bounded experiment starts from the late-down-only Block-1 control, not
+the rejected late-attention variant. It changes only Block 0's final down
+projection plus residual sum to the same augmented MatMul. The existing
+`attention_project_residual` helper is reused with an independent Block-0 weight
+buffer, so resident graphs do not share mutable weight contents.
+`-FuseDownResidualBlock0` requires `-FuseDownResidual`; Block-1 attention residual,
+RoPE and quotient settings are unchanged. Defaults and tolerances remain unchanged.
+
+The offline `late_down_residual_block0` intervention was run first. It reconstructs
+the down projection from observed gated values in FP64, adds the observed residual
+and rounds once to FP16, then supplies that input to the pinned Block-1 oracle.
+The model that freezes the old local Block-1 error suggests four score and two
+output failures. These estimates are explicitly not hardware predictions.
+
+Tasks `GLM-OCR Block0 late residual capture` and
+`GLM-OCR Block0 late residual analysis` use
+`build/ocr-chain-block0-late-residual/` and the preserved
+`build/ocr-chain-late-residual/` control. The native executable SHA-256 is
+`7089ef4373551b7ab2852af66f90aa02a4d202970595fcf666e52a4a3cd7d9f7`.
+The 64-token graph finalizes, executes three times with finite and bit-repeatable
+internal tensors, positive accelerator profiles and successful cleanup. The
+ARM64 Kernel32-only/no-CRT audit passes. This adds another approximately 10 MiB
+of diagnostic constants and retains the separate down tap; it is not a production
+memory or performance optimization.
+
+Hash-checked isolation proves that the initial input, Block-0 taps through down
+and every Block-0 internal capture are bit-identical to control. The new Block-0
+output is handed to Block 1 bit-for-bit. Block-1 code/configuration is unchanged,
+but its inputs, subsequent taps and internals legitimately change. They are not
+claimed to be bit-identical or same-operand comparisons.
+
+Block 0 matches the single-rounded FP64 output in 65,490/65,536 values, versus
+49,559 in the control; 15,979 handoff values change. Every Block-0 tap still passes
+both fixture oracles. The actual two-block results are:
+
+| Block-1 measurement | Late-down-only control | Added Block-0 late down |
+| --- | ---: | ---: |
+| Original score violations | 10 | 14 |
+| Candidate score violations | 7 | 12 |
+| Matched-input score violations | 0 | 7 |
+| Original output violations | 1 | 0 |
+| Candidate output violations | 1 | 0 |
+| Original score RMSE | 0.001542708841 | 0.001523261996 |
+| Original output RMSE | 0.001087702344 | 0.001025551316 |
+| Candidate output RMSE | 0.001058229537 | 0.000996266459 |
+
+All non-score Block-1 taps pass. Nine old original score failures are fixed, but
+13 new ones appear, leaving 14 total; therefore the no-new-failures criterion is
+not met. Both output oracles pass with no new output failures. The original
+failure at index 48323 changes from 0.0579833984375 to 0.057952880859375, versus
+0.05468344688415527 in the oracle. Its error is 0.0032694339752197266, only
+0.0000039832592010498 below the unchanged limit. This is a measured narrow pass,
+not evidence of a robust full-model margin. The control's candidate-only output
+failure at 40896 is also fixed.
+
+The analyzer now compares paired conditional oracles for the old and new captured
+inputs. It separates the measured HTP change into an input-induced oracle change
+and a change in local execution error, with zero closure error. Freezing the old
+local error would produce four score failures; the real graph produces 14.
+The change in local score error has RMSE 0.001328968531. This directly falsifies
+using a frozen local error model as an acceptance prediction for changed inputs.
+
+At new score index 28845, the conditional input effect is only +0.000046641,
+but local execution error changes by +0.004714102. The current local score
+decomposition attributes +0.003694293 to Q/K normalization, +0.001068136 to the
+path through QKV, +0.000194086 to RoPE and +0.000055997 to the last dot/output
+rounding. At 28853, local error changes by -0.004439449; current QKV and Q/K norm
+effects are -0.001937043 and -0.002063787 respectively. These are ordered,
+correlated counterfactual terms; they do not prove an undocumented kernel defect
+or distinguish norm output rounding from its arithmetic approximation by themselves.
+
+This experiment is not accepted as a complete chain fix despite passing both
+final-output oracles. It narrows the next investigation to input-dependent
+QKV/QK-normalization precision in Block 1, including the seven matched-input
+score failures, rather than more blind Block-0 variants. The standard graph and
+all earlier captures remain intact. The extended analyzer, prior late-down control
+analysis, default receipt/German HTP examples and native verifier/tokenizer/RGB/
+position regressions pass. Only this 64-token two-block experiment was measured;
+no full encoder, OCR-quality or latency acceptance is claimed.
+
+## Native image-file input: BMP24 to patch tensors
+
+The independent image-input path now accepts actual BMP files, decodes packed
+RGB, applies the existing reference-checked smart resize and normalization, and
+returns the model's patch tensor. It does not execute any neural layer or QNN
+graph. No numerical diagnostic mode, tolerance or checkpoint was changed.
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -PrepareImages -Test -BuildDir experimental/snapdragon/build/ocr-image-files
+.\experimental\snapdragon\build\ocr-image-files\ocr-image.exe --prepare-image input.bmp patches.f32
+```
+
+The VS Code task `GLM-OCR image file build` runs that standalone build and test.
+`-PrepareImages` alone builds without requiring reference artifacts; `-Test`
+also consumes the existing `models/glm-ocr-images-v2/image-fixtures.got`.
+The executable remains ARM64, Kernel32-only, no CRT, no exception or CLR tables.
+Neither Python nor OS image codecs are required at runtime.
+
+Supported input is deliberately narrow: 24-bit BI_RGB, 40-byte
+BITMAPINFOHEADER, positive width, bottom-up or negative-height top-down rows,
+and four-byte row alignment. The decoder checks header/payload sizes, planes,
+compression, reserved fields, dimensions and destination capacity before copying
+pixels. File size must match the actual input, with the pixel array ending at EOF;
+`biSizeImage` may be zero or the exact padded pixel size. Palette fields must be
+zero. Larger DIB headers, indexed/alpha/compressed BMPs and trailing payloads are
+rejected, not interpreted heuristically. BMP BGR channels become RGB before the
+unchanged image processor. No implicit orientation or color-profile transform is
+performed. PNG/JPEG/TIFF/WebP and PDF are not accepted by this entry point.
+
+Bounds are 64 MiB encoded input, 10,000 pixels per source dimension, 16 million
+source pixels and 256 MiB total requested image-buffer payload (encoded input,
+decoded RGB, resize workspace/output and float32 patches). This is an allocation
+budget, not a measured process peak. Existing geometry, aspect-ratio and patch
+limits also apply; not every image inside the individual limits is accepted.
+Temporary image buffers and the input handle are released on success/failure.
+
+`ocr_image_load` in `ocr_image_file.c` returns `OcrPreparedImage`: source geometry,
+resized geometry/grid/image-token count, float count and owned patch storage.
+Pass an empty result object; release a previous successful result before reuse.
+`ocr_image_release` frees its storage and clears the object. On load failure the
+result is empty. `ocr_image_bmp` itself takes caller-owned nonoverlapping buffers;
+a null RGB destination performs validated geometry inspection without decoding.
+
+The CLI creates a NEW output file, never overwrites an existing path, and emits
+one JSON record to stdout with source/target/grid dimensions, image-token count,
+patch count, `features:1176` and `float32_values`. The file is raw little-endian
+float32 `[grid_height * grid_width, 1176]`, in the existing merge-aware patch order
+and duplicated temporal-frame layout, not a hashed fixture or an OCR result.
+Retain the JSON dimensions with the tensor. Exit 0 means preprocessing and output
+succeeded, 1 means input/I/O/preprocessing failure, and 2 means invalid arguments.
+An output I/O failure may leave a partial file: discard outputs from nonzero exits.
+
+Validation on Windows ARM64:
+
+- 828 native BMP decode/rejection checks: both row directions, all four padding
+  cases, channel order, guard bytes, capacity, truncated inputs and invalid fields.
+- 16 actual BMP-file-to-patch comparisons against existing processor fixtures,
+  covering both row directions with exact float32-byte SHA-256 equality and exact
+  JSON geometry; Unicode paths, no-overwrite and invalid input/output tests pass.
+- The standalone binary passes those 16 comparisons and 46 verifier regressions.
+- Full image tests still pass 1,015 geometry cases, 21,652,512 resized RGB bytes,
+  43,305,024 normalized values (maximum error zero), padded-row/negative tests,
+  positions and 180,712 tokenizer cases plus their negative tests.
+
+These file tests use existing reference RGB fixtures wrapped as BMP, not a new
+held-out scan corpus. They establish preprocessing equivalence, not OCR quality.
+
+## Complete native vision execution
+
+The image-file path now feeds the learned HTP patch projection and all 24 vision
+blocks, followed by post-RMSNorm, the learned 2x2 downsampling convolution and the
+complete patch merger (projection, LayerNorm, GELU and gated SiLU MLP). The final
+features have text width 1536. This follows the pinned `GlmOcrVisionModel.forward`,
+including its connector, rather than stopping at the last transformer block.
+There is still no text prefill, decode or recognized text output.
+
+The initial supported resized grids are exactly `[1,8,8]` and `[1,8,16]`, or
+112x112 and 224x112 RGB pixels. Other grids are explicitly rejected before loading
+the HTP library. Input remains the bounded BMP24 path above; this is not support
+for arbitrary full-resolution pages. The two outputs are `[16,1536]` and
+`[32,1536]` respectively.
+
+### Build and run
+
+Offline development preparation uses the existing exporter and original weights:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-vision-encoder
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestVision -Test -BuildDir experimental/snapdragon/build/ocr-vision
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --analyze-vision-encoder
+```
+
+Equivalent VS Code tasks are `GLM-OCR full vision export`, `GLM-OCR full vision
+hardware` and `GLM-OCR full vision analysis`. Export uses pinned package/source
+identities and the actual Transformers vision model for both original-value FP32
+and FP16-weight/input-expanded-FP32 references. Intermediate oracle activations
+are not rounded to FP16. Existing differing exports are refused. The original
+checkpoint is never modified.
+
+For a native-only build use `-Vision` instead of `-TestVision`. No Python is needed
+to build or execute with existing weight artifacts. The no-CRT ARM64 executable
+imports only Kernel32; QNN is loaded explicitly, with no CPU neural fallback.
+
+```powershell
+$htp = (Resolve-Path experimental/snapdragon/build/QnnHtp.dll).Path
+New-Item -ItemType Directory -Path experimental/snapdragon/build/my-vision-capture
+.\experimental\snapdragon\build\ocr-vision\ocr-vision.exe --vision $htp experimental/snapdragon/models/glm-ocr-vision-v1 input.bmp experimental/snapdragon/build/my-vision-capture
+```
+
+Create a fresh capture directory first. Each output uses CREATE_NEW; an occupied
+output path or failed write fails the run without overwriting prior data. Failed
+runs may leave partial captures; never consume them as completed features.
+`--check-vision WEIGHTS_DIR` validates assets without loading QNN.
+
+### Weights and execution contract
+
+The 26 model artifacts total 868,342,944 bytes, separate from references/images:
+24 `block-NN.got` files, `shared.got` and `tail.got`. Envelope kinds 10/11/12 retain
+the pinned image/config identity and SHA-256 integrity check. Each includes the
+original checkpoint digest. Block records additionally carry their block index;
+lengths, finite FP16 constants and bounded FP32 RoPE coefficients are checked.
+Shared weights contain the patch matrix/bias and both fixed-grid RoPE tables.
+Block storage is grid-independent: the selected RoPE table is inserted into the
+existing block builder's constant layout. The downsampling kernel is packed to
+match the processor's merge-aware patch ordering before its MatMul equivalent.
+
+All assets are verified before QNN loads. Block/tail files are reverified on use
+and must retain their preflight hashes, preventing unnoticed changes between
+validation and execution. These checks establish integrity/provenance consistency,
+not authentication against a malicious artifact producer.
+
+The prototype reuses one activation buffer and one QNN context at a time. It
+creates/finalizes/executes the patch graph, each block graph, and the tail graph
+sequentially, freeing each previous context before reusing weight storage.
+Contexts are not yet compiled/cached for low-latency repeated requests. The
+diagnostic implementation retains all 18 block outputs and writes them to disk;
+it is not a performance-optimized serving path. Backend/device/profile/context
+cleanup and positive accelerator profile evidence are required for success.
+
+The existing block graph now accepts a runtime mode without reference fixtures:
+one execution per block, finite captured activations, probability bounds/row sums
+and bit-preserving handoff. Existing probe mode still executes each block three
+times and applies its original numerical gates. Optional quotient, residual and
+RoPE experiment flags are not accepted by this runtime build. No tolerance or
+existing default graph arithmetic was changed.
+
+### Outputs and measured results
+
+The capture directory contains `0.patches.f32`, `0.patch.f16`, each block's
+`N.input.f16` and `N.taps.f16` (N=0..23), `24.postnorm.f16`,
+`25.downsample.f16` and final `26.features.f16`. The final file is raw
+little-endian FP16 `[image_tokens,1536]` in image-token order, not text or a
+self-describing container. Grid dimensions are logged by the runtime. The test
+runner additionally records case/grid provenance through its case identity,
+executable, image, weight, four QNN runtime-library and capture hashes in the two
+`*-vision-run.json` files. The analysis verifies artifact/executable/input/capture
+identity, exact CPU preprocessing and every unchanged block handoff, then compares
+all 28 exposed stage outputs. Runtime hashes are recorded for reproducibility.
+
+Both complete hardware runs (pattern 64 patches, receipt 128 patches) finish with
+finite captured outputs, positive HTP profiling and successful resource cleanup.
+Fourteen negative tests cover missing/corrupt/truncated artifacts, wrong input
+geometry, missing image/runtime and invalid arguments. The full existing image,
+tokenizer, verifier and default receipt/German block-0 HTP regressions also pass.
+
+**Numerical acceptance remains false at the unchanged 0.003 + 0.005*abs(reference)
+gate.** Measured final-feature violations are:
+
+| Case | Values | Original FP32 | Candidate FP32 |
+| --- | ---: | ---: | ---: |
+| Pattern | 24,576 | 2 | 1 |
+| Receipt | 49,152 | 10 | 12 |
+
+Accumulated intermediate differences are substantially larger: block 23 has
+31,114/30,829 violations (original/candidate) for pattern and 61,843/62,663 for
+receipt. Postnorm and merger change the scale and error distribution; the small
+final violation count is NOT an OCR error rate or evidence of harmless drift.
+Even the full receipt patch projection has five original-reference violations,
+while its candidate-reference gate passes; the prior 16-row projection probe did
+not cover this complete input.
+
+`vision-analysis.json` contains all per-stage counts, RMSE, maxima and hashes.
+The analysis command's successful exit means its structural/integrity checks and
+report generation succeeded, not that `numerical_gate_pass` is true. Likewise,
+native exit 0 means complete vision execution and I/O success, not numerical or
+OCR-quality acceptance. This implementation enables further pipeline development
+without concealing the unresolved precision work.
+
+## Multimodal decoder input and text prefill
+
+The native pipeline now connects freshly computed Vision features directly to
+the complete 16-layer text decoder prefill and its final RMSNorm, in the same
+process and QNN backend/device session. It does not reload its own feature dump
+as inference input. There is no LM output head, token selection, incremental
+decode or generated OCR text yet.
+
+### Official prompt contract
+
+The [GLM-OCR model card](https://huggingface.co/zai-org/GLM-OCR), consulted on
+2026-09-16, specifies the document-parsing prompts `Text Recognition:`,
+`Formula Recognition:` and `Table Recognition:`. These match the existing native
+prompt builder. The new input references invoke the checkpoint's actual pinned
+chat template through `AutoTokenizer.apply_chat_template`, with one user message
+containing the image followed by the task text and `add_generation_prompt=True`.
+The single image placeholder expands to exactly 16 or 32 feature tokens.
+No extra system instruction or hand-written alternate chat wrapper is inserted.
+
+The native commands use the template default: `enable_thinking` is not passed.
+The assembly helper also supports the existing explicit no-thinking variant;
+both variants of all three tasks on both image grids are byte-exactly tested
+(12 cases), but the complete hardware campaign uses Text Recognition with the
+default template only. Arbitrary extraction/JSON-schema prompts mentioned on the
+model card are not implemented by these fixed-task commands.
+
+### Native input and decoder
+
+`ocr_text_prepare` in `ocr_text.{h,c}` builds a bounded `OcrTextInput` with IDs,
+three mRoPE position planes, modality bytes, FP16 embeddings and a causal mask.
+Ordinary rows are copied from the complete 59,392x1536 embedding table. Only
+`<|image|>` placeholder rows are replaced, in order, by unchanged Vision features.
+The image feature count and grid geometry must agree exactly. The caller supplies
+valid nonoverlapping buffers, including `image_tokens*1536` feature words and the
+complete embedding table; buffers must remain valid during the call. On failure,
+the result count is zero and partial array contents must be discarded.
+
+The runtime uses a single 64-position context bucket. Text Recognition has 28/44
+valid prompt tokens on the two image grids; all remaining rows are zero padded.
+Padding IDs are 59246, padding modality/position entries are zero. Causality is
+based on sequence indices, not the compressed image mRoPE positions. Keys beyond
+the real prompt and future keys receive FP16 -65504; every masked probability
+is checked to be exactly zero on hardware, with valid probability ranges/row sums.
+Padded query rows are computed but excluded from accuracy scoring and are not
+valid positions for subsequent token selection. This is not a tested 131072-token
+runtime or a general chat/multi-image input API.
+
+The HTP prefill implements the model's four RMSNorms per layer (input,
+post-self-attention, post-attention/pre-MLP, post-MLP), Q/K/V/output projections,
+16 query heads and 8 KV heads of width 128, grouped KV repetition, causal stable
+Softmax, fused gate/up projection and stable gated SiLU MLP. Text RoPE uses
+interleaved channel-pair rotation and mRoPE sections [16,24,24], unlike the vision
+encoder's split-half rotation. Captured coefficients are byte-exact with the
+pinned text rotary implementation. Each layer's output is copied bit-exactly to
+the next layer. There is one QNN context at a time, freed before reusing its
+constant storage, followed by a separate final norm graph.
+
+CPU work is file handling, image preprocessing, prompt/index lookup, positions,
+masks, coefficient lookup, copies and diagnostics. Neural projections, attention,
+rotations, normalizations and MLPs execute on HTP; no CPU neural fallback is added.
+The executable is still ARM64, Kernel32-only, no CRT/exception/CLR tables.
+
+### Build, artifacts and captures
+
+Use the existing toolchain entry points and previously completed Vision captures:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-text-decoder
+.\experimental\snapdragon\tools\build-ocr.ps1 -Prefill -Test -BuildDir experimental/snapdragon/build/ocr-prefill
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestPrefill -Test -BuildDir experimental/snapdragon/build/ocr-prefill
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --analyze-text-prefill
+```
+
+VS Code tasks: `GLM-OCR text decoder export`, `GLM-OCR multimodal input tests`,
+`GLM-OCR multimodal prefill hardware`, `GLM-OCR multimodal prefill analysis`.
+`-Prefill -Test` runs the exact input/negative tests without loading QNN; `-Prefill`
+alone builds without requiring artifacts. Native execution needs no Python.
+
+```powershell
+$htp = (Resolve-Path experimental/snapdragon/build/QnnHtp.dll).Path
+New-Item -ItemType Directory -Path experimental/snapdragon/build/my-prefill
+.\experimental\snapdragon\build\ocr-prefill\ocr-prefill.exe --prefill-text $htp experimental/snapdragon/models/glm-ocr-vision-v1 experimental/snapdragon/models/glm-ocr-text-v1 input.bmp experimental/snapdragon/build/my-prefill
+```
+
+`--prefill-formula` and `--prefill-table` select the other fixed tasks. A fresh,
+existing capture directory is required; files are CREATE_NEW and failed runs may
+leave incomplete diagnostics. `--test-text-input TEXT_DIR` is the native offline
+input-reference check. No command reports successful OCR text generation.
+
+The 18 model artifacts under `models/glm-ocr-text-v1/` are `embeddings.got`
+(kind 13, 182,452,384 bytes), 16 `text-NN.got` files (kind 14, 61,354,148 bytes
+each), and `text-shared.got` (kind 15, 68,768 bytes), totaling 1,164,187,520 bytes.
+Shared data contains final-norm gamma and a 64-position FP32 rotary lookup table.
+Kind 16 holds the 12 input test records and is not needed for native inference.
+Original checkpoint/config identities, exact sizes, layer indices, finite FP16
+weights, bounded rotary constants and SHA-256 envelopes are verified. All weights
+are checked before QNN loads; streamed layer assets must retain their preflight
+hashes. The unused MTP layer 16 and LM output head are not exported here. Original
+weights remain untouched, and previous Vision-only/test paths remain available.
+
+In addition to the existing Vision capture files, the runtime writes:
+
+- `0.text-layout.u32`: count, image-token count, task, no-think flag, grid height,
+   grid width, signed mRoPE delta stored as its 32-bit representation.
+- `0.text-ids.u32`, `0.text-positions.i32`, `0.text-modalities.u8`,
+   `0.text-mask.f16`, `0.text-embeddings.f16`, `0.text-cosine.f32`, `0.text-sine.f32`.
+- `N.text-input.f16` and `N.text-taps.f16` for N=0..15. Taps are four normalized
+   states and final layer output (each [64,1536]), rotated K [64,8,128], V
+   [64,1024], and attention probabilities [16,64,64], totaling 688,128 FP16 values.
+- `16.text-norm.f16`: final [64,1536] states; the last valid prompt row is
+   `count-1`. These are hidden states, not logits or text.
+
+K/V outputs are captured diagnostics, not a resident incremental KV-cache. All
+graphs are still finalized per run and all taps are retained, so no serving
+latency/memory optimization is claimed. Run reports include image, executable,
+Vision/text artifact, QNN runtime and capture hashes.
+
+### Validation and remaining precision
+
+Both integrated hardware runs (pattern/receipt) complete all Vision and text
+layers with finite captured outputs, accelerator profile evidence and clean
+resource teardown. Native and offline checks establish exact official-template
+IDs, embedding/feature insertion, position/modality/mask arrays, rotary values,
+and all 16 unchanged text handoffs. The test suite adds 12 synthetic assembly
+cases/10 rejection checks, 12 exact pinned-model input fixtures, and 11 artifact/
+argument negative checks. The prior full image/tokenizer/verifier and default
+receipt/German HTP block regressions pass; standalone image export also passes.
+
+The two FP32 text oracles are **conditioned on the actual captured native Vision
+features**, isolating the text integration from the known Vision error. They are
+not original-checkpoint end-to-end image-to-text references. Both use the actual
+16-layer text model with no KV cache, original or FP16-expanded weights, explicit
+positions and padding masks. Only real prompt rows are scored at the unchanged
+`0.003 + 0.005*abs(reference)` gate.
+
+Layers 0..13 pass both references for both cases. Pattern layer 14 has one
+candidate-only violation; layer 15 has three violations in each scope/case.
+After final norm:
+
+| Case | Valid values | Original violations | Candidate violations | Last-prompt-row original/candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Pattern | 43,008 | 1,326 | 1,330 | 39 / 41 |
+| Receipt | 67,584 | 1,276 | 1,268 | 20 / 20 |
+
+A local FP64 RMSNorm reference on the captured layer-15 input and deployed gamma
+has zero tolerance violations in both cases (RMSE about 0.000358/0.000359). This
+distinguishes propagated input differences from the norm's local implementation
+error; it is not a claim of mathematically exact normalization or physical FP32
+accumulation. `prefill-analysis.json` records counts, last-row counts, RMSE,
+maxima, identity checks and this local comparison. Numerical acceptance remains
+false; successful native/analysis exits mean execution/structural checks and
+report generation, not accuracy or OCR-quality approval. No tolerances were
+relaxed and no previous diagnostic precision variant became a default.
+
+## Concrete image-to-text gaps
+
+1. **Common input formats.** Native PNG/JPEG pixel decoding, explicit EXIF
+   orientation and grayscale/alpha/color handling with reference cases. BMP24
+   works now; compressed image support is not required for the first BMP-only OCR.
+2. **Larger image-to-vision buckets.** The native BMP-to-HTP connection now works
+   for 8x8/8x16 patch grids. Larger page grids, additional aspect ratios and their
+   positional geometry, memory and numerical checks remain.
+3. **Vision accuracy and lifecycle optimization.** All 24 blocks and postnorm now
+   execute with checked handoffs and reference reports. Accumulated FP16 error
+   remains unaccepted; resident graph/context caching and lean output buffers are
+   still needed for an efficient serving path.
+4. **Connector accuracy.** Learned 2x2 downsampling and the complete merger to
+   1536-wide features now execute, but their full-chain numerical gate remains
+   unaccepted. Their direct connection to text input is implemented above.
+5. **Broader multimodal inputs.** Single-image fixed-task input assembly is now
+   exact against the official template and model. Larger contexts, multi-image
+   inputs and optional schema-driven extraction prompts remain unsupported.
+6. **Text prefill accuracy and caching.** All 16 decoder layers and final norm now
+   execute on HTP with checked positions, masks and handoffs. Resolve the remaining
+   numerical differences and establish resident K/V ownership for incremental use.
+7. **Incremental decode.** Resident KV-cache allocation, append/update, decode
+   positions/masks, context limits and reset between documents; output head and
+   deterministic token selection, EOS/output-limit termination and UTF-8 streaming.
+   Tokenizer decoding exists, but it is not connected to generated model tokens.
+8. **End-to-end command/runtime.** Orchestrate model loading, graph/context caching,
+   image processing, vision, prefill and decode into actual text output. Add clear
+   failure propagation, cancellation, resource cleanup and repeated-request tests.
+   Patch export, Vision execution and multimodal prefill are not that OCR command.
+9. **Acceptance and performance.** End-to-end oracle comparisons, a held-out
+   image/text corpus, digits/punctuation, omissions, repetition, reading order,
+   multilingual text and termination; then matched-quality cold/resident timing
+   and measured memory. No current OCR quality or latency acceptance exists.
+
+PDF rasterization, multi-page orchestration, GUI integration and optional layout
+analysis are extensions, not prerequisites for a single-image-to-text baseline.
+MTP and low-bit quantization are also not needed for that baseline.
+
 ## Next stages
 
 1. **Execution contract and tokenizer: completed above.** Initial source audit and
    bounded tokenizer are verified; image and numerical contracts remain below.
-2. **RGB preprocessing and positions: completed above.** Image-file decoder reuse
-   and real scan fixtures remain separate integration work. Extend the numerical
+2. **RGB preprocessing and positions: completed above.** Native BMP24 file input
+   now reaches reference-checked patches; common compressed formats and real scan
+   fixtures remain integration work. Extend the numerical
    oracle to learned-layer taps before claiming a correct model forward pass.
    PDF rasterization is a separate feature, not an implicit external dependency.
 3. **HTP capability and precision probes: primitives, weight audit, patch and block 0 completed above.** Continue with
@@ -1373,13 +2038,13 @@ errors and upstream score errors separately, not repeat correction blindly.
    updates. Test real dimensions, finite outputs and cleanup on the installed SDK.
    Weight casting ranges are audited; activation and accumulated errors remain open. No blind
    cast, silent clamping, assumed BF16 HTP support or premature W4 conversion.
-4. **Vision encoder and connector.** Implement and compare every significant tap
-   against the oracle. Bound image sizes with tested static buckets; use shared
-   buffers and retain the compiled context. No whole-page quality claim yet.
-5. **Text prefill and decode.** Dense 16-layer decoder, resident KV, NPU projections
-   and selection where correct and useful, incremental UTF-8 output. Start with
-   explicit context/output limits; config's 131072 positions is NOT a tested runtime
-   capacity. Implement MTP only after a correct ordinary decode baseline.
+4. **Vision encoder and connector: executable prototype above.** All blocks and
+   connector run on two bounded grids; improve numerical acceptance, cover larger
+   images and implement retained compiled contexts. No whole-page quality claim.
+5. **Text prefill implemented; decode pending.** The 16-layer prefill has a
+   64-position bucket and open precision gates. Add the output head, resident KV,
+   decode updates, selection/termination and incremental UTF-8 output. Config's
+   131072 positions is NOT a tested runtime capacity. MTP is a later extension.
 6. **Usable OCR and quality gates.** Image-to-text CLI first, then tables/formulas
    and optional separately pinned layout analysis. Evaluate German/English printed
    pages, multilingual text, digits, punctuation, omissions, repetition, termination,
@@ -1389,9 +2054,13 @@ errors and upstream score errors separately, not repeat correction blindly.
    batches, buckets, graph fusion and caching using those measurements.
 
 Current status: source acquisition, verification, bounded native tokenizer/prompt
-runtime, RGB resize/normalization/patch packing, single-image positions, isolated
+runtime, native BMP24-to-patch file input, RGB resize/normalization/patch packing,
+single-image positions, isolated
 FP16 HTP primitives, complete weight range audit, learned patch projection and
 complete vision block 0 on three 64-patch grids and two visible 128-patch OCR
-examples against two numerical oracles, with PNG previews and known input text.
+examples against two numerical oracles, plus a complete native 24-block vision
+and connector forward path on 64/128 patches, exact multimodal prompt/embedding
+assembly, and integrated 16-layer text prefill. Structural/execution checks pass;
+Vision and text numerical gates remain explicitly failing.
 No image-to-text inference, full-model FP16 accuracy, PDF support or OCR quality
 acceptance is claimed. No previous Whisper or TranslateGemma campaign is restarted.

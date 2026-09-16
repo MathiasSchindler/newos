@@ -364,6 +364,397 @@ def export_vision_attention(model, output, case="pattern", full_block=False, blo
     print("PASS vision block oracle:" if full_block else "PASS vision attention oracle:",len(tap_names),"taps, two references,",len(data),"bytes",sha(data),flush=True)
 
 
+def export_vision_encoder(model, output):
+    import inspect as source_inspect
+    import numpy as np
+    torch, processor_class, _, versions = image_reference()
+    from PIL import Image
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrVisionConfig
+    module_hash = sha(Path(source_inspect.getfile(reference)).read_bytes())
+    if module_hash != "aea6387985dad1f0f5124f9344cc98849be8a7f2c26652ac3d914f6eefac6cc6" or torch.version.git_version != "08187d9e0fba026dc8217405802ab5381dc88d90":
+        raise ValueError("Vision reference source drift")
+    state = {}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        for name,tensor in tensors.items():
+            if not name.startswith("model.visual."):
+                continue
+            start,end = tensor["data_offsets"]
+            stream.seek(payload+start)
+            raw = stream.read(end-start)
+            if len(raw) != end-start:
+                raise ValueError("Truncated vision weight")
+            values = (np.frombuffer(raw,dtype="<u2").astype(np.uint32) << 16).view(np.float32).reshape(tensor["shape"])
+            if not np.isfinite(values).all() or not np.isfinite(values.astype(np.float16)).all():
+                raise ValueError("Nonfinite/overflowing vision weight")
+            state[name.removeprefix("model.visual.")] = torch.from_numpy(values.copy())
+    config = GlmOcrVisionConfig(**read_json(model/"config.json")["vision_config"])
+    config._attn_implementation = "eager"
+    if (config.depth,config.hidden_size,config.out_hidden_size,config.spatial_merge_size,config.rms_norm_eps) != (24,1024,1536,2,1e-5):
+        raise ValueError("Vision geometry drift")
+    vision = reference.GlmOcrVisionModel(config).eval()
+    vision.load_state_dict(state,strict=True)
+    output.mkdir(parents=True,exist_ok=True)
+    files = {}
+    def store(name,data):
+        path = output/name
+        if path.exists() and sha(path.read_bytes()) != sha(data):
+            raise ValueError("Existing vision artifact differs: "+str(path))
+        if not path.exists():
+            with path.open("xb") as target:
+                target.write(data)
+        files[name] = {"bytes":len(data),"sha256":sha(data)}
+    def half(value):
+        return value.detach().half().contiguous().numpy().astype("<f2").tobytes()
+    original_sha = next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors")
+    identity = bytes.fromhex(original_sha)
+    for block_index in range(24):
+        prefix = f"blocks.{block_index}."
+        constants = half(state[prefix+"norm1.weight"])
+        for name in ("attn.qkv.weight","attn.qkv.bias","attn.q_norm.weight","attn.k_norm.weight",
+                     "attn.proj.weight","attn.proj.bias","norm2.weight",
+                     "mlp.gate_proj.weight","mlp.gate_proj.bias","mlp.up_proj.weight","mlp.up_proj.bias","mlp.down_proj.weight","mlp.down_proj.bias"):
+            value = state[prefix+name]
+            constants += half(value.t() if value.ndim == 2 else value)
+        if len(constants) != 33585408:
+            raise ValueError("Vision block layout drift")
+        store(f"block-{block_index:02}.got",envelope(identity+struct.pack("<I",block_index)+constants,10,catalog))
+    shared = identity+half(state["patch_embed.proj.weight"].reshape(1024,1176).t())+half(state["patch_embed.proj.bias"])
+    for grid in ([1,8,8],[1,8,16]):
+        positions = reference.get_vision_position_ids(torch.tensor([grid]),2)
+        with torch.inference_mode():
+            cosine,sine = vision.rotary_pos_emb(torch.zeros(grid[1]*grid[2],1024),positions)
+        shared += cosine.numpy().astype("<f4").tobytes()+sine.numpy().astype("<f4").tobytes()
+    store("shared.got",envelope(shared,11,catalog))
+    tail = identity+half(state["post_layernorm.weight"])
+    tail += half(state["downsample.weight"].permute(2,3,1,0).reshape(4096,1536))+half(state["downsample.bias"])
+    tail += half(state["merger.proj.weight"].t())
+    tail += half(state["merger.post_projection_norm.weight"])+half(state["merger.post_projection_norm.bias"])
+    for projection in ("gate_proj","up_proj","down_proj"):
+        tail += half(state["merger."+projection+".weight"].t())
+    if len(tail) != 59780096+32:
+        raise ValueError("Vision tail layout drift: "+str(len(tail)))
+    store("tail.got",envelope(tail,12,catalog))
+    processor = processor_class.from_pretrained(str(model),local_files_only=True)
+    cases = []
+    for case,columns in (("pattern",112),("receipt",224)):
+        if case == "receipt":
+            image = Image.open(ROOT/"experimental/snapdragon/models/glm-ocr-examples-v1/receipt/input.png").convert("RGB")
+        else:
+            rows,cols = np.indices((112,columns))
+            image = Image.fromarray(np.stack(((rows*17+cols*7)%256,(rows*3+cols*23)%256,(rows*31+cols*5)%256),axis=-1).astype(np.uint8))
+        import io
+        bitmap = io.BytesIO(); image.save(bitmap,format="BMP")
+        store(case+".bmp",bitmap.getvalue())
+        processed = processor(images=image,return_tensors="pt")
+        grid = processed["image_grid_thw"].tolist()
+        if grid != [[1,8,columns//14]]:
+            raise ValueError("Vision image bucket mismatch")
+        cases.append((case,processed))
+        store(case+".patches.f32",processed["pixel_values"].numpy().astype("<f4").tobytes())
+    for scope in ("original","candidate"):
+        if scope == "candidate":
+            vision.half().float()
+        for case,processed in cases:
+            captured = []
+            def hook(module,arguments,result):
+                captured.append(result.detach().clone())
+            handles = [vision.patch_embed.register_forward_hook(hook)]
+            handles += [block.register_forward_hook(hook) for block in vision.blocks]
+            handles += [vision.post_layernorm.register_forward_hook(hook),vision.downsample.register_forward_hook(hook)]
+            try:
+                inputs = processed["pixel_values"].float()
+                if scope == "candidate":
+                    inputs = inputs.half().float()
+                with torch.inference_mode():
+                    result = vision(inputs,processed["image_grid_thw"])
+                captured.append(result.pooler_output)
+                if len(captured) != 28 or any(not torch.isfinite(value).all() for value in captured):
+                    raise ValueError("Vision reference capture mismatch")
+                store(case+"."+scope+".f32",b"".join(value.contiguous().numpy().astype("<f4").tobytes() for value in captured))
+            finally:
+                for handle in handles:
+                    handle.remove()
+            print("PASS full vision oracle",scope,case,flush=True)
+    manifest = {"schema_version":1,"source_sha256":original_sha,"modeling_sha256":module_hash,"versions":versions,
+                "blocks":24,"buckets":[[8,8],[8,16]],"output_width":1536,"files":files,
+                "reference_stages":["patch"]+[f"block-{index}" for index in range(24)]+["postnorm","downsample","merger"],
+                "full_text_inference":False}
+    store("manifest.json",(json.dumps(manifest,indent=2)+"\n").encode())
+    print("PASS vision encoder export",len(files),"files",flush=True)
+
+
+def analyze_vision_encoder(output, build):
+    import numpy as np
+    manifest = read_json(output/"manifest.json")
+    if manifest["blocks"] != 24 or manifest["buckets"] != [[8,8],[8,16]] or len(manifest["reference_stages"]) != 28:
+        raise ValueError("Vision manifest geometry mismatch")
+    for name,record in manifest["files"].items():
+        path = output/name
+        with path.open("rb") as stream:
+            digest = hashlib.file_digest(stream,"sha256").hexdigest()
+        if path.stat().st_size != record["bytes"] or digest != record["sha256"]:
+            raise ValueError("Vision artifact changed: "+name)
+    reports = {}
+    def stats(actual,reference):
+        error = actual.astype(np.float64)-reference.astype(np.float64)
+        limit = 0.003+0.005*np.abs(reference.astype(np.float64))
+        return {"elements":int(actual.size),"failures":int((np.abs(error)>limit).sum()),
+                "rmse":float(np.sqrt(np.mean(error*error))),"max_absolute_error":float(np.abs(error).max())}
+    for case,tokens in (("pattern",64),("receipt",128)):
+        run = json.loads((build/(case+"-vision-run.json")).read_text(encoding="utf-8-sig"))
+        capture = Path(run["capture"])
+        if run["case"] != case or run["exit_code"] != 0 or sha((build/"ocr-vision.exe").read_bytes()).upper() != run["executable_sha256"]:
+            raise ValueError("Vision run identity mismatch")
+        if "weight_hashes" in run:
+            expected_weights = {name:record["sha256"].upper() for name,record in manifest["files"].items() if name.endswith(".got")}
+            if run["weight_hashes"] != expected_weights or run["input_sha256"] != manifest["files"][case+".bmp"]["sha256"].upper():
+                raise ValueError("Vision input/weight identity changed")
+        captured_hashes = {}
+        def captured(name,elements,dtype="<f2"):
+            raw = (capture/name).read_bytes()
+            values = np.frombuffer(raw,dtype=dtype)
+            if values.size != elements or not np.isfinite(values).all():
+                raise ValueError("Invalid captured tensor: "+name)
+            captured_hashes[name] = sha(raw)
+            if "captures" in run and captured_hashes[name].upper() != run["captures"][name]:
+                raise ValueError("Capture changed: "+name)
+            return values
+        patches = captured("0.patches.f32",tokens*1176,"<f4")
+        if patches.tobytes() != (output/(case+".patches.f32")).read_bytes():
+            raise ValueError("Native BMP preprocessing differs from actual processor")
+        stages = [captured("0.patch.f16",tokens*1024)]
+        for index in range(24):
+            source = captured(f"{index}.input.f16",tokens*1024)
+            if source.tobytes() != stages[-1].tobytes():
+                raise ValueError("Vision block handoff changed")
+            taps = captured(f"{index}.taps.f16",30720*tokens+32*tokens*tokens)
+            stages.append(taps[-tokens*1024:])
+        stages += [captured("24.postnorm.f16",tokens*1024),captured("25.downsample.f16",tokens//4*1536),captured("26.features.f16",tokens//4*1536)]
+        scopes = {}
+        for scope in ("original","candidate"):
+            reference = np.frombuffer((output/(case+"."+scope+".f32")).read_bytes(),dtype="<f4")
+            if reference.size != sum(value.size for value in stages) or not np.isfinite(reference).all():
+                raise ValueError("Invalid full vision reference")
+            cursor = 0; result = {}
+            for name,actual in zip(manifest["reference_stages"],stages,strict=True):
+                result[name] = stats(actual,reference[cursor:cursor+actual.size]); cursor += actual.size
+            scopes[scope] = result
+            print(case,scope,"stage failures",[(name,data["failures"]) for name,data in result.items()],flush=True)
+        reports[case] = {"run":run,"captured_sha256":captured_hashes,"block_handoffs_bit_exact":True,
+                         "preprocessing_bit_exact":True,"finite_all_taps":True,"stages":scopes,
+                         "numerical_gate_pass":all(not data["failures"] for scope in scopes.values() for data in scope.values())}
+    report = {"schema_version":1,"analyzer_sha256":sha(Path(__file__).read_bytes()),"manifest_sha256":sha((output/"manifest.json").read_bytes()),
+              "tolerance":{"absolute":0.003,"relative":0.005},"cases":reports,"full_text_inference":False,
+              "numerical_gate_pass":all(value["numerical_gate_pass"] for value in reports.values())}
+    (build/"vision-analysis.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
+    print("PASS vision structure/identity/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
+
+
+def export_text_decoder(model, output, vision_build):
+    import inspect as source_inspect
+    import numpy as np
+    from types import SimpleNamespace, MethodType
+    torch, _, _, versions = image_reference()
+    from transformers import AutoTokenizer
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrTextConfig
+    module_hash = sha(Path(source_inspect.getfile(reference)).read_bytes())
+    if module_hash != "aea6387985dad1f0f5124f9344cc98849be8a7f2c26652ac3d914f6eefac6cc6":
+        raise ValueError("Text decoder reference source drift")
+    state = {}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        for name,tensor in tensors.items():
+            if not name.startswith("model.language_model."):
+                continue
+            local = name.removeprefix("model.language_model.")
+            if local.startswith("layers.16."):
+                continue
+            start,end = tensor["data_offsets"]; stream.seek(payload+start); raw = stream.read(end-start)
+            if len(raw) != end-start:
+                raise ValueError("Truncated text weight")
+            values = (np.frombuffer(raw,dtype="<u2").astype(np.uint32) << 16).view(np.float32).reshape(tensor["shape"])
+            if not np.isfinite(values).all() or not np.isfinite(values.astype(np.float16)).all():
+                raise ValueError("Text FP16 weight overflow")
+            state[local] = torch.from_numpy(values.copy())
+    config = GlmOcrTextConfig(**read_json(model/"config.json")["text_config"]); config._attn_implementation = "eager"
+    if (config.num_hidden_layers,config.hidden_size,config.intermediate_size,config.head_dim,config.num_attention_heads,config.num_key_value_heads,config.vocab_size) != (16,1536,4608,128,16,8,59392):
+        raise ValueError("Text geometry drift")
+    decoder = reference.GlmOcrTextModel(config).eval(); decoder.load_state_dict(state,strict=True)
+    output.mkdir(parents=True,exist_ok=True); files = {}
+    def store(name,data):
+        path = output/name
+        if path.exists() and sha(path.read_bytes()) != sha(data):
+            raise ValueError("Existing text artifact differs: "+name)
+        if not path.exists():
+            with path.open("xb") as stream:
+                stream.write(data)
+        files[name] = {"bytes":len(data),"sha256":sha(data)}
+    def half(value):
+        return value.detach().half().contiguous().numpy().astype("<f2").tobytes()
+    identity = bytes.fromhex(next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors"))
+    store("embeddings.got",envelope(identity+half(state["embed_tokens.weight"]),13,catalog))
+    for index in range(16):
+        constants = b""
+        for name in ("input_layernorm.weight","self_attn.q_proj.weight","self_attn.k_proj.weight","self_attn.v_proj.weight","self_attn.o_proj.weight",
+                     "post_self_attn_layernorm.weight","post_attention_layernorm.weight","mlp.gate_up_proj.weight","mlp.down_proj.weight","post_mlp_layernorm.weight"):
+            value = state[f"layers.{index}."+name]
+            constants += half(value.t() if value.ndim == 2 else value)
+        if len(constants) != 61353984:
+            raise ValueError("Text block layout drift")
+        store(f"text-{index:02}.got",envelope(identity+struct.pack("<I",index)+constants,14,catalog))
+    positions = torch.arange(64).view(1,1,64).expand(3,1,64)
+    with torch.inference_mode():
+        cosine,sine = decoder.rotary_emb(torch.zeros(1,64,1536),positions)
+    store("text-shared.got",envelope(identity+half(state["norm.weight"])+cosine.numpy().astype("<f4").tobytes()+sine.numpy().astype("<f4").tobytes(),15,catalog))
+    del state
+    tokenizer = AutoTokenizer.from_pretrained(str(model),local_files_only=True,trust_remote_code=False)
+    position_model = SimpleNamespace(config=SimpleNamespace(vision_config=SimpleNamespace(spatial_merge_size=2)))
+    position_model.get_vision_position_ids = MethodType(reference.GlmOcrModel.get_vision_position_ids,position_model)
+    cases = []; fixture_records = []
+    for case,width in (("pattern",8),("receipt",16)):
+        run = json.loads((vision_build/(case+"-vision-run.json")).read_text(encoding="utf-8-sig"))
+        raw_features = (Path(run["capture"])/"26.features.f16").read_bytes()
+        if run["exit_code"] != 0 or sha(raw_features).upper() != run["captures"]["26.features.f16"]:
+            raise ValueError("Unverified vision features")
+        features = torch.from_numpy(np.frombuffer(raw_features,dtype="<f2").astype(np.float32)).reshape(width*2,1536)
+        store(case+".features.f16",raw_features)
+        for task,text in enumerate(TASKS):
+            for no_think in (0,1):
+                kwargs = {"add_generation_prompt":True,"tokenize":False}
+                if no_think: kwargs["enable_thinking"] = False
+                rendered = tokenizer.apply_chat_template([{"role":"user","content":[{"type":"image"},{"type":"text","text":text}]}],**kwargs)
+                ids = torch.tensor([tokenizer.encode(rendered.replace("<|image|>","<|image|>"*(width*2)),add_special_tokens=False)])
+                count = ids.shape[1]; modalities = ids == 59280
+                positions,delta = reference.GlmOcrModel.get_rope_index(position_model,ids,modalities.long(),torch.tensor([[1,8,width]]))
+                if count > 64: raise ValueError("Text context too long")
+                padded_ids = torch.full((1,64),59246,dtype=torch.long); padded_ids[:,:count] = ids
+                padded_positions = torch.zeros((3,1,64),dtype=torch.long); padded_positions[:,:,:count] = positions
+                attention = torch.zeros((1,64),dtype=torch.long); attention[:,:count] = 1
+                with torch.inference_mode():
+                    inputs = decoder.embed_tokens(padded_ids).half().float(); inputs[:,count:] = 0
+                    inputs[:,:count][modalities] = features
+                mask = np.where((np.arange(64)[None,:] <= np.arange(64)[:,None]) & (np.arange(64)[None,:] < count),0,-65504).astype("<f2")
+                fixture_records.append(struct.pack("<6Ii",task,no_think,8,width,count,width*2,delta.item())+
+                    padded_ids.numpy().astype("<u4").tobytes()+padded_positions.numpy().astype("<i4").tobytes()+
+                    np.pad(modalities.numpy().astype(np.uint8).reshape(-1),(0,64-count)).tobytes()+mask.tobytes()+half(inputs))
+                if task == 0 and no_think == 0:
+                    cases.append((case,padded_ids,padded_positions,attention,features,count))
+    store("input-fixtures.got",envelope(struct.pack("<I",len(fixture_records))+b"".join(fixture_records),16,catalog))
+    for scope in ("original","candidate"):
+        if scope == "candidate": decoder.half().float()
+        for case,ids,positions,attention,features,count in cases:
+            with torch.inference_mode():
+                inputs = decoder.embed_tokens(ids); inputs[:,count:] = 0
+                inputs[ids == 59280] = features
+            captured = []
+            def hook(module,arguments,result): captured.append(result.detach().clone())
+            handles = [layer.register_forward_hook(hook) for layer in decoder.layers]+[decoder.norm.register_forward_hook(hook)]
+            try:
+                with torch.inference_mode(): result = decoder(inputs_embeds=inputs,position_ids=positions,attention_mask=attention,use_cache=False)
+                if len(captured) != 17 or any(not torch.isfinite(value).all() for value in captured): raise ValueError("Bad text reference")
+                store(case+"."+scope+".f32",b"".join(value.contiguous().numpy().astype("<f4").tobytes() for value in [inputs]+captured))
+            finally:
+                for handle in handles: handle.remove()
+            print("PASS text prefill oracle",case,scope,"tokens",count,flush=True)
+    manifest = {"schema_version":1,"source_sha256":identity.hex(),"modeling_sha256":module_hash,"versions":versions,"files":files,
+                "context":64,"layers":16,"reference_vision_build":str(vision_build),"prompt_tasks":TASKS,
+                "prompt_source":"https://huggingface.co/zai-org/GLM-OCR","generation":False}
+    store("manifest.json",(json.dumps(manifest,indent=2)+"\n").encode())
+    print("PASS text decoder export",len(files),"files",flush=True)
+
+
+def analyze_text_prefill(model, output, build):
+    import inspect as source_inspect
+    import numpy as np
+    torch, _, _, _ = image_reference()
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrTextConfig
+    manifest = read_json(output/"manifest.json")
+    if manifest["layers"] != 16 or manifest["context"] != 64 or sha(Path(source_inspect.getfile(reference)).read_bytes()) != manifest["modeling_sha256"]:
+        raise ValueError("Text reference identity/geometry changed")
+    for name,record in manifest["files"].items():
+        with (output/name).open("rb") as stream:
+            digest = hashlib.file_digest(stream,"sha256").hexdigest()
+        if (output/name).stat().st_size != record["bytes"] or digest != record["sha256"]:
+            raise ValueError("Text artifact changed: "+name)
+    config = GlmOcrTextConfig(**read_json(model/"config.json")["text_config"])
+    fixtures = (output/"input-fixtures.got").read_bytes()
+    reports = {}
+    for case,record_index in (("pattern",0),("receipt",6)):
+        run = json.loads((build/(case+"-prefill-run.json")).read_text(encoding="utf-8-sig"))
+        if run["exit_code"] != 0 or run["scope"] != "prefill" or sha((build/"ocr-prefill.exe").read_bytes()).upper() != run["executable_sha256"]:
+            raise ValueError("Unverified prefill executable/run")
+        expected_hashes = {name:item["sha256"].upper() for name,item in manifest["files"].items() if name.endswith(".got")}
+        if run["text_weight_hashes"] != expected_hashes:
+            raise ValueError("Prefill weights differ from reference")
+        capture = Path(run["capture"])
+        def captured(name,elements,dtype="<f2"):
+            raw = (capture/name).read_bytes()
+            if sha(raw).upper() != run["captures"][name]: raise ValueError("Prefill capture changed: "+name)
+            values = np.frombuffer(raw,dtype=dtype)
+            if values.size != elements or not np.isfinite(values).all(): raise ValueError("Invalid prefill capture: "+name)
+            return values
+        record = fixtures[132+record_index*205916:132+(record_index+1)*205916]
+        task,no_think,height,width,count,image_tokens,delta = struct.unpack_from("<6Ii",record)
+        if captured("0.text-layout.u32",7,"<u4").tobytes() != struct.pack("<7I",count,image_tokens,task,no_think,height,width,delta&0xffffffff):
+            raise ValueError("Wrong multimodal layout")
+        cursor = 28
+        for name,elements,dtype in (("0.text-ids.u32",64,"<u4"),("0.text-positions.i32",192,"<i4"),
+                                    ("0.text-modalities.u8",64,"u1"),("0.text-mask.f16",4096,"<f2"),("0.text-embeddings.f16",98304,"<f2")):
+            actual = captured(name,elements,dtype); expected_bytes = record[cursor:cursor+actual.nbytes]
+            if actual.tobytes() != expected_bytes: raise ValueError("Multimodal boundary differs from oracle: "+name)
+            cursor += actual.nbytes
+        features = captured("26.features.f16",image_tokens*1536)
+        if features.tobytes() != (output/(case+".features.f16")).read_bytes():
+            raise ValueError("Vision features differ from conditional text reference")
+        positions = torch.from_numpy(captured("0.text-positions.i32",192,"<i4").copy().reshape(3,1,64)).long()
+        with torch.inference_mode():
+            cosine,sine = reference.GlmOcrTextRotaryEmbedding(config)(torch.zeros(1,64,1536),positions)
+        for name,value in (("cosine",cosine),("sine",sine)):
+            if captured("0.text-"+name+".f32",64*128,"<f4").tobytes() != value.numpy().astype("<f4").tobytes():
+                raise ValueError("Native text mRoPE differs from pinned model")
+        stages = [captured("0.text-embeddings.f16",98304).reshape(64,1536)]
+        mask = captured("0.text-mask.f16",4096).reshape(64,64)
+        for index in range(16):
+            source = captured(f"{index}.text-input.f16",98304)
+            if source.tobytes() != stages[-1].tobytes(): raise ValueError("Text handoff differs")
+            taps = captured(f"{index}.text-taps.f16",688128)
+            probabilities = taps[622592:].reshape(16,64,64).astype(np.float32)
+            if np.any(probabilities[:,mask != 0] != 0) or np.any(probabilities < 0) or np.any(probabilities > 1) or np.any(np.abs(probabilities.sum(-1)-1) > 0.003):
+                raise ValueError("Causal/padding mask failure")
+            stages.append(taps[4*98304:5*98304].reshape(64,1536))
+        stages.append(captured("16.text-norm.f16",98304).reshape(64,1536))
+        stage_names = ["embeddings"]+[f"layer-{index}" for index in range(16)]+["final_norm"]
+        scopes = {}
+        for scope in ("original","candidate"):
+            expected = np.frombuffer((output/(case+"."+scope+".f32")).read_bytes(),dtype="<f4").reshape(18,64,1536)
+            results = {}
+            for name,actual,target in zip(stage_names,stages,expected,strict=True):
+                error = actual[:count].astype(np.float64)-target[:count].astype(np.float64)
+                limit = 0.003+0.005*np.abs(target[:count].astype(np.float64))
+                results[name] = {"elements":int(error.size),"failures":int((np.abs(error)>limit).sum()),
+                                 "last_prompt_token_failures":int((np.abs(error[-1])>limit[-1]).sum()),
+                                 "rmse":float(np.sqrt(np.mean(error*error))),"max_absolute_error":float(np.abs(error).max())}
+            scopes[scope] = results
+            print(case,scope,"prefill failures",[(name,values["failures"]) for name,values in results.items()],flush=True)
+        gamma = np.frombuffer((output/"text-shared.got").read_bytes(),dtype="<f2",count=1536,offset=160).astype(np.float64)
+        observed = stages[-2][:count].astype(np.float64)
+        ideal = observed/np.sqrt(np.mean(observed*observed,axis=-1,keepdims=True)+1e-5)*gamma
+        local_error = stages[-1][:count].astype(np.float64)-ideal
+        local = {"reference":"FP64 RMSNorm on captured layer-15 output and deployed gamma", "failures":int((np.abs(local_error)>0.003+0.005*np.abs(ideal)).sum()),
+                 "rmse":float(np.sqrt(np.mean(local_error*local_error))),"max_absolute_error":float(np.abs(local_error).max())}
+        print(case,"final norm local",local,"last prompt token failures",{scope:stages["final_norm"]["last_prompt_token_failures"] for scope,stages in scopes.items()},flush=True)
+        reports[case] = {"run":run,"count":count,"task":TASKS[task],"no_think":bool(no_think),"input_boundary_bit_exact":True,
+                         "mrope_bit_exact":True,"handoffs_bit_exact":True,"causal_padding_mask_pass":True,"finite_captured_taps":True,
+                         "stages":scopes,"final_norm_local":local,"numerical_gate_pass":all(not item["failures"] for scope in scopes.values() for item in scope.values())}
+    report = {"schema_version":1,"analyzer_sha256":sha(Path(__file__).read_bytes()),"manifest_sha256":sha((output/"manifest.json").read_bytes()),
+              "conditioning":"actual native vision features, not original end-to-end image inference", "tolerance":{"absolute":0.003,"relative":0.005},
+              "cases":reports,"numerical_gate_pass":all(case["numerical_gate_pass"] for case in reports.values()),"token_generation":False}
+    (build/"prefill-analysis.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
+    print("PASS multimodal boundary/mRoPE/causal mask/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
+
+
 def export_vision_chain(model, output, case):
     records,reports = [],[]
     for block_index in range(2):
@@ -436,6 +827,18 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
     if captures["0.taps.f16"][offsets[17]:].tobytes() != captures["1.input.f16"].tobytes():
         raise ValueError("Block handoff changed bits")
     isolation = None
+    late_native = bool(run.get("fuse_down_residual_block1"))
+    attention_native = bool(run.get("fuse_attention_residual_block1"))
+    block0_late_native = bool(run.get("fuse_down_residual_block0"))
+    baseline_captures = {}
+    baseline_output = None
+    baseline_residual = None
+    if attention_native and not late_native:
+        raise ValueError("Attention residual analysis requires late down rounding")
+    if block0_late_native and (not late_native or attention_native):
+        raise ValueError("Block-0 late residual analysis requires isolated late-down settings")
+    if late_native and compare_build is None:
+        raise ValueError("Late residual analysis requires its unchanged control")
     if compare_build is not None:
         baseline = json.loads((compare_build/"htp-probe.json").read_text(encoding="utf-8-sig"))
         baseline_dir = Path(baseline["capture_directory"])
@@ -443,15 +846,51 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
             raise ValueError("Isolation baseline identity mismatch")
         if sha((compare_build/"ocr-htp-test.exe").read_bytes()) != baseline["executable_sha256"]:
             raise ValueError("Isolation baseline executable mismatch")
+        if late_native:
+            if bool(baseline.get("fuse_down_residual_block1")) != (attention_native or block0_late_native) or baseline.get("fuse_down_residual_block0") or baseline.get("fuse_attention_residual_block1") or not run.get("capture_internals"):
+                raise ValueError("Invalid late residual control")
+            for field in ("runtime_sha256","rope_implementation","rope_block1_only","capture_internals",
+                          "refine_divide_block1","refine_silu_only","matrix_residual","matrix_residual_group"):
+                if run.get(field) != baseline.get(field):
+                    raise ValueError("Late residual control configuration mismatch: "+field)
         for name,values in captures.items():
             raw = (baseline_dir/name).read_bytes()
             if len(raw) != values.nbytes or sha(raw) != baseline["capture_sha256"][name]:
                 raise ValueError("Isolation baseline capture mismatch")
-            checked_bytes = offsets[4]*2 if name == "1.taps.f16" else len(raw)
+            baseline_captures[name] = np.frombuffer(raw,dtype="<f2").astype(np.float64)
+            if not np.isfinite(baseline_captures[name]).all():
+                raise ValueError("Nonfinite isolation baseline")
+            checked_bytes = offsets[10 if attention_native else 17 if late_native else 4]*2 if name == "1.taps.f16" else len(raw)
+            if block0_late_native:
+                checked_bytes = 0 if name.startswith("1.") else offsets[17]*2 if name == "0.taps.f16" else len(raw)
             if raw[:checked_bytes] != values.tobytes()[:checked_bytes]:
-                raise ValueError("RoPE isolation changed upstream tensors: "+name)
-        isolation = {"baseline_run":baseline,"block0_all_taps_bit_exact":True,
-                     "block1_input_and_pre_rope_taps_bit_exact":True}
+                raise ValueError("Isolation changed upstream tensors: "+name)
+            if name == "1.taps.f16":
+                baseline_output = np.frombuffer(raw,dtype="<f2")[offsets[17]:].astype(np.float64)
+                baseline_residual = np.frombuffer(raw,dtype="<f2")[offsets[10]:offsets[11]].astype(np.float64)
+        isolation = {"baseline_run":baseline,"block0_all_taps_bit_exact":not block0_late_native,
+                     "block1_input_and_pre_rope_taps_bit_exact":not block0_late_native}
+        if baseline_captures["0.taps.f16"][offsets[17]:].tobytes() != baseline_captures["1.input.f16"].tobytes():
+            raise ValueError("Baseline block handoff mismatch")
+        if late_native:
+            for block_index in range(2):
+                name = f"{block_index}.internals.f16"
+                raw = (capture_dir/name).read_bytes()
+                control_raw = (baseline_dir/name).read_bytes()
+                count = 32*tokens+32*tokens*tokens+tokens*4096*(6 if run.get("matrix_residual") and block_index == 1 else 4)
+                checked_bytes = (32*tokens+32*tokens*tokens)*2 if attention_native and block_index == 1 else count*2
+                if block0_late_native and block_index == 1:
+                    checked_bytes = 0
+                if len(raw) != count*2 or len(control_raw) != count*2 or sha(raw) != run["capture_sha256"][name] or sha(control_raw) != baseline["capture_sha256"][name] or raw[:checked_bytes] != control_raw[:checked_bytes]:
+                    raise ValueError("Late residual changed internal capture: "+name)
+                if not np.isfinite(np.frombuffer(raw,dtype="<f2")).all():
+                    raise ValueError("Nonfinite residual experiment capture")
+            if block0_late_native:
+                isolation["block0_through_down_and_internals_bit_exact"] = True
+                isolation["block1_configuration_unchanged_input_changed"] = True
+            else:
+                isolation["block1_through_projection_bit_exact" if attention_native else "block1_through_down_bit_exact"] = True
+                isolation["block0_and_block1_softmax_internal_captures_bit_exact" if attention_native else "all_internal_captures_bit_exact"] = True
     base_original,base_candidate = records[1][2]
     actual = captures["1.taps.f16"].astype(np.float64)
     actual_input = captures["1.input.f16"].astype(np.float32).reshape(tokens,1024)
@@ -472,6 +911,27 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
                 "out_of_tolerance":int(np.count_nonzero(np.abs(error) > 0.003+0.005*np.abs(right)))}
     observed = conditional["actual_input"][1]
     ideal = conditional["rounded_ideal_input"][1]
+    block0_local_error_change = None
+    if block0_late_native:
+        control_input = baseline_captures["1.input.f16"].astype(np.float32).reshape(tokens,1024)
+        control_oracle = conditional_reference(control_input)[1]
+        conditional_change = observed-control_oracle
+        measured_change = actual-baseline_captures["1.taps.f16"]
+        local_change = measured_change-conditional_change
+        block0_local_error_change = {}
+        for tap,tap_name in ((6,"scores"),(17,"block_output")):
+            section = slice(offsets[tap],offsets[tap+1])
+            frozen = baseline_captures["1.taps.f16"][section]+conditional_change[section]
+            reference = base_original[section]
+            indices = np.flatnonzero(np.abs(actual[section]-reference) > 0.003+0.005*np.abs(reference))
+            block0_local_error_change[tap_name] = {
+                "frozen_control_local_error_vs_original":stats(frozen,reference),
+                "local_error_change_rmse":float(np.sqrt(np.mean(local_change[section]**2))),
+                "closure_max_abs":float(np.max(np.abs(conditional_change[section]+local_change[section]-measured_change[section]))),
+                "actual_failures":[{"index":int(index),"conditional_input_effect":float(conditional_change[offsets[tap]+index]),
+                    "local_execution_error_change":float(local_change[offsets[tap]+index]),
+                    "measured_output_change":float(measured_change[offsets[tap]+index])} for index in indices],
+                "interpretation":"Measured difference minus paired conditional-oracle difference; local execution error changes with the input, not an unchanged error term"}
     terms = {"initial_cast_and_weight_effect":base_candidate-base_original,
              "ideal_handoff_rounding_effect":ideal-base_candidate,
              "block0_execution_propagated":observed-ideal,
@@ -581,6 +1041,8 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
         "observed_qkv_ideal_norm_rope_dot":stats(scores_from_qkv,base_original[score_section]),
         "observed_norm1_ideal_qkv_norm_rope_dot":stats(ideal_norm_scores(ideal_qkv),base_original[score_section])}
     for row in failures["scores"]:
+        row["allowed_error"] = 0.003+0.005*abs(row["original"])
+        row["tolerance_fraction"] = abs(row["actual"]-row["original"])/row["allowed_error"]
         row["local_stages"] = {name:float(value[row["index"]]) for name,value in score_terms.items()}
     residual_sum = captures["1.taps.f16"][offsets[10]:offsets[11]].astype(np.float64)+captures["1.taps.f16"][offsets[16]:offsets[17]].astype(np.float64)
     residual = stats(actual[offsets[17]:],residual_sum)
@@ -588,6 +1050,7 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
         index = row["index"]
         row["allowed_error"] = 0.003+0.005*abs(row["original"])
         row["last_add_error"] = float(actual[offsets[17]+index]-residual_sum[index])
+        row["last_add_comparison_is_separate_operation"] = not late_native
         row["actual_residual_operand"] = float(actual[offsets[10]+index])
         row["actual_down_operand"] = float(actual[offsets[16]+index])
         row["cancellation_factor"] = float((abs(base_original[offsets[10]+index])+abs(base_original[offsets[16]+index]))/abs(row["original"]))
@@ -654,7 +1117,7 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
         "mlp_silu_local_propagated":down_after_silu-down_after_up,
         "mlp_gated_multiply_local_propagated":down_after_gated-down_after_silu,
         "mlp_down_projection_local":actual_taps[16]-down_after_gated,
-        "final_residual_add_local":actual_taps[17]-(actual_taps[10]+actual_taps[16])}
+        "late_output_vs_separate_taps" if block0_late_native else "final_residual_add_local":actual_taps[17]-(actual_taps[10]+actual_taps[16])}
     block0_error = actual_taps[17]-block0_tap(block0_original,17)
     block0_closure = float(np.max(np.abs(sum(block0_terms.values())-block0_error)))
     if not all(np.isfinite(value).all() for value in block0_terms.values()) or block0_closure > 1e-12:
@@ -675,7 +1138,34 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
         ("silu_single_round",activated_gate(actual_taps[12]),14),
         ("gated_multiply_single_round",actual_taps[14]*actual_taps[13],15),
         ("down_projection_single_round",down_after_gated,16),
-        ("final_residual_add_single_round",actual_taps[10]+actual_taps[16],17))}
+        ("separate_final_residual_counterfactual" if block0_late_native else "final_residual_add_single_round",actual_taps[10]+actual_taps[16],17))}
+    block0_late_reference = {"native_path_enabled":block0_late_native,
+        "captured_vs_single_round":rounding_stats(actual_taps[10]+down_after_gated,actual_taps[17]),
+        "reference_vs_original":stats((actual_taps[10]+down_after_gated).astype(np.float16).astype(np.float64),block0_tap(block0_original,17))}
+    block0_chain_comparison = None
+    if block0_late_native:
+        control_block0 = baseline_captures["0.taps.f16"][offsets[17]:].reshape(tokens,1024)
+        block0_late_reference["control_vs_single_round"] = rounding_stats(actual_taps[10]+down_after_gated,control_block0)
+        block0_late_reference["control_vs_original"] = stats(control_block0,block0_tap(block0_original,17))
+        block0_late_reference["changed_handoff_elements"] = int(np.count_nonzero(control_block0 != actual_taps[17]))
+        block0_chain_comparison = {}
+        for tap,tap_name in enumerate(manifest["blocks"][1]["tap_order"]):
+            section = slice(offsets[tap],offsets[tap+1])
+            control_values = baseline_captures["1.taps.f16"][section]
+            actual_values = actual[section]
+            scopes = {}
+            for scope,reference in (("original",base_original[section]),("candidate",base_candidate[section])):
+                allowed = 0.003+0.005*np.abs(reference)
+                control_bad = np.abs(control_values-reference) > allowed
+                actual_bad = np.abs(actual_values-reference) > allowed
+                indices = np.flatnonzero(control_bad | actual_bad)
+                scopes[scope] = {"control":stats(control_values,reference),"actual":stats(actual_values,reference),
+                    "new_failures":int(np.count_nonzero(actual_bad & ~control_bad)),
+                    "fixed_failures":int(np.count_nonzero(control_bad & ~actual_bad)),
+                    "failure_union":[{"index":int(index),"reference":float(reference[index]),"allowed":float(allowed[index]),
+                        "control":float(control_values[index]),"actual":float(actual_values[index]),
+                        "control_failed":bool(control_bad[index]),"actual_failed":bool(actual_bad[index])} for index in indices]}
+            block0_chain_comparison[tap_name] = scopes
     normalized_error = np.abs(block0_error)/(0.003+0.005*np.abs(block0_tap(block0_original,17)))
     largest_indices = np.argsort(normalized_error.reshape(-1),kind="stable")[-12:][::-1]
     block0_largest = [{"index":int(index),"actual":float(actual_taps[17].reshape(-1)[index]),
@@ -740,6 +1230,7 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
     intervention_inputs = {
         "observed_silu_tail_replay":replay_input,
         "single_round_silu_tail_replay":replay_silu_tail(single_round_silu),
+        "late_down_residual_block0":half_round(actual_taps[10]+down_after_gated),
         "unrounded_final_residual":actual_taps[10]+actual_taps[16]}
     intervention_references = {"rounded_ideal_block0":ideal}
     interventions = {}
@@ -768,6 +1259,8 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
                            "original_failures":[{"index":row["index"],"delta":float(silu_paired_delta[offsets[tap]+row["index"]])} for row in failures[tap_name]]}
                    for tap,tap_name in ((2,"q_norm"),(6,"scores"),(17,"block_output"))}
     block0_analysis = {"oracle_fixture_byte_exact":True,"closure_max_abs":block0_closure,
+                       "late_down_residual_reference":block0_late_reference,
+                       "block1_control_comparison":block0_chain_comparison,
                        "taps":block0_taps,"output_components":block0_components,"rounding_simulations":block0_rounding,
                        "silu_rounding":{"single_round":rounding_stats(single_round_silu,actual_taps[14]),
                                         "staged_half":rounding_stats(staged_silu,actual_taps[14]),
@@ -782,10 +1275,101 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
                        "reference_reconstruction":{"projection":stats(candidate_projection_exact,candidate_taps[9]),
                                                    "mlp":stats(candidate_down_exact,candidate_taps[16])},
                        "method":"Ordered FP64 counterfactual differences at observed boundaries; nonlinear interactions depend on ordering, not independent causal percentages"}
+    constant_cursor = weights_start+2048+6291456+6144+256+tokens*512
+    failure_projection_weight,failure_projection_bias = constant_half((1024,1024)),constant_half((1024,))
+    failure_norm_weight = constant_half((1024,))
+    failure_gate_weight,failure_gate_bias = constant_half((1024,4096)),constant_half((4096,))
+    failure_up_weight,failure_up_bias = constant_half((1024,4096)),constant_half((4096,))
+    failure_down_weight,failure_down_bias = constant_half((4096,1024)),constant_half((1024,))
+    if constant_cursor != weights_start+constant_bytes:
+        raise ValueError("Block-1 failure constant layout mismatch")
+    attention_sum = actual[offsets[8]:offsets[9]].reshape(tokens,1024)@failure_projection_weight+failure_projection_bias+actual_input
+    attention_rounded = attention_sum.astype(np.float16).astype(np.float64).reshape(-1)
+    attention_observed = actual[offsets[10]:offsets[11]]
+    attention_control = baseline_residual if attention_native else attention_observed
+    attention_reference = {"native_path_enabled":attention_native,
+        "captured_vs_single_round":rounding_stats(attention_sum,attention_observed),
+        "control_vs_single_round":rounding_stats(attention_sum,attention_control),
+        "captured_vs_original":stats(attention_observed,base_original[offsets[10]:offsets[11]]),
+        "control_vs_original":stats(attention_control,base_original[offsets[10]:offsets[11]]),
+        "reference_vs_original":stats(attention_rounded,base_original[offsets[10]:offsets[11]]),
+        "changed_from_control":int(np.count_nonzero(attention_observed != attention_control)),
+        "interpretation":"FP64 projection plus captured incoming residual, then one nearest-even FP16 rounding; native and control outputs compared separately"}
+    late_down = actual[offsets[15]:offsets[16]].reshape(tokens,4096)@failure_down_weight+failure_down_bias
+    late_sum = actual[offsets[10]:offsets[11]].reshape(tokens,1024)+late_down
+    late_rounded = late_sum.astype(np.float16).astype(np.float64).reshape(-1)
+    late_reference = {"vs_original":stats(late_rounded,base_original[offsets[17]:]),
+                      "vs_candidate":stats(late_rounded,base_candidate[offsets[17]:]),
+                      "captured_vs_single_round":rounding_stats(late_sum,actual[offsets[17]:]),
+                      "native_path_enabled":late_native,
+                      "interpretation":"FP64 from observed gated/residual tensors and fixture weights, one final nearest-even FP16 rounding; offline counterfactual unless the native late-rounding path is enabled"}
+    original_output = base_original[offsets[17]:]
+    old_output = actual[offsets[17]:]
+    control_output = baseline_output if late_native else old_output
+    late_reference["control_vs_original"] = stats(control_output,original_output)
+    late_reference["changed_from_control"] = int(np.count_nonzero(old_output != control_output))
+    late_indices = np.flatnonzero((np.abs(late_rounded-original_output) > 0.003+0.005*np.abs(original_output)) |
+                                 (np.abs(old_output-original_output) > 0.003+0.005*np.abs(original_output)) |
+                                 (np.abs(control_output-original_output) > 0.003+0.005*np.abs(original_output)))
+    late_reference["failure_union"] = [{"index":int(index),"original":float(original_output[index]),
+        "allowed":float(0.003+0.005*abs(original_output[index])),"captured":float(old_output[index]),"control":float(control_output[index]),
+        "late_rounded":float(late_rounded[index]),"late_error":float(late_rounded[index]-original_output[index])} for index in late_indices]
+    for row in failures["block_output"]:
+        token_index,channel = divmod(row["index"],1024)
+        local_taps = [actual[offsets[tap]:offsets[tap+1]].reshape(tokens,-1)[token_index] for tap in range(18)]
+        matched_taps = [observed[offsets[tap]:offsets[tap+1]].reshape(tokens,-1)[token_index] for tap in range(18)]
+        def failure_normalized(values):
+            return values/np.sqrt(np.mean(values**2)+epsilon)*failure_norm_weight
+        def failure_down(gate_values,up_values):
+            return float((activated_gate(gate_values)*up_values)@failure_down_weight[:,channel]+failure_down_bias[channel])
+        def failure_mlp(values):
+            return failure_down(values@failure_gate_weight+failure_gate_bias,values@failure_up_weight+failure_up_bias)
+        reference_down = failure_mlp(failure_normalized(matched_taps[10]))
+        if not np.isclose(reference_down,matched_taps[16][channel],atol=1e-5,rtol=1e-5):
+            raise ValueError("Block-1 failure FP64 MLP differs from matched oracle")
+        stages = {
+            "mlp_reference_rounding":reference_down,
+            "mlp_residual_input_propagated":failure_mlp(failure_normalized(local_taps[10])),
+            "mlp_norm2_local_propagated":failure_mlp(local_taps[11]),
+            "mlp_gate_projection_local_propagated":failure_down(local_taps[12],local_taps[11]@failure_up_weight+failure_up_bias),
+            "mlp_up_projection_local_propagated":failure_down(local_taps[12],local_taps[13]),
+            "mlp_silu_local_propagated":float((local_taps[14]*local_taps[13])@failure_down_weight[:,channel]+failure_down_bias[channel]),
+            "mlp_gated_multiply_local_propagated":float(local_taps[15]@failure_down_weight[:,channel]+failure_down_bias[channel]),
+            "mlp_down_projection_local":float(local_taps[16][channel])}
+        local_components = {
+            "residual_operand_direct":float(local_taps[10][channel]-matched_taps[10][channel]),
+            "reference_output_add":float(matched_taps[10][channel]+matched_taps[16][channel]-matched_taps[17][channel]),
+            "late_output_vs_separate_taps" if late_native else "final_output_add":float(local_taps[17][channel]-local_taps[10][channel]-local_taps[16][channel])}
+        previous = float(matched_taps[16][channel])
+        for name,value in stages.items():
+            local_components[name] = value-previous
+            previous = value
+        local_closure = abs(sum(local_components.values())-row["block1_local_execution"])
+        if not all(np.isfinite(value) for value in local_components.values()) or local_closure > 1e-12:
+            raise ValueError("Block-1 failure local decomposition does not close")
+        row["token"] = token_index
+        row["channel"] = channel
+        row["tolerance_fraction"] = abs(row["actual"]-row["original"])/row["allowed_error"]
+        row["block1_local_components"] = local_components
+        row["block1_local_closure_max_abs"] = local_closure
+        exact_down = stages["mlp_gated_multiply_local_propagated"]
+        rounded_down = np.float16(exact_down)
+        row["down_projection_rounding"] = {
+            "fp64_from_observed_gated":exact_down,"nearest_fp16":float(rounded_down),
+            "actual":float(local_taps[16][channel]),
+            **rounding_stats(exact_down,local_taps[16][channel])}
+        row["first_residual_add_rounding"] = rounding_stats(
+            float(actual_input[token_index,channel])+local_taps[9][channel],local_taps[10][channel])
+        row["first_residual_comparison_is_separate_operation"] = not attention_native
+        row["block1_local_method"] = "Ordered FP64 MLP counterfactuals from matched oracle and observed taps; signed correlated contributions, not independent percentages"
     result = {"schema_version":1,"run":run,"fixture_sha256":sha(fixture),"analysis_sha256":sha(Path(__file__).read_bytes()),
+              "late_down_residual_reference":late_reference,
+              "attention_residual_reference":attention_reference,
+              "block0_input_local_error_change":block0_local_error_change,
               "block0_output_analysis":block0_analysis,
               "handoff_bit_exact":True,"isolation_comparison":isolation,"closure_max_abs":closure,"taps":taps,"failures":failures,
               "qk_vs_fp64_observed_vectors":qk,"last_add_vs_fp64_observed_operands":residual,
+              "last_add_comparison_is_separate_operation":not late_native,
               "local_score_stages":score_summary,"local_score_closure":score_closure,
               "rope_rounding_simulations":rope_simulations,"scores_with_fp32_rope_then_half_counterfactual":rope_counterfactual,
               "upstream_rounding_simulations":upstream,"upstream_score_counterfactuals":upstream_score_counterfactuals,
@@ -796,6 +1380,8 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
     print("Local score stages",json.dumps(score_summary),flush=True)
     print("RoPE rounding simulations",json.dumps(rope_simulations),"counterfactual scores",json.dumps(rope_counterfactual),flush=True)
     print("Residual failures",json.dumps(failures["block_output"]),flush=True)
+    print("Late down/residual reference",json.dumps(late_reference),flush=True)
+    print("Attention residual reference",json.dumps(attention_reference),flush=True)
     print("Upstream rounding",json.dumps(upstream),"counterfactual scores",json.dumps(upstream_score_counterfactuals),flush=True)
     print("Query norm failures",json.dumps(failures["q_norm"]),flush=True)
     print("Block 0 output",json.dumps(block0_taps["block_output"]),"closure",block0_closure,flush=True)
@@ -810,8 +1396,17 @@ def analyze_chain_boundary(model, output, build, compare_build=None):
             print("  Block 1",tap_name,json.dumps(metrics),flush=True)
         print("  Residual failure deltas",json.dumps(intervention["original_failures"]["block_output"]),flush=True)
     print("SiLU paired intervention",json.dumps(silu_paired),flush=True)
-    if isolation is not None:
+    if block0_late_native:
+        print("Block 1 input-dependent local error",json.dumps(block0_local_error_change),flush=True)
+        print("Block 0 late residual reference",json.dumps(block0_late_reference),flush=True)
+        for tap_name in ("scores","block_output"):
+            print("Block 0 change propagated",tap_name,json.dumps(block0_chain_comparison[tap_name]),flush=True)
+        print("PASS Block 0 isolation: input, through-down taps and all internals bit exact; new handoff bit exact; Block 1 configuration unchanged",flush=True)
+    elif isolation is not None:
         print("PASS isolation: Block 0 all taps and Block 1 input/norm1/QKV/Q/K norms bit exact against baseline",flush=True)
+        if late_native:
+            print("PASS attention residual isolation: Block 1 through projection and softmax internals bit exact" if attention_native else
+                  "PASS late residual isolation: Block 1 through down and all internal captures bit exact",flush=True)
 
 
 def analyze_internal_tensors(output, build, compare_build):
@@ -1349,8 +1944,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5,6,7,8,9) else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5,6,7,8,9) else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if 3 <= kind <= 16 else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if 3 <= kind <= 16 else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -1749,6 +2344,14 @@ def main():
     parser.add_argument("--export-learned-htp", action="store_true")
     parser.add_argument("--export-vision-attention", action="store_true")
     parser.add_argument("--export-vision-block", action="store_true")
+    parser.add_argument("--export-vision-encoder", action="store_true")
+    parser.add_argument("--export-text-decoder", action="store_true")
+    parser.add_argument("--analyze-text-prefill", action="store_true")
+    parser.add_argument("--text-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-prefill")
+    parser.add_argument("--text-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-text-v1")
+    parser.add_argument("--analyze-vision-encoder", action="store_true")
+    parser.add_argument("--vision-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-vision")
+    parser.add_argument("--vision-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-vision-v1")
     parser.add_argument("--analyze-chain-scores", action="store_true")
     parser.add_argument("--analyze-chain-boundary", action="store_true")
     parser.add_argument("--analyze-internal-tensors", action="store_true")
@@ -1789,6 +2392,14 @@ def main():
         analyze_internal_tensors(args.vision_block_output,args.chain_build,args.chain_compare_build)
     elif args.analyze_chain_scores:
         analyze_chain_scores(args.vision_block_output,args.chain_build)
+    elif args.analyze_text_prefill:
+        analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
+    elif args.export_text_decoder:
+        export_text_decoder(args.model_dir,args.text_output,args.vision_build)
+    elif args.analyze_vision_encoder:
+        analyze_vision_encoder(args.vision_output,args.vision_build)
+    elif args.export_vision_encoder:
+        export_vision_encoder(args.model_dir,args.vision_output)
     elif args.export_vision_block:
         cases = ("pattern","noise","text") if args.attention_case == "all" else ("receipt","german") if args.attention_case == "examples" else (args.attention_case,)
         for case in cases:

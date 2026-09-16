@@ -5,7 +5,20 @@ typedef struct {
     unsigned int height, width, grid_height, grid_width, image_tokens;
 } OcrImageShape;
 
+typedef struct {
+    OcrImageShape shape;
+    unsigned int source_height, source_width;
+    unsigned long long value_count;
+    float *patches;
+} OcrPreparedImage;
+
+int ocr_image_load(const unsigned short *path, OcrPreparedImage *image);
+void ocr_image_release(OcrPreparedImage *image);
+int ocr_image_export(const unsigned short *input_path, const unsigned short *output_path);
 int ocr_image_shape(unsigned int height, unsigned int width, OcrImageShape *shape);
+int ocr_image_bmp(const unsigned char *data, unsigned long long size,
+                  unsigned char *rgb, unsigned long long capacity,
+                  unsigned int *height, unsigned int *width);
 int ocr_image_resize(const unsigned char *rgb, unsigned long long size,
                      unsigned int height, unsigned int width, unsigned int stride,
                      unsigned char *scratch, unsigned long long scratch_size,

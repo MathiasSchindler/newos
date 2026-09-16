@@ -1,5 +1,46 @@
 #include "ocr_image.h"
 
+static unsigned int bmp_u32(const unsigned char *bytes) {
+    return (unsigned int)bytes[0] | (unsigned int)bytes[1] << 8 |
+           (unsigned int)bytes[2] << 16 | (unsigned int)bytes[3] << 24;
+}
+
+int ocr_image_bmp(const unsigned char *data, unsigned long long size,
+                  unsigned char *rgb, unsigned long long capacity,
+                  unsigned int *height, unsigned int *width) {
+    if (!height || !width) return 0;
+    *height = *width = 0;
+    if (!data || size < 54 || size > 64ULL * 1024 * 1024 || data[0] != 'B' || data[1] != 'M' ||
+        bmp_u32(data + 2) != size || bmp_u32(data + 6) || bmp_u32(data + 14) != 40 ||
+        data[26] != 1 || data[27] || data[28] != 24 || data[29] || bmp_u32(data + 30) ||
+        bmp_u32(data + 46) || bmp_u32(data + 50)) return 0;
+    unsigned int source_width = bmp_u32(data + 18), encoded_height = bmp_u32(data + 22);
+    int top_down = (encoded_height & 0x80000000U) != 0;
+    unsigned int source_height = top_down ? 0U - encoded_height : encoded_height;
+    if (!source_width || source_width > 10000 || !source_height || source_height > 10000 ||
+        (unsigned long long)source_width * source_height > 16000000) return 0;
+    unsigned int offset = bmp_u32(data + 10), stride = (source_width * 3 + 3) & ~3U;
+    unsigned long long pixel_size = (unsigned long long)stride * source_height;
+    if (offset < 54 || offset > size || pixel_size != size - offset ||
+        (bmp_u32(data + 34) && bmp_u32(data + 34) != pixel_size)) return 0;
+    if (rgb) {
+        if (capacity < (unsigned long long)source_width * source_height * 3) return 0;
+        for (unsigned int row = 0; row < source_height; ++row) {
+            const unsigned char *source = data + offset +
+                (unsigned long long)(top_down ? row : source_height - 1 - row) * stride;
+            unsigned char *target = rgb + (unsigned long long)row * source_width * 3;
+            for (unsigned int column = 0; column < source_width; ++column) {
+                target[column * 3] = source[column * 3 + 2];
+                target[column * 3 + 1] = source[column * 3 + 1];
+                target[column * 3 + 2] = source[column * 3];
+            }
+        }
+    }
+    *height = source_height;
+    *width = source_width;
+    return 1;
+}
+
 int ocr_image_positions(const unsigned int *ids, unsigned int count,
                          unsigned int grid_height, unsigned int grid_width,
                          int *positions, unsigned int capacity,

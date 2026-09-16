@@ -2,6 +2,7 @@
 #include "crypto/sha256.h"
 #ifdef OCR_IMAGE_TEST
 #include "ocr_image.h"
+#include "ocr_text.h"
 #endif
 
 __declspec(dllimport) void *CreateFileW(const unsigned short *, unsigned int, unsigned int, void *, unsigned int, unsigned int, void *);
@@ -64,6 +65,117 @@ static void rehash(unsigned int size) {
 static unsigned char image_scratch[32U * 1024U * 1024U];
 static float image_patches[32U * 1024U * 1024U];
 static int image_positions[OCR_TOKENIZER_LIMIT * 3];
+static unsigned short text_embeddings[OCR_TEXT_VOCAB*OCR_TEXT_WIDTH];
+static unsigned short text_features[32*OCR_TEXT_WIDTH];
+static OcrTextInput text_input;
+
+static int text_input_test(void) {
+    unsigned int checks = 0;
+    for (unsigned int index = 0; index < 32*OCR_TEXT_WIDTH; ++index) text_features[index] = (unsigned short)(0x3000+index%1024);
+    for (unsigned int grid_width = 8; grid_width <= 16; grid_width += 8) {
+        for (unsigned int task = 0; task < 3; ++task) {
+            for (unsigned int no_think = 0; no_think < 2; ++no_think) {
+                int count = ocr_prompt(task,grid_width*2,no_think,actual,OCR_TEXT_CONTEXT);
+                if (count <= 0) return 0;
+                for (int row = 0; row < count; ++row)
+                    for (unsigned int channel = 0; channel < OCR_TEXT_WIDTH; ++channel)
+                        text_embeddings[actual[row]*OCR_TEXT_WIDTH+channel] = (unsigned short)(0x2000+actual[row]%1024);
+                if (!ocr_text_prepare(text_features,grid_width*2,text_embeddings,(unsigned long long)OCR_TEXT_VOCAB*OCR_TEXT_WIDTH,8,grid_width,task,no_think,&text_input) ||
+                    text_input.count != (unsigned int)count || text_input.image_tokens != grid_width*2) return 0;
+                unsigned int image_index = 0;
+                for (unsigned int row = 0; row < OCR_TEXT_CONTEXT; ++row) {
+                    if (text_input.ids[row] != (row < (unsigned int)count ? actual[row] : 59246)) return 0;
+                    for (unsigned int channel = 0; channel < OCR_TEXT_WIDTH; ++channel) {
+                        unsigned short expected_value = row >= (unsigned int)count ? 0 : actual[row] == 59280 ?
+                            text_features[image_index*OCR_TEXT_WIDTH+channel] : text_embeddings[actual[row]*OCR_TEXT_WIDTH+channel];
+                        if (text_input.embeddings[row*OCR_TEXT_WIDTH+channel] != expected_value) return 0;
+                    }
+                    if (row < (unsigned int)count && actual[row] == 59280) ++image_index;
+                    for (unsigned int column = 0; column < OCR_TEXT_CONTEXT; ++column)
+                        if (text_input.mask[row*OCR_TEXT_CONTEXT+column] != (column <= row && column < (unsigned int)count ? 0 : 0xfbff)) return 0;
+                }
+                ++checks;
+            }
+        }
+    }
+    unsigned long long elements = (unsigned long long)OCR_TEXT_VOCAB*OCR_TEXT_WIDTH;
+    if (ocr_text_prepare(text_features,15,text_embeddings,elements,8,8,0,0,&text_input) || text_input.count ||
+        ocr_text_prepare(text_features,16,text_embeddings,elements-1,8,8,0,0,&text_input) ||
+        ocr_text_prepare(text_features,16,text_embeddings,elements,8,8,3,0,&text_input) ||
+        ocr_text_prepare(text_features,16,text_embeddings,elements,8,8,0,2,&text_input) ||
+        ocr_text_prepare(0,16,text_embeddings,elements,8,8,0,0,&text_input) ||
+        ocr_text_prepare(text_features,16,0,elements,8,8,0,0,&text_input) ||
+        ocr_text_prepare(text_features,16,text_embeddings,elements,8,8,0,0,0) ||
+        ocr_text_prepare(text_features,16,text_embeddings,elements,4,16,0,0,&text_input)) return 0;
+    text_features[0] = 0x7e00;
+    if (ocr_text_prepare(text_features,16,text_embeddings,elements,8,8,0,0,&text_input) || text_input.count) return 0;
+    text_features[0] = 0x3000;
+    text_embeddings[59248*OCR_TEXT_WIDTH] = 0x7c00;
+    if (ocr_text_prepare(text_features,16,text_embeddings,elements,8,8,0,0,&text_input) || text_input.count) return 0;
+    report("PASS multimodal assembly cases: ",checks);
+    report("PASS multimodal rejection checks: ",10);
+    return 1;
+}
+
+static void bmp_store(unsigned char *bytes, unsigned int value) {
+    for (unsigned int index = 0; index < 4; ++index) bytes[index] = (unsigned char)(value >> (index * 8));
+}
+
+static int bmp_test(void) {
+    unsigned char bmp[256] = {0}, rgb[64];
+    unsigned int height, width, checks = 0;
+    bmp[0] = 'B'; bmp[1] = 'M'; bmp[26] = 1; bmp[28] = 24;
+    bmp_store(bmp + 10, 54); bmp_store(bmp + 14, 40);
+    for (unsigned int columns = 1; columns <= 4; ++columns) {
+        unsigned int stride = (columns * 3 + 3) & ~3U, size = 54 + stride * 3;
+        bmp_store(bmp + 2, size); bmp_store(bmp + 18, columns);
+        for (unsigned int orientation = 0; orientation < 2; ++orientation) {
+            bmp_store(bmp + 22, orientation ? 0U - 3U : 3U);
+            for (unsigned int row = 0; row < 3; ++row) {
+                unsigned int source_row = orientation ? row : 2 - row;
+                for (unsigned int offset = 0; offset < stride; ++offset) bmp[54 + source_row * stride + offset] = 0xa5;
+                for (unsigned int column = 0; column < columns; ++column)
+                    for (unsigned int channel = 0; channel < 3; ++channel)
+                        bmp[54 + source_row * stride + column * 3 + 2 - channel] =
+                            (unsigned char)(row * 60 + column * 3 + channel);
+            }
+            for (unsigned int index = 0; index < sizeof(rgb); ++index) rgb[index] = 0xcc;
+            if (!ocr_image_bmp(bmp, size, rgb + 1, columns * 9, &height, &width) || height != 3 || width != columns ||
+                rgb[0] != 0xcc || rgb[columns * 9 + 1] != 0xcc) return 0;
+            for (unsigned int row = 0; row < 3; ++row)
+                for (unsigned int offset = 0; offset < columns * 3; ++offset)
+                    if (rgb[1 + row * columns * 3 + offset] != row * 60 + offset) return 0;
+            if (!ocr_image_bmp(bmp, size, 0, 0, &height, &width) || height != 3 || width != columns ||
+                ocr_image_bmp(bmp, size, rgb, columns * 9 - 1, &height, &width) || height || width) return 0;
+            for (unsigned int length = 0; length < size; ++length) {
+                if (ocr_image_bmp(bmp, length, rgb, sizeof(rgb), &height, &width)) return 0;
+                ++checks;
+            }
+            static const unsigned int invalid[][2] = {
+                {0,0}, {2,0}, {6,1}, {10,53}, {10,0xffffffffU}, {14,108},
+                {18,0}, {18,10001}, {18,0xffffffffU}, {22,0}, {22,10001}, {22,0x80000000U},
+                {26,24U << 16}, {28,32}, {30,1}, {34,1}, {46,1}, {50,1}
+            };
+            for (unsigned int index = 0; index < sizeof(invalid) / sizeof(invalid[0]); ++index) {
+                unsigned int offset = invalid[index][0], saved = number(bmp + offset);
+                bmp_store(bmp + offset, invalid[index][1]);
+                if (ocr_image_bmp(bmp, size, rgb, sizeof(rgb), &height, &width) || height || width) return 0;
+                bmp_store(bmp + offset, saved);
+                ++checks;
+            }
+            bmp_store(bmp + 34, stride * 3);
+            if (!ocr_image_bmp(bmp, size, rgb, sizeof(rgb), &height, &width)) return 0;
+            bmp_store(bmp + 34, 0);
+            checks += 4;
+        }
+    }
+    if (ocr_image_bmp(0, 54, rgb, sizeof(rgb), &height, &width) ||
+        ocr_image_bmp(bmp, sizeof(bmp), rgb, sizeof(rgb), 0, &width) ||
+        ocr_image_bmp(bmp, sizeof(bmp), rgb, sizeof(rgb), &height, 0) ||
+        ocr_image_bmp(bmp, 64ULL * 1024 * 1024 + 1, rgb, sizeof(rgb), &height, &width)) return 0;
+    report("PASS BMP24 decode and rejection checks: ", checks + 4);
+    return 1;
+}
 
 static int position_test(const unsigned short *path) {
     unsigned int size = read_all(path, fixtures, sizeof(fixtures)), cursor = 132;
@@ -102,6 +214,7 @@ static int position_test(const unsigned short *path) {
 }
 
 int ocr_image_test(const unsigned short *fixture_path, const unsigned short *position_path) {
+    if (!bmp_test() || !text_input_test()) return 0;
     unsigned int fixture_size = read_all(fixture_path, fixtures, sizeof(fixtures));
     if (!ocr_artifact(fixtures, fixture_size, 3) || fixture_size < 136) return 0;
     unsigned int geometry_count = number(fixtures + 128), image_count = number(fixtures + 132), cursor = 136;

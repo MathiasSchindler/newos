@@ -1,8 +1,16 @@
 #include "crypto/sha256.h"
+#ifdef OCR_TEXT_DECODER
+int ocr_prefill_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, unsigned int);
+int ocr_prefill_input_test(const unsigned short *);
+#endif
+#ifdef OCR_VISION_RUN
+int ocr_vision_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *);
+int ocr_vision_check(const unsigned short *);
+#endif
 #ifdef OCR_HTP_TEST
 int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture);
 #endif
-#ifdef OCR_IMAGE_TEST
+#if defined(OCR_IMAGE_TEST) || defined(OCR_IMAGE_FILE)
 #include "ocr_image.h"
 #endif
 #ifdef OCR_TOKENIZER_TEST
@@ -35,7 +43,7 @@ void *memcpy(void *destination, const void *source, OcrSize length) {
 }
 
 static unsigned char buffer[1024U * 1024U];
-static OcrWide arguments[5][32768];
+static OcrWide arguments[7][32768];
 
 static int print(const char *text, unsigned int stream) {
     unsigned int length = 0, written = 0;
@@ -62,7 +70,7 @@ static unsigned int parse_arguments(void) {
         int quoted = 0;
         while (*cursor == ' ' || *cursor == '\t') ++cursor;
         if (!*cursor) break;
-        if (count == 5U) return 0;
+        if (count == 7U) return 0;
         while (*cursor && (quoted || (*cursor != ' ' && *cursor != '\t'))) {
             unsigned int slashes = 0;
             while (*cursor == '\\') { ++slashes; ++cursor; }
@@ -173,6 +181,26 @@ void mainCRTStartup(void) {
     int result;
     if (count == 2U && word(arguments[1], "--self-test")) {
         result = self_test();
+#ifdef OCR_TEXT_DECODER
+    } else if (count == 3U && word(arguments[1], "--test-text-input")) {
+        result = ocr_prefill_input_test(arguments[2]);
+    } else if (count == 7U && (word(arguments[1], "--prefill-text") || word(arguments[1], "--prefill-formula") || word(arguments[1], "--prefill-table"))) {
+        unsigned int task = word(arguments[1], "--prefill-text") ? 0 : word(arguments[1], "--prefill-formula") ? 1 : 2;
+        result = ocr_prefill_run(arguments[2],arguments[3],arguments[4],arguments[5],arguments[6],task);
+#endif
+#ifdef OCR_VISION_RUN
+    } else if (count == 6U && word(arguments[1], "--vision")) {
+        result = ocr_vision_run(arguments[2],arguments[3],arguments[4],arguments[5]);
+    } else if (count == 3U && word(arguments[1], "--check-vision")) {
+        result = ocr_vision_check(arguments[2]);
+#endif
+#ifdef OCR_IMAGE_FILE
+    } else if (count == 4U && word(arguments[1], "--prepare-image")) {
+        result = ocr_image_export(arguments[2], arguments[3]);
+        if (!result) print("FAIL image preparation: require bounded BMP24 input and a new writable output path; no inference performed\n", (unsigned int)-12);
+        ExitProcess(result ? 0U : 1U);
+        return;
+#endif
 #ifdef OCR_HTP_TEST
     } else if (count == 4U && word(arguments[1], "--test-htp")) {
         result = ocr_htp_test(arguments[2], arguments[3],0);
@@ -191,6 +219,15 @@ void mainCRTStartup(void) {
                parse_hash(arguments[3], expected)) {
         result = verify(arguments[2], expected, word(arguments[1], "--weights"));
     } else {
+    #ifdef OCR_TEXT_DECODER
+        print("Prefill: --prefill-text|--prefill-formula|--prefill-table DLL VISION_DIR TEXT_DIR INPUT.bmp CAPTURE_DIR\n", (unsigned int)-12);
+    #endif
+    #ifdef OCR_VISION_RUN
+        print("Vision: --vision QnnHtp.dll WEIGHTS_DIR INPUT.bmp NEW_CAPTURE_DIR | --check-vision WEIGHTS_DIR\n", (unsigned int)-12);
+    #endif
+#ifdef OCR_IMAGE_FILE
+        print("Image preprocessing only: --prepare-image INPUT.bmp OUTPUT.f32\n", (unsigned int)-12);
+#endif
         print("Usage: ocr-model --self-test | --verify FILE SHA256 | --weights FILE SHA256\n", (unsigned int)-12);
         ExitProcess(2U);
         return;

@@ -11,18 +11,35 @@ param(
     [switch]$Test,
     [switch]$TestTokenizer,
     [switch]$TestImages,
+    [switch]$PrepareImages,
+    [switch]$Vision,
+    [switch]$TestVision,
+    [switch]$Prefill,
+    [switch]$TestPrefill,
+    [string]$TextDir = 'experimental/snapdragon/models/glm-ocr-text-v1',
+    [string]$VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v1',
     [switch]$TestHtp,
     [switch]$CaptureHtp,
     [switch]$CaptureInternals,
     [switch]$RefineDivide,
     [switch]$RefineSiluOnly,
     [switch]$MatrixResidual,
+    [switch]$FuseDownResidual,
+    [switch]$FuseDownResidualBlock0,
+    [switch]$FuseAttentionResidual,
     [switch]$MatrixRope,
     [switch]$SplitRope,
     [switch]$RopeBlock1Only
 )
 
 $ErrorActionPreference = 'Stop'
+if ($TestVision) { $Vision = $true }
+if ($TestPrefill) { $Prefill = $true }
+if ($Prefill) { $Vision = $true }
+if ($Vision -and ($TestHtp -or $CaptureInternals -or $RefineDivide -or $MatrixResidual -or $FuseDownResidual -or $MatrixRope -or $SplitRope -or $RopeBlock1Only)) { throw 'Vision runtime does not accept diagnostic HTP variants' }
+if ($FuseDownResidualBlock0 -and -not $FuseDownResidual) { throw '-FuseDownResidualBlock0 requires -FuseDownResidual' }
+if ($FuseAttentionResidual -and -not $FuseDownResidual) { throw '-FuseAttentionResidual requires -FuseDownResidual' }
+if ($FuseDownResidual -and -not $CaptureInternals) { throw '-FuseDownResidual requires -CaptureInternals' }
 if ($MatrixResidual -and -not ($RefineDivide -and $RefineSiluOnly -and $CaptureInternals)) { throw '-MatrixResidual requires -RefineDivide -RefineSiluOnly -CaptureInternals' }
 if ($RefineSiluOnly -and -not $RefineDivide) { throw '-RefineSiluOnly requires -RefineDivide' }
 if ($CaptureInternals -and -not ($TestHtp -and $CaptureHtp)) { throw '-CaptureInternals requires -TestHtp -CaptureHtp' }
@@ -190,6 +207,119 @@ function Test-Ocr {
     } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }
 
+function Test-ImageFiles {
+    $scratch = Join-Path $repoRoot ('tests/tmp/ocr-image-files-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    $stream = [IO.File]::OpenRead((Join-Path $ImageDir 'image-fixtures.got'))
+    $reader = New-Object IO.BinaryReader($stream)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    $checked = 0
+    try {
+        $null = $stream.Seek(128, [IO.SeekOrigin]::Begin)
+        $geometryCount = $reader.ReadUInt32()
+        $imageCount = $reader.ReadUInt32()
+        $null = $stream.Seek(16L * $geometryCount, [IO.SeekOrigin]::Current)
+        for ($index = 0; $index -lt $imageCount; ++$index) {
+            $height = $reader.ReadUInt32(); $width = $reader.ReadUInt32()
+            $targetHeight = $reader.ReadUInt32(); $targetWidth = $reader.ReadUInt32()
+            $sourceSize = $reader.ReadUInt32(); $targetSize = $reader.ReadUInt32(); $patchSize = $reader.ReadUInt32()
+            if ($sourceSize -gt 65536 -or $checked -ge 16) {
+                $null = $stream.Seek([long]$sourceSize + $targetSize + $patchSize, [IO.SeekOrigin]::Current)
+                continue
+            }
+            $rgb = $reader.ReadBytes($sourceSize)
+            $null = $stream.Seek($targetSize, [IO.SeekOrigin]::Current)
+            $patches = $reader.ReadBytes($patchSize)
+            if ($rgb.Length -ne $sourceSize -or $patches.Length -ne $patchSize) { throw 'Truncated image test fixture' }
+            $expected = [BitConverter]::ToString($hash.ComputeHash($patches)).Replace('-', '')
+            [int]$stride = ([int]$width * 3 + 3) -band -4
+            foreach ($topDown in @($false, $true)) {
+                $inputPath = Join-Path $scratch ('image ' + [char]0x00e4 + '.bmp')
+                $outputPath = Join-Path $scratch ('patches-{0}.f32' -f $checked)
+                $bitmap = New-Object byte[] (54 + $stride * $height)
+                $memory = New-Object IO.MemoryStream(,$bitmap)
+                $writer = New-Object IO.BinaryWriter($memory)
+                try {
+                    $writer.Write([byte]0x42); $writer.Write([byte]0x4d)
+                    $writer.Write([uint32]$bitmap.Length); $writer.Write([uint32]0)
+                    $writer.Write([uint32]54); $writer.Write([uint32]40); $writer.Write([int]$width)
+                    $signedHeight = if ($topDown) { -[int]$height } else { [int]$height }
+                    $writer.Write([int]$signedHeight); $writer.Write([uint16]1); $writer.Write([uint16]24)
+                    $writer.Write([uint32]0); $writer.Write([uint32]($stride * $height))
+                    $writer.Flush()
+                } finally { $writer.Dispose(); $memory.Dispose() }
+                for ($row = 0; $row -lt $height; ++$row) {
+                    $diskRow = if ($topDown) { $row } else { $height - 1 - $row }
+                    for ($column = 0; $column -lt $width; ++$column) {
+                        $source = ($row * $width + $column) * 3
+                        $target = 54 + $diskRow * $stride + $column * 3
+                        $bitmap[$target] = $rgb[$source + 2]
+                        $bitmap[$target + 1] = $rgb[$source + 1]
+                        $bitmap[$target + 2] = $rgb[$source]
+                    }
+                }
+                [IO.File]::WriteAllBytes($inputPath, $bitmap)
+                $metadata = & $binary --prepare-image $inputPath $outputPath
+                if ($LASTEXITCODE -ne 0) { throw 'BMP file preparation failed' }
+                $record = ConvertFrom-Json -InputObject ($metadata -join "`n")
+                if ($record.source_height -ne $height -or $record.source_width -ne $width -or
+                    $record.height -ne $targetHeight -or $record.width -ne $targetWidth -or
+                    $record.grid_height -ne $targetHeight / 14 -or $record.grid_width -ne $targetWidth / 14 -or
+                    $record.image_tokens -ne $targetHeight * $targetWidth / 784 -or
+                    $record.patches -ne $targetHeight * $targetWidth / 196 -or
+                    $record.features -ne 1176 -or $record.float32_values -ne $patchSize / 4 -or
+                    (Get-Item -LiteralPath $outputPath).Length -ne $patchSize -or
+                    (Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash -ne $expected) {
+                    throw ('BMP-to-patches differs from oracle fixture {0}' -f $index)
+                }
+                Assert-Native @('--prepare-image', $inputPath, $outputPath) 1 'FAIL image preparation'
+                if ((Get-FileHash -LiteralPath $outputPath -Algorithm SHA256).Hash -ne $expected) { throw 'Output overwritten' }
+                ++$checked
+            }
+        }
+        if ($checked -lt 4) { throw 'Insufficient BMP fixture coverage' }
+        $absent = Join-Path $scratch 'absent.bmp'
+        $unused = Join-Path $scratch 'unused.f32'
+        Assert-Native @('--prepare-image', $absent, $unused) 1 'FAIL image preparation'
+        Assert-Native @('--prepare-image', $inputPath, (Join-Path $scratch 'absent/output.f32')) 1 'FAIL image preparation'
+        Assert-Native @('--prepare-image', $inputPath) 2
+        $bitmap[0] = 0
+        [IO.File]::WriteAllBytes($inputPath, $bitmap)
+        Assert-Native @('--prepare-image', $inputPath, $unused) 1 'FAIL image preparation'
+        [IO.File]::WriteAllBytes($inputPath, (New-Object byte[] 53))
+        Assert-Native @('--prepare-image', $inputPath, $unused) 1 'FAIL image preparation'
+        if (Test-Path -LiteralPath $unused) { throw 'Rejected input created output' }
+        Write-Output ('PASS BMP file-to-patch oracle comparisons: {0}; Unicode, geometry, exact float32 bytes, no overwrite, invalid paths/input' -f $checked)
+    } finally {
+        $reader.Dispose(); $stream.Dispose(); $hash.Dispose()
+        Remove-Item -LiteralPath $scratch -Recurse -Force
+    }
+}
+
+function Test-PrefillInput {
+    Assert-Native @('--test-text-input', $TextDir)
+    $scratch = Join-Path $repoRoot ('tests/tmp/ocr-prefill-input-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    try {
+        Assert-Native @('--test-text-input', $scratch) 1
+        $path = Join-Path $scratch 'text-00.got'
+        $original = [IO.File]::ReadAllBytes((Join-Path $TextDir 'text-00.got'))
+        foreach ($offset in @(0,12,96,128,160,($original.Length - 1))) {
+            $original[$offset] = $original[$offset] -bxor 1
+            [IO.File]::WriteAllBytes($path, $original)
+            Assert-Native @('--test-text-input', $scratch) 1
+            $original[$offset] = $original[$offset] -bxor 1
+        }
+        [IO.File]::WriteAllBytes($path, (New-Object byte[] 127))
+        Assert-Native @('--test-text-input', $scratch) 1
+        [IO.File]::WriteAllBytes($path, $original)
+        Assert-Native @('--test-text-input', $scratch) 1
+        Assert-Native @('--prefill-text') 2
+        Assert-Native @('--prefill-invalid') 2
+        Write-Output 'PASS prefill input: 12 exact official-template/embedding/position/mask cases; 11 negative artifact/argument checks'
+    } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
+}
+
 function Test-SourceFile($Entry, [string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -ne $Entry.size) {
         throw ('Missing or wrong-sized source: {0}' -f $Entry.name)
@@ -302,19 +432,29 @@ try {
         $flags += '-DOCR_TOKENIZER_TEST'
         $sources += @('experimental/snapdragon/src/tools/ocr/ocr_tokenizer.c', 'experimental/snapdragon/src/tools/ocr/ocr_tokenizer_test.c')
     }
-    if ($TestImages) {
-        $binary = Join-Path $BuildDir 'ocr-image-test.exe'
-        $flags += @('-DOCR_IMAGE_TEST', '-fno-math-errno', '-ffp-contract=off')
-        $sources += 'experimental/snapdragon/src/tools/ocr/ocr_image.c'
+    if ($TestImages -or $PrepareImages -or $Vision) {
+        $binary = Join-Path $BuildDir 'ocr-image.exe'
+        $flags += @('-DOCR_IMAGE_FILE', '-fno-math-errno', '-ffp-contract=off')
+        $sources += @('experimental/snapdragon/src/tools/ocr/ocr_image.c', 'experimental/snapdragon/src/tools/ocr/ocr_image_file.c')
+        if ($TestImages -or $Prefill) { $sources += 'experimental/snapdragon/src/tools/ocr/ocr_text.c' }
+        if ($TestImages) {
+            $binary = Join-Path $BuildDir 'ocr-image-test.exe'
+            $flags += '-DOCR_IMAGE_TEST'
+        }
     }
-    if ($TestHtp) {
+    if ($TestHtp -or $Vision) {
         $binary = Join-Path $BuildDir 'ocr-htp-test.exe'
+        if ($Vision) { $binary = Join-Path $BuildDir 'ocr-vision.exe'; $flags += '-DOCR_VISION_RUN' }
+        if ($Prefill) { $binary = Join-Path $BuildDir 'ocr-prefill.exe'; $flags += '-DOCR_TEXT_DECODER' }
         if ($MatrixRope -or $SplitRope) { $flags += '-DOCR_MATRIX_ROPE' }
         if ($SplitRope) { $flags += '-DOCR_SPLIT_ROPE' }
         if ($CaptureInternals) { $flags += '-DOCR_CAPTURE_INTERNALS' }
         if ($RefineDivide) { $flags += '-DOCR_REFINE_DIVIDE' }
         if ($RefineSiluOnly) { $flags += '-DOCR_REFINE_SILU_ONLY' }
         if ($MatrixResidual) { $flags += '-DOCR_MATRIX_RESIDUAL' }
+        if ($FuseDownResidual) { $flags += '-DOCR_FUSE_DOWN_RESIDUAL' }
+        if ($FuseDownResidualBlock0) { $flags += '-DOCR_FUSE_DOWN_RESIDUAL_BLOCK0' }
+        if ($FuseAttentionResidual) { $flags += '-DOCR_FUSE_ATTENTION_RESIDUAL' }
         if ($RopeBlock1Only) { $flags += '-DOCR_ROPE_BLOCK1_ONLY' }
         $flags += @('-DOCR_HTP_TEST', '-ffp-contract=off', '-fno-math-errno')
         $sources += 'experimental/snapdragon/src/tools/ocr/ocr_htp.c'
@@ -341,6 +481,74 @@ try {
     if ($TestImages) {
         & $binary --test-images "$ImageDir/image-fixtures.got" "$ImageDir/position-fixtures.got"
         if ($LASTEXITCODE -ne 0) { throw 'OCR native image tests failed' }
+        Test-ImageFiles
+    }
+    if ($PrepareImages -and $Test -and -not $TestImages) { Test-ImageFiles }
+    if ($Prefill -and ($Test -or $TestPrefill)) { Test-PrefillInput }
+    if ($TestVision -or $TestPrefill) {
+        Assert-Native @('--check-vision', $VisionDir)
+        $negative = Join-Path $repoRoot ('tests/tmp/ocr-vision-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $negative | Out-Null
+        try {
+            Assert-Native @('--check-vision', $negative) 1 'FAIL vision weight artifact'
+            $firstBlock = Join-Path $negative 'block-00.got'
+            $original = [IO.File]::ReadAllBytes((Join-Path $VisionDir 'block-00.got'))
+            foreach ($offset in @(0,12,32,96,128,160,($original.Length - 1))) {
+                $original[$offset] = $original[$offset] -bxor 1
+                [IO.File]::WriteAllBytes($firstBlock, $original)
+                Assert-Native @('--check-vision', $negative) 1 'FAIL vision weight artifact'
+                $original[$offset] = $original[$offset] -bxor 1
+            }
+            [IO.File]::WriteAllBytes($firstBlock, (New-Object byte[] 127))
+            Assert-Native @('--check-vision', $negative) 1 'FAIL vision weight artifact'
+            [IO.File]::WriteAllBytes($firstBlock, $original)
+            Assert-Native @('--check-vision', $negative) 1 'FAIL vision weight artifact'
+            $missingDll = Join-Path $negative 'missing.dll'
+            $missingImage = Join-Path $negative 'missing.bmp'
+            Assert-Native @('--vision', $missingDll, $VisionDir, $missingImage, $negative) 1 'FAIL vision image input'
+            $bitmap = New-Object byte[] (54 + 56 * 112 * 3)
+            $bitmap[0] = 0x42; $bitmap[1] = 0x4d; $bitmap[26] = 1; $bitmap[28] = 24
+            foreach ($field in @(@(2,$bitmap.Length),@(10,54),@(14,40),@(18,56),@(22,112))) {
+                [Array]::Copy([BitConverter]::GetBytes([uint32]$field[1]),0,$bitmap,$field[0],4)
+            }
+            [IO.File]::WriteAllBytes($missingImage, $bitmap)
+            Assert-Native @('--vision', $missingDll, $VisionDir, $missingImage, $negative) 1 'FAIL vision bucket or weights'
+            Assert-Native @('--vision', $missingDll, $VisionDir, (Join-Path $VisionDir 'pattern.bmp'), $negative) 1 'FAIL loading explicit HTP library'
+            Assert-Native @('--vision') 2
+            Write-Output 'PASS vision negative checks: 14; missing/corrupt/truncated weights, invalid image/bucket/runtime/arguments'
+        } finally { Remove-Item -LiteralPath $negative -Recurse -Force }
+        $weightHashes = [ordered]@{}
+        foreach ($artifact in Get-ChildItem -LiteralPath $VisionDir -Filter '*.got') { $weightHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash }
+        $runtimeHashes = [ordered]@{}
+        foreach ($name in @('QnnHtp.dll','QnnHtpPrepare.dll','QnnHtpV73Stub.dll','libQnnHtpV73Skel.so')) {
+            $runtimeHashes[$name] = (Get-FileHash -LiteralPath (Join-Path $QnnDir $name)).Hash
+        }
+        foreach ($case in @('pattern', 'receipt')) {
+            $capture = Join-Path $BuildDir ($case + '-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $capture | Out-Null
+            $runtime = (Resolve-Path (Join-Path $QnnDir 'QnnHtp.dll')).Path
+            $previous = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                $runArgs = if ($TestPrefill) { @('--prefill-text',$runtime,$VisionDir,$TextDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) } else { @('--vision',$runtime,$VisionDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) }
+                & $binary @runArgs 2>&1 | Tee-Object -FilePath (Join-Path $capture 'execution.log')
+                $code = $LASTEXITCODE
+            } finally { $ErrorActionPreference = $previous }
+            $captureHashes = [ordered]@{}
+            foreach ($tensor in Get-ChildItem -LiteralPath $capture -File | Where-Object { $_.Extension -in @('.f16','.f32','.u32','.i32','.u8') }) {
+                $captureHashes[$tensor.Name] = (Get-FileHash -LiteralPath $tensor.FullName).Hash
+            }
+            $textHashes = [ordered]@{}
+            if ($TestPrefill) { foreach ($artifact in Get-ChildItem -LiteralPath $TextDir -Filter '*.got') { $textHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash } }
+            $runType = if ($TestPrefill) { 'prefill' } else { 'vision' }
+            [ordered]@{ case = $case; exit_code = $code; capture = (Resolve-Path $capture).Path; text_weight_hashes = $textHashes;
+                executable_sha256 = (Get-FileHash $binary).Hash; runtime_sha256 = (Get-FileHash $runtime).Hash;
+                runtime_hashes = $runtimeHashes; weight_hashes = $weightHashes; captures = $captureHashes;
+                input_sha256 = (Get-FileHash -LiteralPath (Join-Path $VisionDir ($case + '.bmp'))).Hash;
+                scope = $runType; numerical_acceptance = $false } |
+                ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $BuildDir ($case + '-' + $runType + '-run.json'))
+            if ($code -ne 0) { throw ('Vision execution failed: {0}; capture retained' -f $case) }
+        }
     }
     if ($Download -or $Verify) { Stage-Model }
     if ($TestHtp) {
@@ -425,6 +633,9 @@ try {
             refine_divide_block1 = [bool]$RefineDivide
             refine_silu_only = [bool]$RefineSiluOnly
             matrix_residual = [bool]$MatrixResidual
+            fuse_down_residual_block1 = [bool]$FuseDownResidual
+            fuse_down_residual_block0 = [bool]$FuseDownResidualBlock0
+            fuse_attention_residual_block1 = [bool]$FuseAttentionResidual
             matrix_residual_group = $(if ($MatrixResidual) { 256 } else { 0 })
         }
         if ($CaptureHtp) {

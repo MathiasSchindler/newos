@@ -7,6 +7,27 @@ capture, see [diagnostics.md](diagnostics.md).
 
 ## GLM-OCR development
 
+The native BMP input now reaches the **complete 24-block vision encoder and
+connector on HTP**, producing 1536-wide image features for 8x8/8x16 patch grids.
+Use the tasks `GLM-OCR full vision export`, `GLM-OCR full vision hardware` and
+`GLM-OCR full vision analysis`, or build the standalone runtime with
+`build-ocr.ps1 -Vision -BuildDir experimental/snapdragon/build/ocr-vision`.
+Execution, integrity, exact preprocessing/handoffs and regression checks pass.
+Numerical acceptance does NOT: final-feature original/candidate violations are
+2/1 for pattern and 10/12 for receipt, with much larger intermediate drift.
+The complete 16-layer text **prefill** is now directly connected through exact
+multimodal prompt/embedding assembly, mRoPE and causal/padding masks. The official
+`Text Recognition:`, `Formula Recognition:` and `Table Recognition:` templates
+are tested; the integrated Text Recognition hardware runs pass structural checks.
+Text numerical acceptance remains open, especially after final norm. There is
+still no output head/token generation or recognized text. Use `GLM-OCR text
+decoder export`, `GLM-OCR multimodal input tests`, `GLM-OCR multimodal prefill
+hardware` and `GLM-OCR multimodal prefill analysis`; see the
+[multimodal prefill contract](plan-glm-ocr.md#multimodal-decoder-input-and-text-prefill)
+and the earlier Vision
+[runtime contract and results](plan-glm-ocr.md#complete-native-vision-execution).
+The stage history below records the earlier bounded experiments.
+
 GLM-OCR is the third independent freestanding C/QNN experiment, alongside Whisper
 and TranslateGemma. The pinned original checkpoint is staged under
 `models/glm-ocr/`; the native ARM64 artifact verifier is built under `build/ocr/`.
@@ -35,6 +56,20 @@ positions, verified against the real Transformers/PyTorch image processor:
 ```
 
 This uses `models/glm-ocr-images-v2/` and builds a separate no-CRT image test binary.
+Native BMP24 file input now reaches the same reference-checked patch tensors:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -PrepareImages -Test -BuildDir experimental/snapdragon/build/ocr-image-files
+.\experimental\snapdragon\build\ocr-image-files\ocr-image.exe --prepare-image input.bmp patches.f32
+```
+
+The new file must not already exist. Output is raw little-endian float32 patches
+with geometry JSON on stdout, not recognized text. Sixteen file-to-patch oracle
+comparisons are byte-exact; 828 native decoder checks and the existing regressions
+pass. Only bounded uncompressed BMP24 is supported, with no Python/codec runtime
+dependency. PNG/JPEG and the full inference connection remain open; see the
+[concrete pipeline gaps](plan-glm-ocr.md#concrete-image-to-text-gaps).
+
 Stage 4a adds isolated HTP primitive probes with numerical reference comparisons
 and accelerator profiling evidence:
 
@@ -45,7 +80,7 @@ and accelerator profiling evidence:
 This consumes offline-generated `models/glm-ocr-htp-v1/` fixtures and the existing
 QNN runtime, producing a separate no-CRT HTP test binary. Thirteen graph cases
 pass; these synthetic results do not validate checkpoint precision or OCR quality.
-Image-file decoding and full learned-model execution are still pending.
+Common compressed-image decoding and full learned-model execution are still pending.
 Stage 4b audits all original BF16 weights without writing a converted checkpoint
 and validates the first learned patch projection with bias on HTP. Use the VS Code
 tasks `GLM-OCR precision audit`, `GLM-OCR learned patch oracle` and
@@ -93,6 +128,25 @@ nearest FP16 in 261,969 cases, with none outside the adjacent-value bracket.
 This verifies the local precision mechanism, but the chain still has ten score
 and two final-output violations against the original oracle. The large-memory
 diagnostic path is not a production or full-OCR accuracy claim.
+Further conditional analysis localizes the remaining failures to accumulated
+Block-0/Block-1 errors and cancellation of FP16 residual operands. Both failing
+outputs have exact final additions and correctly rounded down projections;
+the corrected SiLU is no longer the dominant local contributor there.
+An opt-in augmented MatMul now postpones down-projection/residual rounding in
+Block 1. Controlled HTP captures keep all earlier taps and internals bit-identical
+and reduce final-output violations from two to one, without new violations.
+Ten original score failures remain; the final remaining output also fails the
+ideal late-rounding reference. Global output RMSE is slightly higher, so this
+is a verified local mechanism, not full-chain acceptance or a new default.
+Extending late rounding to Block 1's attention residual improves local accuracy
+and global output RMSE, but creates a new output violation and worsens the existing
+one. That variant is rejected as a chain fix and kept only as an opt-in diagnostic;
+the previous late-down-only capture remains intact.
+Applying late down rounding to Block 0 instead makes both Block-1 output oracles
+pass, but score violations rise from 10/7 to 14/12 (original/candidate), including
+seven matched-input failures. Paired conditional analysis shows that local
+QKV/QK-normalization errors change with the input; a frozen-error prediction is
+not a reliable gate. This variant also remains diagnostic, not a chain fix.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 
