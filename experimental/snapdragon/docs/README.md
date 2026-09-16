@@ -46,6 +46,11 @@ This consumes offline-generated `models/glm-ocr-htp-v1/` fixtures and the existi
 QNN runtime, producing a separate no-CRT HTP test binary. Thirteen graph cases
 pass; these synthetic results do not validate checkpoint precision or OCR quality.
 Image-file decoding and full learned-model execution are still pending.
+Stage 4b audits all original BF16 weights without writing a converted checkpoint
+and validates the first learned patch projection with bias on HTP. Use the VS Code
+tasks `GLM-OCR precision audit`, `GLM-OCR learned patch oracle` and
+`GLM-OCR learned patch HTP`. Three image cases pass against both original-value and
+FP16-candidate FP32 references. Full encoder/decoder accuracy is still unvalidated.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 

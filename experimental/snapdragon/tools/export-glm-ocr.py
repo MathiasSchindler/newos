@@ -1,8 +1,10 @@
 import argparse
 import collections
+import contextlib
 import hashlib
 import importlib.metadata
 import json
+import math
 import os
 import random
 import shutil
@@ -87,6 +89,83 @@ def export_htp(model, output):
               "original_weight_precision_validated":False,"full_model_inference":False}
     (output/"manifest.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     print("PASS HTP oracle export:",len(records),"cases",len(data),"bytes",sha(data))
+
+
+def export_learned_htp(model, output):
+    import inspect as source_inspect
+    import numpy as np
+    torch, processor_class, _, versions = image_reference()
+    from PIL import Image, ImageDraw, ImageFont
+    from transformers.models.glm_ocr.modeling_glm_ocr import GlmOcrVisionPatchEmbed
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrVisionConfig
+    module_hash = sha(Path(source_inspect.getfile(GlmOcrVisionPatchEmbed)).read_bytes())
+    if module_hash != "aea6387985dad1f0f5124f9344cc98849be8a7f2c26652ac3d914f6eefac6cc6" or torch.version.git_version != "08187d9e0fba026dc8217405802ab5381dc88d90":
+        raise ValueError("Learned reference source drift")
+    state = {}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        for suffix in ("weight","bias"):
+            name = "model.visual.patch_embed.proj."+suffix
+            tensor = tensors[name]
+            start,end = tensor["data_offsets"]
+            stream.seek(payload+start)
+            raw = stream.read(end-start)
+            if len(raw) != end-start:
+                raise ValueError("Truncated patch tensor")
+            values = (np.frombuffer(raw,dtype="<u2").astype(np.uint32) << 16).view(np.float32).reshape(tensor["shape"])
+            state["proj."+suffix] = torch.from_numpy(values.copy())
+    original_sha = next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors")
+    configuration = GlmOcrVisionConfig(**read_json(model/"config.json")["vision_config"])
+    original = GlmOcrVisionPatchEmbed(configuration).eval()
+    original.load_state_dict(state,strict=True)
+    candidate = GlmOcrVisionPatchEmbed(configuration).eval()
+    candidate.load_state_dict({name:value.half().float() for name,value in state.items()},strict=True)
+    processor = processor_class.from_pretrained(str(model),local_files_only=True)
+    row_ids,column_ids = np.indices((112,112))
+    pattern = np.stack(((row_ids*17+column_ids*7)%256,(row_ids*3+column_ids*23)%256,(row_ids*31+column_ids*5)%256),axis=-1).astype(np.uint8)
+    noise = np.random.default_rng(20260916).integers(0,256,size=(112,112,3),dtype=np.uint8)
+    font_path = Path(os.environ["WINDIR"])/"Fonts/segoeui.ttf"
+    page = Image.new("RGB",(224,168),"white")
+    ImageDraw.Draw(page).multiline_text((8,8),"Rechnung 1042\nBetrag: 19,95 EUR\nDatum: 16.09.2026\nHello, OCR!",font=ImageFont.truetype(str(font_path),18),fill="black",spacing=8)
+    weights = candidate.proj.weight.detach().reshape(1024,1176).t().contiguous()
+    constants = weights.half().numpy().astype("<f2").tobytes()+candidate.proj.bias.detach().half().numpy().astype("<f2").tobytes()
+    records,descriptions = [],[]
+    with torch.inference_mode():
+        for name,image in (("pattern",pattern),("noise",noise),("text",np.asarray(page))):
+            pixels = torch.from_numpy(image.copy()).permute(2,0,1)
+            all_patches = processor(images=pixels,return_tensors="pt",input_data_format="channels_first")["pixel_values"]
+            indices = torch.linspace(0,all_patches.shape[0]-1,16).long()
+            patches = all_patches[indices].contiguous().float()
+            rounded = patches.half().float()
+            source_result = original(patches)
+            candidate_result = candidate(rounded)
+            flattened_result = rounded @ weights + candidate.proj.bias
+            torch.testing.assert_close(flattened_result,candidate_result,atol=1e-4,rtol=1e-5)
+            source = rounded.half().numpy().astype("<f2").tobytes()
+            for scope,expected in (("original_fp32",source_result),("candidate_fp32",candidate_result)):
+                if not torch.isfinite(expected).all() or not torch.isfinite(rounded).all() or not torch.isfinite(weights).all():
+                    raise ValueError("Nonfinite learned reference")
+                reference = expected.contiguous().numpy().astype("<f4").tobytes()
+                records.append(struct.pack("<7I",7,16,1176,1024,len(source),len(constants),len(reference))+source+constants+reference)
+                descriptions.append({"name":name+"_"+scope,"patch_indices":indices.tolist(),"rgb_sha256":sha(image.tobytes()),
+                                     "input_min":float(patches.min()),"input_max":float(patches.max()),
+                                     "reference_max_magnitude":float(expected.abs().max()),
+                                     "conversion_max_absolute_error":float((source_result-candidate_result).abs().max())})
+    data = envelope(bytes.fromhex(original_sha)+struct.pack("<I",len(records))+b"".join(records),6,catalog)
+    output.mkdir(parents=True,exist_ok=True)
+    target = output/"htp-fixtures.got"
+    if target.exists() and target.read_bytes() != data:
+        raise ValueError("Existing learned HTP fixtures differ; choose a new output directory")
+    if not target.exists():
+        temporary = target.with_suffix(".partial")
+        temporary.write_bytes(data)
+        os.replace(temporary,target)
+    report = {"schema_version":1,"source_revision":catalog["revision"],"source_sha256":original_sha,
+              "exporter_sha256":sha(Path(__file__).read_bytes()),"modeling_sha256":module_hash,"versions":versions,
+              "font_sha256":sha(font_path.read_bytes()),"sha256":sha(data),"size":len(data),"cases":descriptions,
+              "reference":"Pinned patch Conv3d with original BF16 values expanded to FP32; separately FP16-rounded inputs/weights in FP32 Conv3d",
+              "full_model_inference":False,"checkpoint_written":False}
+    (output/"manifest.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    print("PASS learned patch oracle:",len(records),"cases",len(data),"bytes",sha(data),flush=True)
 
 
 def export_positions(model, output):
@@ -242,8 +321,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5) else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5) else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5,6) else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5,6) else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -503,6 +582,96 @@ def verified_sources(model):
     return catalog
 
 
+@contextlib.contextmanager
+def weight_source(model):
+    catalog = verified_sources(model)
+    record = next(item for item in catalog["files"] if item["name"] == "model.safetensors")
+    with (model / record["name"]).open("rb") as stream:
+        if os.fstat(stream.fileno()).st_size != record["size"] or hashlib.file_digest(stream,"sha256").hexdigest() != record["sha256"]:
+            raise ValueError("Original weight identity mismatch")
+        stream.seek(0)
+        header_size = int.from_bytes(stream.read(8),"little")
+        if not 2 <= header_size <= 16*1024*1024:
+            raise ValueError("Weight header bounds")
+        header = json.loads(stream.read(header_size))
+        tensors = {name:value for name,value in header.items() if name != "__metadata__"}
+        cursor = 0
+        for name,tensor in sorted(tensors.items(),key=lambda item:item[1]["data_offsets"][0]):
+            shape,offsets = tensor["shape"],tensor["data_offsets"]
+            if tensor["dtype"] != "BF16" or not shape or any(type(size) is not int or size <= 0 for size in shape):
+                raise ValueError("Weight geometry: " + name)
+            if offsets != [cursor,cursor+math.prod(shape)*2]:
+                raise ValueError("Weight coverage: " + name)
+            cursor = offsets[1]
+        if len(tensors) != 526 or cursor != record["size"]-8-header_size:
+            raise ValueError("Weight inventory mismatch")
+        yield stream,tensors,8+header_size,catalog
+
+
+def precision_stats(words):
+    import numpy as np
+    source = (words.astype(np.uint32) << 16).view(np.float32)
+    with np.errstate(over="ignore",invalid="ignore"):
+        candidate = source.astype(np.float16).astype(np.float32)
+    finite = np.isfinite(source)
+    comparable = finite & np.isfinite(candidate)
+    subnormal = finite & (candidate != 0) & (np.abs(candidate) < 2**-14)
+    error = np.abs(candidate[comparable].astype(np.float64)-source[comparable])
+    return {
+        "elements":int(source.size), "source_nonfinite":int((~finite).sum()),
+        "fp16_overflow":int((finite & ~np.isfinite(candidate)).sum()),
+        "nonzero_to_zero":int((finite & (source != 0) & (candidate == 0)).sum()),
+        "fp16_subnormal":int(subnormal.sum()),
+        "changed_finite":int((candidate[comparable] != source[comparable]).sum()),
+        "compared_elements":int(comparable.sum()),
+        "max_source_magnitude":float(np.abs(source[finite]).max(initial=0)),
+        "max_absolute_error":float(error.max(initial=0)),
+        "max_error_if_subnormals_flushed":max(float(error.max(initial=0)),float(np.abs(source[subnormal]).max(initial=0))),
+        "squared_error_sum":float(np.dot(error,error)),
+    }
+
+
+def merge_precision(total, current):
+    for key,value in current.items():
+        total[key] = max(total.get(key,0),value) if key.startswith("max_") else total.get(key,0)+value
+
+
+def audit_precision(model, output):
+    import numpy as np
+    boundary = precision_stats(np.array([0x0000,0x3f80,0xbf80,0x4780,0x0001,0x3580,0x7f80,0x7fc0,0x3381],dtype=np.uint16))
+    if (boundary["source_nonfinite"],boundary["fp16_overflow"],boundary["nonzero_to_zero"],boundary["fp16_subnormal"],boundary["changed_finite"]) != (2,1,1,2,2) or boundary["max_absolute_error"] != 2**-31 or boundary["max_error_if_subnormals_flushed"] != 2**-20:
+        raise ValueError("BF16/FP16 boundary self-test failed")
+    print("PASS precision boundary self-test",flush=True)
+    totals,groups,results = {},{},{}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        print("PASS original checkpoint SHA-256",flush=True)
+        for name,tensor in tensors.items():
+            start,end = tensor["data_offsets"]
+            stream.seek(payload+start)
+            remaining,summary = end-start,{}
+            while remaining:
+                raw = stream.read(min(remaining,2*1024*1024))
+                if not raw or len(raw)%2:
+                    raise ValueError("Truncated weight tensor: " + name)
+                merge_precision(summary,precision_stats(np.frombuffer(raw,dtype="<u2")))
+                remaining -= len(raw)
+            group = "unused_mtp_layer16" if name.startswith("model.language_model.layers.16.") else "vision" if name.startswith("model.visual.") else "text_and_head"
+            merge_precision(totals,summary)
+            merge_precision(groups.setdefault(group,{}),summary)
+            results[name] = {"shape":tensor["shape"],**summary}
+    report = {"schema_version":1,"source_revision":catalog["revision"],
+              "source_sha256":next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors"),
+              "exporter_sha256":sha(Path(__file__).read_bytes()),"numpy":np.__version__,
+              "conversion":"IEEE FP16 round-to-nearest-even; subnormals preserved; no clamping",
+              "error_scope":"finite source and finite candidate only; overflows counted separately",
+              "totals":totals,"groups":groups,"tensors":results,
+              "candidate_all_finite":not (totals["source_nonfinite"] or totals["fp16_overflow"]),
+              "full_model_inference":False,"checkpoint_written":False}
+    output.mkdir(parents=True,exist_ok=True)
+    (output/"precision-audit.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    print("PASS original BF16 precision audit:",json.dumps(totals),flush=True)
+
+
 def inspect(model):
     catalog = verified_sources(model)
     tokenizer = read_json(model / "tokenizer.json")
@@ -548,6 +717,10 @@ def main():
     parser.add_argument("--export-images", action="store_true")
     parser.add_argument("--export-positions", action="store_true")
     parser.add_argument("--export-htp", action="store_true")
+    parser.add_argument("--audit-precision", action="store_true")
+    parser.add_argument("--export-learned-htp", action="store_true")
+    parser.add_argument("--learned-htp-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-learned-htp-v1")
+    parser.add_argument("--precision-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-precision-v1")
     parser.add_argument("--htp-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-htp-v1")
     parser.add_argument("--image-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-images-v2")
     parser.add_argument("--output", type=Path, default=OUTPUT)
@@ -563,6 +736,10 @@ def main():
         from transformers.image_processing_backends import TorchvisionBackend
         print(source_inspect.getsource(TorchvisionBackend.resize))
         print(source_inspect.getsource(TorchvisionBackend.rescale_and_normalize))
+    elif args.audit_precision:
+        audit_precision(args.model_dir,args.precision_output)
+    elif args.export_learned_htp:
+        export_learned_htp(args.model_dir,args.learned_htp_output)
     elif args.export_htp:
         export_htp(args.model_dir,args.htp_output)
     elif args.export_positions:
@@ -576,7 +753,7 @@ def main():
     elif args.wrapper_check:
         wrapper_check(args.model_dir, args.output)
     else:
-        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images, --export-positions or --export-htp")
+        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images, --export-positions, --export-htp, --audit-precision or --export-learned-htp")
 
 
 if __name__ == "__main__":

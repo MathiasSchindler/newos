@@ -341,7 +341,26 @@ try {
             Assert-Native @('--test-htp', $missing, $badFixture) 1 'FAIL HTP fixture verification'
             [IO.File]::WriteAllBytes($badFixture, (New-Object byte[] 127))
             Assert-Native @('--test-htp', $missing, $badFixture) 1 'FAIL HTP fixture verification'
-            Write-Output 'PASS HTP negative checks: 4'
+            $negativeCount = 4
+            $originalFixture = [IO.File]::ReadAllBytes($fixturePath)
+            if ([BitConverter]::ToUInt32($originalFixture,12) -eq 6) {
+                foreach ($offset in @(128,168)) {
+                    $damaged = [byte[]]$originalFixture.Clone()
+                    $damaged[$offset] = $damaged[$offset] -bxor 1
+                    $hash = [Security.Cryptography.SHA256]::Create()
+                    try {
+                        $null = $hash.TransformBlock($damaged,0,96,$damaged,0)
+                        $null = $hash.TransformBlock($damaged,128,$damaged.Length-128,$damaged,128)
+                        $null = $hash.TransformFinalBlock((New-Object byte[] 0),0,0)
+                        [Array]::Copy($hash.Hash,0,$damaged,96,32)
+                    } finally { $hash.Dispose() }
+                    [IO.File]::WriteAllBytes($badFixture,$damaged)
+                    $diagnostic = if ($offset -eq 128) { 'FAIL learned weight identity' } else { 'FAIL HTP fixture structure' }
+                    Assert-Native @('--test-htp',$missing,$badFixture) 1 $diagnostic
+                    ++$negativeCount
+                }
+            }
+            Write-Output ('PASS HTP negative checks: {0}' -f $negativeCount)
         } finally { Remove-Item -LiteralPath $negativeDir -Recurse -Force }
         $logPath = Join-Path (Resolve-Path $BuildDir).Path 'htp-probe.log'
         $reportPath = Join-Path (Resolve-Path $BuildDir).Path 'htp-probe.json'

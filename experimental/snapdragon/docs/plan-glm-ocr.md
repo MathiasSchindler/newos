@@ -406,8 +406,101 @@ rejected before loading QNN. This is corruption detection, not a signature schem
 
 Remaining Stage 4 work: audit original BF16 ranges and candidate FP16 errors;
 compare learned tensor taps; probe full attention, RoPE, merger and KV updates.
-No checkpoint casting, quantization or full-model execution is authorized by these
-primitive results alone.
+These primitive results alone do not establish a production precision choice.
+
+## Stage 4b: weight audit and first learned patch tap (complete)
+
+The existing offline exporter now verifies the complete original checkpoint SHA-256
+before reading learned tensors. It validates BF16 shapes, exact offset coverage and
+the 526-tensor inventory, then audits in bounded 2 MiB blocks. It never writes a
+converted checkpoint, clamps weights or removes the unused MTP group.
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --audit-precision
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-learned-htp
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestHtp -HtpDir experimental/snapdragon/models/glm-ocr-learned-htp-v1 -BuildDir experimental/snapdragon/build/ocr-learned
+```
+
+VS Code process tasks: `GLM-OCR precision audit`, `GLM-OCR learned patch oracle`
+and `GLM-OCR learned patch HTP`. Normal native hardware tests need no Python.
+`--precision-output` and `--learned-htp-output` select alternate offline outputs.
+
+### Original weight ranges
+
+`models/glm-ocr-precision-v1/precision-audit.json` records per-tensor and per-role
+statistics, source/exporter hashes and NumPy version. The boundary self-test covers
+NaN/Inf, overflow, nonzero-to-zero underflow, subnormals and a known rounding error.
+
+| Metric | All stored values |
+| --- | ---: |
+| BF16 elements | 1,325,258,240 |
+| Nonfinite source values / FP16 overflows | 0 / 0 |
+| Largest source magnitude | 3.671875 |
+| Values changed by FP16 conversion | 545,759 |
+| Nonzero values becoming zero | 366,493 |
+| FP16 subnormal outputs | 2,083,563 |
+| Maximum absolute conversion error | 2.9802322387695312e-8 |
+| Sum of squared conversion errors | 1.0353656595289153e-10 |
+| Maximum error if subnormal outputs are also flushed | 6.079673767089844e-5 |
+
+Conversion uses IEEE round-to-nearest-even with preserved FP16 subnormals. The
+last row is a hypothetical flush-to-zero bound, NOT measured HTP behavior. Small
+casting errors do not imply small accumulated network errors or safe activation
+ranges. BF16 has fewer significand bits but a wider exponent range than FP16;
+these weights fit FP16, but that alone says nothing about intermediate values.
+
+Role accounting stays explicit: text/head 673,285,632 values, vision/connector
+434,120,192, unused MTP layer 16 another 217,852,416. Nonzero-to-zero counts are
+183,220 / 362 / 182,911 respectively. No source tensors are discarded.
+
+### Learned patch projection
+
+The oracle loads only `model.visual.patch_embed.proj.weight` and `.bias` into the
+pinned Transformers `GlmOcrVisionPatchEmbed` module. It invokes that actual Conv3d
+forward, not a hand-written reference matrix multiply. A separate flattening
+cross-check verifies `[16,1176] @ [1176,1024] + bias` against Conv3d.
+The production candidate is a native FP16 HTP MatMul plus bias-add graph.
+
+Three deterministic images cover coordinate RGB patterns, seeded random RGB and
+an original German/English text page rendered with Segoe UI. The real image
+processor supplies patches; 16 evenly spaced patch rows per image are selected.
+Font/RGB hashes and selected indices are recorded. These are development fixtures,
+not held-out scans or a full-page encoder test. Native preprocessing parity remains
+the separate Stage 3 gate, not an integrated native image-to-patch-to-HTP pipeline.
+
+Each case has two FP32 Conv3d references: original BF16 weight values expanded to
+FP32 with unrounded normalized input, and independently FP16-rounded weights/input
+expanded to FP32. This is NOT a claim of reproducing a BF16-executed full model.
+
+| Input | Conversion-only maximum error | HTP vs original FP32 | HTP vs candidate FP32 |
+| --- | ---: | ---: | ---: |
+| Coordinate pattern | 0.000685648 | 0.001609 | 0.001769 |
+| Seeded random RGB | 0.000634522 | 0.001793 | 0.001786 |
+| Text page | 0.004526854 | 0.004708 | 0.001912 |
+
+Errors are rounded up. All six learned comparisons pass three executions each,
+checking every output for finiteness and the unchanged gate
+`abs(error) <= 0.003 + 0.005 * abs(reference)`. Including the two residual smoke
+graphs, all 24 executions have positive accelerator profile evidence and successful
+resource cleanup. Test binaries remain ARM64, Kernel32-only imports, no CRT or
+exception/CLR tables. No CPU inference fallback exists in the native probe.
+
+Immutable `models/glm-ocr-learned-htp-v1/htp-fixtures.got` is 15,082,316 bytes,
+SHA-256 `37cea26501ec8b7ae3ff922f22b9da86726a539e3421aa268bb891062434321a`.
+Envelope kind 6 binds preprocessor/config identities and includes the original
+weight SHA-256 in the hashed payload. The native reader enforces that identity,
+six records, operation and exact tensor geometry before loading QNN. This detects
+corruption and mismatched sources, not forgery by a malicious artifact producer.
+
+The learned probe uses separate `build/ocr-learned/` logs, report and executable,
+preserving the original synthetic probe outputs. Six negative tests include missing
+files/DLL, corrupt/truncated fixtures, plus wrong weight identity and invalid row
+count with recomputed valid envelope hashes. Expected exit codes AND diagnostics
+are checked, so a missing DLL cannot mask a fixture-validation defect.
+
+Next: learned vision-block taps including Q/K norms, attention and split-half RoPE,
+then merger/connector. Patch success does not validate those layers, activation
+ranges, the complete vision encoder, text decoder, OCR quality or performance.
 
 ## Next stages
 
@@ -417,10 +510,10 @@ primitive results alone.
    and real scan fixtures remain separate integration work. Extend the numerical
    oracle to learned-layer taps before claiming a correct model forward pass.
    PDF rasterization is a separate feature, not an implicit external dependency.
-3. **HTP capability and precision probes: initial primitives completed above.** Continue with
+3. **HTP capability and precision probes: primitives, weight audit and patch tap completed above.** Continue with
    vision attention/axial RoPE, merger, text attention/mRoPE, norms, SiLU and KV
    updates. Test real dimensions, finite outputs and cleanup on the installed SDK.
-   Source is BF16; FP16 deployment needs a numerical range/error audit. No blind
+   Weight casting ranges are audited; activation and accumulated errors remain open. No blind
    cast, silent clamping, assumed BF16 HTP support or premature W4 conversion.
 4. **Vision encoder and connector.** Implement and compare every significant tap
    against the oracle. Bound image sizes with tested static buckets; use shared
@@ -438,7 +531,7 @@ primitive results alone.
    batches, buckets, graph fusion and caching using those measurements.
 
 Current status: source acquisition, verification, bounded native tokenizer/prompt
-runtime, RGB resize/normalization/patch packing, single-image positions and isolated
-FP16 HTP primitive validation. No image-to-text inference, original-weight FP16
-accuracy, PDF support or OCR quality acceptance is claimed. No previous Whisper
-or TranslateGemma campaign is restarted.
+runtime, RGB resize/normalization/patch packing, single-image positions, isolated
+FP16 HTP primitives, complete weight range audit and a learned patch-projection tap.
+No image-to-text inference, full-model FP16 accuracy, PDF support or OCR quality
+acceptance is claimed. No previous Whisper or TranslateGemma campaign is restarted.

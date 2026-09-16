@@ -120,6 +120,7 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     static const char *const operations[] = {"", "MatMul", "RmsNorm", "LayerNorm", "Sigmoid", "Gelu", "Softmax"};
     u32 dimensions[2] = {rows,width}, output_dimensions[2] = {rows,output_width};
     u32 weight_dimensions[2] = {width,output_width}, axis_dimensions[1] = {1}, axes[1] = {1};
+    u32 bias_dimensions[1] = {output_width};
     QnnGraphHandle graph = 0;
     QnnTensor inputs[3] = {tensor("input",QNN_TENSOR_TYPE_APP_WRITE,dimensions),
         tensor("weight",QNN_TENSOR_TYPE_STATIC,weight_dimensions),tensor("bias",QNN_TENSOR_TYPE_STATIC,weight_dimensions)};
@@ -127,7 +128,7 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     QnnParam parameters[2] = {0};
     u32 scalar_dimensions[2] = {1,1};
     _Float16 one_value = 1;
-    u32 input_count = operation == 1 || operation == 2 ? 2 : operation == 3 ? 3 : 1;
+    u32 input_count = operation == 1 || operation == 2 ? 2 : operation == 3 || operation == 7 ? 3 : 1;
     u32 parameter_count = 0;
     text(name); text("\n");
     if (operation == 2 || operation == 3) {
@@ -135,9 +136,15 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
         inputs[1].data.v1.rank = inputs[2].data.v1.rank = 1;
     }
     inputs[1].data.v1.memory.client_buffer.data = weights;
-    inputs[1].data.v1.memory.client_buffer.data_size = (operation == 1 ? width * output_width : width) * 2;
+    inputs[1].data.v1.memory.client_buffer.data_size = (operation == 1 || operation == 7 ? width * output_width : width) * 2;
     inputs[2].data.v1.memory.client_buffer.data = weights + width * 2;
     inputs[2].data.v1.memory.client_buffer.data_size = width * 2;
+    if (operation == 7) {
+        inputs[2].data.v1.rank = 1;
+        inputs[2].data.v1.dimensions = bias_dimensions;
+        inputs[2].data.v1.memory.client_buffer.data = weights + width * output_width * 2;
+        inputs[2].data.v1.memory.client_buffer.data_size = output_width * 2;
+    }
     if (!checked("graph_create",api->graph_create(context,name,0,&graph))) return 0;
     for (u32 index = 0; index < input_count; ++index)
         if (!checked("tensor_create",api->tensor_create_graph_tensor(graph,&inputs[index]))) return 0;
@@ -164,7 +171,13 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
         parameters[0].value.scalar.data_type = QNN_DATATYPE_UINT_32;
         parameters[0].value.scalar.value.uint32_value = 1;
     }
-    if (operation == 4) {
+    if (operation == 7) {
+        QnnTensor product = tensor("product",QNN_TENSOR_TYPE_NATIVE,output_dimensions);
+        if (!checked("product_tensor",api->tensor_create_graph_tensor(graph,&product)) ||
+            !node(api,graph,"projection","MatMul",inputs,2,&product,0,0)) return 0;
+        QnnTensor sum_inputs[2] = {product,inputs[2]};
+        if (!node(api,graph,"bias_add","ElementWiseAdd",sum_inputs,2,&output,0,0)) return 0;
+    } else if (operation == 4) {
         QnnTensor negative = tensor("negative",QNN_TENSOR_TYPE_NATIVE,dimensions);
         QnnTensor exponential = tensor("exponential",QNN_TENSOR_TYPE_NATIVE,dimensions);
         QnnTensor denominator = tensor("denominator",QNN_TENSOR_TYPE_NATIVE,dimensions);
@@ -212,23 +225,27 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     return 1;
 }
 
-static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 size) {
+static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 size, u32 kind) {
     static const char *const names[] = {"patch_projection","vision_qkv","text_query","rmsnorm_64","rmsnorm_128","rmsnorm_1024","rmsnorm_1536",
         "connector_layernorm","mlp_silu","connector_gelu","attention_softmax"};
-    u32 cursor = 132, count = load32(fixture_data + 128);
-    if (count != sizeof(names) / sizeof(names[0])) return 0;
+    static const char *const learned_names[] = {"patch_pattern_original_fp32","patch_pattern_candidate_fp32","patch_noise_original_fp32",
+        "patch_noise_candidate_fp32","patch_text_original_fp32","patch_text_candidate_fp32"};
+    u32 cursor = kind == 6 ? 164 : 132, count = load32(fixture_data + cursor - 4);
+    if (count != (kind == 6 ? sizeof(learned_names) / sizeof(learned_names[0]) : sizeof(names) / sizeof(names[0]))) return 0;
     for (u32 index = 0; index < count; ++index) {
         if (size - cursor < 28) return 0;
         u32 operation = load32(fixture_data+cursor), rows = load32(fixture_data+cursor+4), width = load32(fixture_data+cursor+8);
         u32 output_width = load32(fixture_data+cursor+12), input_bytes = load32(fixture_data+cursor+16);
         u32 weight_bytes = load32(fixture_data+cursor+20), reference_bytes = load32(fixture_data+cursor+24);
         cursor += 28;
-        if (!operation || operation > 6 || !rows || rows > 16 || !width || width > 4608 || !output_width || output_width > 4608 ||
+        if (!operation || operation > (kind == 6 ? 7U : 6U) || !rows || rows > 16 || !width || width > 4608 || !output_width || output_width > 4608 ||
             rows * output_width > 16384 || rows * width * 2 != input_bytes || rows * output_width * 4 != reference_bytes ||
-            (operation != 1 && width != output_width) || weight_bytes != (operation == 1 ? width * output_width * 2 : operation == 2 ? width * 2 : operation == 3 ? width * 4 : 0) ||
+            (operation != 1 && operation != 7 && width != output_width) ||
+            weight_bytes != (operation == 7 ? (width+1) * output_width * 2 : operation == 1 ? width * output_width * 2 : operation == 2 ? width * 2 : operation == 3 ? width * 4 : 0) ||
             (u64)input_bytes + weight_bytes + reference_bytes > size - cursor) return 0;
-        if (!primitive(api,context,operation,rows,width,output_width,fixture_data+cursor,fixture_data+cursor+input_bytes,
-                       fixture_data+cursor+input_bytes+weight_bytes,names[index])) return 0;
+        if (kind == 6 && (operation != 7 || rows != 16 || width != 1176 || output_width != 1024)) return 0;
+        if (api && !primitive(api,context,operation,rows,width,output_width,fixture_data+cursor,fixture_data+cursor+input_bytes,
+                       fixture_data+cursor+input_bytes+weight_bytes,kind == 6 ? learned_names[index] : names[index])) return 0;
         cursor += input_bytes + weight_bytes + reference_bytes;
     }
     return cursor == size;
@@ -288,7 +305,18 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures) 
     output_good = 1;
     execution_profile = 0;
     u32 fixture_size = read_fixtures(fixtures);
-    if (!ocr_artifact(fixture_data,fixture_size,5)) { text("FAIL HTP fixture verification\n"); return 0; }
+    u32 kind = fixture_size >= 128 ? load32(fixture_data+12) : 0;
+    if ((kind != 5 && kind != 6) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
+    if (kind == 6) {
+        static const char source_sha[] = "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815";
+        static const char hex[] = "0123456789abcdef";
+        if (fixture_size < 164) { text("FAIL learned weight identity\n"); return 0; }
+        for (u32 index = 0; index < 32; ++index)
+            if (hex[fixture_data[128+index] >> 4] != source_sha[index*2] || hex[fixture_data[128+index] & 15] != source_sha[index*2+1]) {
+                text("FAIL learned weight identity\n"); return 0;
+            }
+    }
+    if (!primitives(0,0,fixture_size,kind)) { text("FAIL HTP fixture structure\n"); return 0; }
     module = LoadLibraryExW(library,0,0x1100);
     if (!module) { text("FAIL loading explicit HTP library\n"); goto done; }
     get_providers = (QnnInterfaceGetProviders)GetProcAddress(module,"QnnInterface_getProviders");
@@ -308,7 +336,7 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures) 
     if (!checked("backend_create",api->backend_create(0,0,&backend)) || !checked("device_create",api->device_create(0,0,&device)) ||
         !checked("context_create",api->context_create(backend,device,0,&context))) goto done;
     if (!checked("profile_create",api->profile_create(backend,2,&execution_profile))) goto done;
-    good = addition(api,context,1024,"ocr_vision_add") && addition(api,context,1536,"ocr_text_add") && primitives(api,context,fixture_size);
+    good = addition(api,context,1024,"ocr_vision_add") && addition(api,context,1536,"ocr_text_add") && primitives(api,context,fixture_size,kind);
 done:
     if (context && !checked("context_free",api->context_free(context,0))) clean = 0;
     if (execution_profile && !checked("profile_free",api->profile_free(execution_profile))) clean = 0;
