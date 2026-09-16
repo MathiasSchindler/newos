@@ -1,6 +1,6 @@
 #include "crypto/sha256.h"
 #ifdef OCR_HTP_TEST
-int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures);
+int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture);
 #endif
 #ifdef OCR_IMAGE_TEST
 #include "ocr_image.h"
@@ -35,7 +35,7 @@ void *memcpy(void *destination, const void *source, OcrSize length) {
 }
 
 static unsigned char buffer[1024U * 1024U];
-static OcrWide arguments[4][32768];
+static OcrWide arguments[5][32768];
 
 static int print(const char *text, unsigned int stream) {
     unsigned int length = 0, written = 0;
@@ -62,7 +62,7 @@ static unsigned int parse_arguments(void) {
         int quoted = 0;
         while (*cursor == ' ' || *cursor == '\t') ++cursor;
         if (!*cursor) break;
-        if (count == 4U) return 0;
+        if (count == 5U) return 0;
         while (*cursor && (quoted || (*cursor != ' ' && *cursor != '\t'))) {
             unsigned int slashes = 0;
             while (*cursor == '\\') { ++slashes; ++cursor; }
@@ -175,7 +175,9 @@ void mainCRTStartup(void) {
         result = self_test();
 #ifdef OCR_HTP_TEST
     } else if (count == 4U && word(arguments[1], "--test-htp")) {
-        result = ocr_htp_test(arguments[2], arguments[3]);
+        result = ocr_htp_test(arguments[2], arguments[3],0);
+    } else if (count == 5U && word(arguments[1], "--capture-htp")) {
+        result = ocr_htp_test(arguments[2], arguments[3],arguments[4]);
 #endif
 #ifdef OCR_IMAGE_TEST
     } else if (count == 4U && word(arguments[1], "--test-images")) {

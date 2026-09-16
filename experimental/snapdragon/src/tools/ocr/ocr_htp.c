@@ -11,7 +11,7 @@ __declspec(dllimport) int GetFileSizeEx(void *, long long *);
 __declspec(dllimport) int ReadFile(void *, void *, u32, u32 *, void *);
 __declspec(dllimport) int CloseHandle(void *);
 
-static u8 fixture_data[64U * 1024U * 1024U];
+static u8 fixture_data[144U * 1024U * 1024U];
 static u16 oracle_output[16384];
 
 static u32 load32(const u8 *data) {
@@ -39,6 +39,24 @@ done:
 
 static int output_good = 1;
 static QnnProfileHandle execution_profile;
+static const unsigned short *capture_directory;
+
+static int capture_tensor(u32 block_index, const char *suffix, const void *data, u32 bytes) {
+    unsigned short path[32768];
+    u32 length = 0, written = 0;
+    while (capture_directory[length]) {
+        if (length >= 32700) return 0;
+        path[length] = capture_directory[length]; ++length;
+    }
+    path[length++] = '\\'; path[length++] = '0'+block_index;
+    for (u32 index = 0; suffix[index]; ++index) path[length++] = (unsigned char)suffix[index];
+    path[length] = 0;
+    void *file = CreateFileW(path,0x40000000U,0,0,1,0x80,0);
+    if (file == (void *)~0ULL) return 0;
+    int good = WriteFile(file,data,bytes,&written,0) && written == bytes;
+    if (!CloseHandle(file)) good = 0;
+    return good;
+}
 
 static void text(const char *message) {
     u32 length = 0, written;
@@ -225,25 +243,47 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     return 1;
 }
 
+#ifdef OCR_MATRIX_RESIDUAL
+#define OCR_ATTENTION_TENSORS 160
+#else
+#define OCR_ATTENTION_TENSORS 128
+#endif
+
 typedef struct {
     const QnnInterfaceV2 *api;
     QnnGraphHandle graph;
-    QnnTensor tensors[128];
-    u32 dimensions[128][4];
-    char names[128][5];
+    QnnTensor tensors[OCR_ATTENTION_TENSORS];
+    u32 dimensions[OCR_ATTENTION_TENSORS][4];
+    char names[OCR_ATTENTION_TENSORS][5];
     u32 count;
     int good;
+#ifdef OCR_MATRIX_RESIDUAL
+    u32 diagnostic_quotient;
+    u32 diagnostic_residual;
+#endif
 } OcrAttentionGraph;
 
-static u16 attention_output[2097152];
+static u16 attention_output[4456448];
+static u16 chain_input[131072];
+#ifdef OCR_CAPTURE_INTERNALS
+static u16 internal_output[3674112];
+static u16 internal_previous[3674112];
+#endif
+#ifdef OCR_MATRIX_RESIDUAL
+#define OCR_RESIDUAL_GROUP 256
+static _Float16 residual_identity[524288*OCR_RESIDUAL_GROUP];
+#endif
+#ifdef OCR_MATRIX_ROPE
+static float rope_matrix[128*128*64];
+#endif
 
-static u32 attention_elements(u32 tap) {
-    return tap == 1 ? 196608 : tap >= 12 && tap <= 15 ? 262144 : 65536;
+static u32 attention_elements(u32 tap, u32 tokens) {
+    return tap == 6 || tap == 7 ? 16*tokens*tokens : tokens*(tap == 1 ? 3072 : tap >= 12 && tap <= 15 ? 4096 : 1024);
 }
 
 static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32 rank, const u32 *shape, void *data) {
     u32 index = builder->count, elements = 1;
-    if (!builder->good || index >= 128 || !rank || rank > 4) { builder->good = 0; return 0; }
+    if (!builder->good || index >= OCR_ATTENTION_TENSORS || !rank || rank > 4) { builder->good = 0; return 0; }
     ++builder->count;
     builder->names[index][0] = 't';
     builder->names[index][1] = '0'+index/100;
@@ -271,6 +311,60 @@ static u32 attention_op(OcrAttentionGraph *builder, const char *operation, const
     return output;
 }
 
+static QnnParam attention_axis(const char *name, u32 axis);
+
+static u32 attention_divide(OcrAttentionGraph *builder, const u32 *operands, u32 rank, const u32 *shape, int tap, u32 block_index) {
+#ifdef OCR_REFINE_DIVIDE
+    if (block_index == 1) {
+#ifdef OCR_MATRIX_RESIDUAL
+        u32 elements = 1;
+        for (u32 axis = 0; axis < rank; ++axis) elements *= shape[axis];
+        if (rank != 2 || elements > 524288 || elements%OCR_RESIDUAL_GROUP) { builder->good = 0; return 0; }
+        u32 quotient = attention_op(builder,"ElementWiseDivide",operands,2,rank,shape,QNN_DATATYPE_FLOAT_16,1,0,0);
+        u32 row_shape[3] = {elements/OCR_RESIDUAL_GROUP,1,OCR_RESIDUAL_GROUP};
+        u32 diagonal_shape[3] = {elements/OCR_RESIDUAL_GROUP,OCR_RESIDUAL_GROUP,OCR_RESIDUAL_GROUP};
+        u32 left_shape[3] = {elements/OCR_RESIDUAL_GROUP,1,2*OCR_RESIDUAL_GROUP};
+        u32 right_shape[3] = {elements/OCR_RESIDUAL_GROUP,2*OCR_RESIDUAL_GROUP,OCR_RESIDUAL_GROUP};
+        for (u32 batch = 0; batch < elements/OCR_RESIDUAL_GROUP; ++batch)
+            for (u32 row = 0; row < OCR_RESIDUAL_GROUP; ++row)
+                for (u32 column = 0; column < OCR_RESIDUAL_GROUP; ++column)
+                    residual_identity[(batch*OCR_RESIDUAL_GROUP+row)*OCR_RESIDUAL_GROUP+column] = (_Float16)(row == column);
+        u32 dividend_column = attention_op(builder,"Reshape",&operands[0],1,3,row_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 quotient_column = attention_op(builder,"Reshape",&quotient,1,3,row_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 divisor_column = attention_op(builder,"Reshape",&operands[1],1,3,row_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 negative_divisor = attention_op(builder,"ElementWiseNeg",&divisor_column,1,3,row_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 identity = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,3,diagonal_shape,residual_identity);
+        QnnParam concat_axis = attention_axis("axis",2);
+        u32 ids[2] = {dividend_column,quotient_column};
+        u32 left = attention_op(builder,"Concat",ids,2,3,left_shape,QNN_DATATYPE_FLOAT_16,0,&concat_axis,1);
+        ids[0] = negative_divisor; ids[1] = identity;
+        u32 diagonal = attention_op(builder,"ElementWiseMultiply",ids,2,3,diagonal_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        concat_axis = attention_axis("axis",1);
+        ids[0] = identity; ids[1] = diagonal;
+        u32 right = attention_op(builder,"Concat",ids,2,3,right_shape,QNN_DATATYPE_FLOAT_16,0,&concat_axis,1);
+        ids[0] = left; ids[1] = right;
+        u32 dot = attention_op(builder,"MatMul",ids,2,3,row_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 residual = attention_op(builder,"Reshape",&dot,1,rank,shape,QNN_DATATYPE_FLOAT_16,1,0,0);
+        builder->diagnostic_quotient = quotient;
+        builder->diagnostic_residual = residual;
+#else
+        u32 quotient = attention_op(builder,"ElementWiseDivide",operands,2,rank,shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 ids[2] = {quotient,operands[1]};
+        u32 product = attention_op(builder,"ElementWiseMultiply",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = operands[0]; ids[1] = product;
+        u32 residual = attention_op(builder,"ElementWiseSubtract",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+    #endif
+        ids[0] = residual; ids[1] = operands[1];
+        u32 correction = attention_op(builder,"ElementWiseDivide",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = quotient; ids[1] = correction;
+        return attention_op(builder,"ElementWiseAdd",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,tap,0,0);
+    }
+#else
+    (void)block_index;
+#endif
+    return attention_op(builder,"ElementWiseDivide",operands,2,rank,shape,QNN_DATATYPE_FLOAT_16,tap,0,0);
+}
+
 static QnnParam attention_axis(const char *name, u32 axis) {
     QnnParam result = {0};
     result.name = name; result.type = QNN_PARAMTYPE_SCALAR;
@@ -288,7 +382,7 @@ static u32 attention_norm(OcrAttentionGraph *builder, u32 input, u32 gamma, u32 
     parameters[0].value.scalar.value.float_value = 1e-5f;
     parameters[1].name = "axes"; parameters[1].type = QNN_PARAMTYPE_TENSOR;
     parameters[1].value.tensor = builder->tensors[axis_id];
-    return attention_op(builder,"RmsNorm",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,1,parameters,2);
+        return attention_op(builder,"RmsNorm",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,1,parameters,2);
 }
 
 static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 *shape, u32 *permutation) {
@@ -296,35 +390,43 @@ static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 
     u32 perm_id = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,shape_perm,permutation);
     QnnParam parameter = {0}; parameter.name = "perm"; parameter.type = QNN_PARAMTYPE_TENSOR;
     parameter.value.tensor = builder->tensors[perm_id];
-    return attention_op(builder,"Transpose",&input,1,3,shape,QNN_DATATYPE_FLOAT_16,0,&parameter,1);
+        return attention_op(builder,"Transpose",&input,1,3,shape,QNN_DATATYPE_FLOAT_16,0,&parameter,1);
 }
 
-static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block) {
+static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block, u32 tokens, u32 block_index, u16 *next_input) {
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
-    u32 flat[2] = {64,1024}, fused[2] = {64,3072}, heads[3] = {64,16,64}, batched[3] = {16,64,64};
+    u32 flat[2] = {tokens,1024}, fused[2] = {tokens,3072}, heads[3] = {tokens,16,64}, batched[3] = {16,tokens,64};
+    u32 key_shape[3] = {16,64,tokens}, score_shape[3] = {16,tokens,tokens};
     u32 shape_qkv[2] = {1024,3072}, shape_proj[2] = {1024,1024}, width[1] = {1024}, qkv_width[1] = {3072}, head_width[1] = {64};
-    u32 frequency_shape[3] = {64,1,64}, scalar_shape[1] = {1}, scalar_axis = 1, head_axis = 2;
+    u32 frequency_shape[3] = {tokens,1,64}, scalar_shape[1] = {1}, scalar_axis = 1, head_axis = 2;
     u32 permutation[3] = {1,0,2}, key_permutation[3] = {0,2,1};
     u32 selections[3][1024], rotation[64]; float signs[64]; _Float16 scale = (_Float16)0.125f;
     for (u32 part = 0; part < 3; ++part) for (u32 index = 0; index < 1024; ++index) selections[part][index] = part*1024+index;
     for (u32 index = 0; index < 64; ++index) { rotation[index] = (index+32)%64; signs[index] = index < 32 ? -1.0f : 1.0f; }
-    if (!checked("attention_graph",api->graph_create(context,"vision_attention_0",0,&builder.graph))) return 0;
+    checked("vision_block_index",block_index);
+    if (!checked("attention_graph",api->graph_create(context,block_index ? "vision_attention_1" : "vision_attention_0",0,&builder.graph))) return 0;
     u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
     u32 gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
     u32 qkv_weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,shape_qkv,constants); constants += 6291456;
     u32 qkv_bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,qkv_width,constants); constants += 6144;
     u32 q_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,head_width,constants); constants += 128;
     u32 k_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,head_width,constants); constants += 128;
-    u32 cosine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += 16384;
-    u32 sine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += 16384;
+    u32 cosine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += tokens*256;
+    u32 sine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += tokens*256;
     u32 proj_weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,shape_proj,constants); constants += 2097152;
     u32 proj_bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
     u32 rotate_indices = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,head_width,rotation);
     u32 sign_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,1,head_width,signs);
     u32 scale_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,scalar_shape,&scale);
     u32 taps[18], branches[3], ids[2];
-    u32 tap_count = full_block ? 18 : 11, total_elements = full_block ? 2097152 : 851968;
-    u32 wide[2] = {64,4096}, expanded_weight[2] = {1024,4096}, reduced_weight[2] = {4096,1024}, expanded_width[1] = {4096};
+    int internal_tap = 0;
+#ifdef OCR_CAPTURE_INTERNALS
+    internal_tap = 1;
+    u32 internal_ids[10], internal_count = full_block ? 8 : 4, internal_elements = 0;
+#endif
+    u32 tap_count = full_block ? 18 : 11, total_elements = 0, tap_offsets[18];
+    for (u32 tap = 0; tap < tap_count; ++tap) { tap_offsets[tap] = total_elements; total_elements += attention_elements(tap,tokens); }
+    u32 wide[2] = {tokens,4096}, expanded_weight[2] = {1024,4096}, reduced_weight[2] = {4096,1024}, expanded_width[1] = {4096};
     _Float16 zero = 0, one = 1;
     taps[0] = attention_norm(&builder,input,gamma,2,flat,&scalar_axis);
     ids[0] = taps[0]; ids[1] = qkv_weight;
@@ -339,41 +441,92 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     }
     taps[2] = attention_norm(&builder,branches[0],q_gamma,3,heads,&head_axis);
     taps[3] = attention_norm(&builder,branches[1],k_gamma,3,heads,&head_axis);
+#ifdef OCR_MATRIX_ROPE
+    u32 matrix_width = 64;
+#ifdef OCR_SPLIT_ROPE
+    matrix_width = 128;
+#endif
+    u32 matrix_shape[3] = {tokens,matrix_width,64};
+    const float *cosine_values = builder.tensors[cosine].data.v1.memory.client_buffer.data;
+    const float *sine_values = builder.tensors[sine].data.v1.memory.client_buffer.data;
+    for (u32 token = 0; token < tokens; ++token) {
+        for (u32 row = 0; row < matrix_width; ++row) {
+            for (u32 column = 0; column < 64; ++column) {
+                float coefficient = row%64 == column ? cosine_values[token*64+column] :
+                    row%64 == (column+32)%64 ? (column < 32 ? -1.0f : 1.0f)*sine_values[token*64+column] : 0.0f;
+#ifdef OCR_SPLIT_ROPE
+                float high = (float)(_Float16)coefficient;
+                coefficient = row < 64 ? high : coefficient-high;
+#endif
+                rope_matrix[(token*matrix_width+row)*64+column] = coefficient;
+            }
+        }
+    }
+    u32 matrix_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,matrix_shape,rope_matrix);
+    int use_matrix_rope = 1;
+#ifdef OCR_ROPE_BLOCK1_ONLY
+    use_matrix_rope = block_index != 0;
+#endif
+#endif
     for (u32 part = 0; part < 2; ++part) {
         u32 promoted = attention_op(&builder,"Cast",&taps[2+part],1,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
-        ids[0] = promoted; ids[1] = rotate_indices;
-        QnnParam axis = attention_axis("axis",2);
-        u32 swapped = attention_op(&builder,"Gather",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,&axis,1);
-        ids[0] = swapped; ids[1] = sign_tensor;
-        u32 rotated = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
-        ids[0] = promoted; ids[1] = cosine;
-        u32 real = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
-        ids[0] = rotated; ids[1] = sine;
-        u32 imaginary = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
-        ids[0] = real; ids[1] = imaginary;
-        u32 sum = attention_op(&builder,"ElementWiseAdd",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        u32 sum;
+#ifdef OCR_MATRIX_ROPE
+        if (use_matrix_rope) {
+            u32 rope_input = promoted;
+#ifdef OCR_SPLIT_ROPE
+            u32 duplicated_shape[3] = {tokens,16,128};
+            QnnParam concat_axis = attention_axis("axis",2);
+            ids[0] = promoted; ids[1] = promoted;
+            rope_input = attention_op(&builder,"Concat",ids,2,3,duplicated_shape,QNN_DATATYPE_FLOAT_32,0,&concat_axis,1);
+#endif
+            ids[0] = rope_input; ids[1] = matrix_tensor;
+            sum = attention_op(&builder,"MatMul",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        } else
+#endif
+        {
+            ids[0] = promoted; ids[1] = rotate_indices;
+            QnnParam axis = attention_axis("axis",2);
+            u32 swapped = attention_op(&builder,"Gather",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,&axis,1);
+            ids[0] = swapped; ids[1] = sign_tensor;
+            u32 rotated = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+            ids[0] = promoted; ids[1] = cosine;
+            u32 real = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+            ids[0] = rotated; ids[1] = sine;
+            u32 imaginary = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+            ids[0] = real; ids[1] = imaginary;
+            sum = attention_op(&builder,"ElementWiseAdd",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        }
         taps[4+part] = attention_op(&builder,"Cast",&sum,1,3,heads,QNN_DATATYPE_FLOAT_16,1,0,0);
         branches[part] = attention_transpose(&builder,taps[4+part],batched,permutation);
     }
     branches[2] = attention_transpose(&builder,branches[2],batched,permutation);
-    u32 key_transposed = attention_transpose(&builder,branches[1],batched,key_permutation);
+    u32 key_transposed = attention_transpose(&builder,branches[1],key_shape,key_permutation);
     ids[0] = branches[0]; ids[1] = key_transposed;
-    product = attention_op(&builder,"MatMul",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
+    product = attention_op(&builder,"MatMul",ids,2,3,score_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
     ids[0] = product; ids[1] = scale_tensor;
-    taps[6] = attention_op(&builder,"ElementWiseMultiply",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,1,0,0);
-    u32 reduced_shape[2] = {16,64}, broadcast_shape[3] = {16,64,1};
+    taps[6] = attention_op(&builder,"ElementWiseMultiply",ids,2,3,score_shape,QNN_DATATYPE_FLOAT_16,1,0,0);
+    u32 reduced_shape[2] = {16,tokens}, broadcast_shape[3] = {16,tokens,1};
     u32 reduction_axis = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,scalar_shape,&head_axis);
     QnnParam reduction = {0}; reduction.name = "axes"; reduction.type = QNN_PARAMTYPE_TENSOR;
     reduction.value.tensor = builder.tensors[reduction_axis];
-    u32 maximum = attention_op(&builder,"ReduceMax",&taps[6],1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,0,&reduction,1);
+    u32 maximum = attention_op(&builder,"ReduceMax",&taps[6],1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,internal_tap,&reduction,1);
     u32 maximum_broadcast = attention_op(&builder,"Reshape",&maximum,1,3,broadcast_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
     ids[0] = taps[6]; ids[1] = maximum_broadcast;
-    u32 shifted = attention_op(&builder,"ElementWiseSubtract",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
-    u32 exponential = attention_op(&builder,"ElementWiseExp",&shifted,1,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
-    u32 denominator = attention_op(&builder,"ReduceSum",&exponential,1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,0,&reduction,1);
+    u32 shifted = attention_op(&builder,"ElementWiseSubtract",ids,2,3,score_shape,QNN_DATATYPE_FLOAT_16,internal_tap,0,0);
+    u32 exponential = attention_op(&builder,"ElementWiseExp",&shifted,1,3,score_shape,QNN_DATATYPE_FLOAT_16,internal_tap,0,0);
+    u32 denominator = attention_op(&builder,"ReduceSum",&exponential,1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,internal_tap,&reduction,1);
+#ifdef OCR_CAPTURE_INTERNALS
+    internal_ids[0] = maximum; internal_ids[1] = shifted;
+    internal_ids[2] = exponential; internal_ids[3] = denominator;
+#endif
     u32 denominator_broadcast = attention_op(&builder,"Reshape",&denominator,1,3,broadcast_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
     ids[0] = exponential; ids[1] = denominator_broadcast;
-    taps[7] = attention_op(&builder,"ElementWiseDivide",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,1,0,0);
+#ifdef OCR_REFINE_SILU_ONLY
+    taps[7] = attention_divide(&builder,ids,3,score_shape,1,0);
+#else
+    taps[7] = attention_divide(&builder,ids,3,score_shape,1,block_index);
+#endif
     ids[0] = taps[7]; ids[1] = branches[2];
     u32 attended = attention_op(&builder,"MatMul",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
     u32 context_layout = attention_transpose(&builder,attended,heads,permutation);
@@ -399,14 +552,18 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         u32 one_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,scalar_shape,&one);
         u32 absolute = attention_op(&builder,"ElementWiseAbs",&taps[12],1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
         u32 negative_absolute = attention_op(&builder,"ElementWiseNeg",&absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
-        u32 decay = attention_op(&builder,"ElementWiseExp",&negative_absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 decay = attention_op(&builder,"ElementWiseExp",&negative_absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,internal_tap,0,0);
         ids[0] = one_tensor; ids[1] = decay;
-        u32 divisor = attention_op(&builder,"ElementWiseAdd",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 divisor = attention_op(&builder,"ElementWiseAdd",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,internal_tap,0,0);
         ids[0] = taps[12]; ids[1] = zero_tensor;
         u32 negative_part = attention_op(&builder,"ElementWiseMinimum",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
-        u32 numerator_scale = attention_op(&builder,"ElementWiseExp",&negative_part,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 numerator_scale = attention_op(&builder,"ElementWiseExp",&negative_part,1,2,wide,QNN_DATATYPE_FLOAT_16,internal_tap,0,0);
         ids[0] = numerator_scale; ids[1] = divisor;
-        u32 sigmoid = attention_op(&builder,"ElementWiseDivide",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 sigmoid = attention_divide(&builder,ids,2,wide,internal_tap,block_index);
+    #ifdef OCR_CAPTURE_INTERNALS
+        internal_ids[4] = decay; internal_ids[5] = divisor;
+        internal_ids[6] = numerator_scale; internal_ids[7] = sigmoid;
+    #endif
         ids[0] = taps[12]; ids[1] = sigmoid;
         taps[14] = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,1,0,0);
         ids[0] = taps[14]; ids[1] = taps[13];
@@ -420,32 +577,64 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         ids[0] = taps[10]; ids[1] = taps[16];
         taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
     }
+#ifdef OCR_MATRIX_RESIDUAL
+    if (block_index == 1 && full_block) {
+        internal_ids[8] = builder.diagnostic_quotient;
+        internal_ids[9] = builder.diagnostic_residual;
+        internal_count = 10;
+    }
+#endif
     if (!builder.good || !checked("attention_finalize",api->graph_finalize(builder.graph,0,0))) return 0;
-    QnnTensor outputs[18], source_tensor = builder.tensors[input];
+    QnnTensor outputs[28], source_tensor = builder.tensors[input];
+    u32 output_count = tap_count;
     source_tensor.data.v1.memory.client_buffer.data = source;
-    source_tensor.data.v1.memory.client_buffer.data_size = 131072;
+    source_tensor.data.v1.memory.client_buffer.data_size = tokens*2048;
     u32 offset = 0;
     for (u32 tap = 0; tap < tap_count; ++tap) {
-        u32 elements = attention_elements(tap);
+        u32 elements = attention_elements(tap,tokens);
         outputs[tap] = builder.tensors[taps[tap]];
         outputs[tap].data.v1.memory.client_buffer.data = attention_output+offset;
         outputs[tap].data.v1.memory.client_buffer.data_size = elements*2;
         offset += elements;
     }
+#ifdef OCR_CAPTURE_INTERNALS
+    for (u32 index = 0; index < internal_count; ++index) {
+        QnnTensor value = builder.tensors[internal_ids[index]];
+        u32 elements = 1;
+        for (u32 axis = 0; axis < value.data.v1.rank; ++axis) elements *= value.data.v1.dimensions[axis];
+        if (elements > 3674112-internal_elements) return 0;
+        value.data.v1.memory.client_buffer.data = internal_output+internal_elements;
+        value.data.v1.memory.client_buffer.data_size = elements*2;
+        outputs[output_count++] = value;
+        internal_elements += elements;
+    }
+#endif
     static const char *const names[] = {"norm1","qkv","q_norm","k_norm","q_rope","k_rope","scores","probabilities","context","projection","residual",
         "norm2","gate","up","silu","gated","down","block_output"};
     int good = 1;
     for (u32 run = 0; run < 3; ++run) {
         for (u32 index = 0; index < total_elements; ++index) attention_output[index] = 0x7e00;
-        if (!checked("attention_execute",api->graph_execute(builder.graph,&source_tensor,1,outputs,tap_count,execution_profile,0))) return 0;
+    #ifdef OCR_CAPTURE_INTERNALS
+        for (u32 index = 0; index < internal_elements; ++index) internal_output[index] = 0x7e00;
+    #endif
+        if (!checked("attention_execute",api->graph_execute(builder.graph,&source_tensor,1,outputs,output_count,execution_profile,0))) return 0;
+    #ifdef OCR_CAPTURE_INTERNALS
+        for (u32 index = 0; index < internal_elements; ++index) {
+            if ((internal_output[index] & 0x7c00) == 0x7c00 || (run && internal_output[index] != internal_previous[index])) {
+            text("FAIL nonfinite or unstable internal capture\n"); return 0;
+            }
+            internal_previous[index] = internal_output[index];
+        }
+        text("PASS finite and repeatable internal tensors\n");
+    #endif
         const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
         if (api->profile_get_events(execution_profile,&events,&event_count) || !profile_events(api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
         checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
-        for (u32 row = 0; row < 1024; ++row) {
+        for (u32 row = 0; row < 16*tokens; ++row) {
             float sum = 0;
-            for (u32 column = 0; column < 64; ++column) {
+            for (u32 column = 0; column < tokens; ++column) {
                 union {u16 bits; _Float16 value;} probability;
-                probability.bits = attention_output[589824+row*64+column];
+                probability.bits = attention_output[tap_offsets[7]+row*tokens+column];
                 if (!(probability.value >= 0 && probability.value <= 1)) { text("FAIL probability range\n"); return 0; }
                 sum += (float)probability.value;
             }
@@ -455,7 +644,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         for (u32 scope = 0; scope < 2; ++scope) {
             text(scope ? "candidate_fp32\n" : "original_fp32\n"); offset = 0;
             for (u32 tap = 0; tap < tap_count; ++tap) {
-                float maximum = 0; u32 failures = 0, elements = attention_elements(tap);
+                float maximum = 0; u32 failures = 0, elements = attention_elements(tap,tokens);
                 for (u32 index = 0; index < elements; ++index) {
                     union {u32 bits; float value;} expected;
                     union {u16 bits; _Float16 value;} actual;
@@ -465,28 +654,45 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
                     float magnitude = expected.value < 0 ? -expected.value : expected.value;
                     if ((actual.bits & 0x7c00) == 0x7c00 || !(error <= 0.003f+0.005f*magnitude)) {
                         ++failures;
+                        if (!run && !scope && tap == 6 && failures <= 16) {
+                            checked("score_failure_index",index);
+                            checked("score_actual_fp16_bits",actual.bits);
+                            checked("score_expected_fp32_bits",expected.bits);
+                            u32 head = index/(tokens*tokens), row = index/tokens%tokens, column = index%tokens;
+                            static const char hex[] = "0123456789abcdef";
+                            for (u32 branch = 0; branch < 2; ++branch) {
+                                char vector[257];
+                                u32 start = tap_offsets[4+branch]+((branch ? column : row)*16+head)*64;
+                                for (u32 channel = 0; channel < 64; ++channel) {
+                                    u16 bits = attention_output[start+channel];
+                                    for (u32 digit = 0; digit < 4; ++digit) vector[channel*4+digit] = hex[(bits >> (12-digit*4)) & 15];
+                                }
+                                vector[256] = 0;
+                                text(branch ? "score_key_fp16_hex: " : "score_query_fp16_hex: "); text(vector); text("\n");
+                            }
+                        }
                         if (!run && tap == 17 && failures <= 16) {
                             checked("block_failure_index",index);
                             checked("block_actual_fp16_bits",actual.bits);
                             checked("block_expected_fp32_bits",expected.bits);
-                            checked("block_residual_fp16_bits",attention_output[786432+index]);
-                            checked("block_down_fp16_bits",attention_output[offset-65536+index]);
-                            checked("block_reference_residual_fp32_bits",load32(references+(scope*total_elements+786432+index)*4));
-                            checked("block_reference_down_fp32_bits",load32(references+(scope*total_elements+offset-65536+index)*4));
+                            checked("block_residual_fp16_bits",attention_output[tap_offsets[10]+index]);
+                            checked("block_down_fp16_bits",attention_output[tap_offsets[16]+index]);
+                            checked("block_reference_residual_fp32_bits",load32(references+(scope*total_elements+tap_offsets[10]+index)*4));
+                            checked("block_reference_down_fp32_bits",load32(references+(scope*total_elements+tap_offsets[16]+index)*4));
                         }
                         if (!run && !scope && tap == 10 && failures <= 16) {
                             checked("residual_failure_index",index);
                             checked("input_fp16_bits",source[index*2] | (u32)source[index*2+1] << 8);
-                            checked("projection_fp16_bits",attention_output[offset-65536+index]);
+                            checked("projection_fp16_bits",attention_output[tap_offsets[9]+index]);
                             checked("residual_fp16_bits",actual.bits);
-                            checked("original_projection_fp32_bits",load32(references+(offset-65536+index)*4));
+                            checked("original_projection_fp32_bits",load32(references+(tap_offsets[9]+index)*4));
                             checked("original_residual_fp32_bits",expected.bits);
-                            checked("candidate_projection_fp32_bits",load32(references+(total_elements+offset-65536+index)*4));
+                            checked("candidate_projection_fp32_bits",load32(references+(total_elements+tap_offsets[9]+index)*4));
                             checked("candidate_residual_fp32_bits",load32(references+(total_elements+offset+index)*4));
                             static const char hex[] = "0123456789abcdef";
                             char context_row[4097];
                             for (u32 channel = 0; channel < 1024; ++channel) {
-                                u16 bits = attention_output[655360+(index/1024)*1024+channel];
+                                u16 bits = attention_output[tap_offsets[8]+(index/1024)*1024+channel];
                                 for (u32 digit = 0; digit < 4; ++digit) context_row[channel*4+digit] = hex[(bits >> (12-digit*4)) & 15];
                             }
                             context_row[4096] = 0;
@@ -501,18 +707,60 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
             }
         }
     }
+    if (capture_directory && (!capture_tensor(block_index,".input.f16",source,tokens*2048) ||
+        !capture_tensor(block_index,".taps.f16",attention_output,total_elements*2))) {
+        text("FAIL diagnostic tensor capture\n"); return 0;
+    }
+#ifdef OCR_CAPTURE_INTERNALS
+    if (capture_directory && !capture_tensor(block_index,".internals.f16",internal_output,internal_elements*2)) {
+        text("FAIL internal tensor capture\n"); return 0;
+    }
+#endif
     text(full_block ? (good ? "PASS learned vision block taps\n" : "FAIL learned vision block taps\n") :
                      (good ? "PASS learned vision attention taps\n" : "FAIL learned vision attention taps\n"));
+    if (good && next_input) {
+        for (u32 index = 0; index < tokens*1024; ++index) next_input[index] = attention_output[tap_offsets[17]+index];
+        text("PASS unchanged FP16 block output handed to next block\n");
+    }
     return good;
 }
 
 static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 size, u32 kind) {
+    if (kind == 9) {
+        if (size < 192 || load32(fixture_data+160) != 2) return 0;
+        u32 tokens = load32(fixture_data+168), cursor = 164, records[2];
+        if (tokens != 64 && tokens != 128) return 0;
+        u32 constants = 33585408+tokens*512, references = (30720*tokens+32*tokens*tokens)*8;
+        for (u32 block_index = 0; block_index < 2; ++block_index) {
+            u32 input_bytes = block_index ? 0 : tokens*2048;
+            if (size-cursor < 28) return 0;
+            records[block_index] = cursor+28;
+            if (load32(fixture_data+cursor) != 10+block_index || load32(fixture_data+cursor+4) != tokens ||
+                load32(fixture_data+cursor+8) != 1024 || load32(fixture_data+cursor+12) != 1024 ||
+                load32(fixture_data+cursor+16) != input_bytes || load32(fixture_data+cursor+20) != constants ||
+                load32(fixture_data+cursor+24) != references || (u64)input_bytes+constants+references > size-cursor-28) return 0;
+            cursor += 28+input_bytes+constants+references;
+        }
+        if (cursor != size) return 0;
+        if (!api) return 1;
+        for (u32 block_index = 0; block_index < 2; ++block_index) {
+            u8 *source = block_index ? (u8 *)chain_input : fixture_data+records[0];
+            u8 *weights = fixture_data+records[block_index]+(block_index ? 0 : tokens*2048);
+            if (!attention_probe(api,context,source,weights,weights+constants,1,tokens,block_index,block_index ? 0 : chain_input)) return 0;
+        }
+        text("PASS sequential vision blocks 0 and 1\n");
+        return 1;
+    }
     if (kind == 7 || kind == 8) {
-        u32 constant_bytes = kind == 8 ? 33618176 : 8431872, reference_bytes = kind == 8 ? 16777216 : 6815744;
-        if (size != 192+131072+constant_bytes+reference_bytes || load32(fixture_data+160) != 1 || load32(fixture_data+164) != (kind == 8 ? 9U : 8U) ||
-            load32(fixture_data+168) != 64 || load32(fixture_data+172) != 1024 || load32(fixture_data+176) != 1024 ||
-            load32(fixture_data+180) != 131072 || load32(fixture_data+184) != constant_bytes || load32(fixture_data+188) != reference_bytes) return 0;
-        return !api || attention_probe(api,context,fixture_data+192,fixture_data+192+131072,fixture_data+192+131072+constant_bytes,kind == 8);
+        if (size < 192) return 0;
+        u32 tokens = load32(fixture_data+168);
+        if (tokens != 64 && tokens != 128) return 0;
+        u32 input_bytes = tokens*2048, constant_bytes = (kind == 8 ? 33585408 : 8399104)+tokens*512;
+        u32 reference_bytes = ((kind == 8 ? 30720 : 11264)*tokens+32*tokens*tokens)*8;
+        if (size != 192+input_bytes+constant_bytes+reference_bytes || load32(fixture_data+160) != 1 || load32(fixture_data+164) != (kind == 8 ? 9U : 8U) ||
+            load32(fixture_data+172) != 1024 || load32(fixture_data+176) != 1024 ||
+            load32(fixture_data+180) != input_bytes || load32(fixture_data+184) != constant_bytes || load32(fixture_data+188) != reference_bytes) return 0;
+        return !api || attention_probe(api,context,fixture_data+192,fixture_data+192+input_bytes,fixture_data+192+input_bytes+constant_bytes,kind == 8,tokens,0,0);
     }
     static const char *const names[] = {"patch_projection","vision_qkv","text_query","rmsnorm_64","rmsnorm_128","rmsnorm_1024","rmsnorm_1536",
         "connector_layernorm","mlp_silu","connector_gelu","attention_softmax"};
@@ -580,7 +828,8 @@ static int addition(const QnnInterfaceV2 *api, QnnContextHandle context, u32 wid
     return 1;
 }
 
-int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures) {
+int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture) {
+    capture_directory = capture;
     void *module = 0;
     QnnBackendHandle backend = 0;
     QnnDeviceHandle device = 0;
@@ -594,8 +843,8 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures) 
     execution_profile = 0;
     u32 fixture_size = read_fixtures(fixtures);
     u32 kind = fixture_size >= 128 ? load32(fixture_data+12) : 0;
-    if ((kind != 5 && kind != 6 && kind != 7 && kind != 8) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
-    if (kind == 6 || kind == 7 || kind == 8) {
+    if ((kind != 5 && kind != 6 && kind != 7 && kind != 8 && kind != 9) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
+    if (kind >= 6 && kind <= 9) {
         static const char source_sha[] = "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815";
         static const char hex[] = "0123456789abcdef";
         if (fixture_size < 164) { text("FAIL learned weight identity\n"); return 0; }

@@ -2,6 +2,146 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "GLM-OCR matrix residual analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-internal-tensors", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-matrix-residual-group256", "--chain-compare-build", "experimental/snapdragon/build/ocr-chain-internals"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR matrix residual capture",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-CaptureInternals", "-RefineDivide", "-RefineSiluOnly", "-MatrixResidual", "-SplitRope", "-RopeBlock1Only", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-matrix-residual-group256"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR SiLU quotient analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-internal-tensors", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-quotient-silu", "--chain-compare-build", "experimental/snapdragon/build/ocr-chain-internals"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR SiLU quotient capture",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-CaptureInternals", "-RefineDivide", "-RefineSiluOnly", "-SplitRope", "-RopeBlock1Only", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-quotient-silu"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR quotient correction analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-internal-tensors", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-quotient", "--chain-compare-build", "experimental/snapdragon/build/ocr-chain-internals"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR quotient correction capture",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-CaptureInternals", "-RefineDivide", "-SplitRope", "-RopeBlock1Only", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-quotient"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR internal tensor analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-internal-tensors", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-internals", "--chain-compare-build", "experimental/snapdragon/build/ocr-chain-split-local"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR internal tensor capture",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-CaptureInternals", "-SplitRope", "-RopeBlock1Only", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-internals"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR isolated RoPE analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-chain-boundary", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-split-local", "--chain-compare-build", "experimental/snapdragon/build/ocr-chain-capture"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR split RoPE isolated block",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-SplitRope", "-RopeBlock1Only", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-split-local"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR RoPE variant analysis",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference='Stop'; foreach ($variant in @('matrix','split')) { & ./experimental/snapdragon/build/gemma-oracle-x64/python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --analyze-chain-boundary --vision-block-output experimental/snapdragon/models/glm-ocr-chain-v1 --chain-build ('experimental/snapdragon/build/ocr-chain-' + $variant); if ($LASTEXITCODE -ne 0) { throw 'RoPE analysis failed' } }"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR split RoPE chain",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-SplitRope", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-split"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR matrix RoPE chain",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-MatrixRope", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-matrix"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR chain boundary analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-chain-boundary", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1", "--chain-build", "experimental/snapdragon/build/ocr-chain-capture"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR chain capture",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-CaptureHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain-capture"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR chain score analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-chain-scores", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision chain HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-chain-v1", "-BuildDir", "experimental/snapdragon/build/ocr-chain"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision chain oracle",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-vision-block", "--vision-block-count", "2", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-chain-v1"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR examples HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference='Stop'; foreach ($case in @('receipt','german')) { & ./experimental/snapdragon/tools/build-ocr.ps1 -TestHtp -HtpDir ('experimental/snapdragon/models/glm-ocr-examples-v1/' + $case) -BuildDir ('experimental/snapdragon/build/ocr-examples/' + $case) }"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR examples oracle",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-vision-block", "--attention-case", "examples", "--vision-block-output", "experimental/snapdragon/models/glm-ocr-examples-v1"],
+			"problemMatcher": []
+		},
+		{
 			"label": "GLM-OCR vision block text HTP",
 			"type": "process",
 			"command": "powershell.exe",

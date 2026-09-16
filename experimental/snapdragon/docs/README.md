@@ -60,7 +60,39 @@ Stage 4d extends this to the complete first vision block, including second RMSNo
 gated SiLU MLP and final residual. All eighteen taps pass both oracles on the same
 three grids at unchanged tolerances. Use `GLM-OCR vision block oracle` and
 `GLM-OCR vision block corpus HTP`; results are separate under `build/ocr-block/`.
-Larger grids, accumulated multi-block precision and full-encoder validation remain open.
+Stage 4e adds a 128-patch bucket and two visible examples with known rendering text:
+[receipt image](../models/glm-ocr-examples-v1/receipt/input.png),
+[receipt text](../models/glm-ocr-examples-v1/receipt/expected.txt),
+[German image](../models/glm-ocr-examples-v1/german/input.png),
+[German text](../models/glm-ocr-examples-v1/german/expected.txt).
+Run `GLM-OCR examples oracle` to generate these local artifacts and
+`GLM-OCR examples HTP` for both numerical hardware tests. Both pass all eighteen
+block taps at unchanged tolerances. Expected text is not model output; native
+image-to-text inference and OCR quality scoring are still absent. Larger pages,
+accumulated multi-block precision and full-encoder validation remain open.
+Stage 4f now captures sequential vision blocks 0 and 1 for precision analysis.
+The original chain gate still fails. An opt-in split-coefficient HTP RoPE path,
+isolated to Block 1 with upstream tensors verified bit-identical, reduces original
+score violations from 46 to 10; two final residual violations remain. Matched-input
+oracle success is diagnostic, not chain acceptance. Default RoPE is unchanged;
+the plan records all three experiments, captured evidence and reproduction tasks.
+The offline analyzer also decomposes Block-0 output error with checked closure.
+Softmax and SiLU paths are significant contributors; residual additions match
+correct FP16 rounding. Controlled Block-1 oracles show that improving one local
+path can worsen other downstream values, so no single-path fix is accepted yet.
+Opt-in internal HTP captures now preserve all existing tensors bit-for-bit.
+They distinguish operation-specific midpoint rounding from additional quotient
+error in Softmax and SiLU; the numerical chain gate remains unchanged and failing.
+Opt-in Block-1 quotient corrections now reduce same-operand local quotient RMSE
+by about 36% (Softmax) and 39% (isolated SiLU). The two original residual failures
+pass, but one new residual failure appears and ten score failures remain.
+The default is unchanged; these measured experiments are not chain acceptance.
+An additional opt-in grouped-MatMul residual now matches single-rounded FP64
+references for all 262,144 captured SiLU residuals. Corrected quotients match
+nearest FP16 in 261,969 cases, with none outside the adjacent-value bracket.
+This verifies the local precision mechanism, but the chain still has ten score
+and two final-output violations against the original oracle. The large-memory
+diagnostic path is not a production or full-OCR accuracy claim.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 

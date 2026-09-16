@@ -11,10 +11,22 @@ param(
     [switch]$Test,
     [switch]$TestTokenizer,
     [switch]$TestImages,
-    [switch]$TestHtp
+    [switch]$TestHtp,
+    [switch]$CaptureHtp,
+    [switch]$CaptureInternals,
+    [switch]$RefineDivide,
+    [switch]$RefineSiluOnly,
+    [switch]$MatrixResidual,
+    [switch]$MatrixRope,
+    [switch]$SplitRope,
+    [switch]$RopeBlock1Only
 )
 
 $ErrorActionPreference = 'Stop'
+if ($MatrixResidual -and -not ($RefineDivide -and $RefineSiluOnly -and $CaptureInternals)) { throw '-MatrixResidual requires -RefineDivide -RefineSiluOnly -CaptureInternals' }
+if ($RefineSiluOnly -and -not $RefineDivide) { throw '-RefineSiluOnly requires -RefineDivide' }
+if ($CaptureInternals -and -not ($TestHtp -and $CaptureHtp)) { throw '-CaptureInternals requires -TestHtp -CaptureHtp' }
+if ($RopeBlock1Only -and -not ($MatrixRope -or $SplitRope)) { throw '-RopeBlock1Only requires -MatrixRope or -SplitRope' }
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
 
 function Get-GitBlobHash([string]$Path) {
@@ -297,6 +309,13 @@ try {
     }
     if ($TestHtp) {
         $binary = Join-Path $BuildDir 'ocr-htp-test.exe'
+        if ($MatrixRope -or $SplitRope) { $flags += '-DOCR_MATRIX_ROPE' }
+        if ($SplitRope) { $flags += '-DOCR_SPLIT_ROPE' }
+        if ($CaptureInternals) { $flags += '-DOCR_CAPTURE_INTERNALS' }
+        if ($RefineDivide) { $flags += '-DOCR_REFINE_DIVIDE' }
+        if ($RefineSiluOnly) { $flags += '-DOCR_REFINE_SILU_ONLY' }
+        if ($MatrixResidual) { $flags += '-DOCR_MATRIX_RESIDUAL' }
+        if ($RopeBlock1Only) { $flags += '-DOCR_ROPE_BLOCK1_ONLY' }
         $flags += @('-DOCR_HTP_TEST', '-ffp-contract=off', '-fno-math-errno')
         $sources += 'experimental/snapdragon/src/tools/ocr/ocr_htp.c'
         if (-not ($TestTokenizer -or $TestImages)) { $sources += 'experimental/snapdragon/src/tools/ocr/ocr_tokenizer.c' }
@@ -344,8 +363,12 @@ try {
             $negativeCount = 4
             $originalFixture = [IO.File]::ReadAllBytes($fixturePath)
             $fixtureKind = [BitConverter]::ToUInt32($originalFixture,12)
-            if ($fixtureKind -in @(6,7,8)) {
-                $invalidOffsets = if ($fixtureKind -eq 8) { @(128,164,168,172,176,180,184,188) } else { @(128,168) }
+            if ($fixtureKind -in @(6,7,8,9)) {
+                $invalidOffsets = if ($fixtureKind -in @(8,9)) { @(128,164,168,172,176,180,184,188) } else { @(128,168) }
+                if ($fixtureKind -eq 9) {
+                    $secondRecord = 192+[BitConverter]::ToUInt32($originalFixture,180)+[BitConverter]::ToUInt32($originalFixture,184)+[BitConverter]::ToUInt32($originalFixture,188)
+                    $invalidOffsets += @(160,$secondRecord,($secondRecord+4),($secondRecord+8),($secondRecord+12),($secondRecord+16),($secondRecord+20),($secondRecord+24))
+                }
                 foreach ($offset in $invalidOffsets) {
                     $damaged = [byte[]]$originalFixture.Clone()
                     $damaged[$offset] = $damaged[$offset] -bxor 1
@@ -372,12 +395,19 @@ try {
             $identities[$name] = (Get-FileHash -LiteralPath (Join-Path $runtime $name) -Algorithm SHA256).Hash.ToLowerInvariant()
         }
         $oldPath = $env:PATH
+        $captureDirectory = $null
+        $nativeArguments = @('--test-htp',(Join-Path $runtime 'QnnHtp.dll'),$fixturePath)
+        if ($CaptureHtp) {
+            $captureDirectory = Join-Path (Resolve-Path $BuildDir).Path ('capture-' + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $captureDirectory | Out-Null
+            $nativeArguments = @('--capture-htp',(Join-Path $runtime 'QnnHtp.dll'),$fixturePath,$captureDirectory)
+        }
         $oldPreference = $ErrorActionPreference
         Push-Location $runtime
         try {
             $env:PATH = $runtime + ';' + $oldPath
             $ErrorActionPreference = 'Continue'
-            & $binaryPath --test-htp (Join-Path $runtime 'QnnHtp.dll') $fixturePath 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath
+            & $binaryPath @nativeArguments 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath
             $probeExit = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $oldPreference
@@ -389,6 +419,19 @@ try {
             executable_sha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
             fixtures_sha256 = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash.ToLowerInvariant()
             full_model_inference = $false; timestamp_utc = [DateTime]::UtcNow.ToString('o')
+            rope_implementation = $(if ($SplitRope) { 'split-matrix' } elseif ($MatrixRope) { 'matrix' } else { 'elementwise' })
+            rope_block1_only = [bool]$RopeBlock1Only
+            capture_internals = [bool]$CaptureInternals
+            refine_divide_block1 = [bool]$RefineDivide
+            refine_silu_only = [bool]$RefineSiluOnly
+            matrix_residual = [bool]$MatrixResidual
+            matrix_residual_group = $(if ($MatrixResidual) { 256 } else { 0 })
+        }
+        if ($CaptureHtp) {
+            $captures = @{}
+            Get-ChildItem -LiteralPath $captureDirectory -Filter '*.f16' | ForEach-Object { $captures[$_.Name] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+            $report.capture_directory = $captureDirectory
+            $report.capture_sha256 = $captures
         }
         $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding UTF8
         if ($probeExit -ne 0) { throw 'OCR HTP probe failed; see htp-probe.log' }

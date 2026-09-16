@@ -751,6 +751,615 @@ then spatial merger/connector and text prefill/decode. This is initial block-0
 acceptance, not a complete 24-block encoder, image-to-text pipeline or performance
 result. Python remains confined to optional offline oracle generation.
 
+## Stage 4e: visible OCR examples and 128-patch bucket
+
+Two readable synthetic examples now accompany the numerical block fixtures:
+
+| Example | Image | Expected transcription |
+| --- | --- | --- |
+| Receipt: quantities, decimal commas, date, total | [PNG](../models/glm-ocr-examples-v1/receipt/input.png) | [UTF-8 text](../models/glm-ocr-examples-v1/receipt/expected.txt) |
+| German: umlauts, sharp s, address, opening times; English greeting | [PNG](../models/glm-ocr-examples-v1/german/input.png) | [UTF-8 text](../models/glm-ocr-examples-v1/german/expected.txt) |
+
+These links refer to locally generated, ignored artifacts. Reproduce them with
+the `GLM-OCR examples oracle` task. The original 112x112 text example is also
+available after running `GLM-OCR vision block oracle`:
+[PNG](../models/glm-ocr-block-v1/text/input.png),
+[expected text](../models/glm-ocr-block-v1/text/expected.txt).
+
+The expected text is the rendering input, NOT text recognized by GLM-OCR. There
+is still no native image-to-text forward or OCR accuracy score. These fixtures
+are not held-out scans, photographs, layout/table/formula benchmarks or evidence
+of general OCR quality. They establish a visible starting set for later end-to-end
+comparisons. Real scans, camera distortion and full pages remain additional work.
+
+Both new images are 224x112 RGB pixels, drawn with Segoe UI 14, with checked text
+bounds. The exporter records the font hash, RGB hash, PNG and expected-text hashes
+and provenance in each manifest. It verifies PNG decode against the exact RGB
+oracle input and rejects differing existing image/text artifacts. The previews
+have been visually inspected for readability and clipping. No font binary is
+copied. The processor produces a complete `[1,8,16]` grid: 128 patches, with no
+token selection, padding or truncation. Earlier 64-patch binary fixtures remain
+byte-identical after regeneration.
+
+The native graph now explicitly separates Q/K/V `[16,tokens,64]`, transposed K
+`[16,64,tokens]` and attention matrices `[16,tokens,tokens]`. Tap element counts,
+reference offsets, probability rows and RoPE constant lengths derive from the
+validated token count. Only 64 and 128 patches are accepted before loading QNN;
+this is not an unbounded dynamic-shape implementation. Other grid geometries
+with the same count have not been validated by these examples.
+
+The kind-8 envelope limit and native diagnostic fixture buffer are now 80 MiB;
+output scratch is bounded at 4,456,448 FP16 elements. For 128 patches, input bytes
+are 262,144, constants 33,650,944 and references 35,651,584. Each complete fixture
+is 69,564,864 bytes. The native reader checks these lengths from the token count,
+the operation, dimensions and original source weight identity. Existing twelve
+negative checks per case pass, including rehashed invalid geometry/lengths.
+
+| Case | Block-output max absolute error vs original FP32 | vs candidate FP32 |
+| --- | ---: | ---: |
+| Receipt | 0.026906 | 0.026036 |
+| German | 0.028847 | 0.029892 |
+
+All eighteen taps pass finiteness and the unchanged
+`abs(error) <= 0.003 + 0.005 * abs(reference)` gate against both oracles, three
+executions per example: 53,477,376 value comparisons. Each run checks 2,048
+probability rows for values in `[0,1]` and sums within `1 +/- 0.003`. Both reports
+have exit zero, positive accelerator profile evidence and successful cleanup;
+ARM64/no-CRT/Kernel32-only audits pass. Previous 64-patch block and attention
+corpora, native verifier, tokenizer, image and position regressions also pass.
+No neural CPU fallback or tolerance change was introduced. The block input is
+still the offline patch embedding, not an integrated native image-to-block path.
+
+Immutable fixture SHA-256 values:
+- Receipt: `94e78f8e6cdc5446c2a8d7c9fe67a24c208871da64119db90d724c7baac71819`.
+- German: `62d6d8dddd3fc10255629eaf52396159c0924fee6435d17bf2fd0ebc7ccd23b5`.
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-vision-block --attention-case examples --vision-block-output experimental/snapdragon/models/glm-ocr-examples-v1
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestHtp -HtpDir experimental/snapdragon/models/glm-ocr-examples-v1/receipt -BuildDir experimental/snapdragon/build/ocr-examples/receipt
+```
+
+`GLM-OCR examples oracle` exports both cases; `GLM-OCR examples HTP` builds and
+tests both serially, with separate reports under `build/ocr-examples/receipt/`
+and `german/`. Normal native testing consumes pre-generated fixtures without
+Python. `--attention-case receipt|german` selects individual examples; `all`
+continues to mean the original pattern/noise/text corpus. Next: accumulated
+multi-block accuracy, larger document buckets, merger/connector and text decoder.
+
+## Stage 4f: two-block precision investigation (not accepted)
+
+The first two vision blocks now execute as separate HTP graphs. Block 0 runs
+three times, then its last FP16 output is copied unchanged into Block 1, which
+runs three times on that input. This is not three complete chain executions,
+a fused graph, or device-resident zero-copy execution. No oracle tensor replaces
+the computed intermediate input and no CPU neural fallback is used.
+
+`GLM-OCR vision chain oracle` generates original and candidate FP32 references
+for sequential blocks 0 and 1. The candidate rounds only the initial input and
+weights to FP16 before expanding to FP32; it does not round every intermediate.
+Kind 9 has two strictly checked records (operations 10 and 11), with no input
+payload in the second record. Both records are validated before loading QNN.
+Twenty negative checks cover identity, count and both records' geometry/lengths.
+The diagnostic fixture buffer and kind-9 limit are 144 MiB; existing limits for
+other envelope kinds remain unchanged.
+
+The 64-patch pattern fixture is 100,922,076 bytes, SHA-256
+`bf2bcfa9b0c04352c464f17d16ba0e53c82ac806fc053f9ca25e96f09c0f0418`, under
+`models/glm-ocr-chain-v1/`. Regeneration remains byte-identical. Block 0 passes,
+but Block 1 fails the unchanged `0.003 + 0.005 * abs(reference)` gate:
+
+| Reference | Score failures | Final residual failures |
+| --- | ---: | ---: |
+| Original FP32 chain | 46 | 2 |
+| Candidate FP32 chain | 45 | 1 |
+| Candidate weights, exact observed Block-1 input | 21 | 0 |
+
+All other sixteen taps pass in these comparisons. The last row is an offline
+conditional oracle, NOT a replacement acceptance gate. It distinguishes local
+Block-1 errors from errors inherited from Block 0. The failed FP32-declared
+RoPE/QK, explicit Q/K RMSNorm and explicit first RMSNorm experiments have all
+been removed. The last had increased original failures to 61 scores/four residuals.
+
+### Reproducible conditional oracle
+
+`GLM-OCR chain capture` invokes `build-ocr.ps1 -TestHtp -CaptureHtp` using separate
+`build/ocr-chain-capture/` output. It deliberately still exits 1 for the numerical
+failure. The explicit native `--capture-htp DLL FIXTURE DIRECTORY` mode saves each
+block's input and final-execution taps to a fresh capture directory. Files use
+CREATE_NEW, never overwrite existing files, and are hashed in `htp-probe.json`.
+Ordinary `--test-htp` runs do not write tensor captures. No new OS imports or
+production dependencies were needed.
+
+Run `GLM-OCR chain boundary analysis` after capture. The existing exporter checks
+fixture/envelope, executable and capture hashes and exact geometry, then verifies
+the Block-0 output and Block-1 input are bit-identical. It invokes the pinned
+Transformers Block 1 with both the actual NPU input and the FP16-rounded ideal
+candidate Block-0 output. Conditional weights must match the native fixture bytes.
+The result is `build/ocr-chain-capture/chain-boundary-analysis.json`, containing
+all eighteen tap summaries, all original failing indices, signed decompositions
+and the runtime identities. Analysis success does not mean hardware acceptance.
+
+The signed decomposition closes exactly (maximum residual 0) across all taps:
+initial input/weight conversion; ideal handoff FP16 rounding; propagated Block-0
+execution error beyond that rounding; local Block-1 execution error. These are
+ordered counterfactual differences, not independent causal percentages.
+
+### Score localization
+
+There is no copy/layout corruption at the handoff. Even with the exact observed
+input, 21 score failures remain. FP64 dot products on observed post-RoPE Q/K
+vectors introduce no tolerance violations relative to the hardware scores.
+At the 46 originally failing score indices, the mean absolute signed-component
+magnitudes from a telescoping FP64 reconstruction are:
+
+| Local stage | Mean absolute contribution |
+| --- | ---: |
+| Through QKV, before ideal Q/K norms and RoPE | 0.000786783 |
+| Observed Q/K normalization | 0.000764583 |
+| Observed RoPE | 0.001945912 |
+| QK dot/output rounding | 0.000026204 |
+
+RoPE is the largest of these local contributions at the failing indices. This
+does not say QK rounding is negligible everywhere: its whole-tensor RMSE is
+0.000819710, and large scores tolerate more absolute error. Local score-component
+closure is also checked within 1e-12.
+
+An offline RoPE simulation using FP16 coefficients, FP16 products and FP16 sums
+matches 130,952 / 131,072 observed Q/K values bit-for-bit (99.91%). FP32 arithmetic
+with only a final FP16 cast matches 102,798 values (78.43%). FP16 coefficients
+with FP32 products/sum match 109,542. This strongly supports low-precision
+intermediates in the FP32-declared HTP path, but the 120 mismatches preclude an
+exact undocumented-kernel claim. A counterfactual using FP32 RoPE followed by
+FP16 output and FP64 QK dots reduces original score violations from 46 to 10;
+it is not an implemented HTP fix and does not alone validate the full chain.
+
+### Residual localization
+
+| Metric | Index 34755 | Index 48323 |
+| --- | ---: | ---: |
+| Actual output | 0.1337890625 | 0.0585937500 |
+| Original output | 0.1301323175 | 0.0546834469 |
+| Absolute error | 0.0036567450 | 0.0039103031 |
+| Allowed error | 0.0036506616 | 0.0032734172 |
+| Initial input/weight conversion effect | +0.0003089905 | +0.0004169941 |
+| Ideal handoff rounding effect | +0.0001223087 | -0.0002267361 |
+| Propagated Block-0 execution effect | +0.0010228157 | +0.0016713142 |
+| Local Block-1 execution effect | +0.0022026300 | +0.0020487309 |
+| Final addition error on observed operands | 0 | 0 |
+| Cancellation factor | 25.13 | 99.23 |
+
+The final sums are exactly `1.7021484375 - 1.568359375` and
+`2.7421875 - 2.68359375`. Cancellation reduces the reference magnitude and hence
+the relative tolerance budget; it creates no new arithmetic error at these
+two additions. Higher precision only at the last addition cannot recover earlier
+errors. Initial conversion and handoff representation alone are not the dominant
+terms. Block-0 and local Block-1 errors reinforce each other here.
+
+### Measured HTP RoPE precision experiments
+
+Three opt-in experiments keep the original fixture and tolerance unchanged.
+The default remains elementwise RoPE; none of these variants is accepted for
+deployment. `-MatrixRope` expresses each token's split-half rotation as a batched
+MatMul. `-SplitRope` splits each constant into its FP16 high part and residual,
+duplicates the input using HTP Concat, and accumulates both coefficient parts in
+one MatMul. Only static constants are transformed on the CPU. These dense
+diagnostic matrices are not a performance optimization or a claim of physical
+FP32 execution.
+
+| RoPE path | Original score failures | Candidate score failures | Matched-input score failures | Original final residual failures |
+| --- | ---: | ---: | ---: | ---: |
+| Elementwise baseline | 46 | 45 | 21 | 2 |
+| Matrix, both blocks | 30 | 27 | 14 | 1 |
+| Split matrix, both blocks | 12 | 10 | 3 | 1 |
+| Split matrix, only Block 1 | 10 | 7 | 0 | 2 |
+
+Block 0 passes in all three experiments. The both-block matrix variant also has
+two original Q-norm and two Q-RoPE violations; the both-block split variant has
+one of each. The isolated variant has no such extra violations. All hardware
+chain tasks still exit 1, with positive accelerator profiles and checked cleanup.
+
+The matrix variant matches the FP16-coefficients/FP32-sum simulation in
+131,070 of 131,072 RoPE outputs, but matches FP32 arithmetic with final FP16
+rounding in only 110,032. Splitting the coefficients raises the latter agreement
+to 131,035 (both blocks) and 131,036 (isolated Block 1). This demonstrates an
+HTP precision improvement without inferring an exact undocumented kernel.
+For the isolated variant, ideal FP32 RoPE followed by FP16 output and FP64 QK
+still gives ten original score failures: the remaining chain error is not
+explained by its 36 RoPE bit mismatches alone.
+
+`GLM-OCR matrix RoPE chain`, `GLM-OCR split RoPE chain`, and
+`GLM-OCR split RoPE isolated block` preserve separate captures/reports under
+`build/ocr-chain-matrix/`, `build/ocr-chain-split/`, and
+`build/ocr-chain-split-local/`. The last adds `-RopeBlock1Only` to `-SplitRope`.
+`GLM-OCR RoPE variant analysis` analyzes the first two;
+`GLM-OCR isolated RoPE analysis` adds
+`--chain-compare-build experimental/snapdragon/build/ocr-chain-capture`.
+This comparison verifies baseline executable/capture/fixture hashes and asserts
+bit identity of every Block-0 tap, both inputs, and Block-1 norm1/QKV/Q/K norms.
+The isolated score improvement is therefore measured at unchanged upstream
+tensors. All eighteen taps pass the matched-input oracle in this run, but the
+original chain gate still fails. Original residual indices 34755 and 48323,
+their values, operands and signed error decomposition remain exactly as above.
+
+### Upstream rounding evidence
+
+The analyzer reconstructs norm1, QKV projection/bias and Q/K norms in FP64 from
+observed inputs and the verified native constants. In the both-block split run,
+QKV matches a single final rounding in 196,541 of 196,608 values, versus only
+155,565 for a separately rounded projection followed by bias. A double-rounded
+bias path is therefore not the leading explanation. Q/K norms match single
+rounding in 65,351 and 65,357 of 65,536 values respectively.
+
+The original Q-norm failure at index 53629 has upstream effect -0.00324110427
+and local norm effect +0.00000457392. Its four-way chain decomposition attributes
+-0.00302384607 to propagated Block-0 execution. This is not evidence for a broken
+local RMSNorm. Removing all Q/K norm and RoPE rounding offline leaves two score
+failures, or one when also replacing QKV with an ideal projection from observed
+norm1. These are diagnostic counterfactuals, not implementable HTP guarantees.
+
+The both-block split residual failure at index 38104 is an exact sum of observed
+operands `2.703125 - 2.67578125`: actual 0.02734375 versus original 0.02416849136,
+allowed error 0.00312084246. Propagated Block-0 error contributes +0.00120663643
+and local Block-1 error +0.00175642967; cancellation factor is 222.51. Better RoPE
+does not monotonically remove every downstream threshold crossing.
+
+Do not substitute matched-input references for the chain gate or relax tolerance.
+After these experiments the default 128-patch receipt/German hardware gates and
+native verifier/tokenizer/image/position regressions all pass. Full encoder, OCR
+quality and performance remain unvalidated.
+
+### Block-0 output decomposition
+
+The existing chain analyzer now also reconstructs Block 0. Run
+`GLM-OCR isolated RoPE analysis` for the baseline Block-0 computation and
+`GLM-OCR RoPE variant analysis` for the both-block matrix/split captures. This is
+offline development analysis only: no new hardware graph, runtime change, model
+weight edit or CPU inference fallback. Reports remain in each run directory's
+`chain-boundary-analysis.json`, under `block0_output_analysis`.
+
+The pinned Block-0 oracle is regenerated in memory; input, constants and both
+reference tensors must match the fixture bytes exactly. FP64 attention projection
+and MLP reconstructions must independently match the candidate oracle within
+`1e-5 + 1e-5 * abs(reference)`; context uses absolute `1e-6`. This reconstruction
+check does not replace or change the native acceptance tolerance. Fifteen signed
+terms sum back to the observed Block-0 output error, checked at every value within
+1e-12 (measured closure 0 in all three captures). Nonlinear contributions use an
+explicit order of counterfactual boundary replacements, not causal percentages.
+
+For the baseline computation, all Block-0 taps still pass. Output RMSE versus
+the original oracle is 0.00072464835, maximum absolute error 0.02152252197.
+Selected output-component RMS magnitudes are:
+
+| Component at Block-0 output | RMS magnitude |
+| --- | ---: |
+| Initial input/weight conversion | 0.000240753 |
+| Attention context propagated through output projection | 0.000321796 |
+| Local attention projection | 0.000186429 |
+| First residual addition rounding | 0.000328524 |
+| Residual-input error propagated through MLP | 0.000332304 |
+| Local norm2 propagated through MLP | 0.000106429 |
+| Local SiLU propagated through down projection | 0.000307734 |
+| Local down projection | 0.000157541 |
+| Final residual addition rounding | 0.000347876 |
+
+These RMS values must not be added as independent error budgets. Signed terms
+can cancel. Reference FP32/FP64 differences are retained explicitly in the
+decomposition rather than being attributed to HTP execution.
+
+Both residual additions match correctly rounded FP16 sums in all 65,536 values.
+The local projection/norm results also mostly match single rounding: attention
+projection 65,521/65,536; norm2 65,428/65,536; gate projection 262,058/262,144;
+up projection 262,033/262,144; down projection 65,499/65,536. This points to
+representation loss at these boundaries, not a grossly incorrect addition or
+matrix layout. Keeping only the last observed sum unrounded reduces Block-0
+output RMSE to 0.00062926006 in an FP32-input oracle experiment; it is not an
+implemented wider-precision HTP handoff.
+
+### Attention and SiLU localization
+
+The attention-context contribution is further decomposed, with closure below
+2e-15, through exact FP64 softmax/context and the verified output weights:
+
+| Attention contribution at Block-0 output | RMS magnitude |
+| --- | ---: |
+| Upstream Q/K through softmax | 0.000056982 |
+| Score dot/output rounding through softmax | 0.000081815 |
+| Local softmax path | 0.000290872 |
+| Value branch | 0.000036497 |
+| Context MatMul | 0.000061090 |
+
+Thus the local softmax path is the largest attention-context contribution under
+this ordered decomposition. It includes output rounding and any effects of the
+composed ReduceMax/Subtract/Exp/ReduceSum/Divide path, not a proven defect in a
+particular QNN primitive. Both-block split gives a similar local softmax RMS
+0.000294035, despite the more accurate RoPE.
+
+SiLU matches a single final FP16 rounding in only 99,266/262,144 values (37.87%).
+Simulating FP16 rounding after each operation of the native factor-first formula
+matches 120,302 values (45.89%). A separately rounded reciprocal variant matches
+126,732 (48.34%); neither reproduces the kernel. Both positive and negative gate
+values disagree. At the Block-0 output, single SiLU output rounding contributes
+RMS 0.000099872, simulated intermediate rounding 0.000199720, and the observed
+minus staged-simulation remainder 0.000311358. Their signed sum closes below
+6e-15. These components are correlated; the remainder does not identify whether
+Exp, Divide, fusion or another implementation detail is responsible.
+
+### Controlled Block-1 sensitivity
+
+Three interventions pass changed Block-0 outputs to the pinned candidate-weight
+Block-1 oracle: an observed-SiLU tail replay, the same replay with single-rounded
+SiLU, and the exact observed final residual sum without FP16 rounding. The replay
+rounds gated multiply, down projection/bias, and final addition separately. Its
+control differs from the captured output in 1,151/65,536 elements, so it is not a
+bit-exact HTP emulator. Reports include the control and paired SiLU effect.
+
+Single-rounded SiLU reduces baseline Block-0 output RMSE from 0.00072464835 to
+0.00068425348 (control 0.00072490308), but worsens conditional Block-1 score RMSE
+from 0.00091725909 in the replay control to 0.00107889185. At the two originally
+failing Block-1 residual indices, paired conditional shifts are:
+
+| Index | Single-rounded SiLU minus replay control |
+| --- | ---: |
+| 34755 | -0.00070703030 |
+| 48323 | +0.00132393837 |
+
+The first reduces the existing positive error; the second increases it. For the
+both-block split capture, the paired shift at its failing residual index 38104
+is also adverse (+0.00078034401). An isolated improvement in average Block-0
+accuracy therefore does not guarantee improvement at every downstream boundary.
+
+Reports additionally show `frozen_local_error_estimate_vs_original`, formed by
+adding each conditional oracle delta to the captured Block-1 tensor. This assumes
+unchanged local Block-1 execution error and is NOT a hardware prediction, proof
+of attainable precision, or acceptance gate. Even the observed-SiLU control can
+move borderline failure counts; raw counts from these estimates must not be
+reported as a working fix. Conditional deltas and original failing indices are
+retained separately.
+
+All three capture analyses pass their identity, reconstruction and closure checks.
+That offline investigation required no new native build or hardware execution.
+The subsequent intermediate-tensor hardware measurement is recorded below.
+
+### Internal HTP tensor measurement
+
+`GLM-OCR internal tensor capture` builds the opt-in `-CaptureInternals` mode,
+which requires `-TestHtp -CaptureHtp`. It uses the split-RoPE-only-in-Block-1
+configuration and separate `build/ocr-chain-internals/` output. Four existing
+softmax tensors (row maximum, shifted scores, exponential, row sum) and four
+SiLU tensors (decay exponential, divisor, numerator exponential, sigmoid factor)
+become additional APP_READ outputs. There are no extra arithmetic nodes.
+Existing tap layouts, fixtures and default graph choices remain unchanged.
+
+Each block runs three times with NaN-sentinel buffers, finite checks, bit-exact
+internal repeatability, positive accelerator profiling and checked cleanup.
+The final-execution internals are written as `0.internals.f16` and
+`1.internals.f16` through the existing CREATE_NEW capture path and SHA-256 report.
+The instrumented executable remains ARM64/no CRT/Kernel32-only, SHA-256
+`b5fd53bfc1ea33f78897d53cea183988170b3e81ecc69475903a279336a4b9cc`.
+The runtime DLL identities and original chain fixture are unchanged.
+
+Run `GLM-OCR internal tensor analysis` to produce `internal-analysis.json`.
+The existing exporter uses `--analyze-internal-tensors`, the usual chain fixture
+and build options, and `--chain-compare-build` pointing to
+`build/ocr-chain-split-local/`. It checks both executable/capture/fixture hashes,
+exact geometry and input/handoff identities, and matching runtime/RoPE settings.
+It then asserts that both inputs and ALL original taps of BOTH blocks are
+bit-identical to the uninstrumented control. This assertion passes: adding these
+diagnostic outputs did not perturb any observed existing tensor on this run.
+Both internal captures are finite and repeatable. The chain gate still exits 1
+with the same ten original score/two residual violations; measurement success
+does not constitute a precision fix.
+
+#### Observed rounding rules
+
+The analyzer compares each local operation to FP64 arithmetic on its observed
+operands, including nearest-even, nearest-with-ties-away-from-zero, and
+toward-zero FP16 results. The following matches hold in BOTH blocks:
+
+| Operation | Matching rounding model | Matching values per block |
+| --- | --- | ---: |
+| Softmax maximum | Exact | 1,024 / 1,024 |
+| Softmax subtract | Nearest, ties away from zero | 65,536 / 65,536 |
+| Softmax sum | Nearest-even | 1,024 / 1,024 |
+| SiLU divisor addition | Nearest, ties away from zero | 262,144 / 262,144 |
+| SiLU final multiply | Nearest, ties away from zero | 262,144 / 262,144 |
+| Gated multiply | Nearest, ties away from zero | 262,144 / 262,144 |
+| First/final residual additions | Nearest-even | 65,536 / 65,536 each |
+
+For example, all 59,035 Block-0 SiLU-divisor disagreements with nearest-even
+occur exactly at midpoints. Its final multiply's 507 disagreements are likewise
+midpoints. This resolves those apparent arithmetic discrepancies without calling
+them approximation defects. The residual additions include thousands of
+midpoints and select nearest-even instead, so there is no single global HTP
+rounding rule established by these graphs. Row sums have no exact midpoints in
+this fixture and therefore do not distinguish the two nearest rounding modes.
+
+#### Division and exponential results
+
+| Local operation | Block-0 nearest-even matches | Block-1 nearest-even matches |
+| --- | ---: | ---: |
+| Softmax Exp | 61,367 / 65,536 | 61,331 / 65,536 |
+| SiLU decay Exp | 242,604 / 262,144 | 242,891 / 262,144 |
+| SiLU numerator Exp | 252,525 / 262,144 | 252,459 / 262,144 |
+| Softmax Divide | 38,393 / 65,536 | 37,350 / 65,536 |
+| SiLU factor Divide | 137,611 / 262,144 | 138,870 / 262,144 |
+
+All observed exponential results lie within the two FP16 numbers bracketing
+their FP64 reference. Division differs more substantially: 6,440/7,214 softmax
+results and 27,138/26,025 SiLU-factor results lie outside that bracket in
+Blocks 0/1. Neither changing the midpoint rule nor truncating the exact quotient
+reproduces them. A rounded-reciprocal/multiply model also does not match fully.
+Both divisions have a negative mean error: softmax -4.5391e-6/-4.6479e-6 and
+SiLU factor -1.6568e-4/-1.6332e-4. These are measured graph-path discrepancies
+relative to observed operands, not a claim about undocumented kernel internals.
+
+Telescoping decompositions close exactly in both blocks. At Block-0 softmax
+output, local RMS contributions are shift 3.0113e-6, Exp 4.6021e-6, sum
+6.9418e-6, and Divide 1.2410e-5. At SiLU output they are decay Exp 1.6796e-5,
+numerator Exp 2.4146e-5, divisor addition 6.8420e-5, factor Divide 1.0044e-4,
+and final multiply 6.1123e-5. Divide is the largest local contribution in each
+of these ordered decompositions, not the sole error source or an independent
+percentage of final chain error.
+
+The default 128-patch receipt/German HTP gates were rebuilt and both pass;
+verifier, tokenizer, RGB preprocessing and position regressions also pass.
+The intermediate capture itself is currently measured on the 64-token chain;
+128-token storage is bounded but has not been hardware-validated in this mode.
+No tolerance relaxation, original-weight change or full-model acceptance follows
+from this diagnostic result.
+
+### HTP quotient residual correction
+
+Two opt-in experiments now apply `q + (a - q*b)/b`, starting with the native
+Divide result `q`. All five operations are HTP FP16 nodes; no CPU neural work or
+unproven FP32 arithmetic is assumed. The shared tool-private graph helper keeps
+the unmodified Divide when the experiment is disabled or the block index is 0.
+The original graph tensor limit remains unchanged.
+
+- `-RefineDivide` enables correction of Softmax and SiLU quotients in Block 1.
+- Adding `-RefineSiluOnly` corrects only the SiLU quotient and requires
+   `-RefineDivide`.
+- Tasks `GLM-OCR quotient correction capture` and `GLM-OCR SiLU quotient capture`
+   use internal captures, split RoPE only in Block 1, and separate directories
+   `build/ocr-chain-quotient/` and `build/ocr-chain-quotient-silu/`.
+- Corresponding `GLM-OCR quotient correction analysis` and
+   `GLM-OCR SiLU quotient analysis` tasks compare to the instrumented, uncorrected
+   `build/ocr-chain-internals/` control. Reports include the enabled flags.
+
+Both hardware runs pass finite/repeatability checks for internal outputs and
+positive accelerator profiling, with checked cleanup and the ARM64/Kernel32-only,
+no-CRT audit. Both still exit 1 for the unchanged chain precision gate.
+
+The combined experiment asserts bit identity of all Block-0 tensors, both block
+inputs, Block-1 taps through scores, and Softmax maximum/shift/Exp/sum. The
+SiLU-only experiment additionally asserts identity through norm2/gate/up and
+SiLU decay/divisor/numerator. All assertions pass. SiLU operands change in the
+combined experiment because corrected Softmax changes the upstream computation;
+the isolated SiLU experiment supplies the same-operand comparison instead.
+
+| Same-operand local comparison | Uncorrected | Corrected |
+| --- | ---: | ---: |
+| Softmax nearest-even matches / 65,536 | 37,350 | 56,935 |
+| Softmax quotient RMSE | 0.000011317660 | 0.000007202706 |
+| Softmax outside adjacent FP16 bracket | 7,214 | 492 |
+| SiLU factor nearest-even matches / 262,144 | 138,870 | 224,104 |
+| SiLU factor quotient RMSE | 0.000213555449 | 0.000130305647 |
+| SiLU factor outside adjacent FP16 bracket | 26,025 | 863 |
+
+Softmax local RMSE improves about 36%; isolated SiLU factor RMSE about 39%.
+The mean quotient errors move from -4.6479e-6 to +2.8425e-7 for Softmax and
+from -1.6332e-4 to +4.0194e-5 for isolated SiLU. Correction reduces the negative
+bias but does not produce correctly rounded quotients everywhere.
+
+All ten original/seven candidate score violations remain bit-for-bit unchanged:
+scores precede both corrections. Each variant has one original and one candidate
+final-residual violation, versus two original/one candidate in the control.
+All other taps pass. The original failing residuals now pass, but a new one
+appears in both variants:
+
+| Final output index | Original oracle | Control | Either corrected variant | Allowed error |
+| --- | ---: | ---: | ---: | ---: |
+| 34755 | 0.1301323175 | 0.1337890625 | 0.1328125000 | 0.0036506616 |
+| 48323 | 0.0546834469 | 0.0585937500 | 0.0566406250 | 0.0032734172 |
+| 12136 | 0.1332283020 | 0.1308593750 | 0.1289062500 | 0.0036661415 |
+
+At index 12136 the new error is -0.0043220520. Overall final-output RMSE versus
+the original oracle is 0.0011068444 in the control, 0.0010537251 with both
+corrections, and 0.0011120240 with SiLU only. Fewer threshold violations do not
+by themselves prove a globally more accurate chain. Neither option is enabled
+by default or accepted as a full precision fix.
+
+The analyzer also simulates correction from the observed control quotient using
+the measured ties-away rule for product/residual/add and an ideal single-rounded
+correction Divide. For Softmax this predicts 65,391/65,536 corrected outputs
+exactly; it is not an exact HTP emulator. Product rounding erases 36,232 nonzero
+exact Softmax residuals and 117,683 isolated-SiLU residuals. Those are offline
+model counts, not additional captured hardware residuals. The report labels
+whether the modeled correction is active in the corresponding capture and keeps
+an exact-residual counterfactual separate from measured outputs.
+
+The evidence supports testing a more accurate residual calculation before simply
+repeating this FP16 iteration. The current unchanged scores also require separate
+upstream work; a post-score correction cannot fix them. No wider-precision
+residual implementation or performance claim has been validated here.
+Default receipt/German HTP examples, native verifier/tokenizer/image/position
+tests, and the original internal-capture analysis were rerun successfully.
+
+### Captured matrix residual: local precision verified, chain still fails
+
+The next opt-in experiment computes the Block-1 SiLU correction residual through
+MatMul accumulation instead of separately rounding `q*b`. For each group of 256
+elements it multiplies `[a, q]` by vertically concatenated `[I; -diag(b)]`, giving
+`a - q*b`. The diagonal construction uses only exact zero/one masks and negation
+of the observed FP16 divisor. Quotient, residual, correction Divide and final
+Add still have FP16 tensor interfaces. This does not claim a documented physical
+accumulator width or universally correctly rounded MatMul implementation.
+
+Reproduction:
+
+- `GLM-OCR matrix residual capture` builds with `-MatrixResidual -RefineDivide
+   -RefineSiluOnly -CaptureInternals -CaptureHtp -TestHtp -SplitRope
+   -RopeBlock1Only`, using the unchanged chain fixture and
+   `build/ocr-chain-matrix-residual-group256/`.
+- `GLM-OCR matrix residual analysis` compares to `build/ocr-chain-internals/`.
+- Block 1 appends `silu_initial_quotient` and `silu_correction_residual`, each
+   `[tokens,4096]`, to its eight existing internal captures. Block 0 retains eight.
+   The analyzer verifies all capture/fixture/executable/runtime identities and
+   uses FP64 arithmetic on the actual captured operands.
+
+The initial scalar-batch graph and a 32-element grouped graph were deliberately
+stopped during QNN finalization after more than eight and six minutes respectively.
+Their separate build directories `ocr-chain-matrix-residual` and
+`ocr-chain-matrix-residual-grouped` retain aborted-run evidence, not numerical
+results. Grouping 256 elements reduces the 64-token batch count to 1,024 and
+allows finalization and execution to complete. This costs substantial temporary
+storage: the explicit identity alone is 128 MiB at 64 tokens (256 MiB at the
+128-token capacity). No performance or production suitability claim is made;
+the matrix-residual path was measured only on the 64-token chain.
+
+The completed native executable SHA-256 is
+`9d3ff36d6f60a970b9487ecb990a8a54a11526179be41b44bee5d5fd44fc9b44`.
+It passes the ARM64 Kernel32-only/no-CRT audit. Both blocks execute three times;
+internal captures are finite and bit-repeatable, with successful cleanup.
+Both inputs, all Block-0 taps/internals, Block 1 through gate/up and the first
+seven internals are bit-identical to the uncorrected control. The newly captured
+initial quotient is also bit-identical to the control SiLU factor.
+
+| Block-1 SiLU measurement | Uncorrected Divide | Separate-product correction | Matrix-residual correction |
+| --- | ---: | ---: | ---: |
+| Nearest-even quotient matches / 262,144 | 138,870 | 224,104 | 261,969 |
+| Quotient RMSE | 0.000213555449 | 0.000130305647 | 0.000111144337 |
+| Quotients outside adjacent FP16 bracket | 26,025 | 863 | 0 |
+
+All 262,144 captured matrix residuals match exactly one nearest-even FP16
+rounding of `a - q*b` computed in FP64, including 4,288 midpoint cases.
+Residual RMSE is 3.0338583e-8; no nonzero exact residual is erased. The earlier
+separate-product offline model has residual RMSE 0.000131390785 and erases
+117,683 nonzero residuals. This directly verifies the intended improvement
+against identical operands, rather than inferring precision from tensor types.
+The remaining 175 quotient disagreements are all within the adjacent FP16
+bracket. An offline ideal correction-Divide model predicts 261,967 outputs
+exactly; the correction quotient itself was not captured, so this is not an
+exact account of its kernel or a guarantee of fully correct rounding.
+
+The unchanged chain gate still fails: ten original/seven candidate score
+violations, plus two final-output violations against each oracle. Other taps
+pass. Scores precede the changed arithmetic and are bit-identical to control.
+Final-output RMSE versus the original oracle changes from 0.001106844425 to
+0.001084375442, but the individual failures remain decisive:
+
+| Final output index | Original oracle | Control | Matrix-residual path | Status |
+| --- | ---: | ---: | ---: | --- |
+| 34755 | 0.1301323175 | 0.1337890625 | 0.1328125000 | Now passes |
+| 48323 | 0.0546834469 | 0.0585937500 | 0.0585937500 | Still fails |
+| 12136 | 0.1332283020 | 0.1308593750 | 0.1289062500 | New failure versus control |
+
+The local residual hypothesis is confirmed, not full-chain acceptance. Improving
+the correction residual alone does not remove upstream representation and
+accumulation errors. Default inference arithmetic, source weights and numerical
+tolerances remain unchanged. Further work should localize the remaining output
+errors and upstream score errors separately, not repeat correction blindly.
+
 ## Next stages
 
 1. **Execution contract and tokenizer: completed above.** Initial source audit and
@@ -782,6 +1391,7 @@ result. Python remains confined to optional offline oracle generation.
 Current status: source acquisition, verification, bounded native tokenizer/prompt
 runtime, RGB resize/normalization/patch packing, single-image positions, isolated
 FP16 HTP primitives, complete weight range audit, learned patch projection and
-complete vision block 0 on three small grids against two numerical oracles.
+complete vision block 0 on three 64-patch grids and two visible 128-patch OCR
+examples against two numerical oracles, with PNG previews and known input text.
 No image-to-text inference, full-model FP16 accuracy, PDF support or OCR quality
 acceptance is claimed. No previous Whisper or TranslateGemma campaign is restarted.
