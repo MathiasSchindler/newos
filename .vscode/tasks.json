@@ -202,6 +202,34 @@
 			"command": "& { $ErrorActionPreference = 'Stop'; $tokens = $null; $parseErrors = $null; [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'experimental/snapdragon/tools/build.ps1'), [ref]$tokens, [ref]$parseErrors); if ($parseErrors.Count) { throw ($parseErrors | Out-String) }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; & (Join-Path (Split-Path (Get-Command clang).Source) 'llvm-readobj.exe') --file-headers --coff-imports experimental/snapdragon/build/npu_probe_group_composition.exe | Select-String -Pattern 'Machine:|Name:|ExceptionTable|CLRRuntimeHeader'; if ($LASTEXITCODE -ne 0) { throw 'PE audit failed' }; Get-Content experimental/snapdragon/build/gemma-group-composition.log | Select-String -Pattern 'maximum absolute|composed graph|contextFree|backendFree|logFree'; Write-Output 'Build script syntax and whitespace passed' }",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma build inline",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma greeting test",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/translate.exe --from de --to en --max-tokens 16 'Guten Tag.'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma CLI regression",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --hardware",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma final gates",
+			"type": "shell",
+			"command": "clang --target=aarch64-w64-windows-gnu -std=c11 -Wall -Wextra -Wpedantic -Werror -ffreestanding -fno-builtin -Isrc/shared -Iexperimental/snapdragon/src/shared -Iexperimental/snapdragon/src/tools/gemma -fsyntax-only experimental/snapdragon/tools/test-gemma-block.c; if ($LASTEXITCODE -ne 0) { throw 'Normal runner compile failed' }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; & ./experimental/snapdragon/build/translate.exe --from en --to de --max-tokens 16 'The door is open.'; if ($LASTEXITCODE -ne 0) { throw 'Console test failed' }",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

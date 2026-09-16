@@ -12,6 +12,58 @@ and reference generation.
 The first release supports text-to-text translation. The SigLIP vision tower and
 image translation are explicitly deferred.
 
+## Runnable 512-token prototype (2026-09-16)
+
+Build from the repository root with
+`./experimental/snapdragon/tools/build-gemma.ps1 -Translate`. The VS Code task
+`TranslateGemma build inline` runs the same build without changing PowerShell's
+machine execution policy. Run the resulting executable:
+
+```powershell
+.\experimental\snapdragon\build\translate.exe --from de --to en "Guten Tag, mein Name ist Hase. Ich weiß von nichts."
+```
+
+Observed output: `Good day, my name is Hase. I know nothing.`
+
+This is an experimental row-W4, greedy, text-only NPU prototype, not Stage 8
+performance or translation-quality acceptance. It restores the existing verified
+128-row Stage 7 graph and masks 127 rows for each decode step. Prompt plus reserved
+output must fit 512 tokens; `--max-tokens` defaults to 64 (allowed 1..256). Stop
+tokens are omitted. Exit 0 means a nonempty EOS-terminated result, exit 1 means
+failure, and exit 2 means the output budget was exhausted; partial output is still
+printed. Known row-W4 semantic failures remain unresolved.
+
+The executable is freestanding ARM64 C, has only Kernel32 static imports, and
+loads QNN dynamically. Python is not used at runtime. Translation alone goes to
+stdout (UTF-8 when redirected, Unicode console output otherwise); diagnostics go
+to stderr. The prototype textually reuses the tested block runner for context
+validation, tensor registration, and cleanup; it does not load expected KV/logit
+fixtures or invoke a CPU model.
+
+Keep the executable under `experimental/snapdragon/build`, alongside the matching
+QAIRT 2.50/QNN 2.39 DLLs, HTP skeletons and their `.cat` files. Defaults resolve
+relative to the executable: `gemma-block/prompt-512.gmb` (with its `.context` file)
+and `../models/translategemma-4b-stage4/tokenizer.gta`. The binding references the
+existing validated W4 embedding and Stage 7 RoPE artifacts using absolute ASCII
+paths. `--bindings PATH` and `--tokenizer PATH` override defaults. Model asset
+paths must remain ASCII; source text supports Unicode. The build does not export
+weights or create a missing QNN context.
+
+The 12-case bounded CLI/NPU check is
+`experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --hardware`.
+Without `--hardware`, only request validation runs. Results are saved beside the
+executable in `translate-test-results.json`. Hardware cases cover the sentence
+above, greeting, embedded quotes, German umlaut output, truncation, and successful
+QNN cleanup; malformed requests are rejected before context restore.
+
+On this Snapdragon X Elite, the sentence took 16.54 seconds wall time: context
+creation from validated binary 1.10 seconds, prefill 0.25 seconds, and 12 decode
+steps 2.93 seconds (about 4.1 steps/s). File loading, complete payload hashing, and
+other startup work account for most remaining latency. This is not a persistent
+service or an optimized one-token graph. The earlier 253-token incremental probe
+passed all 34 layers' KV and final-logit tolerances. The stopped CPU quality sweep
+and its preserved results were not restarted or changed.
+
 ## Feasibility baseline
 
 The official checkpoint is a Gemma 3 conditional-generation model. Its text

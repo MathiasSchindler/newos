@@ -1,6 +1,11 @@
 #include "gemma_block.h"
 #include "gemma_numeric.h"
 #include "crypto/sha256.h"
+#ifdef GEMMA_TRANSLATE
+#include "gemma_tokenizer.h"
+static int translate_arguments(void);
+static int translate_run(const QnnInterfaceV2 *, QnnContextHandle, i32);
+#endif
 
 __declspec(dllimport) void *GetStdHandle(u32);
 __declspec(dllimport) char *GetCommandLineA(void);
@@ -33,6 +38,7 @@ static u8 *shared;
 static u32 cache_positions[2048];
 static long long frequency;
 static char failure_point[32];
+static u32 prompt_chunk = 128;
 static GemmaBlock prompt_blocks[34];
 static char binding_path[1024];
 static QnnApiVersion runtime_version;
@@ -55,13 +61,19 @@ static int equal(const char *left, const char *right) {
     while (*left && *left == *right) { ++left; ++right; } return *left == *right;
 }
 static void text(const char *message) {
-    u32 written; WriteFile(GetStdHandle((u32)-11), message, length(message), &written, 0);
+    u32 written; WriteFile(GetStdHandle((u32)
+#ifdef GEMMA_TRANSLATE
+        -12
+#else
+        -11
+#endif
+    ), message, length(message), &written, 0);
 }
 static void number(u64 value) {
     char output[32], reversed[32]; u32 size = 0, index, written;
     do { reversed[size++] = (char)('0' + value % 10); value /= 10; } while (value);
     for (index = 0; index < size; ++index) output[index] = reversed[size - index - 1];
-    WriteFile(GetStdHandle((u32)-11), output, size, &written, 0);
+    output[size] = 0; text(output); (void)written;
 }
 static void status(const char *name, u64 code) { text(name); text(": "); number(code); text("\n"); }
 static void join(char *output, const char *first, const char *second) {
@@ -91,8 +103,12 @@ done:
 }
 static u32 read32(const u8 *data) { return data[0] | (u32)data[1] << 8 | (u32)data[2] << 16 | (u32)data[3] << 24; }
 static int read_bindings(void) {
+#ifndef GEMMA_TRANSLATE
     char args[3][1024] = {{0}}; const char *command = GetCommandLineA();
-    u32 count = 0, size, offset = 20, index; u8 *data;
+    u32 count = 0;
+#endif
+    u32 size, offset = 20, index; u8 *data;
+#ifndef GEMMA_TRANSLATE
     while (*command) {
         u32 used = 0; int quoted = 0;
         while (*command == ' ' || *command == '\t') ++command;
@@ -112,9 +128,15 @@ static int read_bindings(void) {
         if (length(args[2]) >= sizeof(failure_point)) return 0;
         memcpy(failure_point, args[2], length(args[2]) + 1);
     }
-    data = read_file(args[1], &size);
+#else
+    if (!translate_arguments()) return 0;
+#endif
+    data = read_file(binding_path, &size);
     if (!data || size < 20 || read32(data) != 0x36424d47U || read32(data + 4) != 2) return 0;
     layer = read32(data + 8); bits = read32(data + 12); binding_count = read32(data + 16);
+#ifdef GEMMA_TRANSLATE
+    if (layer != 34 || bits != 4) { text("Translator requires the W4 512-token prompt binding\n"); return 0; }
+#endif
     if ((layer != 0 && layer != 5 && layer != 34) || (bits != 4 && bits != 8) || binding_count > 1024) return 0;
     for (index = 0; index < binding_count; ++index) {
         u32 name_size, path_size;
@@ -741,16 +763,20 @@ static int prompt_buffers(const QnnInterfaceV2 *api, QnnContextHandle context, i
     tables[0] = prompt_fixture("local-cos", 2048 * 128); tables[1] = prompt_fixture("local-sin", 2048 * 128);
     tables[2] = prompt_fixture("global-cos", 2048 * 128); tables[3] = prompt_fixture("global-sin", 2048 * 128);
     for (index = 0; index < 4; ++index) if (!tables[index]) return 0;
+#ifndef GEMMA_TRANSLATE
     prompt_embedding = prompt_fixture("input", 256 * 2560);
     prompt_logits[0] = prompt_fixture("logits-253", 262208); prompt_logits[1] = prompt_fixture("logits-256", 262208);
     if (!prompt_embedding || !prompt_logits[0] || !prompt_logits[1]) return 0;
+#endif
     for (layer_index = 0; layer_index < 34; ++layer_index) {
+#ifndef GEMMA_TRANSLATE
         char name[80], digits[8] = {(char)('0' + layer_index / 10), (char)('0' + layer_index % 10), '/', 0};
         char stem[32];
         join(stem, "layer-", layer_index < 10 ? digits + 1 : digits);
         join(name, stem, "k-rope"); prompt_expected_key[layer_index] = prompt_fixture(name, 4 * 256 * 256);
         join(name, stem, "v-projection"); prompt_expected_value[layer_index] = prompt_fixture(name, 4 * 256 * 256);
         if (!prompt_expected_key[layer_index] || !prompt_expected_value[layer_index]) return 0;
+    #endif
         for (index = 0; index < prompt_blocks[layer_index].count; ++index) {
             GemmaBlockTensor *entry = &prompt_blocks[layer_index].tensors[index]; const char *name_part = entry->name + 9;
             int cache = equal(name_part, "past-key") || equal(name_part, "past-value");
@@ -809,8 +835,8 @@ static int prompt_execute(const QnnInterfaceV2 *api, u32 bucket, u32 valid, int 
         memset(prompt_tensor(layer_index, "past-key")->buffer, 0, 4U * bucket * 512);
         memset(prompt_tensor(layer_index, "past-value")->buffer, 0, 4U * bucket * 512);
     }
-    for (start = 0; start < valid; start += 128) {
-        u32 count = valid - start < 128 ? valid - start : 128;
+    for (start = 0; start < valid; start += prompt_chunk) {
+        u32 count = valid - start < prompt_chunk ? valid - start : prompt_chunk;
         u16 *embedding = prompt_tensor(0, "input")->buffer;
         float *positions = prompt_tensor(0, "positions")->buffer;
         for (element = 0; element < 128 * 2560; ++element)
@@ -864,12 +890,21 @@ void mainCRTStartup(void) {
     QnnLogHandle log = 0; QnnBackendHandle backend = 0; QnnDeviceHandle device = 0; QnnContextHandle context = 0;
     Providers get_providers; RpcAlloc rpc_alloc; RpcFd rpc_fd; u32 count, index, step, result = 1, cleanup_errors = 0, prompt_bucket = 0;
     u64 code, started; GemmaBlockHost host = {0, allocate, weight, status};
-    if (!read_bindings() || !QueryPerformanceFrequency(&frequency)) goto cleanup;
+    if (!read_bindings() || !QueryPerformanceFrequency(&frequency)) {
+#ifdef GEMMA_TRANSLATE
+        text("Invalid request or assets; run translate.exe --help\n");
+#endif
+        goto cleanup;
+    }
     if (layer == 34 && equal(failure_point, "envelope-regression")) {
         result = prompt_envelope_regression() ? 0 : 1;
         goto cleanup;
     }
+#ifdef GEMMA_TRANSLATE
+    text("TranslateGemma 4B W4 NPU prototype\n");
+#else
     text(layer == 34 ? "Gemma Stage 7 W" : "Gemma Stage 6 W"); number(bits); text(" layer "); number(layer); text("\n");
+#endif
     module = LoadLibraryA("QnnHtp.dll"); if (!module) goto cleanup;
     get_providers = (Providers)GetProcAddress(module, "QnnInterface_getProviders");
     if (!get_providers || get_providers(&providers, &count)) goto cleanup;
@@ -888,12 +923,15 @@ void mainCRTStartup(void) {
     }
     if (layer == 34) {
         int restore_only = failure_point[0] == 'r';
-        prompt_bucket = equal(failure_point, "prompt-512") || equal(failure_point, "restore-512") ? 512 :
+        if (equal(failure_point, "decode-check-512")) { restore_only = 1; prompt_chunk = 1; }
+        prompt_bucket = equal(failure_point, "prompt-512") || equal(failure_point, "restore-512") || equal(failure_point, "decode-check-512") ? 512 :
             equal(failure_point, "prompt-1024") || equal(failure_point, "restore-1024") ? 1024 :
             equal(failure_point, "prompt-2048") || equal(failure_point, "restore-2048") ? 2048 : 0;
         if (!prompt_bucket || bits != 4 || (!restore_only && !prompt_build(api, context, host, prompt_bucket))) goto cleanup;
+#ifndef GEMMA_TRANSLATE
         while (allocation_count) if (!VirtualFree(allocations[--allocation_count], 0, 0x8000U)) ++cleanup_errors;
         text("Released construction weight buffers\n");
+#endif
         if (cleanup_errors || !prompt_restore(api, backend, device, &context, prompt_bucket)) goto cleanup;
     } else {
     if (fail_at("context")) goto cleanup;
@@ -916,9 +954,15 @@ void mainCRTStartup(void) {
         shared = rpc_alloc(25, 1, (i32)prompt_shared_bytes);
         if (!shared || (u64)shared % 4096) goto cleanup;
         memset(shared, 0xa5, prompt_shared_bytes);
+    #ifdef GEMMA_TRANSLATE
+        result = (u32)translate_run(api, context, rpc_fd(shared));
+        result = result == 1 ? 0 : result == 2 ? 2 : 1;
+        goto cleanup;
+    #endif
         if (!prompt_buffers(api, context, rpc_fd(shared), prompt_bucket)) goto cleanup;
         if (!prompt_execute(api, prompt_bucket, 253, 1, &elapsed)) goto cleanup;
         status("padded prompt us", elapsed);
+        if (prompt_chunk == 1) { text("PASS incremental KV/logits\n"); result = 0; goto cleanup; }
         if (!prompt_execute(api, prompt_bucket, 256, 1, &elapsed)) goto cleanup;
         status("full prompt us", elapsed);
         for (repeat = 0; repeat < 3; ++repeat) {
@@ -1000,8 +1044,18 @@ cleanup:
     status("cleanup errors", cleanup_errors);
     if (cleanup_errors) result = 1;
     if (!result && layer != 34) text("PASS block intermediates, cached rows, guard regions and warm determinism\n");
-    if (!result && layer == 34) text(equal(failure_point, "envelope-regression") ? "PASS envelope regression cleanup\n" :
+    if (!result && layer == 34)
+#ifndef GEMMA_TRANSLATE
+    text(prompt_chunk == 1 ? "PASS incremental decode cleanup\n" : equal(failure_point, "envelope-regression") ? "PASS envelope regression cleanup\n" :
         equal(failure_point, "position-regression") ? "PASS position regression cleanup\n" :
         "PASS prompt restore, KV/logits, padding, determinism and throughput\n");
-    status("block runner result", result); ExitProcess(result);
+#else
+    text("Translation complete\n");
+#endif
+#ifdef GEMMA_TRANSLATE
+    status("translator result", result);
+#else
+    status("block runner result", result);
+#endif
+    ExitProcess(result);
 }

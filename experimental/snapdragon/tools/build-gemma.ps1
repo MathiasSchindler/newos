@@ -9,6 +9,7 @@ param(
     [switch]$TestBlocks,
     [switch]$TestPrompt,
     [switch]$RestorePrompt,
+    [switch]$Translate,
     [ValidateSet(512, 1024, 2048)][int]$PromptBucket = 512,
     [ValidateSet(4, 8)][int[]]$BlockBits = @(8, 4),
     [ValidateSet(0, 5)][int[]]$BlockLayers = @(0, 5),
@@ -67,6 +68,25 @@ try {
         throw "Tokenizer no-CRT PE contract failed`n$audit"
     }
     Write-Output "Built $binary; ARM64, Kernel32 only, no exception or CLR tables"
+    if ($Translate) {
+        $translateBinary = Join-Path $BuildDir 'translate.exe'
+        & $compilerPath @flags experimental/snapdragon/src/tools/gemma/translate.c `
+            experimental/snapdragon/src/tools/gemma/gemma_block.c `
+            experimental/snapdragon/src/tools/gemma/gemma_model.c `
+            experimental/snapdragon/src/tools/gemma/gemma_artifact.c `
+            experimental/snapdragon/src/tools/gemma/gemma_numeric.c `
+            experimental/snapdragon/src/tools/gemma/gemma_tokenizer.c src/shared/crypto/sha256.c -o $translateBinary
+        if ($LASTEXITCODE -ne 0) { throw 'Translator compilation failed' }
+        $translateAudit = & $readObj --file-headers --coff-imports $translateBinary | Out-String
+        $translateImports = @([regex]::Matches($translateAudit, '(?m)^\s*Name: (.+\.dll)\s*$'))
+        if ($LASTEXITCODE -ne 0 -or $translateAudit -notmatch 'IMAGE_FILE_MACHINE_ARM64' -or
+            $translateImports.Count -ne 1 -or $translateImports[0].Groups[1].Value.Trim() -ine 'KERNEL32.dll' -or
+            $translateAudit -notmatch 'ExceptionTableRVA: 0x0\b' -or $translateAudit -notmatch 'ExceptionTableSize: 0x0\b' -or
+            $translateAudit -notmatch 'CLRRuntimeHeaderRVA: 0x0\b' -or $translateAudit -notmatch 'CLRRuntimeHeaderSize: 0x0\b') {
+            throw 'Translator no-CRT PE contract failed'
+        }
+        Write-Output "Built $translateBinary; ARM64, Kernel32 only, no exception or CLR tables"
+    }
     if ($TestBlocks -or $TestPrompt) {
         $blockDir = Join-Path $BuildDir 'gemma-block'
         New-Item -ItemType Directory -Force -Path $blockDir | Out-Null

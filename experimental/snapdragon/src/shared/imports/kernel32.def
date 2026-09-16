@@ -6,6 +6,11 @@ EXPORTS
     ExitProcess
     FreeLibrary
     GetCommandLineA
+    GetCommandLineW
+    GetModuleFileNameW
+    WideCharToMultiByte
+    MultiByteToWideChar
+    WriteConsoleW
     GetActiveProcessorCount
     GetCurrentProcess
     GetConsoleMode
