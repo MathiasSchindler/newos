@@ -10,6 +10,8 @@ param(
     [switch]$TestPrompt,
     [switch]$RestorePrompt,
     [switch]$Translate,
+    [switch]$Gui,
+    [switch]$TestDocuments,
     [switch]$ProfileTranslate,
     [switch]$BuildDecode,
     [switch]$BuildBundle,
@@ -83,12 +85,23 @@ try {
         throw "Tokenizer no-CRT PE contract failed`n$audit"
     }
     Write-Output "Built $binary; ARM64, Kernel32 only, no exception or CLR tables"
-    if ($Translate -or $ProfileTranslate) {
-        $translateName = if ($ProfileTranslate) { 'translate-profile.exe' } else { 'translate.exe' }
+    if (($Gui -and ($Translate -or $ProfileTranslate -or $TestDocuments)) -or ($TestDocuments -and ($Translate -or $ProfileTranslate))) { throw 'Build GUI, CLI and document test targets separately' }
+    if ($Translate -or $ProfileTranslate -or $Gui -or $TestDocuments) {
+        $translateName = if ($TestDocuments) { 'test-translate-document.exe' } elseif ($Gui) { 'translate-gui.exe' } elseif ($ProfileTranslate) { 'translate-profile.exe' } else { 'translate.exe' }
         $translateBinary = Join-Path $BuildDir $translateName
         $translateFlags = @('-O2')
         if ($ProfileTranslate) { $translateFlags += '-DGEMMA_TRANSLATE_PROFILE' }
-        & $compilerPath @flags @translateFlags experimental/snapdragon/src/tools/gemma/translate.c `
+        $translateSource = 'experimental/snapdragon/src/tools/gemma/translate.c'
+        if ($TestDocuments) { $translateSource = 'experimental/snapdragon/tools/test-translate-document.c' }
+        if ($Gui) {
+            $translateSource = 'experimental/snapdragon/src/tools/gemma/translate_gui.c'
+            foreach ($library in 'user32','gdi32') {
+                & $dllTool -m arm64 -d ('experimental/snapdragon/src/shared/imports/{0}.def' -f $library) -l ('{0}/lib{1}.a' -f $BuildDir,$library)
+                if ($LASTEXITCODE -ne 0) { throw 'GUI import library creation failed' }
+            }
+            $translateFlags += @('-luser32', '-lgdi32', '-Wl,--subsystem,windows')
+        }
+        & $compilerPath @flags @translateFlags $translateSource `
             experimental/snapdragon/src/tools/gemma/gemma_block.c `
             experimental/snapdragon/src/tools/gemma/gemma_model.c `
             experimental/snapdragon/src/tools/gemma/gemma_artifact.c `
@@ -97,13 +110,20 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Translator compilation failed' }
         $translateAudit = & $readObj --file-headers --coff-imports $translateBinary | Out-String
         $translateImports = @([regex]::Matches($translateAudit, '(?m)^\s*Name: (.+\.dll)\s*$'))
+        $expectedImports = if ($Gui) { @('KERNEL32.dll','USER32.dll','GDI32.dll') } else { @('KERNEL32.dll') }
+        $actualImports = @($translateImports | ForEach-Object { $_.Groups[1].Value.Trim() })
         if ($LASTEXITCODE -ne 0 -or $translateAudit -notmatch 'IMAGE_FILE_MACHINE_ARM64' -or
-            $translateImports.Count -ne 1 -or $translateImports[0].Groups[1].Value.Trim() -ine 'KERNEL32.dll' -or
+            @(Compare-Object $expectedImports $actualImports).Count -ne 0 -or
+            ($Gui -and $translateAudit -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') -or
             $translateAudit -notmatch 'ExceptionTableRVA: 0x0\b' -or $translateAudit -notmatch 'ExceptionTableSize: 0x0\b' -or
             $translateAudit -notmatch 'CLRRuntimeHeaderRVA: 0x0\b' -or $translateAudit -notmatch 'CLRRuntimeHeaderSize: 0x0\b') {
             throw 'Translator no-CRT PE contract failed'
         }
-        Write-Output "Built $translateBinary; ARM64, Kernel32 only, no exception or CLR tables"
+        Write-Output ('Built {0}; ARM64, imports: {1}; no exception or CLR tables' -f $translateBinary,($actualImports -join ', '))
+        if ($TestDocuments) {
+            & $translateBinary
+            if ($LASTEXITCODE -ne 0) { throw 'Native document tests failed' }
+        }
     }
     if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $TestEnvelope -or $TestSelection -or $BuildSelection) {
         $blockDir = Join-Path $BuildDir 'gemma-block'

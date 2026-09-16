@@ -1,0 +1,4 @@
+LIBRARY GDI32.dll
+EXPORTS
+    CreateFontW
+    DeleteObject

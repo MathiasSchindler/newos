@@ -12,6 +12,90 @@ and reference generation.
 The first release supports text-to-text translation. The SigLIP vision tower and
 image translation are explicitly deferred.
 
+## Resident Windows GUI
+
+Build with `./experimental/snapdragon/tools/build-gemma.ps1 -Gui`, or use the
+VS Code task `TranslateGemma native GUI build`. Launch
+`experimental/snapdragon/build/translate-gui.exe`. This is a native ARM64 Win32
+application, not a wrapper around the CLI process. Its only static imports are
+Kernel32, User32 and Gdi32; the build audits these imports, the GUI subsystem,
+and empty exception/CLR tables. No CRT, browser, Python or GUI framework is used
+at runtime. QNN remains dynamically loaded.
+
+The application preloads the tokenizer, embedding, shared prefill/decode context
+and NPU selector on one dedicated inference thread. They stay resident until
+the window closes. Native controls provide source/target language selection
+from the tokenizer's 581 language codes, multiline input, streamed Unicode
+output, and a Translate button. German to English is the initial selection.
+The UI stays responsive during loading and inference. Each request resets its
+KV state; changing languages does not reload the model. Closing waits for any
+in-flight operation and normal QNN cleanup without blocking the message loop.
+
+Keep the executable in the existing build directory with the matching QNN DLLs,
+HTP skeletons and `.cat` files. It uses the executable-relative
+`gemma-block/prompt-512.gmb`, its `.bundle.context` and optional
+`.selection.context`, plus `../models/translategemma-4b-stage4/tokenizer.gta`.
+The binding's embedding and RoPE paths must also remain valid. `-Gui` builds the
+program only; it does not generate missing model assets. Long input is handled
+automatically by the shared document engine described below.
+
+The `TranslateGemma native GUI validation` task rebuilds and runs
+`tools/test-translate-gui.py` against the actual native controls and NPU. Python
+is test-only. Coverage includes repeated resident requests, language changes,
+Unicode, multiline text, long paragraphs, missing assets, and closing during
+loading or inference. Desktop and compact DPI-aware screenshots and timings
+are saved under `build/translate-gui-*`; both layouts were visually inspected.
+The document-capable run preloaded in 3.36 seconds; the Hase sentence completed
+in 2.07/2.06 seconds. Output now appears when each piece completes, rather than
+streaming tokens that might need to be discarded on retry. A paragraph of 32
+Hase sentence pairs plus a final greeting completed in 74.25 seconds, retaining
+all 32 names and the paragraph break. These are local measurements, not
+cold-cache or translation-quality guarantees.
+Existing row-W4 translation-quality limitations are unchanged.
+
+## Long Text And Limits
+
+The pinned model configuration specifies `max_position_embeddings: 131072`
+(128K tokens). That is the model context capacity, not the context supported by
+this application: the installed NPU prefill/decode graphs, masks and KV buffers
+are compiled for **512 tokens per inference**, including prompt instructions,
+source and generated output. A token is not necessarily a word. No 128K NPU
+execution or full-document context is claimed.
+
+GUI and default CLI requests now translate documents in resident pieces, with
+256 output tokens reserved per piece. Short single-line requests up to 128 UTF-8
+bytes stay intact when they fit. Longer text prefers sentence/newline boundaries
+within 256 source bytes, falling back to whitespace or UTF-8 character boundaries
+and smaller token-checked pieces. Sentence detection is deliberately heuristic,
+not a multilingual linguistic parser. Each piece resets KV state. Paragraph
+separators are retained, but cross-piece context and document-wide consistency
+are not guaranteed. The deployed W4 model can still omit or mistranslate content
+even when it returns an end token; chunking does not certify completeness.
+
+If a piece reaches its generation limit, its unpublished output is discarded
+and the source is split and retried. Completed pieces are emitted progressively;
+`--no-stream` buffers the document instead. An unsplittable failed piece remains
+an explicit incomplete result (CLI exit 2), never silent success. Runtime errors
+or output-cap exhaustion return failure (exit 1). Earlier emitted pieces may
+remain visible on failure. The request cap is 196,607 UTF-8 bytes and translated
+content is capped at 4 MiB, plus the final newline. The GUI output control has
+matching capacity. These are application buffer limits, not model limits.
+
+Use `translate.exe --from de --to en --stdin` for a multiline UTF-8 document on
+standard input, including redirected files; `--batch` continues to handle one
+document per input line with fixed languages. Direct command-line text also
+has a 32,767-byte argument cap and Windows' command-line length restriction.
+An explicit `--max-tokens 1..256` retains strict single-request diagnostic mode:
+no automatic splitting, prompt plus reserve must fit 512, and exit 2 reports
+truncated output. Omit it for normal long-text translation.
+
+`build-gemma.ps1 -TestDocuments` runs 416 deterministic freestanding checks,
+including forced limit/retry, byte-exact whitespace reconstruction, UTF-8
+splitting and bounds. `tools/test-translate.py --documents` tests the real NPU
+with long paragraphs, output beyond 64 tokens, multiline stdin, buffering,
+strict-limit compatibility and batch isolation. Neither requires changing or
+rebuilding the installed model graphs.
+
 ## Runnable 512-token prototype (2026-09-16)
 
 Build from the repository root with
@@ -29,11 +113,11 @@ This is an experimental row-W4, greedy, text-only NPU prototype, not Stage 8
 performance or translation-quality acceptance. It restores the existing verified
 128-row Stage 7 graph for prefill. One-off calls also use it for decode to avoid
 loading a second context; `--decode` explicitly selects the dedicated one-row
-decoder. `--batch` selects one-row decoding automatically. Prompt plus reserved
-output must fit 512 tokens; `--max-tokens` defaults to 64 (allowed 1..256). Stop
-tokens are omitted. Exit 0 means a nonempty EOS-terminated result, exit 1 means
-failure, and exit 2 means the output budget was exhausted; partial output is still
-printed. Known row-W4 semantic failures remain unresolved.
+decoder. `--batch` selects one-row decoding automatically. Default requests use
+the document engine above; explicit `--max-tokens` selects strict mode (1..256).
+Stop tokens are omitted. Exit 0 means completed generation, exit 1 means failure,
+and exit 2 means incomplete generation. Known row-W4 semantic failures remain
+unresolved; completed generation is not translation-quality acceptance.
 
 The executable is freestanding ARM64 C, has only Kernel32 static imports, and
 loads QNN dynamically. Python is not used at runtime. Translation alone goes to

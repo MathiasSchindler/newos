@@ -1,4 +1,13 @@
 #define GEMMA_TRANSLATE 1
+#ifdef GEMMA_GUI
+static int gui_next(void);
+static int gui_write(const unsigned char *, unsigned int);
+static void gui_ready(void);
+static void gui_done(int);
+static int gui_cancelled(void);
+static void gui_finished(unsigned int);
+#define mainCRTStartup translate_engine_main
+#endif
 #include "../../../tools/test-gemma-block.c"
 
 __declspec(dllimport) const u16 *GetCommandLineW(void);
@@ -13,7 +22,10 @@ __declspec(dllimport) int SetStdHandle(u32, void *);
 static char arguments[16][32768];
 static char tokenizer_path[1024];
 static const char *source_language, *target_language, *source_text;
-static u32 maximum_tokens = 64;
+static u32 maximum_tokens = 256;
+static int automatic_text = 1, stdin_document;
+static u8 document_output[4194304];
+static u32 document_output_size;
 static GemmaTokenizer tokenizer;
 static u32 request_tokens[512], request_count;
 static GemmaTokenizerWork *tokenizer_work;
@@ -85,10 +97,83 @@ static int batch_read(void) {
     return 1;
 }
 
-static int request_prepare(void) {
+static int request_range(const char *input, u32 size) {
     return gemma_tokenizer_prompt(&tokenizer, tokenizer_work, source_language, target_language,
-        (const u8 *)source_text, length(source_text), maximum_tokens, request_tokens, 512, &request_count) &&
+        (const u8 *)input, size, maximum_tokens, request_tokens, 512, &request_count) &&
         request_count + maximum_tokens <= 512;
+}
+
+static int document_space(u8 value) {
+    return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+}
+
+static u32 document_boundary(const char *input, u32 size) {
+    u32 sentence = 0, space = 0, paragraph = 0;
+    for (u32 index = size / 2; index < size; ++index) {
+        if (document_space((u8)input[index])) {
+            space = index;
+            if (input[index] == '\n') paragraph = index;
+            if (index && (input[index - 1] == '.' || input[index - 1] == '!' || input[index - 1] == '?')) sentence = index;
+        }
+        if (index >= 3 && (u8)input[index - 3] == 0xe3 && (u8)input[index - 2] == 0x80 && (u8)input[index - 1] == 0x82) sentence = index;
+    }
+    if (paragraph) return paragraph;
+    if (sentence) return sentence;
+    if (space) return space;
+    while (size && ((u8)input[size] & 0xc0) == 0x80) --size;
+    return size;
+}
+
+static u32 document_piece(const char *input, u32 size) {
+    int multiline = 0;
+    for (u32 index = 0; index < size && index < 128; ++index)
+        if (input[index] == '\r' || input[index] == '\n') multiline = 1;
+    if (input == source_text && size <= 128 && !multiline && request_range(input, size)) return size;
+    u32 candidate = size < 256 ? size : 256;
+    for (u32 index = 0; index < candidate; ++index) {
+        if (input[index] == '\r' || input[index] == '\n' ||
+            (index && document_space((u8)input[index]) &&
+             (input[index - 1] == '.' || input[index - 1] == '!' || input[index - 1] == '?')) ||
+            (index >= 3 && (u8)input[index - 3] == 0xe3 && (u8)input[index - 2] == 0x80 && (u8)input[index - 1] == 0x82)) {
+            if (index) { candidate = index; break; }
+        }
+    }
+    while (candidate) {
+        while (candidate && ((u8)input[candidate] & 0xc0) == 0x80) --candidate;
+        if (candidate && request_range(input, candidate)) {
+            if (candidate == size || document_space((u8)input[candidate]) ||
+                (candidate >= 3 && (u8)input[candidate - 3] == 0xe3 && (u8)input[candidate - 2] == 0x80 && (u8)input[candidate - 1] == 0x82)) return candidate;
+            candidate = document_boundary(input, candidate);
+            if (candidate && request_range(input, candidate)) return candidate;
+        }
+        candidate /= 2;
+    }
+    return 0;
+}
+
+static int request_prepare(void) {
+    u32 size = length(source_text);
+    if (!size || size >= GEMMA_TOKENIZER_MAX_BYTES || !gemma_utf8_valid((const u8 *)source_text, size)) return 0;
+    if (!automatic_text) return request_range(source_text, size);
+    u32 first = 0;
+    while (first < size && document_space((u8)source_text[first])) ++first;
+    return first < size && document_piece(source_text + first, size - first) != 0;
+}
+
+static int document_read(void) {
+    u32 used = 0, received;
+    for (;;) {
+        u8 byte;
+        if (!ReadFile(GetStdHandle((u32)-10), &byte, 1, &received, 0)) {
+            if (GetLastError() != 109) return 0;
+            received = 0;
+        }
+        if (!received) break;
+        if (!byte || used == sizeof(batch_line) - 1) return 0;
+        batch_line[used++] = (char)byte;
+    }
+    batch_line[used] = 0; source_text = batch_line;
+    return used != 0;
 }
 
 static int profile_events(const QnnInterfaceV2 *api, const u64 *events, u32 count, u32 depth) {
@@ -139,16 +224,24 @@ static int parse_arguments(const u16 *command) {
 
 static int translate_arguments(void) {
     u16 executable[1024]; char directory[1024]; u32 last = 0;
+#ifdef GEMMA_GUI
+    int count = 1;
+    (void)parse_arguments; (void)batch_read; (void)arguments; (void)document_read; (void)stdin_document;
+#else
     int count = parse_arguments(GetCommandLineW());
+#endif
     if (count == 2 && equal(arguments[1], "--help")) {
-        text("Usage: translate.exe --from de --to en [--max-tokens 64] TEXT\n"
+        text("Usage: translate.exe --from de --to en TEXT\n"
              "Optional: --bindings PATH --tokenizer PATH --decode --padded-decode --qnn-profile --verify-decode\n"
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
              "Shared-weight bundle is automatic when installed; --bundle requires it.\n"
              "Diagnostics: --cpu-selection --compile-selection --serial-load --performance (scoped HTP power vote).\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
-             "Experimental W4 NPU runtime; 512 total tokens. Exit 2 means token limit.\n");
+             "Use --stdin instead of TEXT for a multiline UTF-8 document (up to 196607 bytes).\n"
+             "Long text is split automatically; completed pieces are streamed.\n"
+             "--max-tokens 1..256 opts into a strict single-request output limit.\n"
+             "Experimental W4 NPU runtime; 512 tokens per piece, 4 MiB output cap. Exit 2 means incomplete.\n");
         ExitProcess(0);
     }
     u32 size = GetModuleFileNameW(0, executable, 1024);
@@ -158,6 +251,14 @@ static int translate_arguments(void) {
     directory[last] = 0;
     join(binding_path, directory, "gemma-block/prompt-512.gmb");
     join(tokenizer_path, directory, "../models/translategemma-4b-stage4/tokenizer.gta");
+#ifdef GEMMA_GUI
+    translate_quiet = 1; prompt_bundle = 1; force_decode = 1;
+    u32 bytes; u8 *data = read_file(tokenizer_path, &bytes);
+    tokenizer_work = allocate(0, sizeof(*tokenizer_work));
+    if (!data || !tokenizer_work || !gemma_tokenizer_open(&tokenizer, data, bytes)) return 0;
+    join(failure_point, "restore-512", "");
+    return 1;
+#else
     for (int index = 1; index < count; ++index) {
         const char *option = arguments[index];
         if (equal(option, "--quiet")) { translate_quiet = 1; continue; }
@@ -167,6 +268,7 @@ static int translate_arguments(void) {
         if (equal(option, "--compile-selection")) { compile_selection = 1; continue; }
         if (equal(option, "--serial-load")) { serial_bundle_read = 1; continue; }
         if (equal(option, "--batch")) { batch_mode = 1; continue; }
+        if (equal(option, "--stdin")) { stdin_document = 1; continue; }
         if (equal(option, "--padded-decode")) { padded_decode = 1; continue; }
         if (equal(option, "--decode")) { force_decode = 1; continue; }
         if (equal(option, "--bundle")) { prompt_bundle = 1; force_decode = 1; continue; }
@@ -180,6 +282,7 @@ static int translate_arguments(void) {
             if (equal(option, "--from")) { if (source_language) return 0; source_language = value; }
             else if (equal(option, "--to")) { if (target_language) return 0; target_language = value; }
             else if (equal(option, "--max-tokens")) {
+                automatic_text = 0;
                 maximum_tokens = 0;
                 if (!*value) return 0;
                 while (*value) {
@@ -216,6 +319,7 @@ static int translate_arguments(void) {
     }
     if (!force_decode && !batch_mode) padded_decode = 1;
     if (maximum_tokens == 1) padded_decode = 1;
+    if (stdin_document && (batch_mode || source_text || !document_read())) return 0;
     if (batch_mode && (source_text || batch_read() != 1)) return 0;
     if (count < 0 || !source_language || !target_language || !source_text || !*source_text) {
         text("Expected: translate.exe --from de --to en TEXT\n"); return 0;
@@ -223,10 +327,11 @@ static int translate_arguments(void) {
     u32 bytes; u8 *data = read_file(tokenizer_path, &bytes);
     tokenizer_work = allocate(0, sizeof(*tokenizer_work));
     if (!data || !tokenizer_work || !gemma_tokenizer_open(&tokenizer, data, bytes) || !request_prepare()) {
-        text("Invalid language, tokenizer, UTF-8 text, or 512-token request budget\n"); return 0;
+        text("Invalid language, tokenizer, UTF-8 text, input size, or explicit token budget\n"); return 0;
     }
     join(failure_point, "restore-512", "");
     return 1;
+#endif
 }
 
 static int translate_step(const QnnInterfaceV2 *api, const u8 *embedding_weights,
@@ -309,6 +414,10 @@ static int decode_compare(const u16 *actual, const u16 *expected, u32 heads, u32
 static int translation_write(const u8 *bytes, u32 size) {
     if (!size) return 1;
     if (!gemma_utf8_valid(bytes, size)) return 0;
+#ifdef GEMMA_GUI
+    (void)console_output;
+    return gui_write(bytes, size);
+#else
     void *destination = GetStdHandle((u32)-11); u32 console_mode, written;
     if (GetConsoleMode(destination, &console_mode)) {
         int wide_size = MultiByteToWideChar(65001, 8, (const char *)bytes, (int)size,
@@ -328,6 +437,7 @@ static int translation_write(const u8 *bytes, u32 size) {
         }
     }
     return 1;
+#endif
 }
 
 static int translation_emit(const u32 *tokens, u32 count, u32 *emitted, int final) {
@@ -343,6 +453,9 @@ static int translation_emit(const u32 *tokens, u32 count, u32 *emitted, int fina
 }
 
 static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, const GemmaArtifactHeader *header) {
+#ifdef GEMMA_DOCUMENT_TEST
+    return document_test_generate(api, embedding, header);
+#endif
     PROFILE_START(reset_started);
     graph_load(prefill_state);
     for (u32 layer_index = 0; layer_index < 34; ++layer_index) for (u32 kind = 0; kind < 2; ++kind) {
@@ -362,6 +475,9 @@ static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, con
     }
     timing("prefill us", started); started = now();
     while (generated_count < maximum_tokens) {
+    #ifdef GEMMA_GUI
+        if (gui_cancelled()) return 0;
+    #endif
         PROFILE_START(argmax_started);
         u16 *logits = prompt_tensor(33, "logits")->buffer;
         GemmaBlockTensor *selection = prompt_tensor(33, "selected-token");
@@ -393,7 +509,7 @@ static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, con
         if (!profile_first_token) profile_first_token = profile_clock();
     #endif
         generated[generated_count++] = best;
-        if (!no_stream && !translation_emit(generated, generated_count, &emitted, 0)) return 0;
+        if (!automatic_text && !no_stream && !translation_emit(generated, generated_count, &emitted, 0)) return 0;
         status("generated token", best);
         if (gemma_model_is_stop_token(best)) { stopped = 1; break; }
         if (generated_count < maximum_tokens) {
@@ -434,9 +550,74 @@ static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, con
         }
     }
     timing("generation us", started);
+    if (automatic_text) {
+        if (!stopped) return 2;
+        u32 size;
+        if (!gemma_tokenizer_decode(&tokenizer, generated, generated_count, 1, translation_output,
+                                   sizeof(translation_output) - 1, &size) || !size) return 0;
+        translation_output[size] = 0;
+        return 1;
+    }
     if (!translation_emit(generated, generated_count, &emitted, 1)) return 0;
     if (!stopped) { text("Token limit reached; translation may be incomplete\n"); return 2; }
     return 1;
+}
+
+static int document_emit(const u8 *bytes, u32 size) {
+    if (size > sizeof(document_output) - document_output_size) return 0;
+    if (no_stream) memcpy(document_output + document_output_size, bytes, size);
+    else if (!translation_write(bytes, size)) return 0;
+    document_output_size += size;
+    return 1;
+}
+
+static int translate_piece(const QnnInterfaceV2 *api, const u8 *embedding, const GemmaArtifactHeader *header,
+                           const char *input, u32 size, u32 depth) {
+#ifdef GEMMA_GUI
+    if (gui_cancelled()) return 0;
+#endif
+    u32 leading = 0;
+    while (leading < size && document_space((u8)input[leading])) ++leading;
+    if (leading && !document_emit((const u8 *)input, leading)) return 0;
+    input += leading; size -= leading;
+    u32 content = size;
+    while (content && document_space((u8)input[content - 1])) --content;
+    if (content) {
+        if (!request_range(input, content)) return 0;
+        int result = translate_request(api, embedding, header);
+        if (!result) return 0;
+        if (result == 2) {
+            if (depth >= 20) return 2;
+            u32 split = document_boundary(input, content / 2);
+            if (!split || split >= content) return 2;
+            text("Retrying smaller translation pieces\n");
+            result = translate_piece(api, embedding, header, input, split, depth + 1);
+            if (result != 1) return result;
+            result = translate_piece(api, embedding, header, input + split, content - split, depth + 1);
+            if (result != 1) return result;
+        } else if (!document_emit(translation_output, length((const char *)translation_output))) return 0;
+    }
+    return document_emit((const u8 *)input + content, size - content) ? 1 : 0;
+}
+
+static int translate_document(const QnnInterfaceV2 *api, const u8 *embedding, const GemmaArtifactHeader *header) {
+    if (!automatic_text) return translate_request(api, embedding, header);
+    document_output_size = 0;
+    u32 size = length(source_text), position = 0;
+    while (position < size) {
+        u32 first = position;
+        while (position < size && document_space((u8)source_text[position])) ++position;
+        if (!document_emit((const u8 *)source_text + first, position - first)) return 0;
+        if (position == size) break;
+        u32 piece = document_piece(source_text + position, size - position);
+        if (!piece) return 0;
+        int result = translate_piece(api, embedding, header, source_text + position, piece, 0);
+        if (result != 1) return result;
+        position += piece;
+        status("translated source bytes", position);
+    }
+    if (no_stream && !translation_write(document_output, document_output_size)) return 0;
+    return translation_write((const u8 *)"\n", 1) ? 1 : 0;
 }
 
 static void translate_quiet_finish(void) {
@@ -616,17 +797,30 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
         PROFILE_END(PROFILE_DECODE_SETUP, decode_setup_started);
     }
     int final_result = 1;
+#ifdef GEMMA_GUI
+    (void)final_result;
+    gui_ready();
+#endif
     for (;;) {
+#ifdef GEMMA_GUI
+        if (!gui_next()) return 1;
+        if (!request_prepare()) { gui_done(-1); continue; }
+#endif
         u32 checkpoint = allocation_count;
         u64 started = now();
-        int result = translate_request(api, embedding, &header);
+        int result = translate_document(api, embedding, &header);
         timing("request us", started);
         while (allocation_count > checkpoint) if (!VirtualFree(allocations[--allocation_count], 0, 0x8000U)) return 0;
+    #ifdef GEMMA_GUI
+        gui_done(result);
+        if (!result) return 0;
+    #else
         if (!result) return 0;
         if (result == 2) final_result = 2;
         if (!batch_mode) return final_result;
         int next = batch_read();
         if (!next) return final_result;
         if (next < 0 || !request_prepare()) { text("Invalid batch request\n"); return 0; }
+    #endif
     }
 }

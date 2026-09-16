@@ -414,6 +414,62 @@
 			"command": "$candidate = 'experimental/snapdragon/build/fc-only'; New-Item -ItemType Directory -Force -Path ($candidate + '/gemma-block') | Out-Null; Copy-Item experimental/snapdragon/build/gemma-block/prompt-512.gmb ($candidate + '/gemma-block/prompt-512.gmb'); Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in '.dll','.so','.cat' } | Copy-Item -Destination $candidate; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir $candidate -FullyConnected -TestEnvelope; if ($LASTEXITCODE -ne 0) { throw 'FC candidate compile failed' }; $process = Start-Process -FilePath ($candidate + '/gemma-block/test-gemma-block.exe') -ArgumentList @(($candidate + '/gemma-block/prompt-512.gmb'),'build-bundle-512') -RedirectStandardOutput ($candidate + '/bundle-build.log') -RedirectStandardError ($candidate + '/bundle-errors.log') -PassThru -NoNewWindow; if (!$process.WaitForExit(240000)) { $process.Kill(); $process.WaitForExit(); Write-Output 'FC-only candidate exceeded 240-second budget; stopped without deployment' } else { Write-Output ('FC-only exit: {0}' -f $process.ExitCode) }; Get-Content ($candidate + '/bundle-build.log') -Tail 12; $runs = Get-Content -Raw experimental/snapdragon/build/load-candidate/translate-load-results.json | ConvertFrom-Json; foreach ($record in $runs) { Write-Output $record.name; $record.stderr -split '\\r?\\n' | Where-Object { $_ -match '^cleanup .* us:' } }",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma native GUI build",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Gui; if ($LASTEXITCODE -ne 0) { throw 'GUI build failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma native GUI validation",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Gui; if ($LASTEXITCODE -ne 0) { throw 'GUI build failed' }; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate-gui.py; if ($LASTEXITCODE -ne 0) { throw 'GUI tests failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma GUI integration only",
+			"type": "shell",
+			"command": "& ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate-gui.py; if ($LASTEXITCODE -ne 0) { throw 'GUI integration failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma GUI final inspection",
+			"type": "shell",
+			"command": "git --no-pager diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; git --no-pager diff --stat; Get-Process translate-gui -ErrorAction SilentlyContinue | Select-Object Id,MainWindowTitle; Get-Item experimental/snapdragon/build/translate-gui.exe | Select-Object Length,LastWriteTime; git --no-pager diff -- experimental/snapdragon/src/tools/gemma/translate.c experimental/snapdragon/tools/build-gemma.ps1 | Out-String",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma GUI launch",
+			"type": "shell",
+			"command": "$process = Start-Process -FilePath (Resolve-Path experimental/snapdragon/build/translate-gui.exe).Path -PassThru; if (!$process.WaitForInputIdle(10000)) { throw 'GUI did not initialize' }; $process.Refresh(); if ($process.HasExited) { throw 'GUI exited unexpectedly' }; $process | Select-Object Id,MainWindowTitle",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma document validation",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Translate; if ($LASTEXITCODE -ne 0) { throw 'Build failed' }; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --documents; if ($LASTEXITCODE -ne 0) { throw 'Document tests failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma install document GUI",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -Gui -BuildDir experimental/snapdragon/build/gui-update; if ($LASTEXITCODE -ne 0) { throw 'GUI build failed' }; $target = 'experimental/snapdragon/build/translate-gui.exe'; if (Test-Path $target) { Move-Item $target ('experimental/snapdragon/build/translate-gui-before-documents-' + [guid]::NewGuid().ToString('N') + '.exe') }; Copy-Item experimental/snapdragon/build/gui-update/translate-gui.exe $target; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate-gui.py; if ($LASTEXITCODE -ne 0) { throw 'GUI document tests failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma native document tests",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -TestDocuments; if ($LASTEXITCODE -ne 0) { throw 'Native document tests failed' }",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

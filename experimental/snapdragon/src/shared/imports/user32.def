@@ -1,0 +1,26 @@
+LIBRARY USER32.dll
+EXPORTS
+    RegisterClassExW
+    CreateWindowExW
+    DefWindowProcW
+    GetMessageW
+    TranslateMessage
+    DispatchMessageW
+    IsDialogMessageW
+    PostMessageW
+    SendMessageW
+    SetWindowTextW
+    GetWindowTextW
+    GetWindowTextLengthW
+    EnableWindow
+    MoveWindow
+    GetClientRect
+    ShowWindow
+    DestroyWindow
+    PostQuitMessage
+    LoadCursorW
+    LoadIconW
+    SetFocus
+    SetProcessDpiAwarenessContext
+    GetDpiForWindow
+    SetWindowPos

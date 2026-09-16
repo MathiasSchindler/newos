@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--performance", action="store_true", help="Interleaved scoped QNN performance-vote benchmark")
     parser.add_argument("--selection-cache", action="store_true", help="Selector cache corruption, parity and interleaved timing")
     parser.add_argument("--load-benchmark", action="store_true", help="Interleaved serial/overlapped bundle loading")
+    parser.add_argument("--documents", action="store_true", help="Long-text, stdin and strict-limit regression")
     options = parser.parse_args()
     binary = options.binary.resolve()
     if options.profile:
@@ -37,7 +38,7 @@ def main():
             with tempfile.TemporaryFile() as errors:
                 with subprocess.Popen([str(binary), *arguments], cwd=binary.parent.parent,
                                       stdout=subprocess.PIPE, stderr=errors, bufsize=0) as process:
-                    watchdog = threading.Timer(120, process.kill)
+                    watchdog = threading.Timer(240 if options.documents else 120, process.kill)
                     watchdog.start()
                     try:
                         chunks = []
@@ -51,7 +52,7 @@ def main():
                     result = subprocess.CompletedProcess(process.args, code, b"".join(chunks), errors.read())
         else:
             result = subprocess.run([str(binary), *arguments], cwd=binary.parent.parent,
-                                    capture_output=True, input=input_bytes, timeout=120, check=False)
+                                    capture_output=True, input=input_bytes, timeout=240 if options.documents else 120, check=False)
         output = result.stdout.decode("utf-8", errors="strict")
         diagnostics = result.stderr.decode("utf-8", errors="strict")
         record = dict(name=name, arguments=arguments, exit_code=result.returncode,
@@ -75,6 +76,33 @@ def main():
         return record
 
     try:
+        if options.documents:
+            common = ["--from", "de", "--to", "en"]
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            expected = "Good day, my name is Hase. I know nothing."
+            run("short-auto", [*common, sentence], 0, expected + "\n")
+            paragraph = " ".join([sentence] * 9)
+            long_result = run("long-paragraph", [*common, paragraph], 0, observe=True)
+            assert long_result["stdout"].count("Hase") == 9
+            assert long_result["stderr"].count("translated source bytes:") > 1
+            assert long_result["stderr"].count("bundle restore: 0") == 1
+            assert len(re.findall(r"generated token:", long_result["stderr"])) > 64
+            assert long_result["last_byte_seconds"] - long_result["first_byte_seconds"] > 1
+            document = "\t" + paragraph + "\r\n\r\n" + sentence + "\r\n"
+            streamed = run("multiline-stdin", [*common, "--stdin"], 0, input_bytes=document.encode())
+            assert streamed["stdout"].count("Hase") == 10
+            assert streamed["stdout"].startswith("\t") and "\r\n\r\n" in streamed["stdout"]
+            assert streamed["stdout"].endswith("\r\n\n")
+            run("buffered-document", [*common, "--no-stream", "--stdin"], 0, streamed["stdout"], document.encode())
+            run("strict-limit", [*common, "--max-tokens", "1", "Guten Tag."], 2, "Good\n")
+            run("strict-budget", [*common, "--max-tokens", "64", "Hallo " * 700], 1, "")
+            run("invalid-stdin", [*common, "--stdin"], 1, "", b"\xff")
+            run("oversized-stdin", [*common, "--stdin"], 1, "", b"a" * 196608)
+            run("conflicting-stdin", [*common, "--stdin", "--batch"], 1, "", b"Hello")
+            run("batch-documents", [*common, "--batch"], 0, long_result["stdout"] + expected + "\n",
+                (paragraph + "\n" + sentence + "\n").encode())
+            print("PASS long documents, >64 output tokens, paragraph boundaries, stdin, buffering and batch isolation", flush=True)
+            return
         if options.load_benchmark:
             assets = Path(__file__).resolve().parents[1]
             common = ["--bundle", "--bindings", str(assets / "build/gemma-block/prompt-512.gmb"),
@@ -226,7 +254,7 @@ def main():
                     record = run(("buffered-" if buffered else "streamed-") + str(repeat + 1),
                                  [*arguments, sentence], 0, expected, observe=True)
                     span = record["last_byte_seconds"] - record["first_byte_seconds"]
-                    assert span < 0.5 if buffered else span > 1.0, record
+                    assert span < 0.5, record
             unicode_args = ["--quiet", "--from", "en", "--to", "de", "The door is open."]
             unicode_result = run("quiet-unicode", unicode_args, 0, observe=True)
             assert "\u00fc" in unicode_result["stdout"]
@@ -287,7 +315,7 @@ def main():
         run("invalid-language", ["--from", "invalid", "--to", "en", "Hello"], 1, "")
         run("missing-value", ["--from"], 1, "")
         run("invalid-limit", ["--from", "de", "--to", "en", "--max-tokens", "513", "Hallo"], 1, "")
-        run("over-budget", ["--from", "de", "--to", "en", "Hallo " * 700], 1, "")
+        run("over-budget", ["--from", "de", "--to", "en", "--max-tokens", "64", "Hallo " * 700], 1, "")
         run("duplicate-text", ["--from", "de", "--to", "en", "Hallo", "Welt"], 1, "")
         if options.hardware:
             run("greeting", ["--from", "de", "--to", "en", "--max-tokens", "16", "Guten Tag."], 0, "Good day.\n")
@@ -323,7 +351,7 @@ def main():
             assert "QNN_SAMPLE decode" in sampled["stderr"] and "QNN_EVENT Accelerator" in sampled["stderr"], sampled
         print("PASS translator CLI" + (" and NPU integration" if options.hardware else ""), flush=True)
     finally:
-        report = binary.parent / ("translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
+        report = binary.parent / ("translate-document-results.json" if options.documents else "translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

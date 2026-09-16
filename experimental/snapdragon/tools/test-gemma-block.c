@@ -1524,5 +1524,9 @@ cleanup:
 #ifdef GEMMA_TRANSLATE
     translate_quiet_finish();
 #endif
+#ifdef GEMMA_GUI
+    gui_finished(result);
+#else
     ExitProcess(result);
+#endif
 }
