@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import struct
 import statistics
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ def main():
     parser.add_argument("--streaming", action="store_true", help="Quiet/streaming integration and first-byte timing")
     parser.add_argument("--bundle", action="store_true", help="Shared-weight candidate parity and latency")
     parser.add_argument("--performance", action="store_true", help="Interleaved scoped QNN performance-vote benchmark")
+    parser.add_argument("--selection-cache", action="store_true", help="Selector cache corruption, parity and interleaved timing")
     options = parser.parse_args()
     binary = options.binary.resolve()
     if options.profile:
@@ -72,6 +74,59 @@ def main():
         return record
 
     try:
+        if options.selection_cache:
+            common = ["--bundle", "--from", "de", "--to", "en"]
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            expected = "Good day, my name is Hase. I know nothing.\n"
+            setup_samples = [[], []]
+            reference_tokens = None
+            for repeat in range(3):
+                for cached in (0, 1) if repeat % 2 == 0 else (1, 0):
+                    record = run(("cached-" if cached else "compiled-") + str(repeat + 1),
+                                 [*common, *([] if cached else ["--compile-selection"]), "--batch"],
+                                 0, expected * 3, ((sentence + "\n") * 3).encode())
+                    assert ("selection cache restore: 0" in record["stderr"]) == bool(cached)
+                    tokens = re.findall(r"generated token: (\d+)", record["stderr"])
+                    assert tokens
+                    if reference_tokens is None:
+                        reference_tokens = tokens
+                    assert tokens == reference_tokens
+                    record["selection_setup_us"] = int(re.search(r"selection setup us: (\d+)", record["stderr"])[1])
+                    setup_samples[cached].append(record["selection_setup_us"])
+                    record["request_us"] = [int(value) for value in re.findall(r"request us: (\d+)", record["stderr"])]
+                    assert len(record["request_us"]) == 3
+            print(json.dumps({"compiled_setup_median_us": statistics.median(setup_samples[0]),
+                              "cached_setup_median_us": statistics.median(setup_samples[1])}), flush=True)
+            source_binding = binary.parent / "gemma-block/prompt-512.gmb"
+            original = Path(str(source_binding) + ".selection.context").read_bytes()
+            with tempfile.TemporaryDirectory(dir=binary.parent) as temporary:
+                binding = Path(temporary) / "test.gmb"
+                shutil.copyfile(source_binding, binding)
+                Path(str(binding) + ".bundle.context").hardlink_to(Path(str(source_binding) + ".bundle.context"))
+                context = Path(str(binding) + ".selection.context")
+                args = [*common, "--bindings", str(binding), "Guten Tag."]
+                missing = run("selection-cache-missing", args, 0, "Good day.\n")
+                assert "selection cache restore:" not in missing["stderr"]
+                corruptions = {"empty": b"", "short": original[:40], "truncated": original[:-1],
+                               "trailing": original + b"x"}
+                for name, offset in (("magic", 0), ("version", 4), ("runtime", 8), ("digest", 52), ("payload", len(original) - 1)):
+                    changed = bytearray(original)
+                    changed[offset] ^= 1
+                    corruptions[name] = changed
+                oversized = bytearray(original)
+                struct.pack_into("<Q", oversized, 32, 16777217)
+                corruptions["oversized"] = oversized
+                duplicate = bytearray(original)
+                duplicate[44:48] = duplicate[40:44]
+                corruptions["duplicate-id"] = duplicate
+                for name, payload in corruptions.items():
+                    context.write_bytes(payload)
+                    rejected = run("selection-cache-" + name, args, 1, "")
+                    assert "selection cache restore:" not in rejected["stderr"]
+                    assert "Invalid selection cache" in rejected["stderr"]
+                context.write_bytes(original)
+                run("selection-cache-restored", args, 0, "Good day.\n")
+            return
         if options.performance:
             assets = Path(__file__).resolve().parents[1]
             sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
@@ -233,7 +288,7 @@ def main():
             assert "QNN_SAMPLE decode" in sampled["stderr"] and "QNN_EVENT Accelerator" in sampled["stderr"], sampled
         print("PASS translator CLI" + (" and NPU integration" if options.hardware else ""), flush=True)
     finally:
-        report = binary.parent / ("translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
+        report = binary.parent / ("translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

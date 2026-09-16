@@ -376,6 +376,52 @@ Whisper is unchanged. Reports: `build/translate-bundle-results.json`, current
 `build/row-major/translate-performance-results.json`. The streaming-named reports
 are refreshed by their test modes; they are not immutable historical snapshots.
 
+## Selector cache profiling follow-up (2026-09-16)
+
+The separate NPU selector is now cached in
+`build/gemma-block/prompt-512.gmb.selection.context`. Build it with
+`build-gemma.ps1 -BuildSelection`; build the consumer with `-Translate`.
+The payload is 1,233,864 bytes. The fixed version-1 envelope records the QNN
+runtime identity and three tensor IDs, bounds the payload to 16 MiB, requires an
+exact file length and distinct IDs, and hashes header metadata plus payload.
+The I/O contract remains FP16 logits, INT32 first-maximum token, and FP16 finite
+flag. This integrity check is not authentication of untrusted model packages.
+Missing caches retain live graph compilation; invalid installed caches fail.
+`--compile-selection` bypasses the cache for diagnostics. Runtime inference stays
+freestanding C and selection stays on the NPU.
+
+Three interleaved cached/live processes per mode, each translating the Hase
+sentence three times, produced identical token sequences. Median selector setup
+fell from 207,490 us to 9,608 us, a 197,882 us reduction (about 95%). Median total
+three-request process time was 10.36 s cached versus 10.57 s compiled. This is a
+startup optimization, not a per-token kernel improvement. The subsequent bundle
+suite measured 6.21 s median one-off latency and 3.78 s first output; differences
+from older runs cannot all be attributed to this change. The new detailed decode
+sample still reports 610,512,933 device cycles.
+
+Bounded experiments rejected during this pass:
+
+- Embedded selection with the otherwise validated row-major MatMul layout did
+   not finish full-graph finalization within the 240-second budget. No replacement
+   model bundle was installed. This independently shows that the previous combined
+   FullyConnected/embedded-selector slowdown was not necessarily caused by FC.
+- Hierarchical 64-wide selector reductions passed edge cases but cost 3.44 ms
+   per warmed call versus 3.07 ms for the original reduction, so were removed.
+- FP32 index reduction returned 65504 instead of vocabulary ID 262207, consistent
+   with internal half-precision conversion. It was removed; exact INT32 selection
+   remains mandatory on this backend.
+
+`test-translate.py --selection-cache` covers six interleaved processes (18 requests),
+missing-cache fallback, restored execution, and 11 malformed cache cases: empty,
+short, truncated, trailing bytes, magic, version, runtime, digest, payload,
+oversized length and duplicate IDs. The report is
+`build/translate-selection-cache-results.json`. The standalone selector regression
+also checks 100 warmed executions and reports their total wall time. All cache
+tests, full bundle parity/Unicode/multi-chunk tests, 150 legacy and 14 bundle
+envelope cases, 7,470 tokenizer fixtures, 18 tokenizer corruptions, 323 numeric
+fixtures and four SHA vectors passed, as did the ARM64 Kernel32-only PE audit.
+The existing quality campaign remains stopped and Whisper is untouched.
+
 ## Feasibility baseline
 
 The official checkpoint is a Gemma 3 conditional-generation model. Its text

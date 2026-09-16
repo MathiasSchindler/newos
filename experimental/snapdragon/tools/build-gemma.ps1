@@ -19,6 +19,7 @@ param(
     [switch]$FullyConnected,
     [switch]$NpuSelection,
     [switch]$TestSelection,
+    [switch]$BuildSelection,
     [ValidateSet(512, 1024, 2048)][int]$PromptBucket = 512,
     [ValidateSet(4, 8)][int[]]$BlockBits = @(8, 4),
     [ValidateSet(0, 5)][int[]]$BlockLayers = @(0, 5),
@@ -104,7 +105,7 @@ try {
         }
         Write-Output "Built $translateBinary; ARM64, Kernel32 only, no exception or CLR tables"
     }
-    if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $TestEnvelope -or $TestSelection) {
+    if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $TestEnvelope -or $TestSelection -or $BuildSelection) {
         $blockDir = Join-Path $BuildDir 'gemma-block'
         New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
         $blockBinary = Join-Path $blockDir 'test-gemma-block.exe'
@@ -126,6 +127,10 @@ try {
         if ($TestSelection) {
             & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') selection-regression
             if ($LASTEXITCODE -ne 0) { throw 'NPU selection regression failed' }
+        }
+        if ($BuildSelection) {
+            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-selection
+            if ($LASTEXITCODE -ne 0) { throw 'NPU selection cache build failed' }
         }
         if ($BuildDecode) {
             & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-decode-512

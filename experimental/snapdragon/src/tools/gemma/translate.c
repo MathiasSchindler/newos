@@ -36,6 +36,7 @@ static QnnTensor selection_input, selection_outputs[2];
 static u32 selected_token;
 static u16 selected_finite;
 static int cpu_selection;
+static int compile_selection;
 static void *quiet_sink, *saved_stderr;
 static u8 translation_output[GEMMA_TOKENIZER_MAX_BYTES];
 static u16 console_output[GEMMA_TOKENIZER_MAX_BYTES];
@@ -144,7 +145,7 @@ static int translate_arguments(void) {
              "Optional: --bindings PATH --tokenizer PATH --decode --padded-decode --qnn-profile --verify-decode\n"
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
              "Shared-weight bundle is automatic when installed; --bundle requires it.\n"
-             "Diagnostics: --cpu-selection --performance (scoped HTP power vote).\n"
+             "Diagnostics: --cpu-selection --compile-selection --performance (scoped HTP power vote).\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
              "Experimental W4 NPU runtime; 512 total tokens. Exit 2 means token limit.\n");
@@ -163,6 +164,7 @@ static int translate_arguments(void) {
         if (equal(option, "--no-stream")) { no_stream = 1; continue; }
         if (equal(option, "--performance")) { performance_requested = 1; continue; }
         if (equal(option, "--cpu-selection")) { cpu_selection = 1; continue; }
+        if (equal(option, "--compile-selection")) { compile_selection = 1; continue; }
         if (equal(option, "--batch")) { batch_mode = 1; continue; }
         if (equal(option, "--padded-decode")) { padded_decode = 1; continue; }
         if (equal(option, "--decode")) { force_decode = 1; continue; }
@@ -458,29 +460,82 @@ static int translate_release(const QnnInterfaceV2 *api, void (*rpc_free)(void *)
     return ok;
 }
 
+static int selection_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device) {
+    char path[1100]; join(path, binding_path, ".selection.context");
+    void *file = CreateFileA(path, 0x80000000U, 1, 0, 3, 0x80U, 0);
+    if (file == (void *)(u64)-1) {
+        u32 error = GetLastError();
+        return error == 2 || error == 3 ? 0 : -1;
+    }
+    SelectionHeader header; long long size = 0; u8 digest[32];
+    int ok = SetFilePointerEx(file, 0, &size, 2) && SetFilePointerEx(file, 0, 0, 0) &&
+        transfer_file(file, &header, sizeof(header), 0);
+    if (ok) {
+        ok = header.magic == 0x31534d47 && header.version == 1 && header.binary_size &&
+            header.binary_size <= 16777216 && (u64)size == sizeof(header) + header.binary_size &&
+            header.ids[0] != header.ids[1] && header.ids[0] != header.ids[2] && header.ids[1] != header.ids[2];
+        for (u32 index = 0; index < sizeof(runtime_version); ++index)
+            if (((u8 *)&header.qnn)[index] != ((u8 *)&runtime_version)[index]) ok = 0;
+    }
+    void *binary = ok ? VirtualAlloc(0, header.binary_size, 0x3000U, 4U) : 0;
+    if (!binary || !transfer_file(file, binary, header.binary_size, 0)) ok = 0;
+    if (!CloseHandle(file)) ok = 0;
+    if (ok) {
+        selection_digest(&header, binary, digest);
+        for (u32 index = 0; index < 32; ++index) if (digest[index] != header.digest[index]) ok = 0;
+    }
+    if (ok) {
+        ok = !api->context_create_from_binary(backend, device, 0, binary, header.binary_size, &selection_context, 0) &&
+            !api->graph_retrieve(selection_context, "selection_test", &block.graph);
+        status("selection cache restore", ok ? 0 : 1);
+    }
+    if (binary && !VirtualFree(binary, 0, 0x8000U)) ok = 0;
+    if (!ok) return -1;
+    static u32 input_shape[] = {1, 262208}, output_shape[] = {1};
+    QnnTensor *tensors[] = {&selection_input, &selection_outputs[0], &selection_outputs[1]};
+    for (u32 index = 0; index < 3; ++index) {
+        QnnTensor *tensor = tensors[index]; memset(tensor, 0, sizeof(*tensor));
+        tensor->version = QNN_TENSOR_VERSION_1;
+        tensor->data.v1.id = header.ids[index];
+        tensor->data.v1.type = index ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_APP_WRITE;
+        tensor->data.v1.data_type = index == 1 ? QNN_DATATYPE_INT_32 : QNN_DATATYPE_FLOAT_16;
+        tensor->data.v1.rank = index ? 1 : 2;
+        tensor->data.v1.dimensions = index ? output_shape : input_shape;
+        tensor->data.v1.memory.client_buffer.data_size = index ? (index == 1 ? 4 : 2) : 524416;
+        tensor->data.v1.memory.client_buffer.data = index == 1 ? (void *)&selected_token : (void *)&selected_finite;
+    }
+    return 1;
+}
+
 static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device, QnnContextHandle context, i32 fd) {
     if (prompt_bundle && !cpu_selection && prompt_bundle_header.graphs[0].version == 4) {
         PROFILE_START(selection_setup_started);
-        if (api->context_create(backend, device, 0, &selection_context)) return 0;
-        memset(&block, 0, sizeof(block)); block.api = api; block.internal = 1;
-        block.host.allocate = allocate; block.host.status = status;
-        if (api->graph_create(selection_context, "greedy_selection", 0, &block.graph)) return 0;
-        const u32 shape[] = {1, 262208};
-        u32 input = gemma_block_tensor(&block, "test-logits", QNN_TENSOR_TYPE_APP_WRITE,
-                                      QNN_DATATYPE_FLOAT_16, shape, 2, 0);
-        if (!gemma_block_select(&block, input) || api->graph_finalize(block.graph, 0, 0)) return 0;
-        selection_input = block.tensors[input].tensor;
-        selection_input.data.v1.memory.client_buffer.data_size = 262208 * sizeof(u16);
-        u32 output_count = 0;
-        for (u32 index = 0; index < block.count; ++index) {
-            GemmaBlockTensor *entry = &block.tensors[index];
-            if (entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_READ) continue;
-            if (output_count == 2) return 0;
-            entry->tensor.data.v1.memory.client_buffer.data = output_count ? (void *)&selected_finite : (void *)&selected_token;
-            entry->tensor.data.v1.memory.client_buffer.data_size = entry->bytes;
-            selection_outputs[output_count++] = entry->tensor;
+        u64 selection_started = now();
+        int restored = compile_selection ? 0 : selection_restore(api, backend, device);
+        if (restored < 0) { text("Invalid selection cache\n"); return 0; }
+        if (!restored) {
+            if (api->context_create(backend, device, 0, &selection_context)) return 0;
+            memset(&block, 0, sizeof(block)); block.api = api; block.internal = 1;
+            block.host.allocate = allocate; block.host.status = status;
+            if (api->graph_create(selection_context, "greedy_selection", 0, &block.graph)) return 0;
+            const u32 shape[] = {1, 262208};
+            u32 input = gemma_block_tensor(&block, "test-logits", QNN_TENSOR_TYPE_APP_WRITE,
+                                          QNN_DATATYPE_FLOAT_16, shape, 2, 0);
+            if (!gemma_block_select(&block, input) || api->graph_finalize(block.graph, 0, 0)) return 0;
+            selection_input = block.tensors[input].tensor;
+            selection_input.data.v1.memory.client_buffer.data_size = 262208 * sizeof(u16);
+            u32 output_count = 0;
+            for (u32 index = 0; index < block.count; ++index) {
+                GemmaBlockTensor *entry = &block.tensors[index];
+                if (entry->tensor.data.v1.type != QNN_TENSOR_TYPE_APP_READ) continue;
+                if (output_count == 2) return 0;
+                entry->tensor.data.v1.memory.client_buffer.data = output_count ? (void *)&selected_finite : (void *)&selected_token;
+                entry->tensor.data.v1.memory.client_buffer.data_size = entry->bytes;
+                selection_outputs[output_count++] = entry->tensor;
+            }
+            if (output_count != 2) return 0;
         }
-        if (output_count != 2) return 0;
+        timing("selection setup us", selection_started);
         PROFILE_END(PROFILE_DECODE_SETUP, selection_setup_started);
     }
     if (performance_requested) {

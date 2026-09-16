@@ -862,6 +862,44 @@ static void bundle_capture(PromptHeader *header) {
     }
 }
 
+typedef struct SelectionHeader {
+    u32 magic, version;
+    QnnApiVersion qnn;
+    u64 binary_size;
+    u32 ids[3];
+    u8 digest[32];
+} SelectionHeader;
+_Static_assert(sizeof(SelectionHeader) == 88 && __builtin_offsetof(SelectionHeader, digest) == 52 &&
+               __builtin_offsetof(SelectionHeader, binary_size) == 32, "Selection cache ABI");
+
+static void selection_digest(const SelectionHeader *header, const void *binary, u8 digest[32]) {
+    CryptoSha256Context hash;
+    crypto_sha256_init(&hash);
+    crypto_sha256_update(&hash, (const u8 *)header, __builtin_offsetof(SelectionHeader, digest));
+    crypto_sha256_update(&hash, binary, header->binary_size);
+    crypto_sha256_final(&hash, digest);
+}
+
+static int selection_write(const QnnInterfaceV2 *api, QnnContextHandle context, u32 input, const QnnTensor outputs[2]) {
+    SelectionHeader header = {0};
+    header.magic = 0x31534d47; header.version = 1; header.qnn = runtime_version;
+    header.ids[0] = block.tensors[input].tensor.data.v1.id;
+    header.ids[1] = outputs[0].data.v1.id; header.ids[2] = outputs[1].data.v1.id;
+    if (api->context_get_binary_size(context, &header.binary_size) || !header.binary_size ||
+        header.binary_size > 16777216) return 0;
+    void *binary = allocate(0, header.binary_size); u64 written = 0;
+    if (!binary || api->context_get_binary(context, binary, header.binary_size, &written) ||
+        written != header.binary_size) return 0;
+    selection_digest(&header, binary, header.digest);
+    char path[1100]; join(path, binding_path, ".selection.context");
+    void *file = CreateFileA(path, 0x40000000U, 0, 0, 2, 0x80U, 0);
+    if (file == (void *)(u64)-1) return 0;
+    int ok = transfer_file(file, &header, sizeof(header), 1) && transfer_file(file, binary, header.binary_size, 1);
+    if (!CloseHandle(file)) ok = 0;
+    status("selection binary bytes", header.binary_size);
+    return ok;
+}
+
 static int selection_regression(const QnnInterfaceV2 *api, QnnContextHandle context, GemmaBlockHost host) {
     memset(&block, 0, sizeof(block)); block.api = api; block.host = host; block.internal = 1;
     if (api->graph_create(context, "selection_test", 0, &block.graph)) return 0;
@@ -897,6 +935,15 @@ static int selection_regression(const QnnInterfaceV2 *api, QnnContextHandle cont
             status("selection failed case", test); status("selected", selected); status("finite", finite); return 0;
         }
     }
+    memset(values, 0, 262208 * sizeof(u16)); values[106] = 0x3c00;
+    u64 started = now();
+    for (u32 repeat = 0; repeat < 100; ++repeat) {
+        if (api->graph_execute(block.graph, &block.tensors[input].tensor, 1, outputs, 2, 0, 0) ||
+            *(u32 *)outputs[0].data.v1.memory.client_buffer.data != 106 ||
+            *(u16 *)outputs[1].data.v1.memory.client_buffer.data != 0x3c00) return 0;
+    }
+    timing("selection 100 executions us", started);
+    if (equal(failure_point, "build-selection") && !selection_write(api, context, input, outputs)) return 0;
     text("PASS NPU selection ties, boundary IDs and nonfinite rejection\n");
     return 1;
 }
@@ -1212,7 +1259,7 @@ void mainCRTStartup(void) {
     code = api->device_create(log, 0, &device); if (code) goto cleanup;
     code = api->context_create(backend, device, 0, &context); if (code) goto cleanup;
     PROFILE_END(PROFILE_QNN_INIT, qnn_init_started);
-    if (layer == 34 && equal(failure_point, "selection-regression")) {
+    if (layer == 34 && (equal(failure_point, "selection-regression") || equal(failure_point, "build-selection"))) {
         result = selection_regression(api, context, host) ? 0 : 1;
         goto cleanup;
     }
@@ -1382,7 +1429,7 @@ cleanup:
 #ifndef GEMMA_TRANSLATE
     text(prompt_chunk == 1 ? "PASS incremental decode cleanup\n" : equal(failure_point, "envelope-regression") ? "PASS envelope regression cleanup\n" :
         equal(failure_point, "position-regression") ? "PASS position regression cleanup\n" :
-        equal(failure_point, "selection-regression") ? "PASS selection regression cleanup\n" :
+        equal(failure_point, "selection-regression") || equal(failure_point, "build-selection") ? "PASS selection regression cleanup\n" :
         equal(failure_point, "build-bundle-512") || equal(failure_point, "build-decode-512") ? "PASS context build cleanup\n" :
         "PASS prompt restore, KV/logits, padding, determinism and throughput\n");
 #else
