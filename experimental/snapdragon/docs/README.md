@@ -19,8 +19,21 @@ The complete 16-layer text **prefill** is now directly connected through exact
 multimodal prompt/embedding assembly, mRoPE and causal/padding masks. The official
 `Text Recognition:`, `Formula Recognition:` and `Table Recognition:` templates
 are tested; the integrated Text Recognition hardware runs pass structural checks.
-Text numerical acceptance remains open, especially after final norm. There is
-still no output head/token generation or recognized text. Use `GLM-OCR text
+Text numerical acceptance remains open, especially after final norm. The native
+**autoregressive generation** path now adds the untied LM head, greedy selection,
+RAM-resident KV cache, single-token HTP decode, EOS/limit termination and UTF-8
+streaming. The three-token receipt run emits `BELEG`; all six tested decisions
+across both image cases agree with original/candidate conditional references,
+but logit tolerance violations remain. The longer campaign reaches EOS on pattern
+and produces `BELEG 1042` plus `16.09.2026` on receipt before the context limit;
+all 26 decisions match both references. This is not OCR-quality approval.
+Use `GLM-OCR generation export`, `GLM-OCR generation native tests`, `GLM-OCR
+generation hardware` and `GLM-OCR generation analysis`, or build with
+`build-ocr.ps1 -Generate -BuildDir experimental/snapdragon/build/ocr-generate`.
+The 64-token total budget and two BMP image buckets remain explicit limits;
+exit 0 means EOS and exit 3 means incomplete output at a limit. See the
+[generation CLI and execution contract](plan-glm-ocr.md#native-autoregressive-generation).
+For prefill-only diagnostics, use `GLM-OCR text
 decoder export`, `GLM-OCR multimodal input tests`, `GLM-OCR multimodal prefill
 hardware` and `GLM-OCR multimodal prefill analysis`; see the
 [multimodal prefill contract](plan-glm-ocr.md#multimodal-decoder-input-and-text-prefill)

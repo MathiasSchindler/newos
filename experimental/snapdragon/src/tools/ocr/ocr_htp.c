@@ -45,6 +45,7 @@ static u32 read_fixtures(const unsigned short *path) {
 }
 
 static int output_good = 1;
+static u32 diagnostic_stream = (u32)-11;
 static QnnProfileHandle execution_profile;
 static const unsigned short *capture_directory;
 
@@ -70,7 +71,7 @@ static int capture_tensor(u32 block_index, const char *suffix, const void *data,
 static void text(const char *message) {
     u32 length = 0, written;
     while (message[length]) ++length;
-    if (!WriteFile(GetStdHandle((u32)-11), message, length, &written, 0) || written != length) output_good = 0;
+    if (!WriteFile(GetStdHandle(diagnostic_stream), message, length, &written, 0) || written != length) output_good = 0;
 }
 
 static int checked(const char *label, u64 code) {
@@ -1082,6 +1083,7 @@ static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
 
 #ifdef OCR_TEXT_DECODER
 #include "ocr_prefill.c"
+#include "ocr_generate.c"
 #endif
 
 static int htp_run(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture, const unsigned short *image_path,
@@ -1108,6 +1110,7 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
         checked("vision_grid_height",vision_image.shape.grid_height); checked("vision_grid_width",vision_image.shape.grid_width);
     #ifdef OCR_TEXT_DECODER
         if (text_directory && !prefill_check(text_directory)) { text("FAIL text weights\n"); goto done; }
+        if (generation_directory && !generation_check(generation_directory)) { text("FAIL generation weights/tokenizer\n"); goto done; }
         prefill_grid_width = vision_image.shape.grid_width;
     #endif
     } else
@@ -1155,6 +1158,7 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     good = addition(api,context,1024,"ocr_vision_add") && addition(api,context,1536,"ocr_text_add") && primitives(api,context,fixture_size,kind);
 #ifdef OCR_TEXT_DECODER
     if (good && text_directory) good = prefill_forward(api,backend,device,&context,text_directory,task);
+    if (good && generation_directory) good = generation_forward(api,backend,device,&context,text_directory);
 #endif
 done:
     if (context && !checked("context_free",api->context_free(context,0))) clean = 0;
@@ -1164,6 +1168,10 @@ done:
     if (module && !FreeLibrary(module)) clean = 0;
 #ifdef OCR_VISION_RUN
     ocr_image_release(&vision_image);
+#endif
+#ifdef OCR_TEXT_DECODER
+    if (generation_directory) text(good && clean ? "PASS native OCR generation execution; numerical acceptance remains open\n" : "FAIL native OCR generation\n");
+    else
 #endif
     if (text_directory) text(good && clean ? "PASS multimodal text prefill; precision unaccepted, no token generation\n" : "FAIL multimodal text prefill\n");
     else if (image_path) text(good && clean ? "PASS full vision execution; precision unaccepted, no text decoding\n" : "FAIL full vision execution\n");
@@ -1185,5 +1193,14 @@ int ocr_vision_run(const unsigned short *library, const unsigned short *weights,
 int ocr_prefill_run(const unsigned short *library, const unsigned short *vision_weights, const unsigned short *text_weights,
                      const unsigned short *image, const unsigned short *capture, u32 task) {
     return htp_run(library,vision_weights,capture,image,text_weights,task);
+}
+
+int ocr_generate_run(const unsigned short *library, const unsigned short *vision_weights, const unsigned short *text_weights,
+                     const unsigned short *weights, const unsigned short *image, const unsigned short *capture, u32 task, u32 limit) {
+    if (!limit || limit > 64 || task > 2) return 0;
+    generation_directory = weights; generation_limit = limit; diagnostic_stream = (u32)-12;
+    int good = htp_run(library,vision_weights,capture,image,text_weights,task);
+    generation_directory = 0; diagnostic_stream = (u32)-11;
+    return good ? (generation_reason == 1 ? 1 : 2) : 0;
 }
 #endif

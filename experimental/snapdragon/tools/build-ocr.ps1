@@ -16,6 +16,10 @@ param(
     [switch]$TestVision,
     [switch]$Prefill,
     [switch]$TestPrefill,
+    [switch]$Generate,
+    [switch]$TestGenerate,
+    [ValidateRange(1,64)][int]$MaxNewTokens = 3,
+    [string]$GenerationDir = 'experimental/snapdragon/models/glm-ocr-generation-v1',
     [string]$TextDir = 'experimental/snapdragon/models/glm-ocr-text-v1',
     [string]$VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v1',
     [switch]$TestHtp,
@@ -33,6 +37,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($TestGenerate) { $Generate = $true }
+if ($Generate) { $Prefill = $true }
 if ($TestVision) { $Vision = $true }
 if ($TestPrefill) { $Prefill = $true }
 if ($Prefill) { $Vision = $true }
@@ -204,6 +210,31 @@ function Test-Ocr {
             $checks++
         }
         Write-Output ('PASS OCR regression: {0} checks; hash boundaries, Unicode paths, failures, tensor ranges' -f $checks)
+    } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
+}
+
+function Test-Generation {
+    Assert-Native @('--test-generation',$GenerationDir) 0 'PASS generation weights/tokenizer'
+    $scratch = Join-Path $repoRoot ('tests/tmp/ocr-generation-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $scratch | Out-Null
+    try {
+        Assert-Native @('--test-generation',$scratch) 1
+        $path = Join-Path $scratch 'head-00.got'
+        $bytes = [IO.File]::ReadAllBytes((Join-Path $GenerationDir 'head-00.got'))
+        foreach ($offset in @(0,12,32,96,128,160,($bytes.Length-1))) {
+            $bytes[$offset] = $bytes[$offset] -bxor 1
+            [IO.File]::WriteAllBytes($path,$bytes)
+            Assert-Native @('--test-generation',$scratch) 1
+            $bytes[$offset] = $bytes[$offset] -bxor 1
+        }
+        [IO.File]::WriteAllBytes($path,(New-Object byte[] 127))
+        Assert-Native @('--test-generation',$scratch) 1
+        [IO.File]::WriteAllBytes($path,$bytes)
+        Assert-Native @('--test-generation',$scratch) 1
+        foreach ($limit in @('0','65','-1','1x','999999999999999999')) {
+            Assert-Native @('--generate-text','missing','missing','missing','missing','missing','missing',$limit) 2
+        }
+        Write-Output 'PASS generation negative checks: 15; head identity/integrity/truncation/missing layers and invalid limits'
     } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }
 
@@ -446,6 +477,7 @@ try {
         $binary = Join-Path $BuildDir 'ocr-htp-test.exe'
         if ($Vision) { $binary = Join-Path $BuildDir 'ocr-vision.exe'; $flags += '-DOCR_VISION_RUN' }
         if ($Prefill) { $binary = Join-Path $BuildDir 'ocr-prefill.exe'; $flags += '-DOCR_TEXT_DECODER' }
+        if ($Generate) { $binary = Join-Path $BuildDir 'ocr-generate.exe' }
         if ($MatrixRope -or $SplitRope) { $flags += '-DOCR_MATRIX_ROPE' }
         if ($SplitRope) { $flags += '-DOCR_SPLIT_ROPE' }
         if ($CaptureInternals) { $flags += '-DOCR_CAPTURE_INTERNALS' }
@@ -484,8 +516,9 @@ try {
         Test-ImageFiles
     }
     if ($PrepareImages -and $Test -and -not $TestImages) { Test-ImageFiles }
-    if ($Prefill -and ($Test -or $TestPrefill)) { Test-PrefillInput }
-    if ($TestVision -or $TestPrefill) {
+    if ($Prefill -and ($Test -or $TestPrefill -or $TestGenerate)) { Test-PrefillInput }
+    if ($Generate -and ($Test -or $TestGenerate)) { Test-Generation }
+    if ($TestVision -or $TestPrefill -or $TestGenerate) {
         Assert-Native @('--check-vision', $VisionDir)
         $negative = Join-Path $repoRoot ('tests/tmp/ocr-vision-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $negative | Out-Null
@@ -530,24 +563,36 @@ try {
             $previous = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
-                $runArgs = if ($TestPrefill) { @('--prefill-text',$runtime,$VisionDir,$TextDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) } else { @('--vision',$runtime,$VisionDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) }
-                & $binary @runArgs 2>&1 | Tee-Object -FilePath (Join-Path $capture 'execution.log')
-                $code = $LASTEXITCODE
+                if ($TestGenerate) {
+                    $runArgs = @('--generate-text',$runtime,$VisionDir,$TextDir,$GenerationDir,(Join-Path $VisionDir ($case + '.bmp')),$capture,[string]$MaxNewTokens)
+                    $quoted = @($runArgs | ForEach-Object { '"' + $_ + '"' })
+                    $process = Start-Process -FilePath $binary -ArgumentList $quoted -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $capture 'stdout.txt') -RedirectStandardError (Join-Path $capture 'execution.log')
+                    $code = $process.ExitCode
+                    Write-Output ('Generation {0}: exit {1}, capture {2}' -f $case,$code,$capture)
+                    Get-Content -LiteralPath (Join-Path $capture 'execution.log') -Tail 8
+                } else {
+                    $runArgs = if ($TestPrefill) { @('--prefill-text',$runtime,$VisionDir,$TextDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) } else { @('--vision',$runtime,$VisionDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) }
+                    & $binary @runArgs 2>&1 | Tee-Object -FilePath (Join-Path $capture 'execution.log')
+                    $code = $LASTEXITCODE
+                }
             } finally { $ErrorActionPreference = $previous }
             $captureHashes = [ordered]@{}
-            foreach ($tensor in Get-ChildItem -LiteralPath $capture -File | Where-Object { $_.Extension -in @('.f16','.f32','.u32','.i32','.u8') }) {
+            foreach ($tensor in Get-ChildItem -LiteralPath $capture -File | Where-Object { $_.Extension -in @('.f16','.f32','.u32','.i32','.u8','.txt') }) {
                 $captureHashes[$tensor.Name] = (Get-FileHash -LiteralPath $tensor.FullName).Hash
             }
             $textHashes = [ordered]@{}
-            if ($TestPrefill) { foreach ($artifact in Get-ChildItem -LiteralPath $TextDir -Filter '*.got') { $textHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash } }
-            $runType = if ($TestPrefill) { 'prefill' } else { 'vision' }
+            if ($TestPrefill -or $TestGenerate) { foreach ($artifact in Get-ChildItem -LiteralPath $TextDir -Filter '*.got') { $textHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash } }
+            $generationHashes = [ordered]@{}
+            if ($TestGenerate) { foreach ($artifact in Get-ChildItem -LiteralPath $GenerationDir -Filter '*.got') { $generationHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash } }
+            $runType = if ($TestGenerate) { 'generate' } elseif ($TestPrefill) { 'prefill' } else { 'vision' }
             [ordered]@{ case = $case; exit_code = $code; capture = (Resolve-Path $capture).Path; text_weight_hashes = $textHashes;
+                generation_weight_hashes = $generationHashes; max_new_tokens = $MaxNewTokens;
                 executable_sha256 = (Get-FileHash $binary).Hash; runtime_sha256 = (Get-FileHash $runtime).Hash;
                 runtime_hashes = $runtimeHashes; weight_hashes = $weightHashes; captures = $captureHashes;
                 input_sha256 = (Get-FileHash -LiteralPath (Join-Path $VisionDir ($case + '.bmp'))).Hash;
                 scope = $runType; numerical_acceptance = $false } |
                 ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $BuildDir ($case + '-' + $runType + '-run.json'))
-            if ($code -ne 0) { throw ('Vision execution failed: {0}; capture retained' -f $case) }
+            if ($code -ne 0 -and -not ($TestGenerate -and $code -eq 3)) { throw ('Native execution failed: {0}; capture retained' -f $case) }
         }
     }
     if ($Download -or $Verify) { Stage-Model }

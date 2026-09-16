@@ -551,6 +551,210 @@ def analyze_vision_encoder(output, build):
     print("PASS vision structure/identity/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
 
 
+def analyze_generation(model, output, text_output, build):
+    import inspect as source_inspect
+    import numpy as np
+    torch, _, _, versions = image_reference()
+    from transformers import AutoTokenizer
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrTextConfig
+    module_hash = sha(Path(source_inspect.getfile(reference)).read_bytes())
+    text_manifest = read_json(text_output/"manifest.json")
+    manifest = read_json(output/"generation-manifest.json")
+    if module_hash != text_manifest["modeling_sha256"] or manifest["eos_token_id"] != [59246,59253] or manifest["do_sample"]:
+        raise ValueError("Generation reference drift")
+    def verify_files(directory,records):
+        for name,record in records.items():
+            with (directory/name).open("rb") as stream: digest = hashlib.file_digest(stream,"sha256").hexdigest()
+            if digest != record["sha256"] or (directory/name).stat().st_size != record["bytes"]:
+                raise ValueError("Changed generation reference asset: "+name)
+    verify_files(output,manifest["files"]); verify_files(text_output,text_manifest["files"])
+    tokenizer = AutoTokenizer.from_pretrained(str(model),local_files_only=True,trust_remote_code=False)
+    def metric(actual,target):
+        actual = np.asarray(actual,dtype=np.float64); target = np.asarray(target,dtype=np.float64)
+        if actual.shape != target.shape or not np.isfinite(actual).all() or not np.isfinite(target).all():
+            raise ValueError("Invalid numerical comparison")
+        error = actual-target
+        return {"elements":int(error.size),"failures":int((np.abs(error)>0.003+0.005*np.abs(target)).sum()),
+                "rmse":float(np.sqrt(np.mean(error*error))),"max_absolute_error":float(np.abs(error).max())}
+    cases = {}
+    for case in ("pattern","receipt"):
+        run = json.loads((build/(case+"-generate-run.json")).read_text(encoding="utf-8-sig"))
+        if run["scope"] != "generate" or run["exit_code"] not in (0,3) or sha((build/"ocr-generate.exe").read_bytes()).upper() != run["executable_sha256"]:
+            raise ValueError("Unverified generation executable/run")
+        for records,key in ((manifest["files"],"generation_weight_hashes"),(text_manifest["files"],"text_weight_hashes")):
+            if run[key] != {name:item["sha256"].upper() for name,item in records.items() if name.endswith(".got")}:
+                raise ValueError("Generation run weight drift")
+        capture = Path(run["capture"])
+        for name,digest in run["captures"].items():
+            if sha((capture/name).read_bytes()).upper() != digest: raise ValueError("Changed capture: "+name)
+        def captured(name,shape,dtype="<f2"):
+            if name not in run["captures"]: raise ValueError("Unhashed capture: "+name)
+            values = np.frombuffer((capture/name).read_bytes(),dtype=dtype)
+            if values.size != np.prod(shape) or not np.isfinite(values).all(): raise ValueError("Invalid capture: "+name)
+            return values.reshape(shape).copy()
+        total,reason,prompt,limit = map(int,captured("0.generation-result.u32",(4,),"<u4"))
+        if not 1 <= total <= limit <= 64 or prompt+total > 64 or limit != run["max_new_tokens"]:
+            raise ValueError("Invalid generation length")
+        ids = captured("0.generated-ids.u32",(total,),"<u4")
+        expected_reason = 1 if ids[-1] in (59246,59253) else 2 if total == limit else 3 if prompt+total == 64 else 0
+        if not expected_reason or reason != expected_reason or run["exit_code"] != (0 if reason == 1 else 3) or any(token in (59246,59253) for token in ids[:-1]):
+            raise ValueError("EOS/limit control failure")
+        decoded = tokenizer.decode(ids.tolist(),skip_special_tokens=True,clean_up_tokenization_spaces=False).encode("utf-8")
+        if (capture/"0.generated.txt").read_bytes() != decoded or (capture/"stdout.txt").read_bytes() != decoded:
+            raise ValueError("UTF-8 text/stream differs from tokenizer")
+        layout = captured("0.text-layout.u32",(7,),"<u4")
+        delta = int(layout.view("<i4")[6])
+        if int(layout[0]) != prompt: raise ValueError("Prompt count mismatch")
+        positions = captured("0.text-positions.i32",(3,1,64),"<i4")[:,:,:prompt]
+        embeddings = captured("0.text-embeddings.f16",(64,1536))[:prompt]
+        stages = []; keys = []; values = []
+        first = []
+        for index in range(16):
+            taps = captured(f"{index}.text-taps.f16",(688128,))
+            first.append(taps[4*98304:5*98304].reshape(64,1536)[:prompt])
+            keys.append(taps[5*98304:5*98304+65536].reshape(64,8,128)[:prompt].copy())
+            values.append(taps[5*98304+65536:622592].reshape(64,8,128)[:prompt].copy())
+        final = captured("16.text-norm.f16",(64,1536))[prompt-1]
+        first.append(final.reshape(1,1536)); stages.append(first)
+        head_inputs = []; logits = []
+        for step in range(total):
+            if step:
+                past = prompt+step-1
+                if captured(f"{past}.decode-layout.u32",(4,),"<u4").tolist() != [past,past+delta,int(ids[step-1]),prompt]:
+                    raise ValueError("Decode token/position/cache offset mismatch")
+                previous = np.fromfile(text_output/"embeddings.got",dtype="<f2",count=1536,offset=160+int(ids[step-1])*3072)
+                current = []
+                for index in range(16):
+                    cached_hash = captured(f"{index}.decode-{past:02}-cache.u8",(64,),"u1").tobytes()
+                    if cached_hash != bytes.fromhex(sha(keys[index].tobytes())+sha(values[index].tobytes())):
+                        raise ValueError("Resident KV cache prefix is not bit-exact")
+                    source = captured(f"{index}.decode-{past:02}-input.f16",(1536,))
+                    if source.tobytes() != previous.tobytes(): raise ValueError("Decode embedding/layer handoff mismatch")
+                    taps = captured(f"{index}.decode-{past:02}-taps.f16",(9728+16*(past+1),))
+                    previous = taps[6144:7680].copy(); current.append(previous.reshape(1,1536))
+                    keys[index] = np.concatenate((keys[index],taps[7680:8704].reshape(1,8,128)))
+                    values[index] = np.concatenate((values[index],taps[8704:9728].reshape(1,8,128)))
+                    probabilities = taps[9728:].reshape(16,past+1).astype(np.float32)
+                    if np.any(probabilities < 0) or np.any(probabilities > 1) or np.any(np.abs(probabilities.sum(-1)-1)>0.003):
+                        raise ValueError("Decode attention probability failure")
+                final = captured(f"{past}.decode-norm.f16",(1536,)); current.append(final.reshape(1,1536)); stages.append(current)
+            source = captured(f"{step}.head-input.f16",(1536,))
+            if source.tobytes() != final.tobytes(): raise ValueError("Head selected wrong hidden-state row")
+            scores = captured(f"{step}.logits.f16",(59392,))
+            if int(scores.argmax()) != int(ids[step]): raise ValueError("Greedy selection or tie-breaking mismatch")
+            head_inputs.append(source); logits.append(scores)
+        cases[case] = {"run":run,"ids":ids,"stages":stages,"embeddings":embeddings,"positions":positions,"delta":delta,
+                       "head_inputs":head_inputs,"logits":logits,"prompt":prompt,"text":decoded.decode("utf-8"),"stop_reason":reason,"scopes":{}}
+        print("PASS",case,"exact resident KV prefixes, decode positions/handoffs, greedy selection, UTF-8 and stop reason",reason,flush=True)
+    state = {}; head = None
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        identity = next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors")
+        if identity != manifest["source_sha256"] or identity != text_manifest["source_sha256"]: raise ValueError("Wrong source weights")
+        for name,tensor in tensors.items():
+            local = name.removeprefix("model.language_model.")
+            if name != "lm_head.weight" and (local == name or local.startswith("layers.16.")): continue
+            start,end = tensor["data_offsets"]; stream.seek(payload+start); raw = stream.read(end-start)
+            if tensor["dtype"] != "BF16" or len(raw) != end-start: raise ValueError("Invalid reference tensor")
+            value = torch.from_numpy(((np.frombuffer(raw,dtype="<u2").astype(np.uint32)<<16).view(np.float32).reshape(tensor["shape"])).copy())
+            if name == "lm_head.weight": head = value
+            else: state[local] = value
+    config = GlmOcrTextConfig(**read_json(model/"config.json")["text_config"]); config._attn_implementation = "eager"
+    decoder = reference.GlmOcrTextModel(config).eval(); decoder.load_state_dict(state,strict=True); del state
+    if head is None: raise ValueError("Missing head")
+    for index in range(8):
+        deployed = np.fromfile(output/f"head-{index:02}.got",dtype="<f2",offset=164).reshape(1536,7424)
+        if deployed.tobytes() != head[index*7424:(index+1)*7424].half().t().contiguous().numpy().tobytes():
+            raise ValueError("Deployed head differs from candidate reference")
+    for scope in ("original","candidate"):
+        if scope == "candidate": decoder.half().float(); head = head.half().float()
+        for case,data in cases.items():
+            cache = None; results = []
+            for step,token in enumerate(data["ids"]):
+                observed = []
+                def hook(module,arguments,result): observed.append(result.detach().clone())
+                handles = [layer.register_forward_hook(hook) for layer in decoder.layers]
+                try:
+                    with torch.inference_mode():
+                        if not step:
+                            inputs = torch.from_numpy(data["embeddings"].astype(np.float32)).unsqueeze(0)
+                            positions = torch.from_numpy(data["positions"].astype(np.int64))
+                        else:
+                            inputs = decoder.embed_tokens(torch.tensor([[int(data["ids"][step-1])]]))
+                            positions = torch.full((3,1,1),data["prompt"]+step-1+data["delta"],dtype=torch.long)
+                        result = decoder(inputs_embeds=inputs,position_ids=positions,attention_mask=torch.ones(1,data["prompt"]+step,dtype=torch.long),past_key_values=cache,use_cache=True)
+                        cache = result.past_key_values
+                        hidden = result.last_hidden_state[:,-1]
+                        reference_logits = (hidden@head.t()).numpy().reshape(-1)
+                        local_logits = (torch.from_numpy(data["head_inputs"][step].astype(np.float32))@head.t()).numpy()
+                    layer_metrics = [metric(actual,expected.numpy()[0]) for actual,expected in zip(data["stages"][step][:16],observed,strict=True)]
+                    norm_metric = metric(data["stages"][step][16],hidden.numpy())
+                    logit_metric = metric(data["logits"][step],reference_logits)
+                    local_metric = metric(data["logits"][step],local_logits)
+                    results.append({"step":step,"selected":int(token),"reference_selected":int(reference_logits.argmax()),
+                                    "selection_agrees":int(token)==int(reference_logits.argmax()),"local_head_selected":int(local_logits.argmax()),
+                                    "local_head_selection_agrees":int(token)==int(local_logits.argmax()),"layers":layer_metrics,
+                                    "final_norm":norm_metric,"logits":logit_metric,"local_head":local_metric})
+                finally:
+                    for handle in handles: handle.remove()
+            data["scopes"][scope] = results
+            print(case,scope,"selected/reference",[(item["selected"],item["reference_selected"]) for item in results],
+                  "logit violations",[item["logits"]["failures"] for item in results],flush=True)
+    reports = {}
+    for case,data in cases.items():
+        accepted = all(not metric["failures"] for scope in data["scopes"].values() for step in scope for metric in step["layers"]+[step["final_norm"],step["logits"],step["local_head"]])
+        reports[case] = {"run":data["run"],"text":data["text"],"ids":data["ids"].tolist(),"stop_reason":data["stop_reason"],
+                         "exact_cache_prefixes":True,"exact_handoffs":True,"exact_greedy_selection":True,"exact_utf8":True,
+                         "reference_scopes":data["scopes"],"numerical_gate_pass":accepted}
+    report = {"schema_version":1,"analyzer_sha256":sha(Path(__file__).read_bytes()),"modeling_sha256":module_hash,"versions":versions,
+              "conditioning":"native Vision embeddings and native token prefixes; reference caches evolve independently",
+              "tolerance":{"absolute":0.003,"relative":0.005},"cases":reports,
+              "numerical_gate_pass":all(case["numerical_gate_pass"] for case in reports.values())}
+    (build/"generation-analysis.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
+    print("PASS generation structural/reference analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
+
+
+def export_generation(model, output, tokenizer_output):
+    import numpy as np
+    generation = read_json(model/"generation_config.json")
+    if generation["eos_token_id"] != [59246,59253] or generation["do_sample"]:
+        raise ValueError("Generation policy drift")
+    output.mkdir(parents=True,exist_ok=True)
+    files = {}
+    def store(name,data):
+        path = output/name
+        if path.exists() and path.read_bytes() != data:
+            raise ValueError("Existing generation artifact differs: "+name)
+        if not path.exists():
+            with path.open("xb") as destination:
+                destination.write(data)
+        files[name] = {"bytes":len(data),"sha256":sha(data)}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        tensor = tensors["lm_head.weight"]
+        if tensor["dtype"] != "BF16" or tensor["shape"] != [59392,1536]:
+            raise ValueError("LM head geometry drift")
+        identity = bytes.fromhex(next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors"))
+        start,end = tensor["data_offsets"]
+        if end-start != 59392*1536*2: raise ValueError("LM head size drift")
+        stream.seek(payload+start)
+        for index in range(8):
+            raw = stream.read(7424*1536*2)
+            if len(raw) != 7424*1536*2: raise ValueError("Truncated LM head")
+            values = (np.frombuffer(raw,dtype="<u2").astype(np.uint32) << 16).view(np.float32).reshape(7424,1536)
+            candidate = values.astype("<f2")
+            if not np.isfinite(values).all() or not np.isfinite(candidate).all(): raise ValueError("LM head overflow")
+            store(f"head-{index:02}.got",envelope(identity+struct.pack("<I",index)+candidate.T.copy().tobytes(),17,catalog))
+    tokenizer = (tokenizer_output/"tokenizer.got").read_bytes()
+    if tokenizer[:8] != b"GLMOCR2\0" or struct.unpack_from("<I",tokenizer,12)[0] != 1 or sha(tokenizer[:96]+tokenizer[128:]) != tokenizer[96:128].hex():
+        raise ValueError("Invalid native tokenizer artifact")
+    store("tokenizer.got",tokenizer)
+    manifest = {"schema_version":1,"source_sha256":identity.hex(),"files":files,"vocab_size":59392,
+                "head_chunks":8,"context":64,"eos_token_id":generation["eos_token_id"],"do_sample":False,
+                "generation_config_sha256":sha((model/"generation_config.json").read_bytes())}
+    store("generation-manifest.json",(json.dumps(manifest,indent=2)+"\n").encode())
+    print("PASS generation export: eight untied LM head chunks and native tokenizer",flush=True)
+
+
 def export_text_decoder(model, output, vision_build):
     import inspect as source_inspect
     import numpy as np
@@ -1944,8 +2148,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if 3 <= kind <= 16 else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if 3 <= kind <= 16 else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if 3 <= kind <= 17 else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if 3 <= kind <= 17 else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -2346,6 +2550,10 @@ def main():
     parser.add_argument("--export-vision-block", action="store_true")
     parser.add_argument("--export-vision-encoder", action="store_true")
     parser.add_argument("--export-text-decoder", action="store_true")
+    parser.add_argument("--export-generation", action="store_true")
+    parser.add_argument("--analyze-generation", action="store_true")
+    parser.add_argument("--generation-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-generate")
+    parser.add_argument("--generation-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-generation-v1")
     parser.add_argument("--analyze-text-prefill", action="store_true")
     parser.add_argument("--text-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-prefill")
     parser.add_argument("--text-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-text-v1")
@@ -2394,6 +2602,10 @@ def main():
         analyze_chain_scores(args.vision_block_output,args.chain_build)
     elif args.analyze_text_prefill:
         analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
+    elif args.analyze_generation:
+        analyze_generation(args.model_dir,args.generation_output,args.text_output,args.generation_build)
+    elif args.export_generation:
+        export_generation(args.model_dir,args.generation_output,args.output)
     elif args.export_text_decoder:
         export_text_decoder(args.model_dir,args.text_output,args.vision_build)
     elif args.analyze_vision_encoder:

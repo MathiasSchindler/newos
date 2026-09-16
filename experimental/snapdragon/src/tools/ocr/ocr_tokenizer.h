@@ -13,6 +13,8 @@ int ocr_encode(const OcrTokenizer *tokenizer, const unsigned char *text, unsigne
                unsigned int *ids, unsigned int capacity);
 int ocr_decode(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned int count,
                int skip_special, unsigned char *output, unsigned int capacity);
+int ocr_decode_prefix(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned int count,
+                      int skip_special, unsigned char *output, unsigned int capacity, int final);
 int ocr_prompt(unsigned int task, unsigned int images, unsigned int no_think,
                unsigned int *ids, unsigned int capacity);
 int ocr_tokenizer_test(const unsigned short *table_path, const unsigned short *fixture_path);

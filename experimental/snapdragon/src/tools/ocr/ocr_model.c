@@ -2,6 +2,8 @@
 #ifdef OCR_TEXT_DECODER
 int ocr_prefill_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, unsigned int);
 int ocr_prefill_input_test(const unsigned short *);
+int ocr_generate_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, unsigned int, unsigned int);
+int ocr_generation_test(const unsigned short *);
 #endif
 #ifdef OCR_VISION_RUN
 int ocr_vision_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *);
@@ -43,7 +45,7 @@ void *memcpy(void *destination, const void *source, OcrSize length) {
 }
 
 static unsigned char buffer[1024U * 1024U];
-static OcrWide arguments[7][32768];
+static OcrWide arguments[9][32768];
 
 static int print(const char *text, unsigned int stream) {
     unsigned int length = 0, written = 0;
@@ -70,7 +72,7 @@ static unsigned int parse_arguments(void) {
         int quoted = 0;
         while (*cursor == ' ' || *cursor == '\t') ++cursor;
         if (!*cursor) break;
-        if (count == 7U) return 0;
+        if (count == 9U) return 0;
         while (*cursor && (quoted || (*cursor != ' ' && *cursor != '\t'))) {
             unsigned int slashes = 0;
             while (*cursor == '\\') { ++slashes; ++cursor; }
@@ -182,6 +184,17 @@ void mainCRTStartup(void) {
     if (count == 2U && word(arguments[1], "--self-test")) {
         result = self_test();
 #ifdef OCR_TEXT_DECODER
+    } else if (count == 3U && word(arguments[1], "--test-generation")) {
+        result = ocr_generation_test(arguments[2]);
+    } else if (count == 9U && (word(arguments[1], "--generate-text") || word(arguments[1], "--generate-formula") || word(arguments[1], "--generate-table"))) {
+        unsigned int limit = 0, digits = 0;
+        while (arguments[8][digits] >= '0' && arguments[8][digits] <= '9' && digits < 2) {
+            limit = limit*10+arguments[8][digits++]-'0';
+        }
+        if (!digits || arguments[8][digits] || !limit || limit > 64) { ExitProcess(2U); return; }
+        unsigned int task = word(arguments[1], "--generate-text") ? 0 : word(arguments[1], "--generate-formula") ? 1 : 2;
+        result = ocr_generate_run(arguments[2],arguments[3],arguments[4],arguments[5],arguments[6],arguments[7],task,limit);
+        ExitProcess(result == 1 ? 0U : result == 2 ? 3U : 1U); return;
     } else if (count == 3U && word(arguments[1], "--test-text-input")) {
         result = ocr_prefill_input_test(arguments[2]);
     } else if (count == 7U && (word(arguments[1], "--prefill-text") || word(arguments[1], "--prefill-formula") || word(arguments[1], "--prefill-table"))) {
@@ -220,6 +233,7 @@ void mainCRTStartup(void) {
         result = verify(arguments[2], expected, word(arguments[1], "--weights"));
     } else {
     #ifdef OCR_TEXT_DECODER
+        print("Generation: --generate-text|--generate-formula|--generate-table DLL VISION_DIR TEXT_DIR GENERATION_DIR INPUT.bmp CAPTURE_DIR MAX_NEW_TOKENS (1..64); exits 0 EOS, 3 incomplete limit, 1 failure\n", (unsigned int)-12);
         print("Prefill: --prefill-text|--prefill-formula|--prefill-table DLL VISION_DIR TEXT_DIR INPUT.bmp CAPTURE_DIR\n", (unsigned int)-12);
     #endif
     #ifdef OCR_VISION_RUN

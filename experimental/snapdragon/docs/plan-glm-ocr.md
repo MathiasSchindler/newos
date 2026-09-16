@@ -1837,8 +1837,9 @@ without concealing the unresolved precision work.
 The native pipeline now connects freshly computed Vision features directly to
 the complete 16-layer text decoder prefill and its final RMSNorm, in the same
 process and QNN backend/device session. It does not reload its own feature dump
-as inference input. There is no LM output head, token selection, incremental
-decode or generated OCR text yet.
+as inference input. This section records the prefill-only stage; the subsequent
+[native generation stage](#native-autoregressive-generation) adds the output head,
+resident cache, incremental decode and text output without changing this command.
 
 ### Official prompt contract
 
@@ -1919,7 +1920,7 @@ New-Item -ItemType Directory -Path experimental/snapdragon/build/my-prefill
 `--prefill-formula` and `--prefill-table` select the other fixed tasks. A fresh,
 existing capture directory is required; files are CREATE_NEW and failed runs may
 leave incomplete diagnostics. `--test-text-input TEXT_DIR` is the native offline
-input-reference check. No command reports successful OCR text generation.
+input-reference check. These prefill commands do not generate text.
 
 The 18 model artifacts under `models/glm-ocr-text-v1/` are `embeddings.got`
 (kind 13, 182,452,384 bytes), 16 `text-NN.got` files (kind 14, 61,354,148 bytes
@@ -1944,7 +1945,8 @@ In addition to the existing Vision capture files, the runtime writes:
 - `16.text-norm.f16`: final [64,1536] states; the last valid prompt row is
    `count-1`. These are hidden states, not logits or text.
 
-K/V outputs are captured diagnostics, not a resident incremental KV-cache. All
+In the original prefill-only stage, K/V outputs were captured diagnostics. The
+generation extension now retains their valid rows in a resident RAM cache. All
 graphs are still finalized per run and all taps are retained, so no serving
 latency/memory optimization is claimed. Run reports include image, executable,
 Vision/text artifact, QNN runtime and capture hashes.
@@ -1986,6 +1988,127 @@ false; successful native/analysis exits mean execution/structural checks and
 report generation, not accuracy or OCR-quality approval. No tolerances were
 relaxed and no previous diagnostic precision variant became a default.
 
+## Native autoregressive generation
+
+The bounded native BMP-to-text path is now connected end to end: Vision,
+multimodal prefill, the untied 1536-to-59392 LM head, deterministic greedy
+selection, incremental single-token decoding through all 16 layers, and UTF-8
+output. No Python, CRT or CPU neural fallback is present in the executable.
+The original checkpoint and earlier artifact packages remain unchanged.
+
+### Commands and limits
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-generation
+.\experimental\snapdragon\tools\build-ocr.ps1 -Generate -Test -TestTokenizer -BuildDir experimental/snapdragon/build/ocr-generate
+$htp = (Resolve-Path experimental/snapdragon/build/QnnHtp.dll).Path
+New-Item -ItemType Directory -Path experimental/snapdragon/build/my-generation
+.\experimental\snapdragon\build\ocr-generate\ocr-generate.exe --generate-text $htp experimental/snapdragon/models/glm-ocr-vision-v1 experimental/snapdragon/models/glm-ocr-text-v1 experimental/snapdragon/models/glm-ocr-generation-v1 input.bmp experimental/snapdragon/build/my-generation 32
+```
+
+Use `--generate-formula` or `--generate-table` for the other fixed prompts.
+`MAX_NEW_TOKENS` must be a decimal integer from 1 to 64. The total prompt plus
+generated-token budget is also capped at 64: default Text Recognition therefore
+allows at most 36 generated tokens for the 8x8 grid and 20 for 8x16. Larger pages,
+long documents, arbitrary prompts and the config's 131072-position capacity are
+not supported. Each invocation processes one image, starts with a fresh valid
+cache prefix, and requires an existing fresh capture directory (CREATE_NEW).
+Failed runs may leave partial output/captures. No resumable or multi-request API
+is promised.
+
+Stdout contains only incrementally decoded UTF-8 bytes; native diagnostics use
+stderr. Broken output writes fail the run. Byte-pair pieces spanning UTF-8
+characters are buffered until complete; terminal incomplete/invalid byte sequences
+use the tokenizer's replacement behavior. Special tokens are skipped for display
+but remain in model history. EOS IDs 59246 and 59253 and `do_sample=false` are
+verified against the checkpoint generation configuration. Selection scans the
+complete finite vocabulary, keeps the lowest ID on ties and never silently masks
+unused IDs. A selected ID >=59282 has no native tokenizer piece and fails loudly.
+
+Exit codes: 0 means EOS reached, 3 means incomplete output stopped by the token
+or context limit, 1 means runtime/artifact/output failure, 2 means invalid CLI
+syntax/limit. EOS takes precedence over a simultaneous limit. Neither exit 0 nor
+3 implies numerical or OCR-quality acceptance. Forced process termination is
+possible, but graceful cancellation and persistent serving are not implemented.
+
+### Execution and ownership
+
+`ocr_prefill.c` now parameterizes the existing text layer for 64 prefill queries
+or one decode query. Prefill retains only valid rotated K and V rows, excluding
+padding, into two static arrays [16,64,8,128] of FP16 values: 4 MiB total. Each
+decode graph concatenates the past prefix and the newly computed K/V on HTP;
+only after successful execution are new rows copied into the resident cache.
+Each layer checks its expected cache length before use. Position for a generated
+input is `past_sequence_length + mrope_delta`, identical on all three axes.
+Decode attends the exact past+current length without future/padded keys.
+
+The cache is **RAM-resident, not device-resident**: prefix tensors are copied as
+graph constants. One QNN context exists at a time and is freed before replacing
+constant storage. Graphs are re-finalized and layer/head artifacts re-read and
+checked against their preflight hashes on every step. This is a correctness-first
+implementation, not an efficient serving or latency claim. Embeddings and shared
+rotary/norm data remain in memory. Every neural projection, normalization, rotary
+operation, attention and MLP runs on HTP; CPU work includes lookup/copies,
+validation, cache ownership, finite greedy comparison and UTF-8 detokenization.
+
+The LM head is eight independent HTP MatMul chunks of 7424 vocabulary columns,
+whose complete FP16 logits are joined before selection. `models/glm-ocr-generation-v1/`
+contains eight kind-17 `head-NN.got` files (22,806,692 bytes each, source identity,
+chunk index and SHA-256 envelope), the native `tokenizer.got`, and a manifest.
+The first head input is the last valid prompt row, never the padded row 63;
+subsequent head inputs are the single decoded token's final normalized state.
+
+### Reproduction and evidence
+
+VS Code tasks `GLM-OCR generation export`, `GLM-OCR generation native tests`,
+`GLM-OCR generation hardware` and `GLM-OCR generation analysis` reproduce the
+three-token campaign. The `GLM-OCR bounded generation hardware` and corresponding
+`GLM-OCR bounded generation analysis` tasks run to EOS or the context boundary.
+Equivalent build flags are `-TestGenerate -MaxNewTokens 3` or `64`; analysis uses
+`export-glm-ocr.py --analyze-generation --generation-build BUILD_DIR`.
+
+Native validation passes 180712 tokenizer fixtures, six incremental UTF-8 split/
+truncation/malformed cases, finite argmax/tie tests, both EOS IDs and limit
+precedence, plus 15 generation artifact/CLI negative cases. Existing verifier,
+multimodal input and image/runtime-negative checks remain in the build runner.
+
+Both three-token image runs complete with HTP profile evidence, finite outputs
+and clean resource teardown. Pattern IDs [2721,6237,5557] produce the prefix
+`\x60\x60\x60markdown`; receipt IDs [21656,2035,71] produce `BELEG`. All six selected
+tokens agree with both original and FP16-expanded text/head references, conditioned
+on native Vision features and the actual emitted token prefixes. Reference caches
+evolve independently, rather than substituting native K/V into the oracle.
+
+The longer bounded campaign also passes the structural/reference checks. Pattern
+emits an empty Markdown code block and reaches EOS 59253 after six tokens (exit 0).
+Receipt emits `BELEG 1042\n16.09.2026\n` in 20 tokens and reaches the 64-position
+prompt-plus-output budget (exit 3, explicitly incomplete). All 26 decisions agree
+with both reference scopes, including EOS. The campaign validates 24 incremental
+decode steps across the two cases, with all 16 layer cache prefixes checked per
+step. Original/candidate logit violations remain in every step; these runs establish
+execution and control flow, not numerical approval or complete-document quality.
+
+The analyzer verifies capture/weight/executable hashes, bit-exact resident K/V
+prefixes against the earlier taps, embedding/layer/head handoffs, decode positions,
+greedy full-vocabulary selection, UTF-8 output, and stop reasons. Per-step hidden
+states, logits and local head-on-native-input errors use the unchanged
+`0.003 + 0.005*abs(reference)` gate. The three-token original/candidate logit
+violation counts are 990/986, 2090/2079, 6966/6910 for pattern and 643/643,
+1740/1746, 421/407 for receipt. **Numerical acceptance remains false**, despite
+matching greedy decisions. These conditional references are not an original-model
+end-to-end image oracle or a held-out OCR quality assessment.
+
+Generation adds `STEP.head-input.f16`, `STEP.logits.f16`,
+`LAYER.decode-PP-input.f16`, `LAYER.decode-PP-taps.f16`,
+`LAYER.decode-PP-cache.u8` (SHA-256 of actual K and V prefixes),
+`PP.decode-layout.u32` (past length, position, input token, prompt count), and
+`PP.decode-norm.f16`. Decode taps hold four norms and layer output (5x1536),
+new rotated K and V (2x1024), then [16,past+1] attention probabilities.
+`0.generated-ids.u32` includes EOS if reached; `0.generation-result.u32` contains
+count, reason (1 EOS, 2 output limit, 3 context limit), prompt count and requested
+limit. `0.generated.txt` exactly matches the native UTF-8 stream. Reports retain
+the numerical rejection and do not turn execution success into accuracy success.
+
 ## Concrete image-to-text gaps
 
 1. **Common input formats.** Native PNG/JPEG pixel decoding, explicit EXIF
@@ -2004,17 +2127,16 @@ relaxed and no previous diagnostic precision variant became a default.
 5. **Broader multimodal inputs.** Single-image fixed-task input assembly is now
    exact against the official template and model. Larger contexts, multi-image
    inputs and optional schema-driven extraction prompts remain unsupported.
-6. **Text prefill accuracy and caching.** All 16 decoder layers and final norm now
+6. **Text accuracy and device caching.** All 16 decoder layers and final norm now
    execute on HTP with checked positions, masks and handoffs. Resolve the remaining
-   numerical differences and establish resident K/V ownership for incremental use.
-7. **Incremental decode.** Resident KV-cache allocation, append/update, decode
-   positions/masks, context limits and reset between documents; output head and
-   deterministic token selection, EOS/output-limit termination and UTF-8 streaming.
-   Tokenizer decoding exists, but it is not connected to generated model tokens.
-8. **End-to-end command/runtime.** Orchestrate model loading, graph/context caching,
-   image processing, vision, prefill and decode into actual text output. Add clear
-   failure propagation, cancellation, resource cleanup and repeated-request tests.
-   Patch export, Vision execution and multimodal prefill are not that OCR command.
+   numerical differences; RAM-resident KV ownership exists, device-resident cache
+   updates and reusable compiled graphs remain optimization work.
+7. **Broader decode validation.** Head, greedy selection, EOS/limits, UTF-8 and
+   incremental KV updates are implemented for the bounded context. Cover larger
+   contexts, richer prompts and multilingual generation beyond tokenizer fixtures.
+8. **Serving lifecycle.** A single-image end-to-end command now exists with failure
+   propagation and cleanup. Graceful cancellation, persistent graph/context caching,
+   repeated-request isolation and a lean nondiagnostic mode remain.
 9. **Acceptance and performance.** End-to-end oracle comparisons, a held-out
    image/text corpus, digits/punctuation, omissions, repetition, reading order,
    multilingual text and termination; then matched-quality cold/resident timing
@@ -2041,9 +2163,9 @@ MTP and low-bit quantization are also not needed for that baseline.
 4. **Vision encoder and connector: executable prototype above.** All blocks and
    connector run on two bounded grids; improve numerical acceptance, cover larger
    images and implement retained compiled contexts. No whole-page quality claim.
-5. **Text prefill implemented; decode pending.** The 16-layer prefill has a
-   64-position bucket and open precision gates. Add the output head, resident KV,
-   decode updates, selection/termination and incremental UTF-8 output. Config's
+5. **Text prefill and decode implemented.** The 16-layer decoder has a
+   64-position bucket, untied output head, RAM-resident KV, greedy selection,
+   termination and UTF-8 streaming, with open precision gates. Config's
    131072 positions is NOT a tested runtime capacity. MTP is a later extension.
 6. **Usable OCR and quality gates.** Image-to-text CLI first, then tables/formulas
    and optional separately pinned layout analysis. Evaluate German/English printed
@@ -2060,7 +2182,8 @@ FP16 HTP primitives, complete weight range audit, learned patch projection and
 complete vision block 0 on three 64-patch grids and two visible 128-patch OCR
 examples against two numerical oracles, plus a complete native 24-block vision
 and connector forward path on 64/128 patches, exact multimodal prompt/embedding
-assembly, and integrated 16-layer text prefill. Structural/execution checks pass;
+assembly, integrated 16-layer text prefill and bounded autoregressive generation
+with native UTF-8 output. Structural/execution checks pass;
 Vision and text numerical gates remain explicitly failing.
-No image-to-text inference, full-model FP16 accuracy, PDF support or OCR quality
+No full-model FP16 accuracy, PDF support or OCR quality
 acceptance is claimed. No previous Whisper or TranslateGemma campaign is restarted.

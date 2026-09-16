@@ -19,7 +19,7 @@ int ocr_artifact(const unsigned char *data, unsigned int size, unsigned int kind
         "9f4a549a14a96217569648aa7627c6674ad94fe9" "04b9992511183247d5115f176a5b9f0360a36a1c";
     static const char image_identity[] = "2e85a62840ccac27daa451df36c736c4636b8628"
         "308553695af766b3e3d05e68279d2c690e73273e" "bdc21c05f82f7a5f3a4bd4caa74f4bf81365fdd7";
-    const char *source_identity = kind >= 3 && kind <= 16 ? image_identity : identity;
+    const char *source_identity = kind >= 3 && kind <= 17 ? image_identity : identity;
     static const char hex[] = "0123456789abcdef";
     unsigned char hash[32];
     CryptoSha256Context context;
@@ -260,7 +260,7 @@ int ocr_encode(const OcrTokenizer *tokenizer, const unsigned char *text, unsigne
     return (int)total;
 }
 
-int ocr_decode(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned int count, int skip_special, unsigned char *output, unsigned int capacity) {
+int ocr_decode_prefix(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned int count, int skip_special, unsigned char *output, unsigned int capacity, int final) {
     unsigned char raw[OCR_TOKENIZER_LIMIT * 4];
     unsigned int length = 0, total = 0, cursor = 0;
     if (!tokenizer || !tokenizer->pieces || !ids || !output || count > OCR_TOKENIZER_LIMIT) return -1;
@@ -286,12 +286,17 @@ int ocr_decode(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned 
                     (lead == 0xed && next >= 0xa0) || (lead == 0xf0 && next < 0x90) || (lead == 0xf4 && next >= 0x90)))) break;
                 ++consumed;
             }
+            if (!final && consumed < expected && cursor+consumed == length) break;
             if (capacity - total < 3) return -1;
             output[total++] = 0xef; output[total++] = 0xbf; output[total++] = 0xbd;
             cursor += consumed;
         }
     }
     return (int)total;
+}
+
+int ocr_decode(const OcrTokenizer *tokenizer, const unsigned int *ids, unsigned int count, int skip_special, unsigned char *output, unsigned int capacity) {
+    return ocr_decode_prefix(tokenizer,ids,count,skip_special,output,capacity,1);
 }
 
 int ocr_prompt(unsigned int task, unsigned int images, unsigned int no_think, unsigned int *ids, unsigned int capacity) {

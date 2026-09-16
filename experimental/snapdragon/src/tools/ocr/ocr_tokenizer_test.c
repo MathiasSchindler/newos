@@ -338,6 +338,28 @@ int ocr_tokenizer_test(const unsigned short *table_path, const unsigned short *f
         if (output_size && ocr_decode(&tokenizer, expected, id_count, mode == 2, decoded, output_size - 1) != -1) return 0;
     }
     if (cursor != fixture_size) return 0;
+    static const unsigned char streaming[][6] = {
+        {0xc3,0xa4,'A',0,0,0}, {0xe2,0x82,0xac,'B',0,0}, {0xf0,0x9f,0x98,0x80,'C',0},
+        {0xe2,0x82,0,0,0,0}, {0xe2,'A',0x80,0,0,0}, {0xed,0xa0,0x80,0,0,0}
+    };
+    static const unsigned int streaming_lengths[] = {3,4,5,2,3,3};
+    for (unsigned int test = 0; test < 6; ++test) {
+        unsigned int previous = 0, length = streaming_lengths[test];
+        unsigned char complete[32], partial[32];
+        for (unsigned int offset = 0; offset < length; ++offset) actual[offset] = number(tokenizer.bytes+streaming[test][offset]*4);
+        int final_size = ocr_decode(&tokenizer,actual,length,1,complete,sizeof(complete));
+        if (final_size < 0) return 0;
+        for (unsigned int prefix = 0; prefix <= length; ++prefix) {
+            int size = ocr_decode_prefix(&tokenizer,actual,prefix,1,partial,sizeof(partial),0);
+            if (size < 0 || (unsigned int)size < previous || size > final_size) return 0;
+            for (int offset = 0; offset < size; ++offset) if (partial[offset] != complete[offset]) return 0;
+            if (test < 3 && prefix && prefix < length-1 && size) return 0;
+            previous = (unsigned int)size;
+        }
+        if (ocr_decode_prefix(&tokenizer,actual,length,1,partial,sizeof(partial),1) != final_size) return 0;
+        for (int offset = 0; offset < final_size; ++offset) if (partial[offset] != complete[offset]) return 0;
+    }
+    report("PASS incremental UTF-8 split/truncation/malformed cases: ",6);
     static const unsigned char invalid[][4] = {{0xc0,0x80,0,0}, {0xed,0xa0,0x80,0}, {0xf4,0x90,0x80,0x80}, {0xe2,0x82,0,0}};
     static const unsigned int lengths[] = {2,3,4,2};
     for (unsigned int index = 0; index < 4; ++index)

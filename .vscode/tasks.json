@@ -2,6 +2,48 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "GLM-OCR bounded generation hardware",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestGenerate", "-MaxNewTokens", "64", "-BuildDir", "experimental/snapdragon/build/ocr-generate-bounded"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR bounded generation analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-generation", "--generation-build", "experimental/snapdragon/build/ocr-generate-bounded"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR generation analysis",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-generation"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR generation native tests",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-Generate", "-Test", "-TestTokenizer", "-BuildDir", "experimental/snapdragon/build/ocr-generate"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR generation hardware",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestGenerate", "-MaxNewTokens", "3", "-BuildDir", "experimental/snapdragon/build/ocr-generate"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR generation export",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-generation"],
+			"problemMatcher": []
+		},
+		{
 			"label": "GLM-OCR multimodal input tests",
 			"type": "process",
 			"command": "powershell.exe",
