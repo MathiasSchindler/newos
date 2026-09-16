@@ -1990,6 +1990,10 @@ relaxed and no previous diagnostic precision variant became a default.
 
 ## Native autoregressive generation
 
+This section records the initial 64-position generation milestone. The
+[256-position extension](#extended-context-and-retained-graphs) below supersedes
+its current limits and adds an optional reusable-graph path.
+
 The bounded native BMP-to-text path is now connected end to end: Vision,
 multimodal prefill, the untied 1536-to-59392 LM head, deterministic greedy
 selection, incremental single-token decoding through all 16 layers, and UTF-8
@@ -2109,14 +2113,252 @@ count, reason (1 EOS, 2 output limit, 3 context limit), prompt count and request
 limit. `0.generated.txt` exactly matches the native UTF-8 stream. Reports retain
 the numerical rejection and do not turn execution success into accuracy success.
 
+## Extended context and retained graphs
+
+The next implemented milestone separates the unchanged 64-row image/text prefill
+from a **256-position decode cache**. The default generation package is now
+`models/glm-ocr-generation-v2/`; v1 and its captures are retained as historical
+evidence. The original model weights and text/vision packages are unchanged.
+
+`--generate-text`, `--generate-formula` and `--generate-table` now accept
+`MAX_NEW_TOKENS` from 1 to 256. Prompt plus generated-token budget is capped at
+256, leaving 228/212 output tokens for the two default Text Recognition prompts.
+The supported images remain 8x8/8x16 patch-grid BMP24 inputs. This does not expand
+the prefill bucket or establish support for larger pages.
+
+The v2 package adds kind-18 `decode-rope.got`: 262304 bytes containing checkpoint
+identity and FP32 cosine/sine tables for all 256 positions. It is bounded,
+identity/hash/finite-range checked before QNN loads. The original 64-position
+prefill table remains separate. KV capacity is now 16 MiB; generated-token and
+UTF-8 storage are separately sized, and capture names handle three-digit indices.
+Native tests cover 64/99/100/255 capture suffixes, 22 negative artifact/limit cases,
+three accepted extended CLI limits and the existing tokenizer/input regressions.
+Hardware reaches past the former position-64 boundary; full capacity through 255
+is bounded in code, not claimed as an exhaustive hardware sweep.
+
+### Optional graph reuse
+
+Build with `-Generate -ReuseDecode` to retain 16 decode-layer and eight LM-head
+graphs and their independent weight storage. This remains **opt-in**: the default
+variable-length path is the numerical/performance comparison, not silently
+replaced by a different attention layout.
+
+Decode graphs use six dynamic inputs: the current hidden row, cosine, sine, past
+K, past V and the causal/padding mask. The past-input tensors have 255 rows; the
+newly computed current K/V is concatenated in slot 255. Only the valid past prefix
+and slot 255 may receive attention. All other probabilities must be exactly zero.
+Current K/V is appended into the real chronological cache slot only after the
+layer succeeds. Cache-prefix hashes and coefficient captures verify the actual
+inputs used across repeated graph executions. This keeps shape constant while
+past length changes, without freezing cache or RoPE values as graph constants.
+
+The 24 retained contexts are freed before their independently allocated weight
+buffers. Failure cleanup follows the same ownership order; ready flags are reset,
+and a new generation clears cache storage. This is still a single-request CLI,
+not a tested persistent service. The final norm graph is still rebuilt per token;
+Vision and prefill also remain cold-built. Neural computation stays on HTP and
+the executable remains ARM64/Kernel32-only/no-CRT. Approximate retained raw weight
+storage is 1.16 GB in addition to backend allocations and existing buffers; this
+is a speed/memory tradeoff, not a measured peak-memory claim. KV buffers are in
+process RAM and copied through QNN inputs, not zero-copy device-resident storage.
+
+### Independent reference and timing
+
+`export-glm-ocr.py --reference-generation --generation-build BUILD_DIR` loads the
+full pinned original model with BF16 weights expanded to FP32, preprocesses the
+original BMP independently, and generates its own token sequence and cache. It
+does not consume native Vision features or force native token prefixes. The report
+`independent-generation.json` records source/image/model/executable hashes, text,
+EOS, top-two logit margins, and exact character edit distances against both the
+native output and the existing receipt transcription. It can create reference
+results before a native run finishes, marking unavailable comparisons as null.
+
+Both native modes now finish the receipt with EOS after 53 tokens:
+
+```text
+BELEG 1042
+16.09.2026
+2 Hefte: 7,90 EUR
+1 Stift: 2,05 EUR
+Summe: 9,95 EUR
+```
+
+Pattern reaches EOS after six tokens, emitting an empty Markdown code block.
+Retained-mode outputs are byte-identical to the independent original model for
+both cases. Receipt differs from the literal stored transcription only by its
+missing terminal newline: one edit out of 74 characters, CER 0.0135135 for both
+native and reference. No whitespace normalization hides this discrepancy. This
+tiny development fixture set is not a held-out or multilingual quality corpus.
+
+The conditional layer/cache analysis also passes for both modes: all 59 token
+decisions agree with original and FP16-expanded text/head references. Actual
+retained-cache prefixes, masks, handoffs and decode rotary coefficients pass.
+However, later logits differ between variable-length and fixed-layout execution;
+the retained pattern run has up to 14350 original-reference logit violations in
+one step, versus 8571 in the variable-length run. **The numerical gate remains
+false in both modes.** No tolerance was relaxed and graph reuse is not approved
+as numerically equivalent merely because these texts match.
+
+`0.timing.u64` stores QPC frequency followed by ticks for file reads, graph
+finalization subset, graph execution subset, generation context operations,
+Vision, prefill, head, decode and total wall time. Phase totals overlap with
+operation totals and must not be summed. The two graph subsets cover the shared
+Vision-tail/text/head execution helper, not all older Vision-block operations.
+Analysis converts these to seconds and retains the raw hashed capture.
+
+Observed receipt timings: variable-length mode 582.02 s total, 474.13 s decode,
+67.04 s head; retained mode 62.43 s total, 16.52 s decode, 2.28 s head. The retained
+run was serial, but part of the earlier variable-length campaign overlapped other
+development work. These values locate a major graph-build cost; they are **not a
+controlled speedup benchmark**. Even retained execution still spends about 28.69 s
+in Vision and 10.89 s in prefill. The separate CPU reference generated the receipt
+in about 9.93 s excluding model load, so NPU execution alone is not a performance
+win. Future comparisons need isolated repeated runs and peak-memory measurement.
+
+### Reproduction
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-generation
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestGenerate -ReuseDecode -MaxNewTokens 212 -BuildDir experimental/snapdragon/build/ocr-retained-full
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --analyze-generation --generation-build experimental/snapdragon/build/ocr-retained-full
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --reference-generation --generation-build experimental/snapdragon/build/ocr-retained-full
+```
+
+Tasks: `GLM-OCR context256 hardware/analysis`, `GLM-OCR retained full
+hardware/analysis`, `GLM-OCR retained independent reference`. The native binary
+and reference reports remain in their separate build directories. Historical v1
+analyses need their matching v1 package explicitly; do not mix old reports with
+new binaries or weights.
+
+## PNG and larger image grids
+
+Native file input now recognizes **BMP24 and PNG8 by signature**, including for
+`--prepare-image`, `--vision`, `--prefill-*` and `--generate-*`. PNG decoding uses
+the existing in-tree zlib inflater through a tool-private Windows allocation
+bridge. It adds no CRT, image DLL, Python or neural CPU fallback to production.
+
+PNG support is deliberately bounded: non-interlaced 8-bit grayscale, RGB,
+grayscale-alpha and RGBA, all five scanline filters and consecutive split IDAT
+chunks. Alpha is composited on white using integer rounding. Palette/low-bit/
+16-bit/Adam7 images, tRNS, embedded ICC profiles, EXIF and APNG are rejected;
+there is no color-management or EXIF-orientation implementation. Ancillary chunks
+otherwise have no pixel effect. CRCs, zlib/Adler integrity, exact decoded length,
+stream consumption, chunk names/order and IEND/EOF are checked. Duplicate PLTE,
+unknown critical chunks and decompression excesses are rejected.
+
+Input remains capped at 64 MiB, 10000 per source dimension and 16 Mi pixels.
+PNG compressed-plus-decoded workspace is capped at 128 MiB and conservatively
+included in the 256 MiB preprocessing buffer budget. This is not the total QNN
+process memory limit. Failed writes can leave partial captures; they are not
+successful results, and an existing output file is never overwritten.
+
+The ordinary build preserves its two original buckets and 64-row prefill.
+Build with `-LargeImages` plus `-Vision`, `-Prefill` or `-Generate` to enable:
+
+| Patch Grid (H x W) | Resized Pixels (W x H) | Image Tokens |
+| --- | --- | --- |
+| 8 x 8 | 112 x 112 | 16 |
+| 8 x 16 | 224 x 112 | 32 |
+| 16 x 16 | 224 x 224 | 64 |
+| 16 x 32 | 448 x 224 | 128 |
+
+These are exact accepted grids after the existing model-compatible resize;
+there is no arbitrary-page tiling or automatic fit to the nearest supported
+bucket. Other aspect ratios/grids still fail before loading QNN. The large build
+uses 256-row prefill for all four grids. Total prompt plus generated output is
+still 256 tokens: the large default Text Recognition prompts contain 76/140
+tokens, leaving at most 180/116 output tokens, respectively. Longer documents
+can therefore still end with exit 3 (incomplete limit).
+
+The large build defaults to a separate `models/glm-ocr-vision-v2/` directory.
+All 26 original Vision weight artifacts retain their layout. New kind-19
+`large-rope.got` has 393376 bytes: original checkpoint identity followed by FP32
+cosine/sine tables for 16x16, then 16x32, in pinned model patch order. The native
+reader checks exact length, envelope/source identity, integrity and finite
+coefficient range before graph construction. The text v1 and generation v2
+packages remain unchanged; the existing 64-position prefill coefficient table
+covers the compressed spatial positions of these grids. Decode uses its
+separate 256-position coefficient table.
+
+Vision buffers now cover 512 patches in the large build; prefilling 128 image
+tokens requires the expanded text buffers/masks and valid-prefix KV copies.
+Neural computation still executes through HTP, with per-stage finite values,
+accelerator profiles, chronological cache hashes and checked cleanup. Optional
+`-ReuseDecode` is independent of `-LargeImages` and remains opt-in. Full tensor
+captures can consume gigabytes; this is still a diagnostic runtime.
+
+### Validation and results
+
+`GLM-OCR image file build` followed by `GLM-OCR PNG import tests` passes 208
+native PNG cases: exact BMP/PNG patch equality across all filters and supported
+color types, split IDAT and compression levels, plus CRC/Adler/truncation,
+chunk-order/name, dimension, unsupported-format and decompression-length errors.
+The existing image, resize, tokenizer and prompt fixtures still pass, including
+43305024 exact normalized patch values. Both small Vision-only and large
+generation builds pass the ARM64/Kernel32-only/no-CRT audit. Large-RoPE tests
+reject missing/truncated/corrupt and correctly rehashed nonfinite data.
+
+The new 224x224 text sample and 448x224 receipt are rendered directly at their
+new resolutions, not enlarged from the old bitmaps. Their PNG, RGB, expected
+transcription, font and reference hashes are recorded in the v2 manifest.
+Both PNGs complete the full 24-block Vision, connector, 16-layer prefill and
+autoregressive HTP path to EOS: 29 tokens for the text sample and 53 for receipt.
+Both texts match an independently executed original full model byte for byte.
+The sample reads `OCR 1042`, `19,95 EUR`, `16.09.2026`, `Hello!`; the receipt
+matches the five-line transcription shown in the preceding milestone.
+Both omit the stored transcription's final newline, counted as one edit rather
+than normalized away. These are development fixtures, not held-out page tests.
+
+Native image patches are exact against the official processor. Prompt IDs,
+embeddings with captured image-feature insertion, modalities, positions, masks
+and prefill RoPE are exact against the actual model. All 82 greedy decisions
+also match both conditional original/candidate references; cache prefixes and
+decode handoffs pass. **The numerical gate remains false**, unchanged at
+`0.003 + 0.005 * abs(reference)`. Initial large-grid final-feature violations
+are 3208/3168 (original/candidate) for the sample and 2253/2582 for receipt,
+with much larger intermediate drift and nonzero logit violations. Matching
+texts do not establish harmless numerical error or general OCR quality.
+
+The initial retained-graph runs took approximately 95.64 s and 125.85 s total,
+including about 40.73/41.06 s in prefill. These single runs identify substantial
+graph-building cost; they are not a controlled throughput benchmark or a claim
+that NPU execution beats the CPU reference. Reports record subsequent runs'
+own hashed timings and preserve the numerical rejection.
+
+### Reproduction
+
+From the repository root, use the named VS Code process tasks or:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-vision-encoder --large-images --vision-output experimental/snapdragon/models/glm-ocr-vision-v2
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestGenerate -LargeImages -ReuseDecode -MaxNewTokens 212 -BuildDir experimental/snapdragon/build/ocr-large-png
+```
+
+Then run `GLM-OCR large PNG vision analysis`, `GLM-OCR large PNG generation
+analysis` and `GLM-OCR large PNG independent reference`. Their reports are
+`vision-analysis.json`, `generation-analysis.json` and
+`independent-generation.json` under `build/ocr-large-png/`. PNG development tests
+use the existing optional exporter tool, not a production Python path.
+
+For your own supported PNG/BMP, create an empty capture directory and run:
+
+```powershell
+$runtime = (Resolve-Path experimental/snapdragon/build/QnnHtp.dll).Path
+.\experimental\snapdragon\build\ocr-large-png\ocr-generate.exe --generate-text $runtime experimental/snapdragon/models/glm-ocr-vision-v2 experimental/snapdragon/models/glm-ocr-text-v1 experimental/snapdragon/models/glm-ocr-generation-v2 INPUT.png NEW_CAPTURE_DIRECTORY 116
+```
+
+Exit 0 means EOS, 3 means incomplete output at an explicit limit, and 1 means
+failure. Stdout is recognized UTF-8 text; diagnostics go to stderr. Original
+checkpoint files and earlier v1 packages/captures are preserved.
+
 ## Concrete image-to-text gaps
 
-1. **Common input formats.** Native PNG/JPEG pixel decoding, explicit EXIF
-   orientation and grayscale/alpha/color handling with reference cases. BMP24
-   works now; compressed image support is not required for the first BMP-only OCR.
-2. **Larger image-to-vision buckets.** The native BMP-to-HTP connection now works
-   for 8x8/8x16 patch grids. Larger page grids, additional aspect ratios and their
-   positional geometry, memory and numerical checks remain.
+1. **Additional input formats.** BMP24 and bounded PNG8 RGB/grayscale/alpha now
+   work. JPEG, palette/interlaced/16-bit PNG, ICC color handling and EXIF
+   orientation remain unsupported.
+2. **Larger image-to-vision buckets.** The native PNG/BMP-to-HTP connection now
+   supports four grids through 16x32 patches in the large build. Full-page grids,
+   additional aspect ratios or tiling and their memory/numerical checks remain.
 3. **Vision accuracy and lifecycle optimization.** All 24 blocks and postnorm now
    execute with checked handoffs and reference reports. Accumulated FP16 error
    remains unaccepted; resident graph/context caching and lean output buffers are
@@ -2129,15 +2371,16 @@ the numerical rejection and do not turn execution success into accuracy success.
    inputs and optional schema-driven extraction prompts remain unsupported.
 6. **Text accuracy and device caching.** All 16 decoder layers and final norm now
    execute on HTP with checked positions, masks and handoffs. Resolve the remaining
-   numerical differences; RAM-resident KV ownership exists, device-resident cache
-   updates and reusable compiled graphs remain optimization work.
+   numerical differences; optional reusable decode/head graphs now exist, while
+   device-resident cache updates and retained Vision/prefill graphs remain work.
 7. **Broader decode validation.** Head, greedy selection, EOS/limits, UTF-8 and
    incremental KV updates are implemented for the bounded context. Cover larger
    contexts, richer prompts and multilingual generation beyond tokenizer fixtures.
 8. **Serving lifecycle.** A single-image end-to-end command now exists with failure
-   propagation and cleanup. Graceful cancellation, persistent graph/context caching,
+   propagation and cleanup. Graceful cancellation, persistent multi-request caching,
    repeated-request isolation and a lean nondiagnostic mode remain.
-9. **Acceptance and performance.** End-to-end oracle comparisons, a held-out
+9. **Acceptance and performance.** An independent end-to-end comparison now exists
+   for the small and larger development images. Still needed: a held-out
    image/text corpus, digits/punctuation, omissions, repetition, reading order,
    multilingual text and termination; then matched-quality cold/resident timing
    and measured memory. No current OCR quality or latency acceptance exists.
@@ -2164,7 +2407,7 @@ MTP and low-bit quantization are also not needed for that baseline.
    connector run on two bounded grids; improve numerical acceptance, cover larger
    images and implement retained compiled contexts. No whole-page quality claim.
 5. **Text prefill and decode implemented.** The 16-layer decoder has a
-   64-position bucket, untied output head, RAM-resident KV, greedy selection,
+   64-row prefill and 256-position decode bucket, untied output head, RAM-resident KV, greedy selection,
    termination and UTF-8 streaming, with open precision gates. Config's
    131072 positions is NOT a tested runtime capacity. MTP is a later extension.
 6. **Usable OCR and quality gates.** Image-to-text CLI first, then tables/formulas
@@ -2182,7 +2425,8 @@ FP16 HTP primitives, complete weight range audit, learned patch projection and
 complete vision block 0 on three 64-patch grids and two visible 128-patch OCR
 examples against two numerical oracles, plus a complete native 24-block vision
 and connector forward path on 64/128 patches, exact multimodal prompt/embedding
-assembly, integrated 16-layer text prefill and bounded autoregressive generation
+assembly, integrated 16-layer text prefill, 256-position autoregressive generation,
+optional retained decode/head graphs and an independent full-model text comparison
 with native UTF-8 output. Structural/execution checks pass;
 Vision and text numerical gates remain explicitly failing.
 No full-model FP16 accuracy, PDF support or OCR quality

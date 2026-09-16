@@ -19,6 +19,9 @@ int ocr_image_shape(unsigned int height, unsigned int width, OcrImageShape *shap
 int ocr_image_bmp(const unsigned char *data, unsigned long long size,
                   unsigned char *rgb, unsigned long long capacity,
                   unsigned int *height, unsigned int *width);
+int ocr_image_png(const unsigned char *data, unsigned long long size,
+                  unsigned char *rgb, unsigned long long capacity,
+                  unsigned int *height, unsigned int *width);
 int ocr_image_resize(const unsigned char *rgb, unsigned long long size,
                      unsigned int height, unsigned int width, unsigned int stride,
                      unsigned char *scratch, unsigned long long scratch_size,

@@ -25,6 +25,7 @@ int ocr_image_load(const unsigned short *path, OcrPreparedImage *image) {
     long long size = 0;
     int good = 0;
     unsigned int received, total = 0;
+    int (*decode)(const unsigned char *, unsigned long long, unsigned char *, unsigned long long, unsigned int *, unsigned int *) = ocr_image_bmp;
     if (!GetFileSizeEx(file, &size) || size < 54 || size > 64LL * 1024 * 1024) goto done;
     encoded = VirtualAlloc(0, (unsigned long long)size, 0x3000, 4);
     if (!encoded) goto done;
@@ -33,20 +34,22 @@ int ocr_image_load(const unsigned short *path, OcrPreparedImage *image) {
         total += received;
     }
     unsigned char extra;
+    if (encoded[0] == 137) decode = ocr_image_png;
     if (!ReadFile(file, &extra, 1, &received, 0) || received ||
-        !ocr_image_bmp(encoded, (unsigned long long)size, 0, 0, &image->source_height, &image->source_width) ||
+        !decode(encoded, (unsigned long long)size, 0, 0, &image->source_height, &image->source_width) ||
         !ocr_image_shape(image->source_height, image->source_width, &image->shape)) goto done;
     unsigned long long rgb_size = (unsigned long long)image->source_height * image->source_width * 3;
     unsigned long long scratch_size = (unsigned long long)image->source_height * image->shape.width * 3;
     unsigned long long resized_size = (unsigned long long)image->shape.height * image->shape.width * 3;
     unsigned long long workspace_size = rgb_size + scratch_size + resized_size;
     image->value_count = resized_size * 2;
-    if ((unsigned long long)size + workspace_size + image->value_count * sizeof(float) > 256ULL * 1024 * 1024) goto done;
+    unsigned long long decode_workspace = decode == ocr_image_png ? (unsigned long long)size+(4ULL*image->source_width+1)*image->source_height : 0;
+    if ((unsigned long long)size + workspace_size + decode_workspace + image->value_count * sizeof(float) > 256ULL * 1024 * 1024) goto done;
     workspace = VirtualAlloc(0, workspace_size, 0x3000, 4);
     image->patches = VirtualAlloc(0, image->value_count * sizeof(float), 0x3000, 4);
     if (!workspace || !image->patches) goto done;
     unsigned char *scratch = workspace + rgb_size, *resized = scratch + scratch_size;
-    if (!ocr_image_bmp(encoded, (unsigned long long)size, workspace, rgb_size, &image->source_height, &image->source_width) ||
+    if (!decode(encoded, (unsigned long long)size, workspace, rgb_size, &image->source_height, &image->source_width) ||
         !ocr_image_resize(workspace, rgb_size, image->source_height, image->source_width, image->source_width * 3,
                           scratch, scratch_size, resized, resized_size) ||
         !ocr_image_patchify(resized, resized_size, image->shape.height, image->shape.width,

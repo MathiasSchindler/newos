@@ -7,6 +7,21 @@ capture, see [diagnostics.md](diagnostics.md).
 
 ## GLM-OCR development
 
+**Current image support:** native BMP24 and non-interlaced PNG8 (RGB/grayscale,
+optional alpha composited on white). The `-LargeImages` build adds 16x16 and
+16x32 patch grids, corresponding to 224x224 and 448x224 pixels after resizing,
+alongside the existing 8x8/8x16 grids. It uses 256-row prefill and the separate
+`models/glm-ocr-vision-v2/` package; total prompt/output context remains 256.
+Both larger PNG test images reached EOS on HTP and matched the independently
+executed original model byte for byte. Numerical tolerance checks still fail.
+Run `GLM-OCR large image export`, `GLM-OCR large PNG hardware`, then the large
+PNG vision/generation analyses and independent reference tasks. See
+[PNG and larger image grids](plan-glm-ocr.md#png-and-larger-image-grids) for
+commands, supported PNG variants, limits and results. `GLM-OCR PNG import tests`
+checks 208 cases after `GLM-OCR image file build`.
+
+The following summarizes the earlier small-grid baseline:
+
 The native BMP input now reaches the **complete 24-block vision encoder and
 connector on HTP**, producing 1536-wide image features for 8x8/8x16 patch grids.
 Use the tasks `GLM-OCR full vision export`, `GLM-OCR full vision hardware` and
@@ -22,15 +37,21 @@ are tested; the integrated Text Recognition hardware runs pass structural checks
 Text numerical acceptance remains open, especially after final norm. The native
 **autoregressive generation** path now adds the untied LM head, greedy selection,
 RAM-resident KV cache, single-token HTP decode, EOS/limit termination and UTF-8
-streaming. The three-token receipt run emits `BELEG`; all six tested decisions
-across both image cases agree with original/candidate conditional references,
-but logit tolerance violations remain. The longer campaign reaches EOS on pattern
-and produces `BELEG 1042` plus `16.09.2026` on receipt before the context limit;
-all 26 decisions match both references. This is not OCR-quality approval.
+streaming. The decode context is now 256 positions, separate from the unchanged
+64-row prefill. The complete five-line receipt reaches EOS after 53 tokens and
+matches the independently executed original full model byte for byte. Pattern
+also reaches EOS; all 59 decisions match the conditional original/candidate
+references. Logit tolerance violations remain, so this is not numerical or
+corpus-wide OCR-quality approval.
 Use `GLM-OCR generation export`, `GLM-OCR generation native tests`, `GLM-OCR
 generation hardware` and `GLM-OCR generation analysis`, or build with
 `build-ocr.ps1 -Generate -BuildDir experimental/snapdragon/build/ocr-generate`.
-The 64-token total budget and two BMP image buckets remain explicit limits;
+Use `-ReuseDecode` for optional retained decode/head graphs. Their dynamic cache,
+mask and RoPE inputs are checked on hardware, but their later logits are not
+bit-identical to the default variable-length mode. The package is now
+`models/glm-ocr-generation-v2/`; timing and independent references are documented in
+[the extended-context milestone](plan-glm-ocr.md#extended-context-and-retained-graphs).
+The 256-token total budget and two image buckets remain limits of that small build;
 exit 0 means EOS and exit 3 means incomplete output at a limit. See the
 [generation CLI and execution contract](plan-glm-ocr.md#native-autoregressive-generation).
 For prefill-only diagnostics, use `GLM-OCR text

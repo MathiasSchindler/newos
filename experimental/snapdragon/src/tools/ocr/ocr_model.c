@@ -188,10 +188,10 @@ void mainCRTStartup(void) {
         result = ocr_generation_test(arguments[2]);
     } else if (count == 9U && (word(arguments[1], "--generate-text") || word(arguments[1], "--generate-formula") || word(arguments[1], "--generate-table"))) {
         unsigned int limit = 0, digits = 0;
-        while (arguments[8][digits] >= '0' && arguments[8][digits] <= '9' && digits < 2) {
+        while (arguments[8][digits] >= '0' && arguments[8][digits] <= '9' && digits < 3) {
             limit = limit*10+arguments[8][digits++]-'0';
         }
-        if (!digits || arguments[8][digits] || !limit || limit > 64) { ExitProcess(2U); return; }
+        if (!digits || arguments[8][digits] || !limit || limit > 256) { ExitProcess(2U); return; }
         unsigned int task = word(arguments[1], "--generate-text") ? 0 : word(arguments[1], "--generate-formula") ? 1 : 2;
         result = ocr_generate_run(arguments[2],arguments[3],arguments[4],arguments[5],arguments[6],arguments[7],task,limit);
         ExitProcess(result == 1 ? 0U : result == 2 ? 3U : 1U); return;
@@ -210,7 +210,7 @@ void mainCRTStartup(void) {
 #ifdef OCR_IMAGE_FILE
     } else if (count == 4U && word(arguments[1], "--prepare-image")) {
         result = ocr_image_export(arguments[2], arguments[3]);
-        if (!result) print("FAIL image preparation: require bounded BMP24 input and a new writable output path; no inference performed\n", (unsigned int)-12);
+        if (!result) print("FAIL image preparation: require bounded BMP24 or non-interlaced PNG8 (gray/RGB, optional alpha) and a new writable output path; no inference performed\n", (unsigned int)-12);
         ExitProcess(result ? 0U : 1U);
         return;
 #endif
@@ -233,14 +233,14 @@ void mainCRTStartup(void) {
         result = verify(arguments[2], expected, word(arguments[1], "--weights"));
     } else {
     #ifdef OCR_TEXT_DECODER
-        print("Generation: --generate-text|--generate-formula|--generate-table DLL VISION_DIR TEXT_DIR GENERATION_DIR INPUT.bmp CAPTURE_DIR MAX_NEW_TOKENS (1..64); exits 0 EOS, 3 incomplete limit, 1 failure\n", (unsigned int)-12);
-        print("Prefill: --prefill-text|--prefill-formula|--prefill-table DLL VISION_DIR TEXT_DIR INPUT.bmp CAPTURE_DIR\n", (unsigned int)-12);
+        print("Generation: --generate-text|--generate-formula|--generate-table DLL VISION_DIR TEXT_DIR GENERATION_DIR INPUT_IMAGE CAPTURE_DIR MAX_NEW_TOKENS (1..256); exits 0 EOS, 3 incomplete limit, 1 failure\n", (unsigned int)-12);
+        print("Prefill: --prefill-text|--prefill-formula|--prefill-table DLL VISION_DIR TEXT_DIR INPUT_IMAGE CAPTURE_DIR\n", (unsigned int)-12);
     #endif
     #ifdef OCR_VISION_RUN
-        print("Vision: --vision QnnHtp.dll WEIGHTS_DIR INPUT.bmp NEW_CAPTURE_DIR | --check-vision WEIGHTS_DIR\n", (unsigned int)-12);
+        print("Vision: --vision QnnHtp.dll WEIGHTS_DIR INPUT_IMAGE NEW_CAPTURE_DIR | --check-vision WEIGHTS_DIR\n", (unsigned int)-12);
     #endif
 #ifdef OCR_IMAGE_FILE
-        print("Image preprocessing only: --prepare-image INPUT.bmp OUTPUT.f32\n", (unsigned int)-12);
+        print("Image preprocessing only: --prepare-image INPUT_IMAGE OUTPUT.f32; BMP24 or PNG8 gray/RGB with optional alpha, non-interlaced\n", (unsigned int)-12);
 #endif
         print("Usage: ocr-model --self-test | --verify FILE SHA256 | --weights FILE SHA256\n", (unsigned int)-12);
         ExitProcess(2U);

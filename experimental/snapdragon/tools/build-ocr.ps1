@@ -18,8 +18,10 @@ param(
     [switch]$TestPrefill,
     [switch]$Generate,
     [switch]$TestGenerate,
-    [ValidateRange(1,64)][int]$MaxNewTokens = 3,
-    [string]$GenerationDir = 'experimental/snapdragon/models/glm-ocr-generation-v1',
+    [switch]$ReuseDecode,
+    [switch]$LargeImages,
+    [ValidateRange(1,256)][int]$MaxNewTokens = 3,
+    [string]$GenerationDir = 'experimental/snapdragon/models/glm-ocr-generation-v2',
     [string]$TextDir = 'experimental/snapdragon/models/glm-ocr-text-v1',
     [string]$VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v1',
     [switch]$TestHtp,
@@ -39,9 +41,12 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($TestGenerate) { $Generate = $true }
 if ($Generate) { $Prefill = $true }
+if ($LargeImages -and -not $PSBoundParameters.ContainsKey('VisionDir')) { $VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v2' }
+if ($ReuseDecode -and -not $Generate) { throw '-ReuseDecode requires -Generate or -TestGenerate' }
 if ($TestVision) { $Vision = $true }
 if ($TestPrefill) { $Prefill = $true }
 if ($Prefill) { $Vision = $true }
+if ($LargeImages -and -not $Vision) { throw '-LargeImages requires -Vision, -Prefill or -Generate' }
 if ($Vision -and ($TestHtp -or $CaptureInternals -or $RefineDivide -or $MatrixResidual -or $FuseDownResidual -or $MatrixRope -or $SplitRope -or $RopeBlock1Only)) { throw 'Vision runtime does not accept diagnostic HTP variants' }
 if ($FuseDownResidualBlock0 -and -not $FuseDownResidual) { throw '-FuseDownResidualBlock0 requires -FuseDownResidual' }
 if ($FuseAttentionResidual -and -not $FuseDownResidual) { throw '-FuseAttentionResidual requires -FuseDownResidual' }
@@ -231,10 +236,28 @@ function Test-Generation {
         Assert-Native @('--test-generation',$scratch) 1
         [IO.File]::WriteAllBytes($path,$bytes)
         Assert-Native @('--test-generation',$scratch) 1
-        foreach ($limit in @('0','65','-1','1x','999999999999999999')) {
+        foreach ($limit in @('0','257','-1','1x','999999999999999999')) {
             Assert-Native @('--generate-text','missing','missing','missing','missing','missing','missing',$limit) 2
         }
-        Write-Output 'PASS generation negative checks: 15; head identity/integrity/truncation/missing layers and invalid limits'
+        foreach ($limit in @('64','100','256')) {
+            Assert-Native @('--generate-text','missing','missing','missing','missing','missing','missing',$limit) 1 'FAIL vision image input'
+        }
+        foreach ($artifact in Get-ChildItem -LiteralPath $GenerationDir -Filter '*.got') {
+            if ($artifact.Name -ne 'head-00.got') { Copy-Item -LiteralPath $artifact.FullName -Destination (Join-Path $scratch $artifact.Name) }
+        }
+        $ropePath = Join-Path $scratch 'decode-rope.got'
+        $rope = [IO.File]::ReadAllBytes($ropePath)
+        foreach ($offset in @(12,96,128,160,($rope.Length-1))) {
+            $rope[$offset] = $rope[$offset] -bxor 1
+            [IO.File]::WriteAllBytes($ropePath,$rope)
+            Assert-Native @('--test-generation',$scratch) 1
+            $rope[$offset] = $rope[$offset] -bxor 1
+        }
+        [IO.File]::WriteAllBytes($ropePath,(New-Object byte[] 127))
+        Assert-Native @('--test-generation',$scratch) 1
+        Remove-Item -LiteralPath $ropePath
+        Assert-Native @('--test-generation',$scratch) 1
+        Write-Output 'PASS generation checks: 22 negative head/RoPE/artifact/limit cases and 3 valid extended CLI limits'
     } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
 }
 
@@ -467,6 +490,7 @@ try {
         $binary = Join-Path $BuildDir 'ocr-image.exe'
         $flags += @('-DOCR_IMAGE_FILE', '-fno-math-errno', '-ffp-contract=off')
         $sources += @('experimental/snapdragon/src/tools/ocr/ocr_image.c', 'experimental/snapdragon/src/tools/ocr/ocr_image_file.c')
+        $sources += @('experimental/snapdragon/src/tools/ocr/ocr_png.c', 'src/shared/compression/zlib.c')
         if ($TestImages -or $Prefill) { $sources += 'experimental/snapdragon/src/tools/ocr/ocr_text.c' }
         if ($TestImages) {
             $binary = Join-Path $BuildDir 'ocr-image-test.exe'
@@ -478,6 +502,8 @@ try {
         if ($Vision) { $binary = Join-Path $BuildDir 'ocr-vision.exe'; $flags += '-DOCR_VISION_RUN' }
         if ($Prefill) { $binary = Join-Path $BuildDir 'ocr-prefill.exe'; $flags += '-DOCR_TEXT_DECODER' }
         if ($Generate) { $binary = Join-Path $BuildDir 'ocr-generate.exe' }
+        if ($ReuseDecode) { $flags += '-DOCR_REUSE_DECODE' }
+        if ($LargeImages) { $flags += '-DOCR_LARGE_IMAGES' }
         if ($MatrixRope -or $SplitRope) { $flags += '-DOCR_MATRIX_ROPE' }
         if ($SplitRope) { $flags += '-DOCR_SPLIT_ROPE' }
         if ($CaptureInternals) { $flags += '-DOCR_CAPTURE_INTERNALS' }
@@ -549,6 +575,30 @@ try {
             Assert-Native @('--vision', $missingDll, $VisionDir, (Join-Path $VisionDir 'pattern.bmp'), $negative) 1 'FAIL loading explicit HTP library'
             Assert-Native @('--vision') 2
             Write-Output 'PASS vision negative checks: 14; missing/corrupt/truncated weights, invalid image/bucket/runtime/arguments'
+            if ($LargeImages) {
+                foreach ($artifact in Get-ChildItem -LiteralPath $VisionDir -Filter '*.got') {
+                    if ($artifact.Name -notin @('block-00.got','large-rope.got')) {
+                        New-Item -ItemType HardLink -Path (Join-Path $negative $artifact.Name) -Target $artifact.FullName | Out-Null
+                    }
+                }
+                Assert-Native @('--check-vision', $negative) 1
+                $ropePath = Join-Path $negative 'large-rope.got'
+                [byte[]]$rope = [IO.File]::ReadAllBytes((Join-Path $VisionDir 'large-rope.got'))
+                [IO.File]::WriteAllBytes($ropePath, (New-Object byte[] 127))
+                Assert-Native @('--check-vision', $negative) 1
+                $rope[160] = $rope[160] -bxor 1
+                [IO.File]::WriteAllBytes($ropePath, $rope)
+                Assert-Native @('--check-vision', $negative) 1
+                [Array]::Copy([BitConverter]::GetBytes([single]::NaN),0,$rope,160,4)
+                $hash = [Security.Cryptography.SHA256]::Create()
+                try { [Array]::Copy($hash.ComputeHash([byte[]]($rope[0..95]+$rope[128..($rope.Length-1)])),0,$rope,96,32) }
+                finally { $hash.Dispose() }
+                [IO.File]::WriteAllBytes($ropePath, $rope)
+                Assert-Native @('--check-vision', $negative) 1
+                Copy-Item -LiteralPath (Join-Path $VisionDir 'large-rope.got') -Destination $ropePath -Force
+                Assert-Native @('--check-vision', $negative)
+                Write-Output 'PASS large-grid RoPE: missing/truncated/corrupt/rehashed nonfinite rejected; restored artifact accepted'
+            }
         } finally { Remove-Item -LiteralPath $negative -Recurse -Force }
         $weightHashes = [ordered]@{}
         foreach ($artifact in Get-ChildItem -LiteralPath $VisionDir -Filter '*.got') { $weightHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash }
@@ -557,6 +607,7 @@ try {
             $runtimeHashes[$name] = (Get-FileHash -LiteralPath (Join-Path $QnnDir $name)).Hash
         }
         foreach ($case in @('pattern', 'receipt')) {
+            $inputImage = Join-Path $VisionDir ($case + $(if ($LargeImages) { '.png' } else { '.bmp' }))
             $capture = Join-Path $BuildDir ($case + '-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $capture | Out-Null
             $runtime = (Resolve-Path (Join-Path $QnnDir 'QnnHtp.dll')).Path
@@ -564,20 +615,20 @@ try {
             $ErrorActionPreference = 'Continue'
             try {
                 if ($TestGenerate) {
-                    $runArgs = @('--generate-text',$runtime,$VisionDir,$TextDir,$GenerationDir,(Join-Path $VisionDir ($case + '.bmp')),$capture,[string]$MaxNewTokens)
+                    $runArgs = @('--generate-text',$runtime,$VisionDir,$TextDir,$GenerationDir,$inputImage,$capture,[string]$MaxNewTokens)
                     $quoted = @($runArgs | ForEach-Object { '"' + $_ + '"' })
                     $process = Start-Process -FilePath $binary -ArgumentList $quoted -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $capture 'stdout.txt') -RedirectStandardError (Join-Path $capture 'execution.log')
                     $code = $process.ExitCode
                     Write-Output ('Generation {0}: exit {1}, capture {2}' -f $case,$code,$capture)
                     Get-Content -LiteralPath (Join-Path $capture 'execution.log') -Tail 8
                 } else {
-                    $runArgs = if ($TestPrefill) { @('--prefill-text',$runtime,$VisionDir,$TextDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) } else { @('--vision',$runtime,$VisionDir,(Join-Path $VisionDir ($case + '.bmp')),$capture) }
+                    $runArgs = if ($TestPrefill) { @('--prefill-text',$runtime,$VisionDir,$TextDir,$inputImage,$capture) } else { @('--vision',$runtime,$VisionDir,$inputImage,$capture) }
                     & $binary @runArgs 2>&1 | Tee-Object -FilePath (Join-Path $capture 'execution.log')
                     $code = $LASTEXITCODE
                 }
             } finally { $ErrorActionPreference = $previous }
             $captureHashes = [ordered]@{}
-            foreach ($tensor in Get-ChildItem -LiteralPath $capture -File | Where-Object { $_.Extension -in @('.f16','.f32','.u32','.i32','.u8','.txt') }) {
+            foreach ($tensor in Get-ChildItem -LiteralPath $capture -File | Where-Object { $_.Extension -in @('.f16','.f32','.u32','.i32','.u8','.u64','.txt') }) {
                 $captureHashes[$tensor.Name] = (Get-FileHash -LiteralPath $tensor.FullName).Hash
             }
             $textHashes = [ordered]@{}
@@ -586,10 +637,11 @@ try {
             if ($TestGenerate) { foreach ($artifact in Get-ChildItem -LiteralPath $GenerationDir -Filter '*.got') { $generationHashes[$artifact.Name] = (Get-FileHash -LiteralPath $artifact.FullName).Hash } }
             $runType = if ($TestGenerate) { 'generate' } elseif ($TestPrefill) { 'prefill' } else { 'vision' }
             [ordered]@{ case = $case; exit_code = $code; capture = (Resolve-Path $capture).Path; text_weight_hashes = $textHashes;
-                generation_weight_hashes = $generationHashes; max_new_tokens = $MaxNewTokens;
+                generation_weight_hashes = $generationHashes; max_new_tokens = $MaxNewTokens; reuse_decode = [bool]$ReuseDecode;
+                large_images = [bool]$LargeImages; prefill_context = $(if ($LargeImages) { 256 } else { 64 });
                 executable_sha256 = (Get-FileHash $binary).Hash; runtime_sha256 = (Get-FileHash $runtime).Hash;
                 runtime_hashes = $runtimeHashes; weight_hashes = $weightHashes; captures = $captureHashes;
-                input_sha256 = (Get-FileHash -LiteralPath (Join-Path $VisionDir ($case + '.bmp'))).Hash;
+                input_sha256 = (Get-FileHash -LiteralPath $inputImage).Hash;
                 scope = $runType; numerical_acceptance = $false } |
                 ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $BuildDir ($case + '-' + $runType + '-run.json'))
             if ($code -ne 0 -and -not ($TestGenerate -and $code -eq 3)) { throw ('Native execution failed: {0}; capture retained' -f $case) }

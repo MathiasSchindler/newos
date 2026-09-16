@@ -8,8 +8,12 @@ int ocr_text_prepare(const unsigned short *features, unsigned int image_tokens,
                       unsigned int task, unsigned int no_think, OcrTextInput *output) {
     if (!output) return 0;
     output->count = output->image_tokens = 0; output->delta = 0;
+    int grid_valid = grid_height == 8 && (grid_width == 8 || grid_width == 16);
+#ifdef OCR_LARGE_IMAGES
+    grid_valid = grid_valid || (grid_height == 16 && (grid_width == 16 || grid_width == 32));
+#endif
     if (!features || !embeddings || embedding_values != (unsigned long long)OCR_TEXT_VOCAB*OCR_TEXT_WIDTH ||
-        grid_height != 8 || (grid_width != 8 && grid_width != 16) || image_tokens != grid_height*grid_width/4) return 0;
+        !grid_valid || image_tokens != grid_height*grid_width/4) return 0;
     int count = ocr_prompt(task,image_tokens,no_think,output->ids,OCR_TEXT_CONTEXT);
     if (count <= 0 || count > (int)OCR_TEXT_CONTEXT) return 0;
     int compact_positions[3*OCR_TEXT_CONTEXT], delta;

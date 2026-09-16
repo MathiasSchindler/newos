@@ -13,6 +13,16 @@ __declspec(dllimport) void *CreateFileW(const unsigned short *, u32, u32, void *
 __declspec(dllimport) int GetFileSizeEx(void *, long long *);
 __declspec(dllimport) int ReadFile(void *, void *, u32, u32 *, void *);
 __declspec(dllimport) int CloseHandle(void *);
+__declspec(dllimport) int QueryPerformanceCounter(long long *);
+__declspec(dllimport) int QueryPerformanceFrequency(long long *);
+
+static u64 runtime_ticks[9], runtime_frequency;
+static int runtime_clock_good = 1;
+static u64 runtime_clock(void) {
+    long long value = 0;
+    if (!QueryPerformanceCounter(&value) || value < 0) runtime_clock_good = 0;
+    return (u64)value;
+}
 
 static u8 fixture_data[144U * 1024U * 1024U];
 static u16 oracle_output[16384];
@@ -22,11 +32,12 @@ static u32 load32(const u8 *data) {
 }
 
 static u32 read_blob(const unsigned short *path, u8 *data, u32 capacity) {
+    u64 started = runtime_clock();
     void *file = CreateFileW(path,0x80000000U,1,0,3,0x08000080U,0);
     long long size = 0;
     u32 total = 0, received;
     int valid = 0;
-    if (file == (void *)~0ULL) return 0;
+    if (file == (void *)~0ULL) { runtime_ticks[0] += runtime_clock()-started; return 0; }
     if (!GetFileSizeEx(file,&size) || size < 132 || (u64)size > capacity) goto done;
     while (total < (u32)size) {
         if (!ReadFile(file,data+total,(u32)size-total,&received,0) || !received) goto done;
@@ -37,6 +48,7 @@ static u32 read_blob(const unsigned short *path, u8 *data, u32 capacity) {
     valid = 1;
 done:
     if (!CloseHandle(file)) valid = 0;
+    runtime_ticks[0] += runtime_clock()-started;
     return valid ? total : 0;
 }
 
@@ -57,7 +69,8 @@ static int capture_tensor(u32 block_index, const char *suffix, const void *data,
         path[length] = capture_directory[length]; ++length;
     }
     path[length++] = '\\';
-    if (block_index >= 10) path[length++] = '0'+block_index/10;
+    if (block_index >= 100) path[length++] = '0'+block_index/100;
+    if (block_index >= 10) path[length++] = '0'+block_index/10%10;
     path[length++] = '0'+block_index%10;
     for (u32 index = 0; suffix[index]; ++index) path[length++] = (unsigned char)suffix[index];
     path[length] = 0;
@@ -273,8 +286,13 @@ typedef struct {
 #endif
 } OcrAttentionGraph;
 
-static u16 attention_output[4456448];
-static u16 chain_input[131072];
+#ifdef OCR_LARGE_IMAGES
+#define OCR_VISION_PATCHES 512U
+#else
+#define OCR_VISION_PATCHES 128U
+#endif
+static u16 attention_output[30720*OCR_VISION_PATCHES+32*OCR_VISION_PATCHES*OCR_VISION_PATCHES];
+static u16 chain_input[OCR_VISION_PATCHES*1024];
 #ifdef OCR_FUSE_DOWN_RESIDUAL
 static u16 fused_down_weight[5152*1024];
 #endif
@@ -439,7 +457,7 @@ static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 
 }
 
 static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block, u32 tokens, u32 block_index, u16 *next_input) {
-    if ((tokens != 64 && tokens != 128) || block_index >= 24 || (!references && (!full_block || !next_input))) return 0;
+    if ((tokens != 64 && tokens != 128 && !(OCR_VISION_PATCHES == 512 && !references && (tokens == 256 || tokens == 512))) || block_index >= 24 || (!references && (!full_block || !next_input))) return 0;
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
     u32 flat[2] = {tokens,1024}, fused[2] = {tokens,3072}, heads[3] = {tokens,16,64}, batched[3] = {16,tokens,64};
     u32 key_shape[3] = {16,64,tokens}, score_shape[3] = {16,tokens,tokens};
@@ -898,12 +916,30 @@ static int addition(const QnnInterfaceV2 *api, QnnContextHandle context, u32 wid
 }
 
 #ifdef OCR_VISION_RUN
+#if defined(OCR_TEXT_DECODER) || defined(OCR_LARGE_IMAGES)
+static int prefill_path(const unsigned short *directory, const char *name, unsigned short *path) {
+    u32 length = 0;
+    if (!directory) return 0;
+    while (directory[length]) {
+        if (length >= 32700) return 0;
+        path[length] = directory[length]; ++length;
+    }
+    path[length++] = '\\';
+    for (u32 index = 0; name[index]; ++index) path[length++] = (u8)name[index];
+    path[length] = 0;
+    return 1;
+}
+#endif
+
 static OcrPreparedImage vision_image;
 static u8 vision_shared[2508960];
-static u8 vision_constants[33585408+128*512];
+static u8 vision_constants[33585408+OCR_VISION_PATCHES*512];
 static u8 vision_hashes[26][32];
-static u16 vision_pixels[128*1176];
-static u16 vision_tail_output[128*1024+2*32*1536];
+static u16 vision_pixels[OCR_VISION_PATCHES*1176];
+static u16 vision_tail_output[OCR_VISION_PATCHES*1024+2*(OCR_VISION_PATCHES/4)*1536];
+#ifdef OCR_LARGE_IMAGES
+static u8 vision_large_rope[160+(256+512)*512];
+#endif
 
 static int vision_asset(const unsigned short *directory, u32 index, int remember) {
     unsigned short path[32768];
@@ -949,17 +985,29 @@ static int vision_asset(const unsigned short *directory, u32 index, int remember
 int ocr_vision_check(const unsigned short *directory) {
     for (u32 index = 0; index < 26; ++index)
         if (!vision_asset(directory,index,1)) { text("FAIL vision weight artifact\n"); return 0; }
+#ifdef OCR_LARGE_IMAGES
+    unsigned short rope_path[32768];
+    if (!prefill_path(directory,"large-rope.got",rope_path) || read_blob(rope_path,vision_large_rope,sizeof(vision_large_rope)) != sizeof(vision_large_rope) ||
+        !ocr_artifact(vision_large_rope,sizeof(vision_large_rope),19)) return 0;
+    for (u32 offset = 0; offset < 32; ++offset) if (vision_large_rope[128+offset] != fixture_data[128+offset]) return 0;
+    for (u32 offset = 160; offset < sizeof(vision_large_rope); offset += 4) {
+        union {u32 bits; float value;} coefficient; coefficient.bits = load32(vision_large_rope+offset);
+        if (!(coefficient.value >= -1 && coefficient.value <= 1)) return 0;
+    }
+#endif
     text("PASS all 26 vision weight artifacts\n");
     return 1;
 }
 
-static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, u32 input_elements,
-                            const u32 *ids, u32 count, u16 *destination) {
-    if (!builder->good || count > 8 || !checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0))) return 0;
-    QnnTensor outputs[8], source_tensor = builder->tensors[input];
+static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *sources, u32 source_count,
+                                   const u32 *ids, u32 count, u16 *destination, int finalize) {
+    if (!builder->good || count > 8) return 0;
+    u64 started = runtime_clock();
+    int finalized = !finalize || checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0));
+    runtime_ticks[1] += runtime_clock()-started;
+    if (!finalized) return 0;
+    QnnTensor outputs[8];
     u32 total = 0;
-    source_tensor.data.v1.memory.client_buffer.data = source;
-    source_tensor.data.v1.memory.client_buffer.data_size = input_elements*2;
     for (u32 index = 0; index < count; ++index) {
         outputs[index] = builder->tensors[ids[index]];
         u32 elements = 1;
@@ -969,7 +1017,10 @@ static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, 
         total += elements;
     }
     for (u32 index = 0; index < total; ++index) destination[index] = 0x7e00;
-    if (!checked("vision_execute",builder->api->graph_execute(builder->graph,&source_tensor,1,outputs,count,execution_profile,0))) return 0;
+    started = runtime_clock();
+    int executed = checked("vision_execute",builder->api->graph_execute(builder->graph,sources,source_count,outputs,count,execution_profile,0));
+    runtime_ticks[2] += runtime_clock()-started;
+    if (!executed) return 0;
     for (u32 index = 0; index < total; ++index)
         if ((destination[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision output\n"); return 0; }
     const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
@@ -977,6 +1028,14 @@ static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, 
         !profile_events(builder->api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
     checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
     return 1;
+}
+
+static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, u32 input_elements,
+                            const u32 *ids, u32 count, u16 *destination) {
+    QnnTensor source_tensor = builder->tensors[input];
+    source_tensor.data.v1.memory.client_buffer.data = source;
+    source_tensor.data.v1.memory.client_buffer.data_size = input_elements*2;
+    return vision_execution_inputs(builder,&source_tensor,1,ids,count,destination,1);
 }
 
 static u32 vision_linear(OcrAttentionGraph *builder, u32 input, u32 rows, u32 width, u32 outputs, u8 **constants, int bias, int tap) {
@@ -1073,6 +1132,9 @@ static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
         u32 prefix = 6299904;
         for (u32 offset = 0; offset < prefix; ++offset) vision_constants[offset] = fixture_data[164+offset];
         const u8 *rope = vision_shared+160+2410496+(tokens == 128 ? 64*512 : 0);
+    #ifdef OCR_LARGE_IMAGES
+        if (tokens >= 256) rope = vision_large_rope+160+(tokens == 512 ? 256*512 : 0);
+    #endif
         for (u32 offset = 0; offset < tokens*512; ++offset) vision_constants[prefix+offset] = rope[offset];
         for (u32 offset = prefix; offset < 33585408; ++offset) vision_constants[offset+tokens*512] = fixture_data[164+offset];
         if (!attention_probe(api,*context,(u8 *)chain_input,vision_constants,0,1,tokens,index,chain_input)) return 0;
@@ -1088,6 +1150,10 @@ static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
 
 static int htp_run(const unsigned short *library, const unsigned short *fixtures, const unsigned short *capture, const unsigned short *image_path,
                     const unsigned short *text_directory, u32 task) {
+    u64 run_started = runtime_clock(); long long frequency = 0;
+    if (!QueryPerformanceFrequency(&frequency) || frequency <= 0) return 0;
+    runtime_frequency = (u64)frequency;
+    for (u32 index = 0; index < 9; ++index) runtime_ticks[index] = 0;
     capture_directory = capture;
     void *module = 0;
     QnnBackendHandle backend = 0;
@@ -1105,13 +1171,18 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
 #ifdef OCR_VISION_RUN
     if (image_path) {
         if (!capture || !ocr_image_load(image_path,&vision_image)) { text("FAIL vision image input\n"); return 0; }
-        if (vision_image.shape.grid_height != 8 || (vision_image.shape.grid_width != 8 && vision_image.shape.grid_width != 16) ||
+        int grid_valid = vision_image.shape.grid_height == 8 && (vision_image.shape.grid_width == 8 || vision_image.shape.grid_width == 16);
+    #ifdef OCR_LARGE_IMAGES
+        grid_valid = grid_valid || (vision_image.shape.grid_height == 16 && (vision_image.shape.grid_width == 16 || vision_image.shape.grid_width == 32));
+    #endif
+        if (!grid_valid ||
             !ocr_vision_check(fixtures)) { text("FAIL vision bucket or weights\n"); goto done; }
         checked("vision_grid_height",vision_image.shape.grid_height); checked("vision_grid_width",vision_image.shape.grid_width);
     #ifdef OCR_TEXT_DECODER
         if (text_directory && !prefill_check(text_directory)) { text("FAIL text weights\n"); goto done; }
         if (generation_directory && !generation_check(generation_directory)) { text("FAIL generation weights/tokenizer\n"); goto done; }
         prefill_grid_width = vision_image.shape.grid_width;
+        prefill_grid_height = vision_image.shape.grid_height;
     #endif
     } else
 #else
@@ -1152,16 +1223,25 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
         !checked("context_create",api->context_create(backend,device,0,&context))) goto done;
     if (!checked("profile_create",api->profile_create(backend,2,&execution_profile))) goto done;
     #ifdef OCR_VISION_RUN
-    if (image_path) good = vision_forward(api,backend,device,&context,fixtures);
+    if (image_path) {
+        u64 started = runtime_clock(); good = vision_forward(api,backend,device,&context,fixtures);
+        runtime_ticks[4] += runtime_clock()-started;
+    }
     else
     #endif
     good = addition(api,context,1024,"ocr_vision_add") && addition(api,context,1536,"ocr_text_add") && primitives(api,context,fixture_size,kind);
 #ifdef OCR_TEXT_DECODER
-    if (good && text_directory) good = prefill_forward(api,backend,device,&context,text_directory,task);
+    if (good && text_directory) {
+        u64 started = runtime_clock(); good = prefill_forward(api,backend,device,&context,text_directory,task);
+        runtime_ticks[5] += runtime_clock()-started;
+    }
     if (good && generation_directory) good = generation_forward(api,backend,device,&context,text_directory);
 #endif
 done:
     if (context && !checked("context_free",api->context_free(context,0))) clean = 0;
+#ifdef OCR_TEXT_DECODER
+    if (!generation_release(api)) clean = 0;
+#endif
     if (execution_profile && !checked("profile_free",api->profile_free(execution_profile))) clean = 0;
     if (device && !checked("device_free",api->device_free(device))) clean = 0;
     if (backend && !checked("backend_free",api->backend_free(backend))) clean = 0;
@@ -1170,12 +1250,19 @@ done:
     ocr_image_release(&vision_image);
 #endif
 #ifdef OCR_TEXT_DECODER
+    if (generation_directory && good && clean) {
+        runtime_ticks[8] = runtime_clock()-run_started;
+        u64 timing[10]; timing[0] = runtime_frequency;
+        for (u32 index = 0; index < 9; ++index) timing[index+1] = runtime_ticks[index];
+        if (!runtime_clock_good || !capture_tensor(0,".timing.u64",timing,sizeof(timing))) good = 0;
+    }
     if (generation_directory) text(good && clean ? "PASS native OCR generation execution; numerical acceptance remains open\n" : "FAIL native OCR generation\n");
     else
 #endif
     if (text_directory) text(good && clean ? "PASS multimodal text prefill; precision unaccepted, no token generation\n" : "FAIL multimodal text prefill\n");
     else if (image_path) text(good && clean ? "PASS full vision execution; precision unaccepted, no text decoding\n" : "FAIL full vision execution\n");
     else text(good && clean ? "PASS OCR HTP probe\n" : "FAIL OCR HTP probe\n");
+    (void)run_started;
     return good && clean && output_good;
 }
 
@@ -1197,8 +1284,11 @@ int ocr_prefill_run(const unsigned short *library, const unsigned short *vision_
 
 int ocr_generate_run(const unsigned short *library, const unsigned short *vision_weights, const unsigned short *text_weights,
                      const unsigned short *weights, const unsigned short *image, const unsigned short *capture, u32 task, u32 limit) {
-    if (!limit || limit > 64 || task > 2) return 0;
+    if (!limit || limit > OCR_DECODE_CONTEXT || task > 2 || !generation_reset()) return 0;
     generation_directory = weights; generation_limit = limit; diagnostic_stream = (u32)-12;
+#ifdef OCR_REUSE_DECODE
+    text_reuse_enabled = 1;
+#endif
     int good = htp_run(library,vision_weights,capture,image,text_weights,task);
     generation_directory = 0; diagnostic_stream = (u32)-11;
     return good ? (generation_reason == 1 ? 1 : 2) : 0;

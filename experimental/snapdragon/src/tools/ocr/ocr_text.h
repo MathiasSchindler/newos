@@ -1,7 +1,11 @@
 #ifndef OCR_TEXT_H
 #define OCR_TEXT_H
 
+#ifdef OCR_LARGE_IMAGES
+#define OCR_TEXT_CONTEXT 256U
+#else
 #define OCR_TEXT_CONTEXT 64U
+#endif
 #define OCR_TEXT_WIDTH 1536U
 #define OCR_TEXT_VOCAB 59392U
 

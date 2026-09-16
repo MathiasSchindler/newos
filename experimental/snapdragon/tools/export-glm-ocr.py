@@ -364,7 +364,7 @@ def export_vision_attention(model, output, case="pattern", full_block=False, blo
     print("PASS vision block oracle:" if full_block else "PASS vision attention oracle:",len(tap_names),"taps, two references,",len(data),"bytes",sha(data),flush=True)
 
 
-def export_vision_encoder(model, output):
+def export_vision_encoder(model, output, large_images=False):
     import inspect as source_inspect
     import numpy as np
     torch, processor_class, _, versions = image_reference()
@@ -426,6 +426,14 @@ def export_vision_encoder(model, output):
             cosine,sine = vision.rotary_pos_emb(torch.zeros(grid[1]*grid[2],1024),positions)
         shared += cosine.numpy().astype("<f4").tobytes()+sine.numpy().astype("<f4").tobytes()
     store("shared.got",envelope(shared,11,catalog))
+    if large_images:
+        rotary = identity
+        for grid in ([1,16,16],[1,16,32]):
+            positions = reference.get_vision_position_ids(torch.tensor([grid]),2)
+            with torch.inference_mode():
+                cosine,sine = vision.rotary_pos_emb(torch.zeros(grid[1]*grid[2],1024),positions)
+            rotary += cosine.numpy().astype("<f4").tobytes()+sine.numpy().astype("<f4").tobytes()
+        store("large-rope.got",envelope(rotary,19,catalog))
     tail = identity+half(state["post_layernorm.weight"])
     tail += half(state["downsample.weight"].permute(2,3,1,0).reshape(4096,1536))+half(state["downsample.bias"])
     tail += half(state["merger.proj.weight"].t())
@@ -437,8 +445,22 @@ def export_vision_encoder(model, output):
     store("tail.got",envelope(tail,12,catalog))
     processor = processor_class.from_pretrained(str(model),local_files_only=True)
     cases = []
+    case_records = {}
     for case,columns in (("pattern",112),("receipt",224)):
-        if case == "receipt":
+        if large_images:
+            from PIL import ImageDraw, ImageFont
+            columns *= 2
+            image = Image.new("RGB",(columns,224),"white")
+            font_path = Path("C:/Windows/Fonts/segoeui.ttf")
+            font = ImageFont.truetype(str(font_path),26)
+            expected = (ROOT/"experimental/snapdragon/models/glm-ocr-examples-v1/receipt/expected.txt").read_text(encoding="utf-8") if case == "receipt" else "OCR 1042\n19,95 EUR\n16.09.2026\nHello!\n"
+            draw = ImageDraw.Draw(image)
+            for index,line in enumerate(expected.splitlines()):
+                bounds = draw.textbbox((12,12+index*36),line,font=font)
+                if bounds[2] > columns-8 or bounds[3] > 216: raise ValueError("Large image text would be clipped")
+                draw.text((12,12+index*36),line,font=font,fill="black")
+            store(case+".expected.txt",expected.encode("utf-8"))
+        elif case == "receipt":
             image = Image.open(ROOT/"experimental/snapdragon/models/glm-ocr-examples-v1/receipt/input.png").convert("RGB")
         else:
             rows,cols = np.indices((112,columns))
@@ -446,10 +468,15 @@ def export_vision_encoder(model, output):
         import io
         bitmap = io.BytesIO(); image.save(bitmap,format="BMP")
         store(case+".bmp",bitmap.getvalue())
+        if large_images:
+            png = io.BytesIO(); image.save(png,format="PNG")
+            store(case+".png",png.getvalue())
         processed = processor(images=image,return_tensors="pt")
         grid = processed["image_grid_thw"].tolist()
-        if grid != [[1,8,columns//14]]:
+        if grid != [[1,16 if large_images else 8,columns//14]]:
             raise ValueError("Vision image bucket mismatch")
+        case_records[case] = {"grid":grid[0],"input":case+(".png" if large_images else ".bmp"),"rgb_sha256":sha(image.tobytes())}
+        if large_images: case_records[case].update({"font_sha256":sha(font_path.read_bytes()),"expected":case+".expected.txt"})
         cases.append((case,processed))
         store(case+".patches.f32",processed["pixel_values"].numpy().astype("<f4").tobytes())
     for scope in ("original","candidate"):
@@ -477,9 +504,10 @@ def export_vision_encoder(model, output):
                     handle.remove()
             print("PASS full vision oracle",scope,case,flush=True)
     manifest = {"schema_version":1,"source_sha256":original_sha,"modeling_sha256":module_hash,"versions":versions,
-                "blocks":24,"buckets":[[8,8],[8,16]],"output_width":1536,"files":files,
+                "blocks":24,"buckets":[[8,8],[8,16]]+([[16,16],[16,32]] if large_images else []),"output_width":1536,"files":files,
                 "reference_stages":["patch"]+[f"block-{index}" for index in range(24)]+["postnorm","downsample","merger"],
                 "full_text_inference":False}
+    if large_images: manifest["cases"] = case_records
     store("manifest.json",(json.dumps(manifest,indent=2)+"\n").encode())
     print("PASS vision encoder export",len(files),"files",flush=True)
 
@@ -487,7 +515,7 @@ def export_vision_encoder(model, output):
 def analyze_vision_encoder(output, build):
     import numpy as np
     manifest = read_json(output/"manifest.json")
-    if manifest["blocks"] != 24 or manifest["buckets"] != [[8,8],[8,16]] or len(manifest["reference_stages"]) != 28:
+    if manifest["blocks"] != 24 or manifest["buckets"] not in ([[8,8],[8,16]],[[8,8],[8,16],[16,16],[16,32]]) or len(manifest["reference_stages"]) != 28:
         raise ValueError("Vision manifest geometry mismatch")
     for name,record in manifest["files"].items():
         path = output/name
@@ -502,13 +530,18 @@ def analyze_vision_encoder(output, build):
         return {"elements":int(actual.size),"failures":int((np.abs(error)>limit).sum()),
                 "rmse":float(np.sqrt(np.mean(error*error))),"max_absolute_error":float(np.abs(error).max())}
     for case,tokens in (("pattern",64),("receipt",128)):
-        run = json.loads((build/(case+"-vision-run.json")).read_text(encoding="utf-8-sig"))
+        record = manifest.get("cases",{}).get(case,{"input":case+".bmp"})
+        if "grid" in record: tokens = math.prod(record["grid"])
+        run_path = build/(case+"-vision-run.json")
+        if not run_path.exists(): run_path = build/(case+"-generate-run.json")
+        run = json.loads(run_path.read_text(encoding="utf-8-sig"))
         capture = Path(run["capture"])
-        if run["case"] != case or run["exit_code"] != 0 or sha((build/"ocr-vision.exe").read_bytes()).upper() != run["executable_sha256"]:
+        binary = "ocr-generate.exe" if run.get("scope") == "generate" else "ocr-vision.exe"
+        if run["case"] != case or run["exit_code"] not in (0,3) or sha((build/binary).read_bytes()).upper() != run["executable_sha256"]:
             raise ValueError("Vision run identity mismatch")
         if "weight_hashes" in run:
             expected_weights = {name:record["sha256"].upper() for name,record in manifest["files"].items() if name.endswith(".got")}
-            if run["weight_hashes"] != expected_weights or run["input_sha256"] != manifest["files"][case+".bmp"]["sha256"].upper():
+            if run["weight_hashes"] != expected_weights or run["input_sha256"] != manifest["files"][record["input"]]["sha256"].upper():
                 raise ValueError("Vision input/weight identity changed")
         captured_hashes = {}
         def captured(name,elements,dtype="<f2"):
@@ -522,7 +555,7 @@ def analyze_vision_encoder(output, build):
             return values
         patches = captured("0.patches.f32",tokens*1176,"<f4")
         if patches.tobytes() != (output/(case+".patches.f32")).read_bytes():
-            raise ValueError("Native BMP preprocessing differs from actual processor")
+            raise ValueError("Native image preprocessing differs from actual processor")
         stages = [captured("0.patch.f16",tokens*1024)]
         for index in range(24):
             source = captured(f"{index}.input.f16",tokens*1024)
@@ -549,6 +582,196 @@ def analyze_vision_encoder(output, build):
               "numerical_gate_pass":all(value["numerical_gate_pass"] for value in reports.values())}
     (build/"vision-analysis.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
     print("PASS vision structure/identity/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
+
+
+def test_png(build):
+    import subprocess
+    import zlib
+    import numpy as np
+    image_reference()
+    from PIL import Image
+    binary = build/"ocr-image.exe"
+    def chunk(kind,payload):
+        return struct.pack(">I",len(payload))+kind+payload+struct.pack(">I",zlib.crc32(kind+payload))
+    signature = b"\x89PNG\r\n\x1a\n"
+    checks = 0
+    with tempfile.TemporaryDirectory(prefix="ocr-png-",dir=ROOT/"tests/tmp") as scratch:
+        scratch = Path(scratch)
+        def run(data,valid,expected=None):
+            nonlocal checks
+            source = scratch/f"input-{checks}.png"; destination = scratch/f"output-{checks}.f32"
+            source.write_bytes(data)
+            result = subprocess.run([str(binary),"--prepare-image",str(source),str(destination)],capture_output=True)
+            if (result.returncode == 0) != valid: raise ValueError("PNG acceptance failure: "+str(checks)+repr(result.stderr))
+            if valid and destination.read_bytes() != expected: raise ValueError("PNG/BMP patch mismatch")
+            if not valid and destination.exists(): raise ValueError("Rejected PNG created output")
+            checks += 1
+        for color,channels in ((0,1),(2,3),(4,2),(6,4)):
+            rows,columns = 112,224
+            values = ((np.arange(rows*columns*channels,dtype=np.uint32)*17+31)%256).astype(np.uint8).reshape(rows,columns,channels)
+            rgb = np.repeat(values[:,:,:1],3,axis=2) if color in (0,4) else values[:,:,:3]
+            if color in (4,6):
+                alpha = values[:,:,-1:].astype(np.uint32)
+                rgb = ((rgb.astype(np.uint32)*alpha+255*(255-alpha)+127)//255).astype(np.uint8)
+            bitmap = scratch/f"reference-{color}.bmp"; patches = scratch/f"reference-{color}.f32"
+            Image.fromarray(rgb).save(bitmap)
+            subprocess.run([str(binary),"--prepare-image",str(bitmap),str(patches)],check=True,capture_output=True)
+            expected = patches.read_bytes()
+            header = chunk(b"IHDR",struct.pack(">IIBBBBB",columns,rows,8,color,0,0,0))
+            for mode in range(5):
+                encoded = bytearray()
+                flat = values.reshape(rows,columns*channels)
+                for row in range(rows):
+                    encoded.append(mode)
+                    for column,value in enumerate(flat[row]):
+                        left = int(flat[row,column-channels]) if column >= channels else 0
+                        above = int(flat[row-1,column]) if row else 0
+                        diagonal = int(flat[row-1,column-channels]) if row and column >= channels else 0
+                        estimate = left+above-diagonal
+                        paeth = min((left,above,diagonal),key=lambda candidate:abs(estimate-candidate))
+                        predictor = (0,left,above,(left+above)//2,paeth)[mode]
+                        encoded.append((int(value)-predictor)&255)
+                compressed = zlib.compress(encoded)
+                middle = len(compressed)//2
+                data = signature+header+chunk(b"IDAT",compressed[:middle])+chunk(b"IDAT",compressed[middle:])+chunk(b"IEND",b"")
+                run(data,True,expected)
+                damaged = bytearray(data); damaged[-1] ^= 1; run(damaged,False)
+                run(data[:-1],False); run(data+b"x",False)
+                invalid_raw = bytearray(encoded); invalid_raw[0] = 5
+                run(signature+header+chunk(b"IDAT",zlib.compress(invalid_raw))+chunk(b"IEND",b""),False)
+                run(signature+header+chunk(b"IDAT",compressed+b"x")+chunk(b"IEND",b""),False)
+            for depth,kind,interlace in ((16,color,0),(8,3,0),(8,color,1)):
+                bad_header = chunk(b"IHDR",struct.pack(">IIBBBBB",columns,rows,depth,kind,0,0,interlace))
+                run(signature+bad_header+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            for forbidden in (b"tRNS",b"eXIf",b"acTL",b"iCCP",b"ABCD"):
+                run(signature+header+chunk(forbidden,b"x")+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            run(signature+header+chunk(b"IDAT",compressed[:middle])+chunk(b"tEXt",b"note\0x")+chunk(b"IDAT",compressed[middle:])+chunk(b"IEND",b""),False)
+            for invalid in (b"aaab",b"a1Ab"):
+                run(signature+header+chunk(invalid,b"")+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            run(signature+header+header+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            run(signature+header+chunk(b"PLTE",b"\0\0\0")*2+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            for width,height in ((0,112),(10001,112),(4097,4097)):
+                invalid_header = chunk(b"IHDR",struct.pack(">IIBBBBB",width,height,8,color,0,0,0))
+                run(signature+invalid_header+chunk(b"IDAT",compressed)+chunk(b"IEND",b""),False)
+            for raw in (encoded[:-1],encoded+b"x"):
+                run(signature+header+chunk(b"IDAT",zlib.compress(raw))+chunk(b"IEND",b""),False)
+            bad_adler = bytearray(compressed); bad_adler[-1] ^= 1
+            run(signature+header+chunk(b"IDAT",bad_adler)+chunk(b"IEND",b""),False)
+            for level in (0,1,9):
+                run(signature+header+chunk(b"IDAT",zlib.compress(encoded,level))+chunk(b"IEND",b""),True,expected)
+    print("PASS PNG native file-to-patch cases:",checks,"all filters, RGB/gray/alpha, split IDAT, CRC/truncation/deflate/unsupported-format rejection",flush=True)
+
+
+def reference_generation(model, vision_output, build):
+    import inspect as source_inspect
+    import time
+    import numpy as np
+    torch, _, _, versions = image_reference()
+    from PIL import Image
+    from transformers import AutoProcessor
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    catalog = verified_sources(model)
+    module_hash = sha(Path(source_inspect.getfile(reference)).read_bytes())
+    if module_hash != "aea6387985dad1f0f5124f9344cc98849be8a7f2c26652ac3d914f6eefac6cc6":
+        raise ValueError("Independent model implementation drift")
+    processor = AutoProcessor.from_pretrained(str(model),local_files_only=True,trust_remote_code=False)
+    started = time.perf_counter()
+    full_model = reference.GlmOcrForConditionalGeneration.from_pretrained(str(model),local_files_only=True,
+                    dtype=torch.float32,attn_implementation="eager").eval()
+    load_seconds = time.perf_counter()-started
+    def distance(actual,expected):
+        previous = list(range(len(expected)+1))
+        for row,actual_value in enumerate(actual,1):
+            current = [row]
+            for column,expected_value in enumerate(expected,1):
+                current.append(min(current[-1]+1,previous[column]+1,previous[column-1]+(actual_value != expected_value)))
+            previous = current
+        return previous[-1]
+    reports = {}
+    vision_manifest = read_json(vision_output/"manifest.json")
+    for case in ("pattern","receipt"):
+        case_record = vision_manifest.get("cases",{}).get(case,{"input":case+".bmp"})
+        image_path = vision_output/case_record["input"]
+        run_path = build/(case+"-generate-run.json")
+        run = json.loads(run_path.read_text(encoding="utf-8-sig")) if run_path.exists() else None
+        if run and (run["exit_code"] not in (0,3) or sha(image_path.read_bytes()).upper() != run["input_sha256"]):
+            raise ValueError("Native run/image identity failure")
+        if run and sha((build/"ocr-generate.exe").read_bytes()).upper() != run["executable_sha256"]: raise ValueError("Native executable changed")
+        with Image.open(image_path) as image:
+            rendered = processor.apply_chat_template([{"role":"user","content":[{"type":"image"},{"type":"text","text":TASKS[0]}]}],
+                                                       tokenize=False,add_generation_prompt=True)
+            inputs = processor(text=[rendered],images=[image.convert("RGB")],return_tensors="pt")
+        count = inputs["input_ids"].shape[1]
+        if run:
+            capture = Path(run["capture"])
+            rows = run.get("prefill_context",64)
+            def captured(name,dtype,shape):
+                raw = (capture/name).read_bytes()
+                if sha(raw).upper() != run["captures"][name]: raise ValueError("Changed native input: "+name)
+                return np.frombuffer(raw,dtype=dtype).reshape(shape).copy()
+            ids = inputs["input_ids"]
+            modalities = (ids == 59280).long()
+            positions,delta = full_model.model.get_rope_index(ids,modalities,inputs["image_grid_thw"])
+            expected_ids = np.full(rows,59246,dtype="<u4"); expected_ids[:count] = ids.numpy()[0]
+            expected_positions = np.zeros((3,1,rows),dtype="<i4"); expected_positions[:,:,:count] = positions.numpy()
+            expected_modalities = np.zeros(rows,dtype="u1"); expected_modalities[:count] = modalities.numpy()[0]
+            expected_mask = np.where((np.arange(rows)[None,:] <= np.arange(rows)[:,None]) & (np.arange(rows)[None,:] < count),0,-65504).astype("<f2")
+            image_tokens = int(modalities.sum())
+            with torch.inference_mode(): expected_embeddings = full_model.model.language_model.embed_tokens(ids).half().numpy()[0]
+            expected_embeddings[modalities.numpy()[0].astype(bool)] = captured("26.features.f16","<f2",(image_tokens,1536))
+            padded_embeddings = np.zeros((rows,1536),dtype="<f2"); padded_embeddings[:count] = expected_embeddings
+            for name,dtype,expected in (("ids","<u4",expected_ids),("positions","<i4",expected_positions),
+                                        ("modalities","u1",expected_modalities),("mask","<f2",expected_mask),("embeddings","<f2",padded_embeddings)):
+                extension = {"<u4":"u32","<i4":"i32","u1":"u8","<f2":"f16"}[dtype]
+                if captured("0.text-"+name+"."+extension,dtype,expected.shape).tobytes() != expected.tobytes():
+                    raise ValueError("Official multimodal input mismatch: "+name)
+            layout = captured("0.text-layout.u32","<u4",(7,)).view("<i4")
+            if layout.tolist() != [count,image_tokens,0,0,*inputs["image_grid_thw"][0,1:].tolist(),int(delta.item())]:
+                raise ValueError("Official multimodal layout mismatch")
+            with torch.inference_mode():
+                cosine,sine = full_model.model.language_model.rotary_emb(torch.zeros(1,rows,1536),torch.from_numpy(expected_positions.astype(np.int64)))
+            for name,expected in (("cosine",cosine),("sine",sine)):
+                if captured("0.text-"+name+".f32","<f4",(rows,128)).tobytes() != expected.numpy().astype("<f4").tobytes():
+                    raise ValueError("Official prefill RoPE mismatch")
+            print("PASS",case,"official image prompt, features, positions, masks and RoPE",flush=True)
+        limit = min(256-count,run["max_new_tokens"] if run else 256)
+        started = time.perf_counter()
+        with torch.inference_mode():
+            generated = full_model.generate(**inputs,max_new_tokens=limit,do_sample=False,use_cache=True,return_dict_in_generate=True,output_scores=True)
+        elapsed = time.perf_counter()-started
+        ids = generated.sequences[0,count:].tolist()
+        text = processor.tokenizer.decode(ids,skip_special_tokens=True,clean_up_tokenization_spaces=False)
+        native = None
+        if run:
+            native_path = Path(run["capture"])/"0.generated.txt"
+            raw = native_path.read_bytes()
+            if sha(raw).upper() != run["captures"]["0.generated.txt"]: raise ValueError("Native output changed")
+            native = raw.decode("utf-8")
+        margins = []
+        for scores in generated.scores:
+            values,indices = scores.float().topk(2,dim=-1)
+            if not torch.isfinite(scores).all(): raise ValueError("Nonfinite independent logits")
+            margins.append({"first":int(indices[0,0]),"second":int(indices[0,1]),"margin":float(values[0,0]-values[0,1])})
+        result = {"input_sha256":sha(image_path.read_bytes()),"prompt_tokens":count,"max_new_tokens":limit,"ids":ids,"text":text,
+                  "eos":bool(ids and ids[-1] in (59246,59253)),"seconds":elapsed,"top2":margins,"native_text":native,
+                  "native_exit_code":run["exit_code"] if run else None,"native_vs_reference_edit_distance":distance(native,text) if run else None,
+                  "native_matches_reference":native==text if run else None,"native_run":run}
+        if run: result["exact_official_multimodal_input"] = True
+        if case == "receipt" or "expected" in case_record:
+            expected_path = vision_output/case_record["expected"] if "expected" in case_record else ROOT/"experimental/snapdragon/models/glm-ocr-examples-v1/receipt/expected.txt"
+            expected = expected_path.read_text(encoding="utf-8")
+            result.update({"expected":expected,"expected_sha256":sha(expected_path.read_bytes()),
+                           "native_vs_expected_edit_distance":distance(native,expected) if run else None,"reference_vs_expected_edit_distance":distance(text,expected),
+                           "native_cer":distance(native,expected)/max(1,len(expected)) if run else None,"reference_cer":distance(text,expected)/max(1,len(expected))})
+        reports[case] = result
+        print(case,"independent original EOS",result["eos"],"tokens",len(ids),"native/reference edits",result["native_vs_reference_edit_distance"],
+              "text",repr(text),flush=True)
+    report = {"schema_version":1,"source_sha256":next(item["sha256"] for item in catalog["files"] if item["name"]=="model.safetensors"),
+              "modeling_sha256":module_hash,"analyzer_sha256":sha(Path(__file__).read_bytes()),"versions":versions,"load_seconds":load_seconds,
+              "reference":"original BF16 weights expanded to FP32, independent original image processing and autoregressive decisions",
+              "cases":reports,"quality_accepted":False}
+    (build/"independent-generation.json").write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+    print("PASS independent full-model image-to-text comparison; no corpus-wide quality acceptance",flush=True)
 
 
 def analyze_generation(model, output, text_output, build):
@@ -594,10 +817,18 @@ def analyze_generation(model, output, text_output, build):
             if values.size != np.prod(shape) or not np.isfinite(values).all(): raise ValueError("Invalid capture: "+name)
             return values.reshape(shape).copy()
         total,reason,prompt,limit = map(int,captured("0.generation-result.u32",(4,),"<u4"))
-        if not 1 <= total <= limit <= 64 or prompt+total > 64 or limit != run["max_new_tokens"]:
+        timing = None
+        if "0.timing.u64" in run["captures"]:
+            values = captured("0.timing.u64",(10,),"<u8")
+            if not values[0] or not values[-1]: raise ValueError("Invalid runtime clock")
+            names = ("file_read","graph_finalize_subset","graph_execute_subset","generation_context","vision","prefill","head","decode","wall")
+            timing = {name:int(value)/int(values[0]) for name,value in zip(names,values[1:],strict=True)}
+            print(case,"seconds (overlapping phases)",timing,flush=True)
+        context = manifest["context"]
+        if not 1 <= total <= limit <= context or prompt+total > context or limit != run["max_new_tokens"]:
             raise ValueError("Invalid generation length")
         ids = captured("0.generated-ids.u32",(total,),"<u4")
-        expected_reason = 1 if ids[-1] in (59246,59253) else 2 if total == limit else 3 if prompt+total == 64 else 0
+        expected_reason = 1 if ids[-1] in (59246,59253) else 2 if total == limit else 3 if prompt+total == context else 0
         if not expected_reason or reason != expected_reason or run["exit_code"] != (0 if reason == 1 else 3) or any(token in (59246,59253) for token in ids[:-1]):
             raise ValueError("EOS/limit control failure")
         decoded = tokenizer.decode(ids.tolist(),skip_special_tokens=True,clean_up_tokenization_spaces=False).encode("utf-8")
@@ -606,16 +837,18 @@ def analyze_generation(model, output, text_output, build):
         layout = captured("0.text-layout.u32",(7,),"<u4")
         delta = int(layout.view("<i4")[6])
         if int(layout[0]) != prompt: raise ValueError("Prompt count mismatch")
-        positions = captured("0.text-positions.i32",(3,1,64),"<i4")[:,:,:prompt]
-        embeddings = captured("0.text-embeddings.f16",(64,1536))[:prompt]
+        rows = run.get("prefill_context",64)
+        if rows not in (64,256) or prompt > rows: raise ValueError("Unsupported prefill geometry")
+        positions = captured("0.text-positions.i32",(3,1,rows),"<i4")[:,:,:prompt]
+        embeddings = captured("0.text-embeddings.f16",(rows,1536))[:prompt]
         stages = []; keys = []; values = []
         first = []
         for index in range(16):
-            taps = captured(f"{index}.text-taps.f16",(688128,))
-            first.append(taps[4*98304:5*98304].reshape(64,1536)[:prompt])
-            keys.append(taps[5*98304:5*98304+65536].reshape(64,8,128)[:prompt].copy())
-            values.append(taps[5*98304+65536:622592].reshape(64,8,128)[:prompt].copy())
-        final = captured("16.text-norm.f16",(64,1536))[prompt-1]
+            taps = captured(f"{index}.text-taps.f16",(rows*9728+16*rows*rows,))
+            first.append(taps[4*rows*1536:5*rows*1536].reshape(rows,1536)[:prompt])
+            keys.append(taps[5*rows*1536:5*rows*1536+rows*1024].reshape(rows,8,128)[:prompt].copy())
+            values.append(taps[5*rows*1536+rows*1024:rows*9728].reshape(rows,8,128)[:prompt].copy())
+        final = captured("16.text-norm.f16",(rows,1536))[prompt-1]
         first.append(final.reshape(1,1536)); stages.append(first)
         head_inputs = []; logits = []
         for step in range(total):
@@ -631,21 +864,30 @@ def analyze_generation(model, output, text_output, build):
                         raise ValueError("Resident KV cache prefix is not bit-exact")
                     source = captured(f"{index}.decode-{past:02}-input.f16",(1536,))
                     if source.tobytes() != previous.tobytes(): raise ValueError("Decode embedding/layer handoff mismatch")
-                    taps = captured(f"{index}.decode-{past:02}-taps.f16",(9728+16*(past+1),))
+                    attention_length = manifest["context"] if run.get("reuse_decode") else past+1
+                    taps = captured(f"{index}.decode-{past:02}-taps.f16",(9728+16*attention_length,))
                     previous = taps[6144:7680].copy(); current.append(previous.reshape(1,1536))
                     keys[index] = np.concatenate((keys[index],taps[7680:8704].reshape(1,8,128)))
                     values[index] = np.concatenate((values[index],taps[8704:9728].reshape(1,8,128)))
-                    probabilities = taps[9728:].reshape(16,past+1).astype(np.float32)
+                    probabilities = taps[9728:].reshape(16,attention_length).astype(np.float32)
+                    if run.get("reuse_decode") and np.any(probabilities[:,past:-1] != 0): raise ValueError("Retained-cache padding is not masked")
                     if np.any(probabilities < 0) or np.any(probabilities > 1) or np.any(np.abs(probabilities.sum(-1)-1)>0.003):
                         raise ValueError("Decode attention probability failure")
                 final = captured(f"{past}.decode-norm.f16",(1536,)); current.append(final.reshape(1,1536)); stages.append(current)
+                if f"{past}.decode-cosine.f32" in run["captures"]:
+                    config = GlmOcrTextConfig(**read_json(model/"config.json")["text_config"])
+                    with torch.inference_mode():
+                        cosine,sine = reference.GlmOcrTextRotaryEmbedding(config)(torch.zeros(1,1,1536),torch.full((3,1,1),past+delta,dtype=torch.long))
+                    for name,expected in (("cosine",cosine),("sine",sine)):
+                        if captured(f"{past}.decode-{name}.f32",(128,),"<f4").tobytes() != expected.numpy().astype("<f4").tobytes():
+                            raise ValueError("Decode RoPE differs from model")
             source = captured(f"{step}.head-input.f16",(1536,))
             if source.tobytes() != final.tobytes(): raise ValueError("Head selected wrong hidden-state row")
             scores = captured(f"{step}.logits.f16",(59392,))
             if int(scores.argmax()) != int(ids[step]): raise ValueError("Greedy selection or tie-breaking mismatch")
             head_inputs.append(source); logits.append(scores)
         cases[case] = {"run":run,"ids":ids,"stages":stages,"embeddings":embeddings,"positions":positions,"delta":delta,
-                       "head_inputs":head_inputs,"logits":logits,"prompt":prompt,"text":decoded.decode("utf-8"),"stop_reason":reason,"scopes":{}}
+                       "head_inputs":head_inputs,"logits":logits,"prompt":prompt,"text":decoded.decode("utf-8"),"stop_reason":reason,"scopes":{},"timing_seconds":timing}
         print("PASS",case,"exact resident KV prefixes, decode positions/handoffs, greedy selection, UTF-8 and stop reason",reason,flush=True)
     state = {}; head = None
     with weight_source(model) as (stream,tensors,payload,catalog):
@@ -694,6 +936,7 @@ def analyze_generation(model, output, text_output, build):
                     results.append({"step":step,"selected":int(token),"reference_selected":int(reference_logits.argmax()),
                                     "selection_agrees":int(token)==int(reference_logits.argmax()),"local_head_selected":int(local_logits.argmax()),
                                     "local_head_selection_agrees":int(token)==int(local_logits.argmax()),"layers":layer_metrics,
+                                    "reference_top2_margin":float(np.partition(reference_logits,-2)[-1]-np.partition(reference_logits,-2)[-2]),
                                     "final_norm":norm_metric,"logits":logit_metric,"local_head":local_metric})
                 finally:
                     for handle in handles: handle.remove()
@@ -705,7 +948,7 @@ def analyze_generation(model, output, text_output, build):
         accepted = all(not metric["failures"] for scope in data["scopes"].values() for step in scope for metric in step["layers"]+[step["final_norm"],step["logits"],step["local_head"]])
         reports[case] = {"run":data["run"],"text":data["text"],"ids":data["ids"].tolist(),"stop_reason":data["stop_reason"],
                          "exact_cache_prefixes":True,"exact_handoffs":True,"exact_greedy_selection":True,"exact_utf8":True,
-                         "reference_scopes":data["scopes"],"numerical_gate_pass":accepted}
+                         "reference_scopes":data["scopes"],"numerical_gate_pass":accepted,"timing_seconds":data["timing_seconds"]}
     report = {"schema_version":1,"analyzer_sha256":sha(Path(__file__).read_bytes()),"modeling_sha256":module_hash,"versions":versions,
               "conditioning":"native Vision embeddings and native token prefixes; reference caches evolve independently",
               "tolerance":{"absolute":0.003,"relative":0.005},"cases":reports,
@@ -716,6 +959,9 @@ def analyze_generation(model, output, text_output, build):
 
 def export_generation(model, output, tokenizer_output):
     import numpy as np
+    torch, _, _, _ = image_reference()
+    from transformers.models.glm_ocr.modeling_glm_ocr import GlmOcrTextRotaryEmbedding
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrTextConfig
     generation = read_json(model/"generation_config.json")
     if generation["eos_token_id"] != [59246,59253] or generation["do_sample"]:
         raise ValueError("Generation policy drift")
@@ -744,12 +990,16 @@ def export_generation(model, output, tokenizer_output):
             candidate = values.astype("<f2")
             if not np.isfinite(values).all() or not np.isfinite(candidate).all(): raise ValueError("LM head overflow")
             store(f"head-{index:02}.got",envelope(identity+struct.pack("<I",index)+candidate.T.copy().tobytes(),17,catalog))
+    config = GlmOcrTextConfig(**read_json(model/"config.json")["text_config"])
+    with torch.inference_mode():
+        cosine,sine = GlmOcrTextRotaryEmbedding(config)(torch.zeros(1,256,1536),torch.arange(256).view(1,1,256).expand(3,1,256))
+    store("decode-rope.got",envelope(identity+cosine.numpy().astype("<f4").tobytes()+sine.numpy().astype("<f4").tobytes(),18,catalog))
     tokenizer = (tokenizer_output/"tokenizer.got").read_bytes()
     if tokenizer[:8] != b"GLMOCR2\0" or struct.unpack_from("<I",tokenizer,12)[0] != 1 or sha(tokenizer[:96]+tokenizer[128:]) != tokenizer[96:128].hex():
         raise ValueError("Invalid native tokenizer artifact")
     store("tokenizer.got",tokenizer)
     manifest = {"schema_version":1,"source_sha256":identity.hex(),"files":files,"vocab_size":59392,
-                "head_chunks":8,"context":64,"eos_token_id":generation["eos_token_id"],"do_sample":False,
+                "head_chunks":8,"context":256,"prefill_context":64,"eos_token_id":generation["eos_token_id"],"do_sample":False,
                 "generation_config_sha256":sha((model/"generation_config.json").read_bytes())}
     store("generation-manifest.json",(json.dumps(manifest,indent=2)+"\n").encode())
     print("PASS generation export: eight untied LM head chunks and native tokenizer",flush=True)
@@ -2148,8 +2398,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if 3 <= kind <= 17 else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if 3 <= kind <= 17 else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if 3 <= kind <= 19 else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if 3 <= kind <= 19 else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -2549,11 +2799,15 @@ def main():
     parser.add_argument("--export-vision-attention", action="store_true")
     parser.add_argument("--export-vision-block", action="store_true")
     parser.add_argument("--export-vision-encoder", action="store_true")
+    parser.add_argument("--large-images", action="store_true")
     parser.add_argument("--export-text-decoder", action="store_true")
     parser.add_argument("--export-generation", action="store_true")
     parser.add_argument("--analyze-generation", action="store_true")
+    parser.add_argument("--reference-generation", action="store_true")
+    parser.add_argument("--test-png", action="store_true")
+    parser.add_argument("--image-build", type=Path, default=ROOT/"experimental/snapdragon/build/ocr-image-files")
     parser.add_argument("--generation-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-generate")
-    parser.add_argument("--generation-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-generation-v1")
+    parser.add_argument("--generation-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-generation-v2")
     parser.add_argument("--analyze-text-prefill", action="store_true")
     parser.add_argument("--text-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-prefill")
     parser.add_argument("--text-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-text-v1")
@@ -2602,6 +2856,10 @@ def main():
         analyze_chain_scores(args.vision_block_output,args.chain_build)
     elif args.analyze_text_prefill:
         analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
+    elif args.test_png:
+        test_png(args.image_build)
+    elif args.reference_generation:
+        reference_generation(args.model_dir,args.vision_output,args.generation_build)
     elif args.analyze_generation:
         analyze_generation(args.model_dir,args.generation_output,args.text_output,args.generation_build)
     elif args.export_generation:
@@ -2611,7 +2869,7 @@ def main():
     elif args.analyze_vision_encoder:
         analyze_vision_encoder(args.vision_output,args.vision_build)
     elif args.export_vision_encoder:
-        export_vision_encoder(args.model_dir,args.vision_output)
+        export_vision_encoder(args.model_dir,args.vision_output,args.large_images)
     elif args.export_vision_block:
         cases = ("pattern","noise","text") if args.attention_case == "all" else ("receipt","german") if args.attention_case == "examples" else (args.attention_case,)
         for case in cases:
