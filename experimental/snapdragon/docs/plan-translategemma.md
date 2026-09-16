@@ -544,10 +544,95 @@ Implementation contract:
 - A separate `--residual-rounding-audit` compares W4's Japanese prompt with
    scaled FP16 versus diagnostic FP32 residual/branch outputs, keeping the same
    quantized projection weights. Both select first tokens `[220844,37307]`;
-   the wide stream peaks at 287257.65625. The observed early generation
-   divergence therefore persists without scaled FP16 residual storage. This
-   two-token comparison does not claim identical complete responses or solve
-   quantization quality. No production FP32/CPU fallback is introduced.
+   the wide stream peaks at 287257.65625. Both tokens also match BF16: the
+   Japanese divergence starts at token 3, so this two-token comparison does not
+   rule out residual-rounding effects at the failing decision. The optional
+   `--divergence-audit` replays each saved common prefix and records the first
+   divergent decision's logits under BF16, W8, W4, wide-residual W4, and a W8
+   vocabulary head applied to the same W4 hidden state. No production FP32/CPU
+   fallback is introduced.
+- The completed first-divergence replay reproduces all three saved decisions.
+   The table reports logits of the BF16 choice minus the original W4 choice;
+   a positive margin does not imply that either is the overall argmax.
+
+   | Decision (generated token) | BF16 | W8 | W4 | Wide-residual W4 | W4 hidden, W8 head |
+   | --- | ---: | ---: | ---: | ---: | ---: |
+   | Czech (6): ` kann` versus ` bis` | 9.75 | 8.84375 | -5.703125 | -5.65625 | -4.890625 |
+   | Japanese (3): full stop versus ` (` | 21.75 | 21.609375 | -4.90625 | -4.90625 | 0.65625 |
+   | German (1): `The` versus opening quote | 18.25 | 18.125 | -0.578125 | -0.546875 | 12.40625 |
+
+   Wider residual arithmetic repairs none of these choices. The W8 head selects
+   the BF16 token for Japanese and German, but selects a comma for Czech, not
+   ` kann`. This isolates an output-head contribution and leaves upstream
+   transformer quantization damage in the Czech case; it does not establish a
+   complete mixed-precision remedy. German's original quoted translation,
+   "The train arrives at 3:30 PM.", is semantically valid despite differing IDs.
+- Reciprocal `--embedding-divergence-audit` runs preserve the same saved prompts
+   and common prefixes. W8 input embeddings with W4 layers/head repair none of
+   the three choices (margins -6.625/-3.4375/-0.140625); W4 embeddings with W8
+   layers/head preserve all three BF16 choices (6.84375/19.859375/14.40625).
+   Input-embedding promotion alone is therefore not a supported fix. These are
+   first-decision tests, not complete generation or multilingual quality gates.
+   Reports live in ignored `models/translategemma-divergence-audit.json` and
+   `models/translategemma-embedding-divergence-audit.json`.
+- Full `--head-generation-audit` uses W4 input embeddings/layers and a W8
+   output head with unchanged greedy decoding and the 64-token limit. All
+   three outputs stop normally, but the change does not resolve quality:
+   Czech still replaces the specific lens-cracking meaning with destruction.
+   Japanese emits the correct greeting and full stop, followed by
+   unwanted "(Ohayou gozaemas.)". German produces the valid "The train will
+   arrive at 3:30 PM." None matches the complete BF16 token sequence. The
+   ignored report is `models/translategemma-w8-head-generation-audit.json`;
+   no mixed-precision deployment, stopping-rule change or quality waiver follows.
+- The diagnostic-only `--mse-divergence-audit` candidate minimizes per-row
+   reconstruction error over the original absmax quantizer and clipped scales
+   from 0.95 to 0.5 times absmax. Candidates use stored FP16 scales and retain
+   signed W4 values in [-7,7], without changing tensor layout. Lower weight
+   error is not a translation-quality guarantee. `--mse-generation-audit`
+   additionally generates the three complete responses using the same cached
+   candidate weights. Neither mode changes the exporter or published artifacts.
+- The completed row-MSE decision experiment does not repair the two degraded
+   translation cases. Czech chooses a comma; the BF16 ` kann` token drops from
+   rank 4 to rank 20, with a -2.8828125 margin against the original W4 ` bis`.
+   Japanese still chooses ` (` over its full stop (margin -1.75). German selects
+   `The` (margin 9.59375), but its original W4 translation was already valid.
+   The same-format candidate is not promoted; reduced reconstruction error
+   alone is insufficient evidence of useful model behavior.
+- `--group32-generation-audit` tests the more specific hypothesis that a single
+   scale across an entire input row (up to 10240 weights) is too coarse for W4.
+   It uses independent absmax scales for contiguous groups of 32, signed packed
+   W4 values, FP16 scales/activations, unchanged normalization and saved prompts.
+   It records all three divergent decisions and then all three full generations
+   using the same cached weights. This is an offline diagnostic, not a compatible
+   Stage 3 artifact: current readers and QNN graphs require per-output-channel
+   scaling. Any deployment would need an explicit format/graph change and new
+   hardware validation. The candidate does not overwrite existing artifacts.
+- Group-32's completed decision replay selects Japanese's full stop (margin
+   19.375, rank 1) and German's `The` (25.59375, rank 1). Czech selects a comma;
+   ` kann` remains rank 5, with margin -8.09375 against the original ` bis`.
+   These are decisions at saved common prefixes, not full-generation acceptance.
+   The manifest contains 3,879,895,040 matrix weights: packed W4 remains
+   1,939,947,520 bytes, while group-32 FP16 scales require 242,493,440 bytes
+   instead of 2,543,744. With unchanged norm tensors, total payload would be
+   2,183,177,216 bytes, 239,949,696 bytes above the current W4 payload.
+- The pinned QAIRT 2.50 headers expose block encodings, but HTP capability queries
+   return `0x7d0` (`QNN_PROPERTY_ERROR_UNKNOWN_KEY`) for all seven queried
+   encodings, including the working bit-width per-axis control. This query
+   cannot establish support or non-support. The experimental Gemma probe now
+   reports these raw statuses without changing its existing acceptance gates.
+- An opt-in `GEMMA_GROUP32_DIAGNOSTIC` build of the capability probe tests
+   `[1,2560] x [2560,2560]` with block dimensions `[32,1]`, four-bit signed
+   values in an S8 container, and varying input-group/output-channel scales.
+   The SDK's `BW_BLOCK_MAPPED` encoding is pointer-valued in the quantization
+   union; the probe uses a function-lifetime encoding structure. HTP accepts
+   creation/finalization/execution but fails the scalar reference at output 0
+   (absolute error about 79.478512, unchanged tolerance 0.25). It is not an
+   accepted hardware implementation. The failure log is retained under ignored
+   `build/gemma-group32-capabilities.log`. Default builds omit this failing
+   experiment; the established capability suite and all cleanup calls still
+   pass. No production graph, shared ABI, Whisper source or published context
+   is changed. The offline grouped candidate requires complete generation
+   results and a numerically validated hardware encoding before deployment.
 
 Validation record:
 
@@ -698,14 +783,15 @@ unchanged. The build also passes tokenizer 7470, corruption 18, numeric scalar
 Create a fixed-shape prompt path that amortizes weight traffic across many input
 tokens.
 
-Status (2026-09-16): the 512-bucket prompt gate passes, including fresh-process
-restore. The 1024/2048 buckets remain unvalidated.
+Status (2026-09-16): Stage 7 complete. All three context buckets pass the
+253/256-token prompt gates, fresh-process restore, corruption rejection,
+and the unchanged 300 input tokens/s requirement.
 The shape-aware block builder supports 128-token chunks and 512/1024/2048 buckets,
 unique layer names, internal hidden connections, and final-token vocabulary
 projection. The existing no-CRT runner now composes all 34 W4 layers into one
-graph. The corrected 512 context is serialized with an application envelope;
-fresh-process QNN restoration took 1.60 seconds, excluding file IO and envelope
-hash verification. Construction-only weight buffers are released before
+graph. Each finalized context is serialized with an application envelope;
+fresh-process QNN restoration takes about 1.4 seconds, excluding file IO and
+envelope hash verification. Construction-only weight buffers are released before
 restore; no BF16/W8 artifact variant is loaded for this path.
 
 The original DMA failure (result 1100, transport error 0) reproduces with only
@@ -731,20 +817,30 @@ checks equal finite outputs at positions 0..127 and 128..255, and compares
 rotated keys against split-half FP16 arithmetic using actual normalized keys.
 Both primitive comparisons report below 1 ppm relative MSE; cleanup passes.
 
-Run the corrected graph and restore gates:
+Run all graph and fresh-process restore gates:
 
 ```powershell
-.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket 512
-.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket 512
+foreach ($bucket in 512, 1024, 2048) {
+   .\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket $bucket
+   .\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket $bucket
+}
 ```
 
-The first command builds and stores `build/gemma-block/prompt-512.gmb.context`;
-the second requires that context and avoids rebuilding/finalizing the graph.
+The first command builds and stores `build/gemma-block/prompt-<bucket>.gmb.context`;
+the second requires that bucket's context and avoids rebuilding/finalizing the graph.
 Envelope version 4 rejects older integer-input contexts. The envelope retains
 graph/tensor names and IDs, dimensions, model repository
 and pinned revision, W4/chunk/bucket metadata, QNN core/backend versions, and
-SHA-256 covering metadata and binary. Fresh-process restore is exercised, but
-corruption/malformed-envelope tests remain pending.
+SHA-256 covering metadata and binary. Before deserialization, the runner checks
+bounded identity strings, version and bucket compatibility, exact file size,
+and all 146 expected IO descriptors (names, owners, types, dimensions, and
+unique IDs). Invalid shapes cannot reach allocation-size arithmetic.
+The envelope regression rejects 75 malformed-header or damaged-hash/payload
+cases across the three bucket schemas, including freshly rehashed invalid
+metadata. The script also checks actual empty files, truncated headers, and
+truncated payloads through the restore path, requiring rejection before QNN
+deserialization and zero cleanup errors. These integrity checks detect
+corruption; SHA-256 is not authentication of an untrusted model publisher.
 
 Offline `export-translategemma.py --prompt-reference` publishes 77 verified
 artifacts under `models/translategemma-4b-stage7/`: full-depth W4 K/V for a
@@ -752,19 +848,31 @@ artifacts under `models/translategemma-4b-stage7/`: full-depth W4 K/V for a
 logits at tokens 253 and 256. Earlier positions of the full causal run provide
 the unpadded 253-token reference. The runner's registered K/V output path,
 253-token padded comparison, all-layer retained-row/logit checks, deterministic
-256-token repeats, and 300 tokens/s gate all pass for the 512 bucket. Every
+256-token repeats, and 300 tokens/s gate all pass for every bucket. Every
 retained KV row in all 34 layers passes the unchanged Stage 6 tolerances for
 both 253 and 256 valid tokens. Fresh-process replay reports key relative MSE
 up to 52 ppm, value relative MSE up to 116 ppm, and logit relative MSE of 53 ppm
 (253 tokens) and 22 ppm (256 tokens). Guard checks, three deterministic warm
-replays, and cleanup pass. Warm median throughput was 358 tokens/s after build
-and restore, and 352 tokens/s in the separate restore-only process, above the
-300 tokens/s gate. These are runner wall-clock measurements, not DDR traffic
-measurements or a power-controlled benchmark.
+replays, and cleanup pass. Final fresh-process results:
 
-The 512-bucket exit criteria pass. Larger buckets have not been finalized or
-executed, malformed-envelope coverage remains pending, and the independent
-Stage 5 W4 translation-quality gate is still blocked.
+| Context Bucket | QNN Restore | Warm Input Tokens/s |
+| --- | --- | --- |
+| 512 | 1.398 s | 488 |
+| 1024 | 1.477 s | 449 |
+| 2048 | 1.382 s | 353 |
+
+The initial 2048 run was numerically correct but reached only 283 tokens/s.
+The host was rebuilding the same shared masks once per layer. Filling positions
+once and local/global masks once each per chunk removed the redundant work;
+the graph, serialized context, timing boundary, and acceptance tolerances did
+not change. These are runner wall-clock measurements (including input/control
+preparation and KV copies), not DDR traffic measurements or a power-controlled
+benchmark. All 75 in-memory corruption cases and nine file-rejection cases pass.
+
+The planned Stage 7 exit criteria pass. Coverage uses the deterministic 253/256
+token fixture in each bucket; it is not a full-length 2048-token reference sweep
+or an end-to-end translation-quality test. The independent Stage 5 W4 quality
+gate remains blocked. Stage 8 adds single-token generation and persistent KV state.
 
 Existing Stage 6 local/global W8/W4 hardware checks, five failure-cleanup probes,
 7470 tokenizer cases, 18 corruption cases, 323 numerical scalars, and no-CRT PE

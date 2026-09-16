@@ -519,10 +519,132 @@ static void prompt_digest(PromptHeader *header, void *binary, u8 digest[32]) {
     crypto_sha256_final(&hash, digest);
 }
 
+static int prompt_io_schema(u32 layer_index, u32 kind, u32 bucket, PromptIo *entry) {
+    static const char *names[] = {"input", "positions", "cos-table", "sin-table", "mask",
+        "past-key", "past-value", "k-rope", "v-projection", "last-token", "logits"};
+    char prefix[] = "layer-00.";
+    if ((kind < 2 && layer_index != 0) || (kind >= 2 && kind <= 4 && layer_index != 0 && layer_index != 5) ||
+        (kind >= 9 && layer_index != 33)) return 0;
+    memset(entry, 0, sizeof(*entry));
+    prefix[6] = (char)('0' + layer_index / 10); prefix[7] = (char)('0' + layer_index % 10);
+    join(entry->name, prefix, names[kind]); entry->layer = layer_index;
+    entry->type = kind == 7 || kind == 8 || kind == 10 ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_APP_WRITE;
+    entry->dtype = kind == 1 || kind == 9 ? QNN_DATATYPE_FLOAT_32 : QNN_DATATYPE_FLOAT_16;
+    entry->rank = 2;
+    if (kind == 0) { entry->dimensions[0] = 128; entry->dimensions[1] = 2560; }
+    else if (kind == 1) { entry->dimensions[0] = 1; entry->dimensions[1] = 128; }
+    else if (kind <= 3) { entry->dimensions[0] = bucket; entry->dimensions[1] = 128; }
+    else if (kind == 4) { entry->rank = 3; entry->dimensions[0] = 8; entry->dimensions[1] = 128; entry->dimensions[2] = bucket + 128; }
+    else if (kind <= 6) { entry->rank = 3; entry->dimensions[0] = 4; entry->dimensions[1] = bucket; entry->dimensions[2] = 256; }
+    else if (kind == 7) { entry->rank = 4; entry->dimensions[0] = 1; entry->dimensions[1] = 4; entry->dimensions[2] = 128; entry->dimensions[3] = 256; }
+    else if (kind == 8) { entry->rank = 3; entry->dimensions[0] = 4; entry->dimensions[1] = 128; entry->dimensions[2] = 256; }
+    else if (kind == 9) { entry->rank = 1; entry->dimensions[0] = 1; }
+    else { entry->dimensions[0] = 1; entry->dimensions[1] = 262208; }
+    return 1;
+}
+
+static int prompt_header_valid(const PromptHeader *header, u32 bucket, u64 file_size) {
+    u32 index, previous, layer_index, kind, dimension, expected_count = 0;
+    PromptIo expected;
+    if ((bucket != 512 && bucket != 1024 && bucket != 2048) || header->magic != 0x37504d47 ||
+        header->version != 4 || header->bucket != bucket || header->tokens != 128 || header->bits != 4 ||
+        header->count != 146 || !header->binary_size || header->binary_size > 8589934592ULL ||
+        file_size != sizeof(*header) + header->binary_size || header->repository[63] || header->revision[47] || header->graph[31] ||
+        !equal(header->repository, gemma_model_translategemma_4b()->repository) ||
+        !equal(header->revision, gemma_model_translategemma_4b()->revision) || !equal(header->graph, "gemma_prompt")) return 0;
+    for (index = 0; index < sizeof(runtime_version); ++index)
+        if (((const u8 *)&header->qnn)[index] != ((const u8 *)&runtime_version)[index]) return 0;
+    for (index = 0; index < header->count; ++index) {
+        if (header->io[index].name[79]) return 0;
+        for (previous = 0; previous < index; ++previous)
+            if (header->io[index].id == header->io[previous].id || equal(header->io[index].name, header->io[previous].name)) return 0;
+    }
+    for (layer_index = 0; layer_index < 34; ++layer_index) for (kind = 0; kind < 11; ++kind) {
+        const PromptIo *actual = 0;
+        if (!prompt_io_schema(layer_index, kind, bucket, &expected)) continue;
+        ++expected_count;
+        for (index = 0; index < header->count; ++index)
+            if (equal(header->io[index].name, expected.name)) { actual = &header->io[index]; break; }
+        if (!actual || actual->layer != expected.layer || actual->type != expected.type ||
+            actual->dtype != expected.dtype || actual->rank != expected.rank) return 0;
+        for (dimension = 0; dimension < 4; ++dimension)
+            if (actual->dimensions[dimension] != expected.dimensions[dimension]) return 0;
+    }
+    return expected_count == header->count;
+}
+
+static int prompt_payload_valid(PromptHeader *header, void *binary) {
+    u8 digest[32]; u32 index;
+    prompt_digest(header, binary, digest);
+    for (index = 0; index < 32; ++index) if (digest[index] != header->digest[index]) return 0;
+    return 1;
+}
+
+static int prompt_envelope_regression(void) {
+    PromptHeader *header = &prompt_header, *original = allocate(0, sizeof(*original));
+    u8 payload[16] = {0}; u32 bucket, layer_index, kind, test, passed = 0;
+    if (!original) return 0;
+    for (bucket = 512; bucket <= 2048; bucket *= 2) {
+        memset(header, 0, sizeof(*header));
+        header->magic = 0x37504d47; header->version = 4; header->bucket = bucket;
+        header->tokens = 128; header->bits = 4; header->qnn = runtime_version; header->binary_size = sizeof(payload);
+        join(header->repository, gemma_model_translategemma_4b()->repository, "");
+        join(header->revision, gemma_model_translategemma_4b()->revision, ""); join(header->graph, "gemma_prompt", "");
+        for (layer_index = 0; layer_index < 34; ++layer_index) for (kind = 0; kind < 11; ++kind)
+            if (prompt_io_schema(layer_index, kind, bucket, &header->io[header->count])) {
+                header->io[header->count].id = header->count + 1; ++header->count;
+            }
+        prompt_digest(header, payload, header->digest);
+        if (!prompt_header_valid(header, bucket, sizeof(*header) + sizeof(payload)) || !prompt_payload_valid(header, payload)) return 0;
+        memcpy(original, header, sizeof(*header));
+        for (test = 0; test < 23; ++test) {
+            u64 file_size = sizeof(*header) + sizeof(payload);
+            memcpy(header, original, sizeof(*header));
+            switch (test) {
+                case 0: header->magic ^= 1; break;
+                case 1: header->version = 3; break;
+                case 2: header->bucket = bucket == 512 ? 1024 : 512; break;
+                case 3: header->tokens = 127; break;
+                case 4: header->bits = 8; break;
+                case 5: header->count = 321; break;
+                case 6: header->binary_size = 0; break;
+                case 7: header->binary_size = ~(u64)0; break;
+                case 8: --file_size; break;
+                case 9: ++file_size; break;
+                case 10: memset(header->repository, 'x', sizeof(header->repository)); break;
+                case 11: header->revision[0] ^= 1; break;
+                case 12: memset(header->graph, 'x', sizeof(header->graph)); break;
+                case 13: ((u8 *)&header->qnn)[0] ^= 1; break;
+                case 14: memset(header->io[0].name, 'x', sizeof(header->io[0].name)); break;
+                case 15: header->io[0].layer = 34; break;
+                case 16: header->io[0].rank = 5; break;
+                case 17: header->io[0].dimensions[0] = 0xffffffffU; break;
+                case 18: header->io[0].dtype = QNN_DATATYPE_INT_32; break;
+                case 19: header->io[0].type = QNN_TENSOR_TYPE_NATIVE; break;
+                case 20: header->io[1].id = header->io[0].id; break;
+                case 21: memcpy(header->io[1].name, header->io[0].name, sizeof(header->io[0].name)); break;
+                default: header->io[0].dimensions[3] = 1; break;
+            }
+            if (test != 6 && test != 7) prompt_digest(header, payload, header->digest);
+            if (prompt_header_valid(header, bucket, file_size)) return 0;
+            ++passed;
+        }
+        memcpy(header, original, sizeof(*header)); header->digest[0] ^= 1;
+        if (prompt_payload_valid(header, payload)) return 0;
+        ++passed;
+        memcpy(header, original, sizeof(*header)); payload[0] ^= 1;
+        if (prompt_payload_valid(header, payload)) return 0;
+        payload[0] ^= 1; ++passed;
+    }
+    memset(header, 0, sizeof(*header));
+    status("PASS prompt envelope corruption cases", passed);
+    return 1;
+}
+
 static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
                            QnnContextHandle *context, u32 bucket) {
     u32 layer_index, index, byte; u64 bytes = 0, written = 0, code, started;
-    void *binary = 0, *file; char path[1100]; u8 digest[32]; int ok = 0;
+    void *binary = 0, *file; char path[1100]; int ok = 0;
     PromptHeader *header = &prompt_header;
     join(path, binding_path, ".context");
     if (prompt_blocks[0].count) {
@@ -565,7 +687,7 @@ static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
         ok = transfer_file(file, header, sizeof(*header), 0) && SetFilePointerEx(file, 0, &file_size, 2);
         if (!CloseHandle(file)) ok = 0;
         bytes = header->binary_size;
-        if (!ok || !bytes || bytes > 8589934592ULL || (u64)file_size != sizeof(*header) + bytes) return 0;
+        if (!ok || !prompt_header_valid(header, bucket, (u64)file_size)) return 0;
         if (api->context_free(*context, 0)) return 0;
         *context = 0;
     }
@@ -574,14 +696,8 @@ static int prompt_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
     if (file == (void *)(u64)-1) { ok = 0; goto done; }
     ok = transfer_file(file, header, sizeof(*header), 0) && transfer_file(file, binary, bytes, 0);
     if (!CloseHandle(file)) ok = 0;
-    if (!ok || header->binary_size != bytes || header->magic != 0x37504d47 || header->version != 4 ||
-        header->bucket != bucket || header->tokens != 128 || header->bits != 4 || header->count > 320 ||
-        !equal(header->repository, gemma_model_translategemma_4b()->repository) ||
-        !equal(header->revision, gemma_model_translategemma_4b()->revision) || !equal(header->graph, "gemma_prompt")) { ok = 0; goto done; }
-    prompt_digest(header, binary, digest);
-    for (byte = 0; byte < 32; ++byte) if (digest[byte] != header->digest[byte]) { ok = 0; goto done; }
-    for (byte = 0; byte < sizeof(runtime_version); ++byte)
-        if (((u8 *)&header->qnn)[byte] != ((u8 *)&runtime_version)[byte]) { ok = 0; goto done; }
+    if (!ok || !prompt_header_valid(header, bucket, sizeof(*header) + bytes) ||
+        !prompt_payload_valid(header, binary)) { ok = 0; goto done; }
     started = now(); code = api->context_create_from_binary(backend, device, 0, binary, bytes, context, 0);
     status("prompt restore", code); timing("prompt restore us", started);
     if (code) { ok = 0; goto done; }
@@ -696,12 +812,12 @@ static int prompt_execute(const QnnInterfaceV2 *api, u32 bucket, u32 valid, int 
     for (start = 0; start < valid; start += 128) {
         u32 count = valid - start < 128 ? valid - start : 128;
         u16 *embedding = prompt_tensor(0, "input")->buffer;
+        float *positions = prompt_tensor(0, "positions")->buffer;
         for (element = 0; element < 128 * 2560; ++element)
             embedding[element] = element < count * 2560 ? half(prompt_embedding[start * 2560 + element]) : 0;
-        for (layer_index = 0; layer_index < 34; ++layer_index) {
-            float *positions = prompt_tensor(layer_index, "positions")->buffer;
+        for (row = 0; row < 128; ++row) positions[row] = row < count ? start + row : 0;
+        for (layer_index = 0; layer_index <= 5; layer_index += 5) {
             u16 *mask = prompt_tensor(layer_index, "mask")->buffer;
-            for (row = 0; row < 128; ++row) positions[row] = row < count ? start + row : 0;
             for (head = 0; head < 8; ++head) for (row = 0; row < 128; ++row) for (key = 0; key < bucket + 128; ++key) {
                 u32 absolute = key < bucket ? key : start + key - bucket;
                 int occupied = key < bucket ? key < start : key < bucket + count;
@@ -749,6 +865,10 @@ void mainCRTStartup(void) {
     Providers get_providers; RpcAlloc rpc_alloc; RpcFd rpc_fd; u32 count, index, step, result = 1, cleanup_errors = 0, prompt_bucket = 0;
     u64 code, started; GemmaBlockHost host = {0, allocate, weight, status};
     if (!read_bindings() || !QueryPerformanceFrequency(&frequency)) goto cleanup;
+    if (layer == 34 && equal(failure_point, "envelope-regression")) {
+        result = prompt_envelope_regression() ? 0 : 1;
+        goto cleanup;
+    }
     text(layer == 34 ? "Gemma Stage 7 W" : "Gemma Stage 6 W"); number(bits); text(" layer "); number(layer); text("\n");
     module = LoadLibraryA("QnnHtp.dll"); if (!module) goto cleanup;
     get_providers = (Providers)GetProcAddress(module, "QnnInterface_getProviders");
@@ -880,7 +1000,8 @@ cleanup:
     status("cleanup errors", cleanup_errors);
     if (cleanup_errors) result = 1;
     if (!result && layer != 34) text("PASS block intermediates, cached rows, guard regions and warm determinism\n");
-    if (!result && layer == 34) text(equal(failure_point, "position-regression") ? "PASS position regression cleanup\n" :
+    if (!result && layer == 34) text(equal(failure_point, "envelope-regression") ? "PASS envelope regression cleanup\n" :
+        equal(failure_point, "position-regression") ? "PASS position regression cleanup\n" :
         "PASS prompt restore, KV/logits, padding, determinism and throughput\n");
     status("block runner result", result); ExitProcess(result);
 }

@@ -194,8 +194,17 @@ static u64 add_node(
 
 static u32 run_w4a16_projection(
     const QnnInterfaceV2 *api,
-    QnnContextHandle context
+    QnnContextHandle context,
+    u32 grouped
 ) {
+    typedef struct GemmaBlockMappedEncoding {
+        u32 bitwidth;
+        u32 mapping;
+        u32 *block_size;
+        QnnScaleOffset *scale_offset;
+    } GemmaBlockMappedEncoding;
+    _Static_assert(sizeof(GemmaBlockMappedEncoding) == 24U, "QNN block-mapped ABI size");
+    _Static_assert(sizeof(GemmaBlockMappedEncoding) <= sizeof(QnnQuantizeEncoding), "QNN encoding storage");
     static const u16 input_pattern[] = {
         0xbc00U, 0xb800U, 0U, 0x3800U, 0x3c00U, 0x4000U, 0xc000U
     };
@@ -211,6 +220,10 @@ static u32 run_w4a16_projection(
     u16 *output = VirtualAlloc(0, output_bytes, 0x3000U, 0x04U);
     float *scales = VirtualAlloc(0, scales_bytes, 0x3000U, 0x04U);
     float *references = VirtualAlloc(0, references_bytes, 0x3000U, 0x04U);
+    QnnScaleOffset *block_scales = grouped ? VirtualAlloc(0,
+        (GEMMA_W4_WEIGHT_ELEMENTS / 32U) * sizeof(QnnScaleOffset), 0x3000U, 0x04U) : 0;
+    u32 block_dimensions[2] = {32U, 1U};
+    GemmaBlockMappedEncoding block_encoding = {4U, 0U, block_dimensions, block_scales};
     QnnTensor inputs[2];
     QnnTensor outputs[1];
     QnnOpConfig operation = {0};
@@ -221,9 +234,10 @@ static u32 run_w4a16_projection(
     u32 output_index;
     u32 result = 0U;
 
-    write_text("TranslateGemma Stage 1 W4A16 projection\n");
-    write_text("  shape: [1,2560] x [2560,2560], per-output scales\n");
-    if (input == 0 || weights == 0 || output == 0 || scales == 0 || references == 0) {
+    write_text(grouped ? "TranslateGemma diagnostic group-32 W4A16 projection\n" : "TranslateGemma Stage 1 W4A16 projection\n");
+    write_text(grouped ? "  shape: [1,2560] x [2560,2560], block-mapped [32,1] scales\n" :
+        "  shape: [1,2560] x [2560,2560], per-output scales\n");
+    if (input == 0 || weights == 0 || output == 0 || scales == 0 || references == 0 || (grouped && !block_scales)) {
         result = 120U;
         goto cleanup;
     }
@@ -240,13 +254,20 @@ static u32 run_w4a16_projection(
         for (output_index = 0U; output_index < GEMMA_HIDDEN_WIDTH; ++output_index) {
             u32 index = input_index * GEMMA_HIDDEN_WIDTH + output_index;
             i32 weight = (i32)((input_index * 13U + output_index * 7U) % 15U) - 7;
+            float weight_scale = scales[output_index];
+            if (grouped) {
+                u32 block_index = (input_index / 32U) * GEMMA_HIDDEN_WIDTH + output_index;
+                weight_scale *= 0.25f * (float)(1U + (input_index / 32U) % 4U);
+                block_scales[block_index].scale = weight_scale;
+                block_scales[block_index].offset = 0;
+            }
             weights[index] = (i8)weight;
             references[output_index] += input_value * (float)weight *
-                scales[output_index];
+                weight_scale;
         }
     }
 
-    status = api->graph_create(context, "gemma_w4a16_projection", 0, &graph);
+    status = api->graph_create(context, grouped ? "gemma_w4a16_group32_projection" : "gemma_w4a16_projection", 0, &graph);
     write_status("  graphCreate", status);
     if (status != 0U) {
         result = 121U;
@@ -261,6 +282,11 @@ static u32 run_w4a16_projection(
         QNN_DATATYPE_SFIXED_POINT_8, weight_dimensions, 2U, 1,
         GEMMA_HIDDEN_WIDTH, scales
     );
+    if (grouped) {
+        inputs[1].data.v1.quantize_params.quantization_encoding = 9U;
+        inputs[1].data.v1.quantize_params.encoding = (QnnQuantizeEncoding){0};
+        inputs[1].data.v1.quantize_params.encoding.reserved[0] = (usize)&block_encoding;
+    }
     inputs[1].data.v1.memory.client_buffer.data = weights;
     inputs[1].data.v1.memory.client_buffer.data_size = GEMMA_W4_BUILD_WEIGHT_BYTES;
     outputs[0] = make_plain_tensor(
@@ -313,6 +339,8 @@ static u32 run_w4a16_projection(
         if (delta > 0.25f) {
             write_text("  numerical mismatch at output ");
             write_u32(output_index);
+            write_text("; absolute error (micro-units): ");
+            write_u32((u32)(delta * 1000000.0f));
             write_text("\n");
             result = 126U;
             goto cleanup;
@@ -323,6 +351,7 @@ static u32 run_w4a16_projection(
     write_text("\n  result: supported and numerically accepted\n");
 
 cleanup:
+    if (block_scales != 0) VirtualFree(block_scales, 0U, 0x8000U);
     if (references != 0) VirtualFree(references, 0U, 0x8000U);
     if (scales != 0) VirtualFree(scales, 0U, 0x8000U);
     if (output != 0) VirtualFree(output, 0U, 0x8000U);
@@ -1306,11 +1335,47 @@ static u32 run_residual_precision(
     return 0U;
 }
 
+static void report_quantization_properties(const QnnInterfaceV2 *api) {
+    typedef u64 (*GemmaHasCapability)(u32 key);
+    static const u32 keys[] = {512U, 513U, 514U, 528U, 530U, 531U, 532U};
+    static const char *const names[] = {
+        "quantization property: bw-axis",
+        "quantization property: block",
+        "quantization property: blockwise-expansion",
+        "quantization property: float-block",
+        "quantization property: bw-block-mapped",
+        "quantization property: bw-blockwise-expansion-mapped",
+        "quantization property: bw-float-block"
+    };
+    GemmaHasCapability has_capability = (GemmaHasCapability)api->property_has_capability;
+    u32 index;
+    if (!has_capability) {
+        write_text("quantization properties: capability API unavailable\n");
+        return;
+    }
+    write_text("Quantization properties (zero means supported, not MatMul acceptance):\n");
+    for (index = 0U; index < sizeof(keys) / sizeof(keys[0]); ++index) {
+        write_status(names[index], has_capability(keys[index]));
+    }
+}
+
 u32 qnn_gemma_stage1_probe(
     const QnnInterfaceV2 *api,
     QnnContextHandle context
 ) {
-    u32 result = run_w4a16_projection(api, context);
+    u32 result;
+    report_quantization_properties(api);
+    result = run_w4a16_projection(api, context, 0U);
+#ifdef GEMMA_GROUP32_DIAGNOSTIC
+    if (result == 0U) {
+        u32 grouped_result = run_w4a16_projection(api, context, 1U);
+        if (grouped_result >= 122U && grouped_result <= 124U) {
+            write_text("  result: group-32 block-mapped graph unavailable; no deployment acceptance\n");
+        } else {
+            result = grouped_result;
+        }
+    }
+#endif
     if (result == 0U) result = run_rms_norm(api, context);
     if (result == 0U) result = run_gated_gelu(api, context);
     if (result == 0U) result = run_gather(api, context);

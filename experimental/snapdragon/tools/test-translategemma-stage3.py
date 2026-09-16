@@ -36,7 +36,75 @@ def write_safetensors(path, tensors):
     path.write_bytes(struct.pack("<Q", len(encoded)) + encoded + payload)
 
 
+def quantize_row_mse(values, bits):
+    best, best_scales = EXPORTER.quantize_groups(values, bits)
+    best_error = np.sum((values - best * best_scales.astype(np.float32)[:, None]) ** 2, axis=1, dtype=np.float64)
+    limit = (1 << (bits - 1)) - 1
+    for ratio in (0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5):
+        scales = (np.max(np.abs(values), axis=1) * np.float32(ratio / limit)).astype(np.float16)
+        scales = np.where(scales > 0, scales, np.float16(1))
+        quantized = np.rint(values / scales.astype(np.float32)[:, None]).clip(-limit, limit).astype(np.int8)
+        error = np.sum((values - quantized * scales.astype(np.float32)[:, None]) ** 2, axis=1, dtype=np.float64)
+        improved = error < best_error
+        best[improved] = quantized[improved]; best_scales[improved] = scales[improved]
+        best_error[improved] = error[improved]
+    return best, best_scales
+
+
+def quantize_grouped_w4(values, group_size):
+    values = np.asarray(values, dtype=np.float32)
+    if values.ndim != 2 or group_size <= 0 or group_size % 2 or values.shape[1] == 0 or values.shape[1] % group_size:
+        raise ValueError("grouped W4 requires nonempty rows divisible by an even group size")
+    quantized, scales = EXPORTER.quantize_groups(values.reshape(-1, group_size), 4)
+    return EXPORTER.pack_s4(quantized.reshape(values.shape)), scales.reshape(values.shape[0], -1)
+
+
+def dequantize_grouped_w4(packed, scales, group_size):
+    quantized = np.empty((packed.shape[0], packed.shape[1] * 2), dtype=np.int8)
+    quantized[:, 0::2] = (packed << np.uint8(4)).view(np.int8) >> 4
+    quantized[:, 1::2] = packed.view(np.int8) >> 4
+    grouped = quantized.reshape(packed.shape[0], -1, group_size).astype(np.float32)
+    return (grouped * scales.astype(np.float32)[..., None]).reshape(quantized.shape)
+
+
 class Stage3Tests(unittest.TestCase):
+    def test_diagnostic_grouped_w4(self):
+        values = np.random.default_rng(19).normal(0, 0.1, (2, 64)).astype(np.float32)
+        values[0, 0] = 7; values[1, 32:] = 0
+        packed, scales = quantize_grouped_w4(values, 32)
+        actual = dequantize_grouped_w4(packed, scales, 32)
+        self.assertEqual(packed.shape, (2, 32))
+        self.assertEqual(packed.dtype, np.uint8)
+        self.assertEqual(scales.shape, (2, 2))
+        self.assertEqual(scales.dtype, np.float16)
+        for row in range(2):
+            for start in (0, 32):
+                quantized, scale = EXPORTER.quantize_groups(values[row:row + 1, start:start + 32], 4)
+                np.testing.assert_array_equal(actual[row:row + 1, start:start + 32], quantized * scale.astype(np.float32)[:, None])
+        original, original_scales = EXPORTER.quantize_groups(values, 4)
+        before = original * original_scales.astype(np.float32)[:, None]
+        full_row_packed, full_row_scales = quantize_grouped_w4(values, values.shape[1])
+        np.testing.assert_array_equal(full_row_packed, EXPORTER.pack_s4(original))
+        np.testing.assert_array_equal(dequantize_grouped_w4(full_row_packed, full_row_scales, values.shape[1]), before)
+        self.assertLess(np.sum((actual - values) ** 2), np.sum((before - values) ** 2))
+        np.testing.assert_array_equal(actual[1, 32:], 0)
+        for size in (0, 3, 30, 128):
+            with self.assertRaises(ValueError):
+                quantize_grouped_w4(values, size)
+
+    def test_diagnostic_row_mse(self):
+        values = np.random.default_rng(17).normal(0, 0.1, (4, 256)).astype(np.float32)
+        values[0, 0] = 2; values[1] = 0
+        original, original_scales = EXPORTER.quantize_groups(values, 4)
+        candidate, scales = quantize_row_mse(values, 4)
+        before = np.sum((values - original * original_scales.astype(np.float32)[:, None]) ** 2, axis=1)
+        after = np.sum((values - candidate * scales.astype(np.float32)[:, None]) ** 2, axis=1)
+        self.assertTrue(np.all(after <= before))
+        self.assertTrue(np.any(after < before))
+        self.assertEqual(scales.dtype, np.float16)
+        self.assertTrue(np.all((candidate >= -7) & (candidate <= 7)))
+        np.testing.assert_array_equal(candidate[1], 0)
+
     def test_generation_limit_diagnostics(self):
         spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
         reference = importlib.util.module_from_spec(spec)
@@ -310,7 +378,7 @@ def residual_bound_audit():
     print("PASS residual-only analytical range bound; not a bound on projections or HTP numerical error", flush=True)
 
 
-def residual_rounding_audit():
+def residual_rounding_audit(divergence=False, embedding_ablation=False, mse_ablation=False, candidate_generation=False, group_size=0):
     from transformers import AutoTokenizer
 
     spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
@@ -331,6 +399,156 @@ def residual_rounding_audit():
     root = TOOLS.parent
     model_dir = root / "data/translategemma-4b"
     tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
+    if divergence:
+        candidate_ablation = mse_ablation or group_size != 0
+        candidate_label = f"group{group_size}" if group_size else "mse"
+
+        class CandidateWeights(reference.Weights):
+            def __init__(self):
+                super().__init__(EXPORTER, model_dir, root / "models/translategemma-4b-stage3", "w4a16")
+                self.quantized_rows = {}
+
+            def rows(self, name, start=None, end=None):
+                full_name = reference.PREFIX + name
+                shape = self.entries[full_name]["shape"]
+                if len(shape) == 1:
+                    return super().rows(name, start, end)
+                start = 0 if start is None else start
+                end = shape[0] if end is None else end
+                key = (name, start, end)
+                if key not in self.quantized_rows:
+                    if start == 0 and name.endswith("self_attn.q_proj.weight"):
+                        print("Quantizing candidate " + name, flush=True)
+                    values = EXPORTER.bf16_to_f32(self.source(full_name)[start:end])
+                    self.quantized_rows[key] = quantize_grouped_w4(values, group_size) if group_size else quantize_row_mse(values, 4)
+                    if end == shape[0]:
+                        EXPORTER.close_memmap(self.mappings.pop(full_name))
+                quantized, scales = self.quantized_rows[key]
+                if group_size:
+                    return dequantize_grouped_w4(quantized, scales, group_size)
+                return quantized.astype(np.float32) * scales.astype(np.float32)[:, None]
+
+        manifest_path = root / "models/translategemma-4b-stage5-v2/manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        artifact_dir = root / "models/translategemma-4b-stage3"
+        report = {"method": "cached teacher-forced common prefix at first divergent decision",
+              "complete": False, "deployment_changed": False,
+              "source_manifest_sha256": EXPORTER.sha256_file(manifest_path),
+              "weight_manifest_sha256": EXPORTER.sha256_file(artifact_dir / "manifest.json"),
+              "global_rope_factor": 8, "cases": []}
+        report["candidate_group_size"] = group_size or "input-dimension"
+        report["deployment_layout_compatible"] = not bool(group_size)
+        report_name = f"translategemma-{candidate_label}-divergence-audit.json" if candidate_ablation else "translategemma-embedding-divergence-audit.json" if embedding_ablation else "translategemma-divergence-audit.json"
+        report_path = root / "models" / report_name
+        report_path.write_bytes(EXPORTER.canonical_json(report))
+        candidate_weights = CandidateWeights() if candidate_ablation else None
+
+        def describe(logits, expected, observed):
+            if not np.isfinite(logits).all():
+                raise ValueError("nonfinite diagnostic logits")
+            order = np.argsort(-logits, kind="stable")[:5]
+            return {"selected_id": int(np.argmax(logits)),
+                    "expected_minus_w4_logit": float(logits[expected] - logits[observed]),
+                    "expected_logit": float(logits[expected]), "w4_logit": float(logits[observed]),
+                    "expected_rank": int(np.count_nonzero(logits > logits[expected])) + 1,
+                    "top5": [{"id": int(token), "text": tokenizer.decode([int(token)]),
+                              "logit": float(logits[token])} for token in order]}
+
+        for baseline in manifest["translations"][:3]:
+            candidate = next(record for record in manifest["translations"]
+                             if record["variant"] == "w4a16" and record["text"] == baseline["text"])
+            if candidate["prompt_ids"] != baseline["prompt_ids"]:
+                raise ValueError("variant prompts differ")
+            first = next(index for index, pair in enumerate(zip(baseline["generated_ids"], candidate["generated_ids"]))
+                         if pair[0] != pair[1])
+            expected, observed = baseline["generated_ids"][first], candidate["generated_ids"][first]
+            prompt = baseline["prompt_ids"]
+            case = {"text": baseline["text"], "source": baseline["source"], "target": baseline["target"],
+                    "decision": first + 1, "common_prefix": baseline["generated_ids"][:first],
+                    "expected_id": expected, "w4_id": observed, "variants": {}}
+            variants = (f"w4-{candidate_label}",) if candidate_ablation else ("w4-w8-embedding", "w8-w4-embedding") if embedding_ablation else (
+                "bf16", "w8a16", "w4a16", "w4-wide-residual")
+            for variant in variants:
+                weight_variant = "w4a16" if variant.startswith("w4-") else "w8a16" if variant.startswith("w8-") else variant
+                weights = candidate_weights if candidate_ablation else reference.Weights(EXPORTER, model_dir, artifact_dir,
+                                            weight_variant)
+                embedding_weights = None
+                if embedding_ablation:
+                    embedding_weights = reference.Weights(EXPORTER, model_dir, artifact_dir,
+                        "w8a16" if weight_variant == "w4a16" else "w4a16")
+                    weights.embedding = embedding_weights.embedding
+                captured = {}
+                original_linear = weights.linear
+
+                def capture_linear(values, name, rows):
+                    if name == "embed_tokens.weight":
+                        captured["final_hidden"] = values.copy()
+                    return original_linear(values, name, rows)
+
+                weights.linear = capture_linear
+                try:
+                    engine = WideResidual(weights) if variant == "w4-wide-residual" else reference.Reference(
+                        weights, residual_scale=1 if variant == "bf16" else 32)
+                    logits = engine.forward(prompt, np.arange(len(prompt)))
+                    for index, token in enumerate(case["common_prefix"]):
+                        logits = engine.forward([token], [len(prompt) + index])
+                    result = describe(logits, expected, observed)
+                    if variant in ("bf16", "w8a16", "w4a16") and result["selected_id"] != (observed if variant == "w4a16" else expected):
+                        raise ValueError("diagnostic did not reproduce saved first divergence")
+                    case["variants"][variant] = result
+                    if variant == "w4a16":
+                        head = reference.Weights(EXPORTER, model_dir, artifact_dir, "w8a16")
+                        try:
+                            head_logits = head.linear(captured["final_hidden"], "embed_tokens.weight", 262208)[0]
+                            case["variants"]["w4-hidden-w8-head"] = describe(head_logits, expected, observed)
+                        finally:
+                            head.close()
+                    print(json.dumps({"case": case["text"], "variant": variant, "result": result}), flush=True)
+                finally:
+                    weights.linear = original_linear
+                    if not candidate_ablation:
+                        weights.close()
+                    if embedding_weights is not None:
+                        embedding_weights.close()
+            report["cases"].append(case)
+            report_path.write_bytes(EXPORTER.canonical_json(report))
+        report["complete"] = True
+        report_path.write_bytes(EXPORTER.canonical_json(report))
+        if candidate_weights is not None:
+            try:
+                if candidate_generation:
+                    generation_report = {
+                        "variant": f"W4 {candidate_label} input embeddings, transformer and output head, FP16 activations",
+                        "deployment_changed": False, "complete": False,
+                        "group_size": group_size or "input-dimension",
+                        "deployment_layout_compatible": not bool(group_size),
+                        "source_manifest_sha256": EXPORTER.sha256_file(manifest_path),
+                        "weight_manifest_sha256": EXPORTER.sha256_file(artifact_dir / "manifest.json"),
+                        "global_rope_factor": 8, "residual_divisor": 32,
+                        "translations": []}
+                    destination = root / "models" / f"translategemma-{candidate_label}-generation-audit.json"
+                    destination.write_bytes(EXPORTER.canonical_json(generation_report))
+                    engine = reference.Reference(candidate_weights, residual_scale=32)
+                    for baseline in manifest["translations"][:3]:
+                        generated = engine.generate(baseline["prompt_ids"], 64)
+                        record = {"source": baseline["source"], "target": baseline["target"],
+                                  "text": baseline["text"], "prompt_ids": baseline["prompt_ids"],
+                                  "generated_ids": generated,
+                                  "translation": tokenizer.decode(generated, skip_special_tokens=True),
+                                  "status": reference.generation_status("w4a16", generated),
+                                  "matches_bf16": generated == baseline["generated_ids"]}
+                        generation_report["translations"].append(record)
+                        destination.write_bytes(EXPORTER.canonical_json(generation_report))
+                        print(json.dumps(record), flush=True)
+                    generation_report["complete"] = True
+                    destination.write_bytes(EXPORTER.canonical_json(generation_report))
+            finally:
+                candidate_weights.close()
+        if candidate_ablation or embedding_ablation:
+            print("Completed quantization diagnostic; this is not translation-quality acceptance", flush=True)
+        else:
+            print("PASS saved first-divergence reproduction; precision ablations recorded", flush=True)
+        return
     source, target, text = reference.CORPUS[1]
     prompt = tokenizer.apply_chat_template([{"role": "user", "content": [{"type": "text",
         "source_lang_code": source, "target_lang_code": target, "text": text}]}],
@@ -349,6 +567,45 @@ def residual_rounding_audit():
     report["same_first_two_ids"] = report["variants"]["scaled_fp16"]["first_two_ids"] == report["variants"]["wide_fp32"]["first_two_ids"]
     (root / "models/translategemma-residual-rounding-audit.json").write_bytes(EXPORTER.canonical_json(report))
     print("Completed diagnostic residual-rounding comparison; no deployment FP32 fallback added", flush=True)
+
+
+def head_generation_audit():
+    from transformers import AutoTokenizer
+
+    spec = importlib.util.spec_from_file_location("translategemma_reference", TOOLS / "translategemma-reference.py")
+    reference = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(reference)
+    root = TOOLS.parent
+    model_dir = root / "data/translategemma-4b"
+    artifact_dir = root / "models/translategemma-4b-stage3"
+    tokenizer = AutoTokenizer.from_pretrained(model_dir, local_files_only=True)
+    manifest = json.loads((root / "models/translategemma-4b-stage5-v2/manifest.json").read_text(encoding="utf-8"))
+    weights = reference.Weights(EXPORTER, model_dir, artifact_dir, "w4a16")
+    head = reference.Weights(EXPORTER, model_dir, artifact_dir, "w8a16")
+    original_linear = weights.linear
+
+    def mixed_linear(values, name, rows):
+        if name == "embed_tokens.weight":
+            return head.linear(values, name, rows)
+        return original_linear(values, name, rows)
+
+    weights.linear = mixed_linear
+    report = {"variant": "W4 input embeddings and transformer, W8 output head, FP16 activations",
+              "deployment_changed": False, "translations": []}
+    try:
+        engine = reference.Reference(weights, residual_scale=32)
+        for baseline in manifest["translations"][:3]:
+            generated = engine.generate(baseline["prompt_ids"], 64)
+            record = {"source": baseline["source"], "target": baseline["target"], "text": baseline["text"],
+                      "generated_ids": generated, "translation": tokenizer.decode(generated, skip_special_tokens=True),
+                      "status": reference.generation_status("w4a16", generated),
+                      "matches_bf16": generated == baseline["generated_ids"]}
+            report["translations"].append(record)
+            (root / "models/translategemma-w8-head-generation-audit.json").write_bytes(EXPORTER.canonical_json(report))
+            print(json.dumps(record), flush=True)
+    finally:
+        weights.close(); head.close()
+    print("Completed W8-head generation experiment; inspect quality before deployment", flush=True)
 
 
 def residual_audit():
@@ -503,6 +760,18 @@ if __name__ == "__main__":
         residual_audit()
     elif sys.argv[1:] == ["--residual-rounding-audit"]:
         residual_rounding_audit()
+    elif sys.argv[1:] == ["--divergence-audit"]:
+        residual_rounding_audit(divergence=True)
+    elif sys.argv[1:] == ["--embedding-divergence-audit"]:
+        residual_rounding_audit(divergence=True, embedding_ablation=True)
+    elif sys.argv[1:] == ["--mse-divergence-audit"]:
+        residual_rounding_audit(divergence=True, mse_ablation=True)
+    elif sys.argv[1:] == ["--mse-generation-audit"]:
+        residual_rounding_audit(divergence=True, mse_ablation=True, candidate_generation=True)
+    elif sys.argv[1:] == ["--group32-generation-audit"]:
+        residual_rounding_audit(divergence=True, group_size=32, candidate_generation=True)
+    elif sys.argv[1:] == ["--head-generation-audit"]:
+        head_generation_audit()
     elif sys.argv[1:] == ["--residual-bound-audit"]:
         residual_bound_audit()
     else:

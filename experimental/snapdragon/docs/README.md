@@ -157,26 +157,30 @@ tolerances, timing results, fixture limits, and remaining full-model obligations
 
 ### Prompt Processor Bring-up
 
-The Stage 7 gate passes for the 512 context bucket. The 128-token, 34-layer W4
+Stage 7 is complete for all three context buckets (512, 1024, 2048). The 128-token, 34-layer W4
 graph shares one runtime position input across layers and uses FP32 index
 inputs with an internal Cast to avoid HTP integer-input lookup errors.
 Fresh-process restore passes all-layer KV/logit tolerances, padding, guards,
-deterministic replay, and the throughput gate at 352 input tokens/s. Existing
-Stage 6 gates also pass. The 1024/2048 buckets and malformed-envelope tests
-remain unvalidated; Stage 5 W4 translation quality remains independently blocked.
+deterministic replay, and the throughput gate at 488/449/353 input tokens/s,
+respectively, using the 253/256-token fixtures. Exact IO-schema validation,
+75 envelope-corruption cases, and nine truncated-file cases pass. Existing
+Stage 6 gates also pass. Stage 5 W4 translation quality remains independently blocked.
 See the [Stage 7 status](plan-translategemma.md#stage-7-prompt-processor) for the
 isolation results and version 4 context contract.
 
 ```powershell
 $env:OPENBLAS_NUM_THREADS = '4'
 .\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --prompt-reference --replace
-.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket 512
-.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket 512
+foreach ($bucket in 512, 1024, 2048) {
+	.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket $bucket
+	.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket $bucket
+}
 ```
 
-The two hardware commands currently fail intentionally at the unpassed execution
-gate. Restore-only requires the context written by the build command. The
-context, bindings, and log remain separate under `build/gemma-block/`.
+Restore-only requires the context written by the build command. Both commands
+run the position and envelope-corruption regressions, then validate the full
+prompt and reject truncated context files. The context, bindings, and logs
+remain separate under `build/gemma-block/`.
 
 ### Independent Numerical Checks
 

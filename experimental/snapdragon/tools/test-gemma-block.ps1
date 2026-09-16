@@ -68,6 +68,9 @@ foreach ($bit in $Bits) {
 		}
 		$ErrorActionPreference = 'Continue'
 		if ($PromptBucket) {
+			& $binaryPath $bindingPath envelope-regression 2>&1 | ForEach-Object { $_.ToString() } |
+				Tee-Object -FilePath (Join-Path $outputDir 'envelope-regression.log')
+			if ($LASTEXITCODE -ne 0) { throw 'Prompt envelope regression failed' }
 			& $binaryPath $bindingPath position-regression 2>&1 | ForEach-Object { $_.ToString() } |
 				Tee-Object -FilePath (Join-Path $outputDir 'position-regression.log')
 			$regressionCode = $LASTEXITCODE
@@ -77,6 +80,35 @@ foreach ($bit in $Bits) {
 		$exitCode = $LASTEXITCODE
 		$ErrorActionPreference = 'Stop'
 		if ($exitCode -ne 0) { throw ('Block gate failed: {0} layer {1}, exit {2}' -f $variant, $layer, $exitCode) }
+		if ($PromptBucket) {
+			$invalidBinding = Join-Path $outputDir ('invalid-context-' + [Guid]::NewGuid().ToString('N') + '.gmb')
+			$invalidContext = $invalidBinding + '.context'
+			try {
+				Copy-Item -LiteralPath $bindingPath -Destination $invalidBinding
+				$source = [IO.File]::OpenRead($bindingPath + '.context')
+				try {
+					$reader = New-Object IO.BinaryReader($source)
+					$sample = $reader.ReadBytes(65536)
+				} finally { $source.Dispose() }
+				foreach ($fileBytes in 0, 16, 65536) {
+					$target = [IO.File]::Create($invalidContext)
+					try { $target.Write($sample, 0, $fileBytes) } finally { $target.Dispose() }
+					$ErrorActionPreference = 'Continue'
+					$rejection = & $binaryPath $invalidBinding ('restore-{0}' -f $PromptBucket) 2>&1
+					$rejectionCode = $LASTEXITCODE
+					$ErrorActionPreference = 'Stop'
+					$rejectionText = $rejection | Out-String
+					$rejectionText | Set-Content -LiteralPath (Join-Path $outputDir ('reject-{0}-{1}.log' -f $PromptBucket, $fileBytes))
+					if ($rejectionCode -ne 1 -or $rejectionText -notmatch 'cleanup errors: 0' -or
+						$rejectionText -match 'prompt restore:|PASS prompt restore') {
+						throw ('Context file rejection failed: bucket {0}, length {1}' -f $PromptBucket, $fileBytes)
+					}
+					Write-Output ('PASS context file rejection: bucket {0}, length {1}' -f $PromptBucket, $fileBytes)
+				}
+			} finally {
+				Remove-Item -LiteralPath $invalidBinding, $invalidContext -Force -ErrorAction SilentlyContinue
+			}
+		}
 		if ($TestCleanup -and $bit -eq $Bits[0] -and $layer -eq $Layers[0]) {
 			foreach ($point in 'context', 'graph', 'finalized', 'registered', 'executed') {
 				$ErrorActionPreference = 'Continue'
