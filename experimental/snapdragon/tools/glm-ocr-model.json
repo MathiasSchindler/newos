@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "repository": "zai-org/GLM-OCR",
+  "revision": "2e85a62840ccac27daa451df36c736c4636b8628",
+  "license": "MIT",
+  "license_source": "README.md",
+  "files": [
+    { "name": "README.md", "size": 6795, "git_blob_sha1": "07c0fadf3f4469cb2505786481ff13fd53899fff" },
+    { "name": "chat_template.jinja", "size": 4606, "git_blob_sha1": "8f3b7224cc22edcb813a59ca438efc92f15749a9" },
+    { "name": "config.json", "size": 1737, "git_blob_sha1": "bdc21c05f82f7a5f3a4bd4caa74f4bf81365fdd7" },
+    { "name": "generation_config.json", "size": 165, "git_blob_sha1": "0de866e8cc29b4479b56bf68300da9353bc63a71" },
+    { "name": "model.safetensors", "size": 2650579464, "sha256": "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815" },
+    { "name": "preprocessor_config.json", "size": 367, "git_blob_sha1": "308553695af766b3e3d05e68279d2c690e73273e" },
+    { "name": "processor_config.json", "size": 1334, "git_blob_sha1": "58b03daf067d4e47aa5cd433029c303e032a92c2" },
+    { "name": "tokenizer.json", "size": 6838609, "git_blob_sha1": "9f4a549a14a96217569648aa7627c6674ad94fe9" },
+    { "name": "tokenizer_config.json", "size": 1138, "git_blob_sha1": "04b9992511183247d5115f176a5b9f0360a36a1c" }
+  ]
+}

@@ -6,6 +6,8 @@ EXPORTS
     ReleaseSemaphore
     WaitForSingleObject
     CreateFileA
+    CreateFileW
+    GetFileSizeEx
     ExitProcess
     FreeLibrary
     GetCommandLineA

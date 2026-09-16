@@ -5,6 +5,31 @@ This directory documents freestanding Windows ARM64 experiments for the Snapdrag
 For Medium execution events, CPU accounting, latency distributions, and timeline
 capture, see [diagnostics.md](diagnostics.md).
 
+## GLM-OCR development
+
+GLM-OCR is the third independent freestanding C/QNN experiment, alongside Whisper
+and TranslateGemma. The pinned original checkpoint is staged under
+`models/glm-ocr/`; the native ARM64 artifact verifier is built under `build/ocr/`.
+It uses no CRT and imports Kernel32 only. Run the offline regression and full
+model verification from the repository root:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -Test -Verify
+```
+
+Use `-Download` for initial resumable acquisition. Stage 1 verifies original
+files and tensor geometry. Stage 2 adds a native Byte-Level-BPE tokenizer,
+decoding and single-image task prompts, verified against 180,712 reference cases:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestTokenizer -Test
+```
+
+This consumes offline-generated `models/glm-ocr-tokenizer-v2/` artifacts without
+Python in the native build/test path. It does not yet perform OCR or execute on the NPU.
+See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
+licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
+
 ## TranslateGemma development
 
 TranslateGemma currently has pinned W4/W8 weight artifacts and a freestanding C

@@ -2,6 +2,65 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "GLM-OCR native tokenizer tests",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestTokenizer", "-Test"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR tokenizer export",
+			"type": "process",
+			"command": "experimental/snapdragon/build/calibration-venv/Scripts/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-tokenizer"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR tokenizer wrapper parity",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--wrapper-check"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR tokenizer inspection",
+			"type": "process",
+			"command": "experimental/snapdragon/build/calibration-venv/Scripts/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--inspect"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR tests",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-Test"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR download and verify",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-Download", "-Verify"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR build",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR offline verification",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+				"& { $ErrorActionPreference = 'Stop'; & ./experimental/snapdragon/tools/build-ocr.ps1 -Test -Verify; if ($LASTEXITCODE -ne 0) { throw 'OCR verification failed' }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; git status --short; Get-Item experimental/snapdragon/build/ocr/ocr-model.exe | Select-Object Name,Length | Format-Table; Write-Output 'PASS OCR offline verification' }"
+			],
+			"problemMatcher": []
+		},
+		{
 			"label": "Gemma W4 Divergence Audit Temporary",
 			"type": "shell",
 			"command": "& { $env:OPENBLAS_NUM_THREADS = '4'; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --divergence-audit; if ($LASTEXITCODE -ne 0) { throw 'Divergence audit failed' } }",
