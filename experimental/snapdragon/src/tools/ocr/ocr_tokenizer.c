@@ -19,7 +19,7 @@ int ocr_artifact(const unsigned char *data, unsigned int size, unsigned int kind
         "9f4a549a14a96217569648aa7627c6674ad94fe9" "04b9992511183247d5115f176a5b9f0360a36a1c";
     static const char image_identity[] = "2e85a62840ccac27daa451df36c736c4636b8628"
         "308553695af766b3e3d05e68279d2c690e73273e" "bdc21c05f82f7a5f3a4bd4caa74f4bf81365fdd7";
-    const char *source_identity = kind == 3 || kind == 4 ? image_identity : identity;
+    const char *source_identity = kind >= 3 && kind <= 5 ? image_identity : identity;
     static const char hex[] = "0123456789abcdef";
     unsigned char hash[32];
     CryptoSha256Context context;

@@ -2,6 +2,13 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "GLM-OCR HTP probes",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp"],
+			"problemMatcher": []
+		},
+		{
 			"label": "GLM-OCR image oracle export",
 			"type": "process",
 			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",

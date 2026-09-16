@@ -34,6 +34,7 @@ EXPORTS
     IsProcessorFeaturePresent
     K32GetProcessMemoryInfo
     LoadLibraryA
+    LoadLibraryExW
     VirtualAlloc
     VirtualFree
     WriteFile

@@ -1,4 +1,7 @@
 #include "crypto/sha256.h"
+#ifdef OCR_HTP_TEST
+int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures);
+#endif
 #ifdef OCR_IMAGE_TEST
 #include "ocr_image.h"
 #endif
@@ -170,6 +173,10 @@ void mainCRTStartup(void) {
     int result;
     if (count == 2U && word(arguments[1], "--self-test")) {
         result = self_test();
+#ifdef OCR_HTP_TEST
+    } else if (count == 4U && word(arguments[1], "--test-htp")) {
+        result = ocr_htp_test(arguments[2], arguments[3]);
+#endif
 #ifdef OCR_IMAGE_TEST
     } else if (count == 4U && word(arguments[1], "--test-images")) {
         result = ocr_image_test(arguments[2], arguments[3]);

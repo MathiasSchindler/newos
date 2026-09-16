@@ -35,7 +35,17 @@ positions, verified against the real Transformers/PyTorch image processor:
 ```
 
 This uses `models/glm-ocr-images-v2/` and builds a separate no-CRT image test binary.
-Image-file decoding and neural-network/NPU execution are still pending.
+Stage 4a adds isolated HTP primitive probes with numerical reference comparisons
+and accelerator profiling evidence:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestHtp -Test
+```
+
+This consumes offline-generated `models/glm-ocr-htp-v1/` fixtures and the existing
+QNN runtime, producing a separate no-CRT HTP test binary. Thirteen graph cases
+pass; these synthetic results do not validate checkpoint precision or OCR quality.
+Image-file decoding and full learned-model execution are still pending.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 

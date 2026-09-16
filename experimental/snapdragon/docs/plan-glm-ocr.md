@@ -329,8 +329,85 @@ the entire large page. Production image code has only bounded stack scratch and
 caller-owned buffers. It directly writes normalized model-order patches, but
 resize remains a scalar correctness baseline with no measured latency claim.
 No external image library enters the native path. PNG/JPEG decoding, EXIF handling,
-PDF rasterization, scanned-page quality, neural-network tensor taps and HTP graphs
-remain subsequent work. Learned computation has not silently moved to the CPU.
+PDF rasterization, scanned-page quality and learned-network tensor taps remain
+subsequent work. The isolated HTP graphs below do not run the learned model.
+
+## Stage 4a: isolated HTP primitives (complete)
+
+`src/tools/ocr/ocr_htp.c` builds independent FP16 QNN graphs using the shared ABI,
+without Gemma-private code or CPU neural fallback. The installed provider is
+`HTP_QTI_AISW`, backend ID 6, core ABI 2.39, QAIRT 2.50.0.260828. Native code
+loads the explicitly selected HTP DLL with restricted DLL search flags.
+The executable remains ARM64, Kernel32-only static imports, no CRT or
+exception/CLR tables; QNN and its platform runtime are loaded dynamically.
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-htp
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestHtp -Test
+```
+
+Export is offline development only, using the Stage 3 package versions and pinned
+PyTorch commit. Normal native builds consume `models/glm-ocr-htp-v1/htp-fixtures.got`
+without Python. `-HtpDir` and `-QnnDir` select fixture/runtime directories; defaults
+reuse the existing runtime under `build/`. The VS Code process task is
+`GLM-OCR HTP probes`. Outputs are separate `build/ocr/ocr-htp-test.exe`,
+`htp-probe.log` and `htp-probe.json`. The report records executable, fixture and
+four runtime-file hashes, exit status and timestamp; the log records numerical
+errors and accelerator events. Runtime files and original weights are not changed.
+
+The bounded 128-byte hashed fixture envelope binds the source revision and
+preprocessor/config identities. Eleven synthetic cases occupy 15,280,632 bytes,
+SHA-256 `15ae6d74611f3dbc439a066bdbf9d1acd1222f6643467a4884d547bdd5f472e3`.
+Reexport is byte-identical. Reference results are FP32 operations on explicitly
+FP16-rounded inputs/constants, NOT on the checkpoint's BF16 tensors.
+
+### Hardware results
+
+All 13 graphs pass three executions each on Snapdragon X Elite. Every execution
+requires a positive HTP accelerator cycle/time event (SDK IDs 3003/3004), separate
+from host RPC timing. Context/profile/device/backend cleanup returns success.
+These profiled smoke runs are not latency benchmarks or proof of HMX utilization.
+Nonfatal `DSP_INFO UNSUPPORTED_KEY: 49/50/51` diagnostics remain in the log.
+
+| Graph case | Shape or width | Maximum absolute error, rounded up |
+| --- | --- | ---: |
+| Two residual additions | 1024, 1536 | 0 |
+| Patch projection MatMul | `[4,1176] @ [1176,1024]` | 0 |
+| Vision QKV MatMul | `[4,1024] @ [1024,3072]` | 0 |
+| Text query MatMul | `[1,1536] @ [1536,2048]` | 0 |
+| RMSNorm | 64 | 0.000487 |
+| RMSNorm | 128 | 0.000472 |
+| RMSNorm | 1024 | 0.000515 |
+| RMSNorm | 1536 | 0.000817 |
+| Connector LayerNorm | 1536 | 0.000906 |
+| SiLU composition | 4608 | 0.004699 |
+| GELU | 1536 | 0.007813 |
+| Softmax | 16 rows, width 64 | 0.001881 |
+
+Additions use three distinct inputs and require exact output. The eleven oracle
+cases repeat their input three times, reset output to NaN before each execution,
+and require every output finite with `abs(error) <= 0.003 + 0.005 * abs(reference)`.
+Norm cases include constant, very small and large rows with epsilon `1e-5`.
+The projections use structured dyadic synthetic weights without bias: their zero
+error is NOT evidence that learned projections will be exact.
+
+The first `Sigmoid(x) * x` SiLU graph failed this unchanged numerical gate. Its
+replacement `x / (1 + exp(-x))` passes, using HTP Neg, Exp, Add and Divide.
+No tolerance was relaxed. Activation fixtures span only `[-8,8]`; this expression
+can overflow its FP16 exponential outside that range and is not yet a general
+deployment choice. GELU is compared against the exact FP32 reference, not declared
+mathematically exact on HTP. Learned activation ranges and accumulated error need
+the next numerical oracle before selecting production precision/compositions.
+
+Four negative tests check both exit code and diagnostic: missing fixture, missing
+DLL with a valid fixture, corrupted fixture and truncated header. SHA known-answer
+tests and the existing 46 verifier regressions also pass. Fixture corruption is
+rejected before loading QNN. This is corruption detection, not a signature scheme.
+
+Remaining Stage 4 work: audit original BF16 ranges and candidate FP16 errors;
+compare learned tensor taps; probe full attention, RoPE, merger and KV updates.
+No checkpoint casting, quantization or full-model execution is authorized by these
+primitive results alone.
 
 ## Next stages
 
@@ -340,7 +417,7 @@ remain subsequent work. Learned computation has not silently moved to the CPU.
    and real scan fixtures remain separate integration work. Extend the numerical
    oracle to learned-layer taps before claiming a correct model forward pass.
    PDF rasterization is a separate feature, not an implicit external dependency.
-3. **HTP capability and precision probes.** Isolated QNN graphs for patch projection,
+3. **HTP capability and precision probes: initial primitives completed above.** Continue with
    vision attention/axial RoPE, merger, text attention/mRoPE, norms, SiLU and KV
    updates. Test real dimensions, finite outputs and cleanup on the installed SDK.
    Source is BF16; FP16 deployment needs a numerical range/error audit. No blind
@@ -361,7 +438,7 @@ remain subsequent work. Learned computation has not silently moved to the CPU.
    batches, buckets, graph fusion and caching using those measurements.
 
 Current status: source acquisition, verification, bounded native tokenizer/prompt
-runtime, RGB resize/normalization/patch packing and single-image positions.
-No image-to-text inference, NPU graph, FP16 accuracy, PDF support or OCR
-quality acceptance is claimed. No previous Whisper or TranslateGemma campaign
-is restarted.
+runtime, RGB resize/normalization/patch packing, single-image positions and isolated
+FP16 HTP primitive validation. No image-to-text inference, original-weight FP16
+accuracy, PDF support or OCR quality acceptance is claimed. No previous Whisper
+or TranslateGemma campaign is restarted.

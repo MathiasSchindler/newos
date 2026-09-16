@@ -31,6 +31,64 @@ def image_reference():
     return torch, Glm46VImageProcessor, smart_resize, versions
 
 
+def export_htp(model, output):
+    catalog = verified_sources(model)
+    torch, _, _, versions = image_reference()
+    if torch.version.git_version != "08187d9e0fba026dc8217405802ab5381dc88d90":
+        raise ValueError("PyTorch source commit drift")
+    records, descriptions = [], []
+
+    def add(operation, name, inputs, weights, expected, output_width):
+        source = inputs.half().contiguous().numpy().astype("<f2").tobytes()
+        constants = weights.half().contiguous().numpy().astype("<f2").tobytes()
+        reference = expected.float().contiguous().numpy().astype("<f4").tobytes()
+        rows, width = inputs.shape
+        records.append(struct.pack("<7I",operation,rows,width,output_width,len(source),len(constants),len(reference)) + source + constants + reference)
+        descriptions.append({"name":name,"operation":operation,"rows":rows,"width":width,"output_width":output_width})
+
+    for rows,width,output_width,name in [(4,1176,1024,"patch_projection"),(4,1024,3072,"vision_qkv"),(1,1536,2048,"text_query")]:
+        inputs = (((torch.arange(rows*width).reshape(rows,width)*7)%29)-14).float()/32
+        weights = (((torch.arange(width*output_width).reshape(width,output_width)*11)%23)-11).float()/256
+        add(1,name,inputs,weights,inputs.half().float() @ weights.half().float(),output_width)
+    for width in (64,128,1024,1536):
+        inputs = (((torch.arange(4*width).reshape(4,width)*7)%29)-14).float()/8
+        inputs[0] = 0
+        inputs[1] *= 0.001
+        inputs[3] *= 64
+        inputs = inputs.half().float()
+        gamma = (torch.arange(width)%7).float()/8 + 0.5
+        expected = inputs*torch.rsqrt(inputs.square().mean(-1,keepdim=True)+1e-5)*gamma
+        add(2,"rmsnorm_"+str(width),inputs,gamma,expected,width)
+    width = 1536
+    inputs = (((torch.arange(4*width).reshape(4,width)*7)%29)-14).float()/8
+    inputs[0] = 1
+    inputs[1] *= 0.001
+    inputs[3] *= 64
+    inputs = inputs.half().float()
+    gamma = (torch.arange(width)%7).float()/8 + 0.5
+    beta = (torch.arange(width)%5).float()/16 - 0.125
+    add(3,"connector_layernorm",inputs,torch.cat((gamma,beta)),torch.nn.functional.layer_norm(inputs,(width,),gamma,beta,1e-5),width)
+    for operation,name,width in [(4,"gated_mlp_silu",4608),(5,"connector_gelu",1536),(6,"attention_softmax",64)]:
+        rows = 16 if operation == 6 else 2
+        inputs = (((torch.arange(rows*width).reshape(rows,width)*13)%257)-128).float()/16
+        expected = torch.nn.functional.silu(inputs) if operation == 4 else torch.nn.functional.gelu(inputs,approximate="none") if operation == 5 else torch.softmax(inputs,dim=-1)
+        add(operation,name,inputs,torch.empty(0),expected,width)
+    data = envelope(struct.pack("<I",len(records))+b"".join(records),5,catalog)
+    output.mkdir(parents=True,exist_ok=True)
+    target = output/"htp-fixtures.got"
+    if target.exists() and target.read_bytes() != data:
+        raise ValueError("Existing HTP fixtures differ; choose a new output directory")
+    if not target.exists():
+        temporary = target.with_suffix(".partial")
+        temporary.write_bytes(data)
+        os.replace(temporary,target)
+    report = {"source_revision":catalog["revision"],"versions":versions,"torch_git_commit":torch.version.git_version,
+              "size":len(data),"sha256":sha(data),"cases":descriptions,"reference":"FP32 operation on FP16-rounded synthetic inputs and weights",
+              "original_weight_precision_validated":False,"full_model_inference":False}
+    (output/"manifest.json").write_text(json.dumps(report,indent=2)+"\n",encoding="utf-8")
+    print("PASS HTP oracle export:",len(records),"cases",len(data),"bytes",sha(data))
+
+
 def export_positions(model, output):
     import inspect as source_inspect
     from types import SimpleNamespace, MethodType
@@ -184,8 +242,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4) else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4) else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5) else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5) else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -489,6 +547,8 @@ def main():
     parser.add_argument("--inspect-images", action="store_true")
     parser.add_argument("--export-images", action="store_true")
     parser.add_argument("--export-positions", action="store_true")
+    parser.add_argument("--export-htp", action="store_true")
+    parser.add_argument("--htp-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-htp-v1")
     parser.add_argument("--image-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-images-v2")
     parser.add_argument("--output", type=Path, default=OUTPUT)
     args = parser.parse_args()
@@ -503,6 +563,8 @@ def main():
         from transformers.image_processing_backends import TorchvisionBackend
         print(source_inspect.getsource(TorchvisionBackend.resize))
         print(source_inspect.getsource(TorchvisionBackend.rescale_and_normalize))
+    elif args.export_htp:
+        export_htp(args.model_dir,args.htp_output)
     elif args.export_positions:
         export_positions(args.model_dir,args.image_output)
     elif args.export_images:
@@ -514,7 +576,7 @@ def main():
     elif args.wrapper_check:
         wrapper_check(args.model_dir, args.output)
     else:
-        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images or --export-positions")
+        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images, --export-positions or --export-htp")
 
 
 if __name__ == "__main__":

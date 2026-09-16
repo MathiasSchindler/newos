@@ -4,11 +4,14 @@ param(
     [string]$ModelDir = 'experimental/snapdragon/models/glm-ocr',
     [string]$TokenizerDir = 'experimental/snapdragon/models/glm-ocr-tokenizer-v2',
     [string]$ImageDir = 'experimental/snapdragon/models/glm-ocr-images-v2',
+    [string]$QnnDir = 'experimental/snapdragon/build',
+    [string]$HtpDir = 'experimental/snapdragon/models/glm-ocr-htp-v1',
     [switch]$Download,
     [switch]$Verify,
     [switch]$Test,
     [switch]$TestTokenizer,
-    [switch]$TestImages
+    [switch]$TestImages,
+    [switch]$TestHtp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -105,7 +108,7 @@ function Get-TensorInventory([string]$Path) {
     } finally { $stream.Dispose() }
 }
 
-function Assert-Native([string[]]$Arguments, [int]$Expected = 0) {
+function Assert-Native([string[]]$Arguments, [int]$Expected = 0, [string]$ExpectedMessage = '') {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -113,6 +116,9 @@ function Assert-Native([string[]]$Arguments, [int]$Expected = 0) {
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previous }
     if ($code -ne $Expected) { throw ('Native OCR exit {0}, expected {1}: {2}' -f $code,$Expected,($messages -join ' ')) }
+    if ($ExpectedMessage -and ($messages -join "`n").IndexOf($ExpectedMessage, [StringComparison]::Ordinal) -lt 0) {
+        throw ('Native OCR missing expected diagnostic: {0}' -f $ExpectedMessage)
+    }
 }
 
 function Test-Ocr {
@@ -289,6 +295,12 @@ try {
         $flags += @('-DOCR_IMAGE_TEST', '-fno-math-errno', '-ffp-contract=off')
         $sources += 'experimental/snapdragon/src/tools/ocr/ocr_image.c'
     }
+    if ($TestHtp) {
+        $binary = Join-Path $BuildDir 'ocr-htp-test.exe'
+        $flags += @('-DOCR_HTP_TEST', '-ffp-contract=off', '-fno-math-errno')
+        $sources += 'experimental/snapdragon/src/tools/ocr/ocr_htp.c'
+        if (-not ($TestTokenizer -or $TestImages)) { $sources += 'experimental/snapdragon/src/tools/ocr/ocr_tokenizer.c' }
+    }
     & $compilerPath @flags @sources -o $binary
     if ($LASTEXITCODE -ne 0) { throw 'OCR native build failed' }
     $audit = & $readObj --file-headers --coff-imports $binary | Out-String
@@ -312,6 +324,54 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'OCR native image tests failed' }
     }
     if ($Download -or $Verify) { Stage-Model }
+    if ($TestHtp) {
+        $runtime = (Resolve-Path $QnnDir).Path
+        $binaryPath = (Resolve-Path $binary).Path
+        $fixturePath = (Resolve-Path "$HtpDir/htp-fixtures.got").Path
+        $negativeDir = Join-Path $repoRoot ('tests/tmp/ocr-htp-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $negativeDir | Out-Null
+        try {
+            $missing = Join-Path $negativeDir 'missing.dll'
+            Assert-Native @('--test-htp', $missing, (Join-Path $negativeDir 'missing.got')) 1 'FAIL HTP fixture verification'
+            Assert-Native @('--test-htp', $missing, $fixturePath) 1 'FAIL loading explicit HTP library'
+            $damaged = [IO.File]::ReadAllBytes($fixturePath)
+            $damaged[$damaged.Length - 1] = $damaged[$damaged.Length - 1] -bxor 1
+            $badFixture = Join-Path $negativeDir 'corrupt.got'
+            [IO.File]::WriteAllBytes($badFixture, $damaged)
+            Assert-Native @('--test-htp', $missing, $badFixture) 1 'FAIL HTP fixture verification'
+            [IO.File]::WriteAllBytes($badFixture, (New-Object byte[] 127))
+            Assert-Native @('--test-htp', $missing, $badFixture) 1 'FAIL HTP fixture verification'
+            Write-Output 'PASS HTP negative checks: 4'
+        } finally { Remove-Item -LiteralPath $negativeDir -Recurse -Force }
+        $logPath = Join-Path (Resolve-Path $BuildDir).Path 'htp-probe.log'
+        $reportPath = Join-Path (Resolve-Path $BuildDir).Path 'htp-probe.json'
+        $runtimeFiles = @('QnnHtp.dll','QnnHtpPrepare.dll','QnnHtpV73Stub.dll','libQnnHtpV73Skel.so')
+        $identities = @{}
+        foreach ($name in $runtimeFiles) {
+            $identities[$name] = (Get-FileHash -LiteralPath (Join-Path $runtime $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $oldPath = $env:PATH
+        $oldPreference = $ErrorActionPreference
+        Push-Location $runtime
+        try {
+            $env:PATH = $runtime + ';' + $oldPath
+            $ErrorActionPreference = 'Continue'
+            & $binaryPath --test-htp (Join-Path $runtime 'QnnHtp.dll') $fixturePath 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath $logPath
+            $probeExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $oldPreference
+            $env:PATH = $oldPath
+            Pop-Location
+        }
+        $report = [ordered]@{
+            schema_version = 1; exit_code = $probeExit; runtime_directory = $runtime; runtime_sha256 = $identities
+            executable_sha256 = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            fixtures_sha256 = (Get-FileHash -LiteralPath $fixturePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            full_model_inference = $false; timestamp_utc = [DateTime]::UtcNow.ToString('o')
+        }
+        $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $reportPath -Encoding UTF8
+        if ($probeExit -ne 0) { throw 'OCR HTP probe failed; see htp-probe.log' }
+    }
 } finally {
     Pop-Location
 }
