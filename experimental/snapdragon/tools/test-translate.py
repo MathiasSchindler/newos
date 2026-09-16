@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--bundle", action="store_true", help="Shared-weight candidate parity and latency")
     parser.add_argument("--performance", action="store_true", help="Interleaved scoped QNN performance-vote benchmark")
     parser.add_argument("--selection-cache", action="store_true", help="Selector cache corruption, parity and interleaved timing")
+    parser.add_argument("--load-benchmark", action="store_true", help="Interleaved serial/overlapped bundle loading")
     options = parser.parse_args()
     binary = options.binary.resolve()
     if options.profile:
@@ -74,6 +75,30 @@ def main():
         return record
 
     try:
+        if options.load_benchmark:
+            assets = Path(__file__).resolve().parents[1]
+            common = ["--bundle", "--bindings", str(assets / "build/gemma-block/prompt-512.gmb"),
+                      "--tokenizer", str(assets / "models/translategemma-4b-stage4/tokenizer.gta"),
+                      "--from", "de", "--to", "en"]
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            expected = "Good day, my name is Hase. I know nothing.\n"
+            samples = [[], []]
+            reference_tokens = None
+            for repeat in range(3):
+                for overlap in (0, 1) if repeat % 2 == 0 else (1, 0):
+                    record = run(("overlap-" if overlap else "serial-") + str(repeat + 1),
+                                 [*common, *([] if overlap else ["--serial-load"]), sentence], 0, expected, observe=True)
+                    tokens = re.findall(r"generated token: (\d+)", record["stderr"])
+                    assert tokens
+                    if reference_tokens is None:
+                        reference_tokens = tokens
+                    assert tokens == reference_tokens
+                    elapsed = int(re.search(r"bundle read/hash us: (\d+)", record["stderr"])[1])
+                    record["read_hash_us"] = elapsed
+                    samples[overlap].append(elapsed)
+            print(json.dumps({"serial_median_us": statistics.median(samples[0]),
+                              "overlap_median_us": statistics.median(samples[1])}), flush=True)
+            return
         if options.selection_cache:
             common = ["--bundle", "--from", "de", "--to", "en"]
             sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
@@ -242,8 +267,18 @@ def main():
             print("PASS profile accounting, deterministic tokens, UTF-8 output and cleanup", flush=True)
             sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
             for repeat in range(3):
-                run("profile-auto-" + str(repeat + 1), ["--from", "de", "--to", "en", sentence], 0,
-                    "Good day, my name is Hase. I know nothing.\n")
+                record = run("profile-auto-" + str(repeat + 1), ["--from", "de", "--to", "en", sentence], 0,
+                             "Good day, my name is Hase. I know nothing.\n")
+                phases = {name: dict(us=int(elapsed), calls=int(calls)) for name, elapsed, calls in
+                          re.findall(r"^PROFILE (\w+) us=(\d+) calls=(\d+)$", record["stderr"], re.MULTILINE)}
+                assert len(phases) == 24 and phases["decode_execute"]["calls"] == 12
+                accounted = sum(phases[name]["us"] for name in exclusive)
+                assert 0.98 <= accounted / phases["total"]["us"] <= 1.01, (accounted, phases)
+                if "bundle restore: 0" in record["stderr"]:
+                    assert "bundle context_read includes overlapped SHA-256" in record["stderr"]
+                    assert phases["context_read"]["calls"] == 1
+                record["phases"] = phases
+                record["accounted_us"] = accounted
             run("profile-batch", ["--from", "de", "--to", "en", "--batch"], 0,
                 "Good day, my name is Hase. I know nothing.\n" * 3, ((sentence + "\n") * 3).encode("utf-8"))
             return
@@ -288,7 +323,7 @@ def main():
             assert "QNN_SAMPLE decode" in sampled["stderr"] and "QNN_EVENT Accelerator" in sampled["stderr"], sampled
         print("PASS translator CLI" + (" and NPU integration" if options.hardware else ""), flush=True)
     finally:
-        report = binary.parent / ("translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
+        report = binary.parent / ("translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

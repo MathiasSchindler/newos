@@ -25,6 +25,11 @@ __declspec(dllimport) int FreeLibrary(void *);
 __declspec(dllimport) int QueryPerformanceCounter(long long *);
 __declspec(dllimport) int QueryPerformanceFrequency(long long *);
 __declspec(dllimport) void ExitProcess(u32);
+__declspec(dllimport) void *CreateThread(void *, u64, u32 (*)(void *), void *, u32, u32 *);
+__declspec(dllimport) void *CreateSemaphoreA(void *, i32, i32, const char *);
+__declspec(dllimport) int ReleaseSemaphore(void *, i32, i32 *);
+__declspec(dllimport) u32 WaitForSingleObject(void *, u32);
+static int serial_bundle_read;
 
 #ifdef GEMMA_TRANSLATE_PROFILE
 enum {
@@ -376,7 +381,9 @@ static int fail_at(const char *point) {
     if (!equal(failure_point, point)) return 0;
     text("Injected failure: "); text(point); text("\n"); return 1;
 }
-static void timing(const char *name, u64 start) { status(name, (now() - start) * 1000000U / (u64)frequency); }
+static void timing(const char *name, u64 start) {
+    if (frequency > 0) status(name, (now() - start) * 1000000U / (u64)frequency);
+}
 static void log_callback(const char *format, u32 level, u64 timestamp, va_list args) {
     (void)timestamp;
     if (level <= QNN_LOG_LEVEL_ERROR) {
@@ -1045,6 +1052,72 @@ static int bundle_build(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qnn
     return ok;
 }
 
+typedef struct BundleReader {
+    void *file, *ready;
+    u8 *binary;
+    u64 bytes;
+    int ok;
+} BundleReader;
+
+static u32 bundle_reader(void *argument) {
+    BundleReader *reader = argument;
+    const u64 chunk = 8388608;
+    reader->ok = 1;
+    for (u64 offset = 0; offset < reader->bytes; offset += chunk) {
+        u64 count = reader->bytes - offset < chunk ? reader->bytes - offset : chunk;
+        if (reader->ok && !transfer_file(reader->file, reader->binary + offset, count, 0)) reader->ok = 0;
+        if (!ReleaseSemaphore(reader->ready, 1, 0)) ExitProcess(1);
+    }
+    return 0;
+}
+
+static int bundle_read_hash(void *file, const PromptBundle *header, void *binary, u8 digest[32]) {
+    BundleReader reader = {file, 0, binary, header->graphs[0].binary_size, 0};
+    reader.ready = CreateSemaphoreA(0, 0, 1024, 0);
+    if (!reader.ready) return 0;
+    void *thread = CreateThread(0, 0, bundle_reader, &reader, 0, 0);
+    if (!thread) { CloseHandle(reader.ready); return 0; }
+    CryptoSha256Context hash;
+    crypto_sha256_init(&hash);
+    crypto_sha256_update(&hash, (const u8 *)header, __builtin_offsetof(PromptBundle, digest));
+    int ok = 1;
+    for (u64 offset = 0; offset < reader.bytes; offset += 8388608) {
+        u64 count = reader.bytes - offset < 8388608 ? reader.bytes - offset : 8388608;
+        if (WaitForSingleObject(reader.ready, 0xffffffffU) != 0) { ok = 0; break; }
+        crypto_sha256_update(&hash, (u8 *)binary + offset, count);
+    }
+    if (WaitForSingleObject(thread, 0xffffffffU) != 0) ExitProcess(1);
+    if (!reader.ok) ok = 0;
+    crypto_sha256_final(&hash, digest);
+    if (!CloseHandle(thread)) ok = 0;
+    if (!CloseHandle(reader.ready)) ok = 0;
+    return ok;
+}
+
+static int bundle_reader_regression(void) {
+    PromptBundle header = {0};
+    header.graphs[0].binary_size = 8388608 + 97;
+    u8 *binary = allocate(0, header.graphs[0].binary_size + 1), expected[32], actual[32];
+    if (!binary) return 0;
+    if (bundle_read_hash((void *)(u64)-1, &header, binary, actual)) return 0;
+    char path[1100]; join(path, binding_path, ".reader-test");
+    void *file = CreateFileA(path, 0xc0000000U, 0, 0, 2, 0x04000100U, 0);
+    if (file == (void *)(u64)-1) return 0;
+    for (u64 index = 0; index < header.graphs[0].binary_size; ++index) binary[index] = (u8)(index * 31 + 7);
+    bundle_digest(&header, binary, expected);
+    int ok = transfer_file(file, binary, header.graphs[0].binary_size, 1) && SetFilePointerEx(file, 0, 0, 0);
+    memset(binary, 0, header.graphs[0].binary_size);
+    if (ok) ok = bundle_read_hash(file, &header, binary, actual);
+    for (u32 index = 0; index < 32; ++index) if (actual[index] != expected[index]) ok = 0;
+    if (ok) {
+        header.graphs[0].binary_size++;
+        ok = SetFilePointerEx(file, 0, 0, 0) && !bundle_read_hash(file, &header, binary, actual);
+    }
+    if (!CloseHandle(file)) ok = 0;
+    if (ok) text("PASS overlapped reader multi-chunk digest, invalid handle and short read\n");
+    return ok;
+}
+
 static int bundle_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
                            QnnContextHandle *context) {
     PROFILE_START(context_read_started);
@@ -1057,15 +1130,18 @@ static int bundle_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
         transfer_file(file, header, sizeof(*header), 0) && bundle_valid(header, (u64)file_size);
     u64 bytes = ok ? header->graphs[0].binary_size : 0;
     void *binary = ok ? VirtualAlloc(0, bytes, 0x3000U, 4U) : 0;
-    if (!binary || !transfer_file(file, binary, bytes, 0)) ok = 0;
+    u64 load_started = now();
+    if (!binary || (serial_bundle_read ? !transfer_file(file, binary, bytes, 0) : !bundle_read_hash(file, header, binary, digest))) ok = 0;
     if (!CloseHandle(file)) ok = 0;
     PROFILE_END(PROFILE_CONTEXT_READ, context_read_started);
     if (ok) {
         PROFILE_START(context_hash_started);
-        bundle_digest(header, binary, digest);
+        if (serial_bundle_read) bundle_digest(header, binary, digest);
         for (u32 index = 0; index < 32; ++index) if (digest[index] != header->digest[index]) ok = 0;
         PROFILE_END(PROFILE_CONTEXT_HASH, context_hash_started);
     }
+    if (!serial_bundle_read) text("bundle context_read includes overlapped SHA-256\n");
+    timing("bundle read/hash us", load_started);
     if (ok) {
         PROFILE_START(context_create_started);
         if (api->context_free(*context, 0)) ok = 0;
@@ -1238,7 +1314,7 @@ void mainCRTStartup(void) {
     PROFILE_END(PROFILE_ARGUMENTS, arguments_started);
     PROFILE_START(qnn_init_started);
     if (layer == 34 && equal(failure_point, "envelope-regression")) {
-        result = prompt_envelope_regression() && bundle_regression() ? 0 : 1;
+        result = prompt_envelope_regression() && bundle_regression() && bundle_reader_regression() ? 0 : 1;
         goto cleanup;
     }
 #ifdef GEMMA_TRANSLATE
@@ -1387,12 +1463,15 @@ void mainCRTStartup(void) {
     result = 0;
 cleanup:
     ; PROFILE_START(cleanup_started);
+    u64 cleanup_stage = now();
     if (api) {
         while (memory_count) { --memory_count; code = api->mem_deregister(&memory_handles[memory_count], 1); if (code) ++cleanup_errors; }
+        timing("cleanup deregister us", cleanup_stage); cleanup_stage = now();
     #ifdef GEMMA_TRANSLATE
         if (!translate_release(api, rpc_free)) ++cleanup_errors;
     #endif
         if (context && api->context_free(context, 0)) ++cleanup_errors;
+        timing("cleanup contexts us", cleanup_stage); cleanup_stage = now();
     }
     if (shared && rpc_free) rpc_free(shared);
     if (rpc_module && !FreeLibrary(rpc_module)) ++cleanup_errors;
@@ -1402,7 +1481,9 @@ cleanup:
         if (log && api->log_free(log)) ++cleanup_errors;
     }
     if (module && !FreeLibrary(module)) ++cleanup_errors;
+    timing("cleanup backend us", cleanup_stage); cleanup_stage = now();
     while (allocation_count) if (!VirtualFree(allocations[--allocation_count], 0, 0x8000U)) ++cleanup_errors;
+    timing("cleanup allocations us", cleanup_stage);
     PROFILE_END(PROFILE_CLEANUP, cleanup_started);
     PROFILE_END(PROFILE_TOTAL, total_started);
 #ifdef GEMMA_TRANSLATE_PROFILE

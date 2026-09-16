@@ -2,6 +2,9 @@ LIBRARY KERNEL32.dll
 EXPORTS
     CloseHandle
     CreateThread
+    CreateSemaphoreA
+    ReleaseSemaphore
+    WaitForSingleObject
     CreateFileA
     ExitProcess
     FreeLibrary

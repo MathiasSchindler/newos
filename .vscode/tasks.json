@@ -386,6 +386,34 @@
 			"command": "$processes = Get-CimInstance Win32_Process; $reviews = $processes | Where-Object { $_.Name -eq 'git.exe' -and $_.CommandLine -like '*diff -- experimental/snapdragon/src/tools/gemma/translate.c*' }; foreach ($review in $reviews) { $processes | Where-Object { $_.ParentProcessId -eq $review.ProcessId -and $_.Name -eq 'less.exe' } | ForEach-Object { Stop-Process -Id $_.ProcessId } }; git --no-pager diff --check; if ($LASTEXITCODE -ne 0) { throw 'Diff check failed' }; git --no-pager diff --stat; & ./experimental/snapdragon/build/translate.exe --quiet --from en --to de 'The door is open.'; if ($LASTEXITCODE -ne 0) { throw 'Quiet execution failed' }; Write-Output 'PASS final quiet execution'; Get-CimInstance Win32_Process | Where-Object { $_.Name -in 'test-gemma-block.exe','translate.exe','less.exe' } | Select-Object ProcessId,Name,CommandLine | Format-List",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma clean release benchmark summary",
+			"type": "shell",
+			"command": "$streaming = Get-Content -Raw experimental/snapdragon/build/translate-streaming-results.json | ConvertFrom-Json; foreach ($mode in 'streamed-*','buffered-*') { $runs = @($streaming | Where-Object { $_.name -like $mode }); $wall = @($runs.wall_seconds | Sort-Object); $first = @($runs.first_byte_seconds | Sort-Object); Write-Output ('{0} wall median={1:F4}s first median={2:F4}s' -f $mode,$wall[1],$first[1]) }; $records = Get-Content -Raw experimental/snapdragon/build/translate-bundle-results.json | ConvertFrom-Json; $detail = $records | Where-Object { $_.name -eq 'bundle-detail' }; $decode = ($detail.stderr -split 'QNN_SAMPLE decode')[1]; $events = [regex]::Matches($decode,'QNN_EVENT (.+?) type=(\\d+) unit=(\\d+) value=(\\d+) depth=(\\d+)'); $total = 0; $mlp = 0; $head = 0; foreach ($event in $events) { $name = $event.Groups[1].Value; $value = [long]$event.Groups[4].Value; if ($event.Groups[2].Value -eq '3003') { $total = $value }; if ($event.Groups[2].Value -eq '404') { if ($name -match '\\.(up-projection|gelu|mlp):') { $mlp += $value }; if ($name -match '\\.logits:') { $head += $value } } }; if ($total -le 0 -or $mlp -le 0 -or $head -le 0) { throw 'Incomplete device profile' }; Write-Output ('Decode cycles={0}; MLP={1} ({2:P2}); head={3} ({4:P2})' -f $total,$mlp,($mlp/$total),$head,($head/$total)); Get-Item experimental/snapdragon/build/translate.exe | Select-Object Length,LastWriteTime | Format-List; Get-FileHash experimental/snapdragon/build/translate.exe -Algorithm SHA256 | Format-List; git --no-pager diff --check; if ($LASTEXITCODE -ne 0) { throw 'Diff check failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma overlapped load probe",
+			"type": "shell",
+			"command": "Copy-Item experimental/snapdragon/build/translate.exe experimental/snapdragon/build/translate-before-load.exe -Force; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir experimental/snapdragon/build/load-candidate -Translate; if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }; Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in '.dll','.so','.cat' } | Copy-Item -Destination experimental/snapdragon/build/load-candidate -Force; & ./experimental/snapdragon/build/load-candidate/translate.exe --bindings ./experimental/snapdragon/build/gemma-block/prompt-512.gmb --tokenizer ./experimental/snapdragon/models/translategemma-4b-stage4/tokenizer.gta --bundle --from en --to de 'The door is open.'; if ($LASTEXITCODE -ne 0) { throw 'Overlap execution failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma load benchmark",
+			"type": "shell",
+			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir experimental/snapdragon/build/load-candidate -Translate; if ($LASTEXITCODE -ne 0) { throw 'Candidate build failed' }; & ./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/test-translate.py --binary experimental/snapdragon/build/load-candidate/translate.exe --load-benchmark; if ($LASTEXITCODE -ne 0) { throw 'Load benchmark failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma FC-only bounded bundle",
+			"type": "shell",
+			"command": "$candidate = 'experimental/snapdragon/build/fc-only'; New-Item -ItemType Directory -Force -Path ($candidate + '/gemma-block') | Out-Null; Copy-Item experimental/snapdragon/build/gemma-block/prompt-512.gmb ($candidate + '/gemma-block/prompt-512.gmb'); Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Extension -in '.dll','.so','.cat' } | Copy-Item -Destination $candidate; $source = Get-Content -Raw experimental/snapdragon/tools/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools).Path + [char]39)); & ([scriptblock]::Create($source)) -BuildDir $candidate -FullyConnected -TestEnvelope; if ($LASTEXITCODE -ne 0) { throw 'FC candidate compile failed' }; $process = Start-Process -FilePath ($candidate + '/gemma-block/test-gemma-block.exe') -ArgumentList @(($candidate + '/gemma-block/prompt-512.gmb'),'build-bundle-512') -RedirectStandardOutput ($candidate + '/bundle-build.log') -RedirectStandardError ($candidate + '/bundle-errors.log') -PassThru -NoNewWindow; if (!$process.WaitForExit(240000)) { $process.Kill(); $process.WaitForExit(); Write-Output 'FC-only candidate exceeded 240-second budget; stopped without deployment' } else { Write-Output ('FC-only exit: {0}' -f $process.ExitCode) }; Get-Content ($candidate + '/bundle-build.log') -Tail 12; $runs = Get-Content -Raw experimental/snapdragon/build/load-candidate/translate-load-results.json | ConvertFrom-Json; foreach ($record in $runs) { Write-Output $record.name; $record.stderr -split '\\r?\\n' | Where-Object { $_ -match '^cleanup .* us:' } }",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

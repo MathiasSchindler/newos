@@ -145,7 +145,7 @@ static int translate_arguments(void) {
              "Optional: --bindings PATH --tokenizer PATH --decode --padded-decode --qnn-profile --verify-decode\n"
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
              "Shared-weight bundle is automatic when installed; --bundle requires it.\n"
-             "Diagnostics: --cpu-selection --compile-selection --performance (scoped HTP power vote).\n"
+             "Diagnostics: --cpu-selection --compile-selection --serial-load --performance (scoped HTP power vote).\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
              "Experimental W4 NPU runtime; 512 total tokens. Exit 2 means token limit.\n");
@@ -165,6 +165,7 @@ static int translate_arguments(void) {
         if (equal(option, "--performance")) { performance_requested = 1; continue; }
         if (equal(option, "--cpu-selection")) { cpu_selection = 1; continue; }
         if (equal(option, "--compile-selection")) { compile_selection = 1; continue; }
+        if (equal(option, "--serial-load")) { serial_bundle_read = 1; continue; }
         if (equal(option, "--batch")) { batch_mode = 1; continue; }
         if (equal(option, "--padded-decode")) { padded_decode = 1; continue; }
         if (equal(option, "--decode")) { force_decode = 1; continue; }

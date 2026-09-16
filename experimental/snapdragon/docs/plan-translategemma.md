@@ -422,6 +422,119 @@ envelope cases, 7,470 tokenizer fixtures, 18 tokenizer corruptions, 323 numeric
 fixtures and four SHA vectors passed, as did the ARM64 Kernel32-only PE audit.
 The existing quality campaign remains stopped and Whisper is untouched.
 
+## Clean release benchmark (2026-09-16)
+
+Rebuilt the release from source with the validated shared-weight bundle, shared
+KV buffers, cached INT32 NPU selector, ARM SHA acceleration and streaming support.
+The release has no `GEMMA_TRANSLATE_PROFILE` instrumentation; the separately rebuilt
+`translate-profile.exe` provides host phase counters. No rejected experimental
+graph variants were promoted. The release is 103,936 bytes, SHA-256
+`16B18358CC3DD9D81B122E8C93B137D90C555ABE06C39D73036B7AF920EABFFB`.
+It passes the ARM64, Kernel32-only, no-CRT PE audit. Runtime/model assets remain
+external; executable size is not total deployment size.
+
+Fresh serial tests on the Hase sentence (89 prompt tokens):
+
+| Measurement | Result |
+| --- | --- |
+| Quiet streamed process, median of 3 | 6.566 s |
+| First streamed byte, median of 3 | 4.006 s |
+| Quiet buffered process, median of 3 | 6.467 s |
+| First buffered byte, median of 3 | 5.768 s |
+| Resident requests, host-instrumented batch | 2.038 / 2.052 / 2.064 s |
+| Model decode call, batch mean over 36 calls | 145.86 ms |
+| Separate NPU selection, wall time including dispatch | 3.40 ms/token |
+| Cached selector setup, batch | 9.46 ms |
+
+The automatic-path median host profile spends 0.687 s reading the bundle, 0.993 s
+hashing it and 1.227 s creating the QNN context. Restore totals about 3.02 s;
+embedding load is 0.354 s and cleanup 0.744 s. These are repeated-process timings
+without flushing the filesystem cache; the first automatic run was slower.
+Detailed QNN profiling is intrusive and is not used as release wall-clock latency.
+The fresh detailed decode sample reports 611,286,655 device cycles: MLP-related
+up/GELU/down events account for 62.12%, and the vocabulary projection for 16.74%.
+GELU-labelled events may contain backend fusion, not just activation arithmetic.
+
+Prioritized remaining opportunities:
+
+1. Reuse the existing resident `--batch` path for repeated requests. This avoids
+   repeated restore and teardown without changing model arithmetic.
+2. Improve paired gate/up and down-projection kernels or backend fusion. This is
+   the largest measured device cost; previous layout/FC experiments did not prove
+   a gain. A new candidate needs block-oracle and full token/KV/logit parity gates.
+3. Improve the vocabulary projection kernel. Its 16.74% cycle share makes it a
+   meaningful target, but reducing vocabulary or precision requires new quality
+   validation and is not a free execution optimization.
+4. Investigate pipelined bundle read/hash with bounded buffers and unchanged full
+   integrity verification before restore. The current read-plus-hash wall cost is
+   about 1.68 s; overlap could reduce only part of it and is not yet measured.
+5. Profile QNN teardown more finely before changing cleanup. Its roughly 0.74 s
+   occurs after output, affecting process completion rather than first text.
+
+CPU output costs less than 1 ms per sentence; decode preparation is tens of
+microseconds per call. They are not promising targets. Removing selector dispatch
+would save only a few milliseconds per token, and prior embedded-selector builds
+exceeded their compilation budget. No additional speedup is claimed by this rebuild.
+Fresh native, streaming (12 cases), bundle parity/corruption (15 cases), and host
+profile accounting gates passed. Reports are the current
+`build/translate-streaming-results.json`, `build/translate-bundle-results.json`,
+and `build/translate-streaming-profile-results.json`.
+
+## Overlapped loading implementation (2026-09-16)
+
+The release now reads the shared bundle in 8 MiB chunks on one Windows reader
+thread while the calling thread hashes completed chunks with ARM SHA. A semaphore
+publishes completed ranges of the existing payload allocation; no second model
+copy is allocated. The reader is joined before returning or freeing its state,
+and QNN restore still requires the exact envelope size/schema and full metadata
+plus payload SHA-256 match. CPU hashing work is not removed or moved to the NPU;
+it overlaps file I/O instead. `--serial-load` retains the previous implementation
+for diagnostics and A/B measurement. No model context or quantization was changed.
+
+Three interleaved runs per mode, with exact output-token parity:
+
+| Measurement | Serial | Overlapped |
+| --- | --- | --- |
+| Median bundle read plus hash | 1.673 s | 0.985 s |
+| Median process wall time | 6.540 s | 5.797 s |
+| Median first output | 3.938 s | 3.234 s |
+
+This is about 0.69 s less loading work on the critical path and 11% lower observed
+process latency. These repeated-process measurements do not flush filesystem
+caches; they are not guaranteed cold-start or sustained-load figures. The report
+is `build/load-candidate/translate-load-results.json`, generated with
+`test-translate.py --binary build/load-candidate/translate.exe --load-benchmark`
+using paths relative to this Snapdragon directory (run the Python tool from the
+repository root with the corresponding full relative paths).
+
+In instrumented builds, `context_read` now includes overlapped hashing;
+`context_hash` contains only final digest comparison for the default path.
+`bundle read/hash us` measures combined elapsed time. Both automatic and legacy
+profile accounting are tested to avoid summing overlapping phases twice.
+
+New teardown timers measured roughly 0.61-0.69 s in context destruction, 59-79 ms
+in the remaining RPC/backend/module teardown, 17-20 ms freeing tracked host
+allocations, and typically 2-4 ms deregistering memory. Skipping cleanup was not
+implemented. The existing resident `--batch` path remains the supported way to
+amortize context creation and destruction, and its request isolation was retested.
+
+A separate FullyConnected-only candidate covered MLP and vocabulary projections
+without the embedded selector. Construction took 22.2 s, but first-graph
+finalization did not finish within 240 s; the process was stopped and no candidate
+bundle was deployed. Consequently no MLP/head throughput improvement is claimed.
+Paired projection/custom-kernel work remains open; this pass does not satisfy that
+target merely by changing the loader.
+
+Validation passed: serial/overlapped token parity, full bundle parity including
+all-layer KV/logits and multi-chunk/Unicode requests, four bundle file corruptions,
+12 quiet/streaming cases, native tokenizer/numeric/SHA gates, 150 legacy plus 14
+bundle envelope cases, and the new reader multi-chunk digest/invalid-handle/short-
+read regression. The reader test uses a delete-on-close scratch file. Release and
+profile builds retain ARM64, Kernel32-only, no-CRT PE contracts. The pre-change
+release is retained as `build/translate-before-load.exe`; validated model and
+selector contexts are unchanged. Whisper and the stopped quality campaign remain
+untouched.
+
 ## Feasibility baseline
 
 The official checkpoint is a Gemma 3 conditional-generation model. Its text
