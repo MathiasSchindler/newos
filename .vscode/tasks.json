@@ -132,6 +132,76 @@
 			"type": "shell",
 			"command": "& { $manifest = Get-Content experimental/snapdragon/models/translategemma-4b-stage3/manifest.json -Raw | ConvertFrom-Json; $matrixWeights = [int64]0; $rows = [int64]0; foreach ($entry in $manifest.variants.w4a16.artifacts) { if ($entry.shape.Count -eq 2) { $matrixWeights += [int64]$entry.shape[0] * [int64]$entry.shape[1]; $rows += [int64]$entry.shape[0] } }; [PSCustomObject]@{ MatrixWeights=$matrixWeights; PackedW4Bytes=$matrixWeights/2; Group32ScaleBytes=$matrixWeights/16; PerRowScaleBytes=$rows*2; ExtraScaleBytes=$matrixWeights/16-$rows*2 } | Format-List }",
 			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Group Encoding Contract",
+			"type": "shell",
+			"command": "& { Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path experimental/snapdragon/data/v2.50.0.260828.zip)); try { foreach ($entry in $zip.Entries | Where-Object { $_.FullName -match '/QnnTypes.h$' }) { $reader = [IO.StreamReader]::new($entry.Open()); try { $text = $reader.ReadToEnd(); $lines = $text -split [char]10; for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index] -match 'BwBlockMapped|BLOCK_MAPPED|MAPPING|BlockEncoding') { $start = [Math]::Max(0, $index - 12); $end = [Math]::Min($lines.Count - 1, $index + 25); $lines[$start..$end] } } } finally { $reader.Dispose() } } } finally { $zip.Dispose() } }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Group Dequantize Probe",
+			"type": "shell",
+			"command": "& { $flags = @('--target=aarch64-w64-windows-gnu','-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-ffunction-sections','-fdata-sections','-flto','-Isrc/shared','-Iexperimental/snapdragon/src/shared','-Iexperimental/snapdragon/src/tools/probe','-Iexperimental/snapdragon/src/tools/whisper','-DGEMMA_GROUP32_DIAGNOSTIC=1','-DGEMMA_GROUP32_DEQUANTIZE=1'); $sources = @('experimental/snapdragon/src/tools/whisper/main.c','experimental/snapdragon/src/tools/whisper/whisper_artifact.c','experimental/snapdragon/src/tools/whisper/whisper_model.c','experimental/snapdragon/src/tools/whisper/whisper_frontend.c','experimental/snapdragon/src/tools/whisper/whisper_decoder.c','experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c','experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c','src/shared/math.c','src/shared/runtime/memory.c','src/shared/runtime/concurrency.c','src/platform/windows/thread.c','experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c'); $link = @('-nostdlib','-fuse-ld=lld','-Wl,-e,mainCRTStartup','-Wl,-s','-Wl,--gc-sections','-Wl,--icf=safe','-Wl,--no-insert-timestamp','-Wl,/merge:.rdata=.text','-Wl,--stack,1048576','experimental/snapdragon/build/chkstk.obj','-Lexperimental/snapdragon/build','-lkernel32'); & clang @flags @sources @link -o experimental/snapdragon/build/npu_probe_group_dequantize.exe; if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }; & ./experimental/snapdragon/build/npu_probe_group_dequantize.exe --gemma-stage1 2>&1 | Tee-Object experimental/snapdragon/build/gemma-group-dequantize.log; Write-Output ('Probe exit: {0}' -f $LASTEXITCODE) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Group Expansion Contract",
+			"type": "shell",
+			"command": "& { Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path experimental/snapdragon/data/v2.50.0.260828.zip)); try { foreach ($entry in $zip.Entries | Where-Object { $_.FullName -match '/(QnnTypes|QnnCommon|QnnTypeMacros).h$' }) { $reader = [IO.StreamReader]::new($entry.Open()); try { $text = $reader.ReadToEnd(); $text -split [char]10 | Select-String -Pattern 'ENCODING_BLOCKWISE_EXPANSION\\s*=|ENCODING_BW_BLOCK|MAPPING_STANDARD|Qnn_BlockwiseExpansion_t|Qnn_QuantizationEncoding_t' -Context 8,4; if ($entry.Name -eq 'QnnTypes.h') { [regex]::Matches($text, '(?s)/\\*\\*[^{}]*block-wise expansion quantization.*?typedef struct \\{.*?\\} Qnn_BlockwiseExpansion_t;') | ForEach-Object { $_.Value } } } finally { $reader.Dispose() } } } finally { $zip.Dispose() }; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*translategemma-quality*' } | Select-Object ProcessId,CommandLine | Format-List; $report = Get-Content experimental/snapdragon/models/translategemma-quality-diagnostic-v1.json -Raw | ConvertFrom-Json; Write-Output ('Finished cases: {0}/72; complete={1}' -f $report.results.Count,$report.complete) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Group Expansion Probe",
+			"type": "shell",
+			"command": "& { $flags = @('--target=aarch64-w64-windows-gnu','-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-ffunction-sections','-fdata-sections','-flto','-Isrc/shared','-Iexperimental/snapdragon/src/shared','-Iexperimental/snapdragon/src/tools/probe','-Iexperimental/snapdragon/src/tools/whisper','-DGEMMA_GROUP32_DIAGNOSTIC=1','-DGEMMA_GROUP32_EXPANSION=1'); $sources = @('experimental/snapdragon/src/tools/whisper/main.c','experimental/snapdragon/src/tools/whisper/whisper_artifact.c','experimental/snapdragon/src/tools/whisper/whisper_model.c','experimental/snapdragon/src/tools/whisper/whisper_frontend.c','experimental/snapdragon/src/tools/whisper/whisper_decoder.c','experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c','experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c','src/shared/math.c','src/shared/runtime/memory.c','src/shared/runtime/concurrency.c','src/platform/windows/thread.c','experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c'); $link = @('-nostdlib','-fuse-ld=lld','-Wl,-e,mainCRTStartup','-Wl,-s','-Wl,--gc-sections','-Wl,--icf=safe','-Wl,--no-insert-timestamp','-Wl,/merge:.rdata=.text','-Wl,--stack,1048576','experimental/snapdragon/build/chkstk.obj','-Lexperimental/snapdragon/build','-lkernel32'); & clang @flags @sources @link -o experimental/snapdragon/build/npu_probe_group_expansion.exe; if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }; & ./experimental/snapdragon/build/npu_probe_group_expansion.exe --gemma-stage1 2>&1 | Tee-Object experimental/snapdragon/build/gemma-group-expansion.log | Select-String -Pattern 'basis|mismatch|result:|cleanup|graphExecute'; Write-Output ('Probe exit: {0}' -f $LASTEXITCODE) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Legacy Block Probe",
+			"type": "shell",
+			"command": "& { $flags = @('--target=aarch64-w64-windows-gnu','-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-ffunction-sections','-fdata-sections','-flto','-Isrc/shared','-Iexperimental/snapdragon/src/shared','-Iexperimental/snapdragon/src/tools/probe','-Iexperimental/snapdragon/src/tools/whisper','-DGEMMA_GROUP32_DIAGNOSTIC=1','-DGEMMA_GROUP32_LEGACY_BLOCK=1'); $sources = @('experimental/snapdragon/src/tools/whisper/main.c','experimental/snapdragon/src/tools/whisper/whisper_artifact.c','experimental/snapdragon/src/tools/whisper/whisper_model.c','experimental/snapdragon/src/tools/whisper/whisper_frontend.c','experimental/snapdragon/src/tools/whisper/whisper_decoder.c','experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c','experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c','src/shared/math.c','src/shared/runtime/memory.c','src/shared/runtime/concurrency.c','src/platform/windows/thread.c','experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c'); $link = @('-nostdlib','-fuse-ld=lld','-Wl,-e,mainCRTStartup','-Wl,-s','-Wl,--gc-sections','-Wl,--icf=safe','-Wl,--no-insert-timestamp','-Wl,/merge:.rdata=.text','-Wl,--stack,1048576','experimental/snapdragon/build/chkstk.obj','-Lexperimental/snapdragon/build','-lkernel32'); & clang @flags @sources @link -o experimental/snapdragon/build/npu_probe_group_legacy.exe; if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }; & ./experimental/snapdragon/build/npu_probe_group_legacy.exe --gemma-stage1 2>&1 | Tee-Object experimental/snapdragon/build/gemma-group-legacy.log | Select-String -Pattern 'basis|mismatch|result:|cleanup|graphExecute'; Write-Output ('Probe exit: {0}' -f $LASTEXITCODE) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Diagnostic Progress Review",
+			"type": "shell",
+			"command": "& { $report = Get-Content experimental/snapdragon/models/translategemma-quality-diagnostic-v1.json -Raw -Encoding UTF8 | ConvertFrom-Json; Write-Output ('Completed {0}/72; complete={1}' -f $report.results.Count,$report.complete); $report.results | Select-Object case_id,variant,translation,health | ConvertTo-Json -Depth 5; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*translategemma-quality*' } | Select-Object ProcessId,WorkingSetSize,CommandLine | Format-List }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma QNN Runtime Identity",
+			"type": "shell",
+			"command": "& { Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path experimental/snapdragon/data/v2.50.0.260828.zip)); try { foreach ($file in Get-ChildItem experimental/snapdragon/build -File | Where-Object { $_.Name -match '^QnnHtp.*\\.dll$|^libQnnHtp.*\\.so$' }) { $local = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash; foreach ($entry in $zip.Entries | Where-Object { $_.Name -eq $file.Name -and $_.FullName -match 'aarch64-windows|hexagon-v73' }) { $stream = $entry.Open(); $sha = [Security.Cryptography.SHA256]::Create(); try { $archived = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-',''); [PSCustomObject]@{ File=$file.Name; Match=($local -eq $archived); SDKEntry=$entry.FullName } | Format-List } finally { $stream.Dispose(); $sha.Dispose() } } } } finally { $zip.Dispose() } }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Group Composition Probe",
+			"type": "shell",
+			"command": "& { $flags = @('--target=aarch64-w64-windows-gnu','-std=c11','-Wall','-Wextra','-Wpedantic','-Werror','-Oz','-ffreestanding','-fno-builtin','-fno-stack-protector','-fno-unwind-tables','-fno-asynchronous-unwind-tables','-ffunction-sections','-fdata-sections','-flto','-Isrc/shared','-Iexperimental/snapdragon/src/shared','-Iexperimental/snapdragon/src/tools/probe','-Iexperimental/snapdragon/src/tools/whisper','-DGEMMA_GROUP32_DIAGNOSTIC=1','-DGEMMA_GROUP32_COMPOSE=1'); $sources = @('experimental/snapdragon/src/tools/whisper/main.c','experimental/snapdragon/src/tools/whisper/whisper_artifact.c','experimental/snapdragon/src/tools/whisper/whisper_model.c','experimental/snapdragon/src/tools/whisper/whisper_frontend.c','experimental/snapdragon/src/tools/whisper/whisper_decoder.c','experimental/snapdragon/src/tools/whisper/whisper_decoder_qnn.c','experimental/snapdragon/src/tools/whisper/whisper_encoder_qnn.c','src/shared/math.c','src/shared/runtime/memory.c','src/shared/runtime/concurrency.c','src/platform/windows/thread.c','experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c'); $link = @('-nostdlib','-fuse-ld=lld','-Wl,-e,mainCRTStartup','-Wl,-s','-Wl,--gc-sections','-Wl,--icf=safe','-Wl,--no-insert-timestamp','-Wl,/merge:.rdata=.text','-Wl,--stack,1048576','experimental/snapdragon/build/chkstk.obj','-Lexperimental/snapdragon/build','-lkernel32'); & clang @flags @sources @link -o experimental/snapdragon/build/npu_probe_group_composition.exe; if ($LASTEXITCODE -ne 0) { throw 'Probe build failed' }; & ./experimental/snapdragon/build/npu_probe_group_composition.exe --gemma-stage1 2>&1 | Tee-Object experimental/snapdragon/build/gemma-group-composition.log | Select-String -Pattern 'basis|representation:|result:|cleanup|group partial|group finalize|group execute'; if ($LASTEXITCODE -ne 0) { throw ('Composition probe failed: {0}' -f $LASTEXITCODE) } }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Serial Quality Campaign",
+			"type": "shell",
+			"command": "& { $ErrorActionPreference = 'Stop'; $old = 'experimental/snapdragon/models/translategemma-quality-diagnostic-v1.json'; $checkpoint = 'experimental/snapdragon/models/translategemma-quality-diagnostic-checkpoint-v1.json'; if (Test-Path $checkpoint) { throw 'Checkpoint already exists; use the resume command explicitly' }; Copy-Item -LiteralPath $old -Destination $checkpoint; $saved = Get-Content $checkpoint -Raw -Encoding UTF8 | ConvertFrom-Json; Write-Output ('Preserved {0} completed cases' -f $saved.results.Count); $workers = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*translategemma-quality.py run --output experimental/snapdragon/models/translategemma-quality-diagnostic-v1.json*' }; foreach ($worker in $workers) { Stop-Process -Id $worker.ProcessId -ErrorAction SilentlyContinue }; $env:OPENBLAS_NUM_THREADS = '4'; $python = './experimental/snapdragon/build/calibration-venv/Scripts/python.exe'; $quality = 'experimental/snapdragon/tools/translategemma-quality.py'; & $python -u -B $quality run --resume $checkpoint --output experimental/snapdragon/models/translategemma-quality-diagnostic-v2.json; if ($LASTEXITCODE -ne 0) { throw 'Baseline evaluation failed; candidate not started' }; & $python -u -B $quality run --variants candidate --candidate-base group32 --output experimental/snapdragon/models/translategemma-quality-group32-v1.json; if ($LASTEXITCODE -ne 0) { throw 'Group32 evaluation failed' }; Write-Output 'Diagnostic generations complete. Semantic review is required before candidate freeze and heldout evaluation.' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Gemma Quality Static Gates",
+			"type": "shell",
+			"command": "& { $ErrorActionPreference = 'Stop'; $tokens = $null; $parseErrors = $null; [void][Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'experimental/snapdragon/tools/build.ps1'), [ref]$tokens, [ref]$parseErrors); if ($parseErrors.Count) { throw ($parseErrors | Out-String) }; git diff --check; if ($LASTEXITCODE -ne 0) { throw 'Whitespace check failed' }; & (Join-Path (Split-Path (Get-Command clang).Source) 'llvm-readobj.exe') --file-headers --coff-imports experimental/snapdragon/build/npu_probe_group_composition.exe | Select-String -Pattern 'Machine:|Name:|ExceptionTable|CLRRuntimeHeader'; if ($LASTEXITCODE -ne 0) { throw 'PE audit failed' }; Get-Content experimental/snapdragon/build/gemma-group-composition.log | Select-String -Pattern 'maximum absolute|composed graph|contextFree|backendFree|logFree'; Write-Output 'Build script syntax and whitespace passed' }",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

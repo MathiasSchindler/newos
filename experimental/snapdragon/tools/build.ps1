@@ -4,6 +4,9 @@ param(
     [switch]$DebugSymbols,
     [switch]$SelfFusionProbe,
     [switch]$SelfFusionCandidate,
+    [switch]$GemmaGroup32Diagnostic,
+    [ValidateSet('mapped', 'dequantize', 'expansion', 'legacy-block', 'composed')]
+    [string]$GemmaGroup32Encoding = 'mapped',
     [switch]$Clean
 )
 
@@ -11,6 +14,18 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 Push-Location $repoRoot
 try {
+    if ($PSBoundParameters.ContainsKey('GemmaGroup32Encoding') -and -not $GemmaGroup32Diagnostic) {
+        throw 'GemmaGroup32Encoding requires GemmaGroup32Diagnostic'
+    }
+    if ($GemmaGroup32Diagnostic) {
+        if ($SelfFusionProbe -or $SelfFusionCandidate) { throw 'Gemma and Whisper candidate modes cannot be combined' }
+        if (-not $PSBoundParameters.ContainsKey('BuildDir')) {
+            $BuildDir = 'experimental/snapdragon/build/gemma-group32-probe'
+        }
+        if ([IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
+            throw 'The Gemma diagnostic must use a separate build directory'
+        }
+    }
     if (($SelfFusionCandidate -or $SelfFusionProbe) -and -not $PSBoundParameters.ContainsKey('BuildDir')) {
         $BuildDir = if ($SelfFusionCandidate) { 'experimental/snapdragon/build/self-fusion-candidate' } else { 'experimental/snapdragon/build/self-fusion-probe' }
     }
@@ -109,7 +124,18 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe.exe" }
     Write-Output "Built $BuildDir/npu_probe.exe"
 
-    & $compilerPath @flags @npuSources `
+    $gemmaFlags = @()
+    if ($GemmaGroup32Diagnostic) {
+        $gemmaFlags += '-DGEMMA_GROUP32_DIAGNOSTIC=1'
+        $encodingFlags = @{
+            'dequantize' = '-DGEMMA_GROUP32_DEQUANTIZE=1'
+            'expansion' = '-DGEMMA_GROUP32_EXPANSION=1'
+            'legacy-block' = '-DGEMMA_GROUP32_LEGACY_BLOCK=1'
+            'composed' = '-DGEMMA_GROUP32_COMPOSE=1'
+        }
+        if ($encodingFlags.ContainsKey($GemmaGroup32Encoding)) { $gemmaFlags += $encodingFlags[$GemmaGroup32Encoding] }
+    }
+    & $compilerPath @flags @gemmaFlags @npuSources `
         experimental/snapdragon/src/tools/probe/qnn_gemma_capabilities.c `
         @npuLinkFlags -o "$BuildDir/npu_probe_builder.exe"
     if ($LASTEXITCODE -ne 0) { throw "Failed to build npu_probe_builder.exe" }

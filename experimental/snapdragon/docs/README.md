@@ -119,6 +119,66 @@ with W8 first when evaluating full-model QNN generation; finite W4 arithmetic
 is not translation acceptance. Stage 6 local/global block checks now pass both
 W8 and W4 as described below.
 
+### Translation Quality Tests
+
+The separate [quality corpus](../tools/translategemma-quality.json) contains 24
+diagnostic cases and 24 reserved held-out cases, without changing the published
+three-sentence fixtures. References have AI semantic approval by GitHub Copilot
+at the user's request; this is not independent human review. The
+[quality runner](../tools/translategemma-quality.py) prepares exact prompts,
+compares BF16/W8/W4, records termination/repetition flags, exports variant-blinded
+review packets, and scores pinned chrF++. Held-out use requires attributed semantic review
+and a matching frozen case hash. See the [evaluation workflow](plan-translategemma.md#quality-evaluation-workflow).
+
+The hardware probe also has 12 tiny basis/sign/cancellation cases. All 48 per-axis
+outputs are exact; direct mapped grouped encoding, explicit dequantization and
+mapped expansion fail 39/48, with results matching unscaled integer weights.
+An opt-in composition of per-axis group MatMuls plus FP16 Adds passes all 48
+outputs and a 2560-wide projection. This is a working projection control, not
+full-model grouped-W4 acceptance or a performance result.
+
+The quality runner also supports offline group-32 candidates and targeted W8
+layer/head substitutions, atomic checkpoints, and provenance-checked resumption.
+`freeze` requires a reviewed 24-case diagnostic pass; held-out evaluation binds
+the chosen candidate and decoding budget and reports pilot semantic quality
+separately from deployment acceptance. The baseline and group-32 diagnostic
+campaign was stopped at the user's request on 2026-09-16 because completion
+within another 30 minutes was not realistic. All 24 BF16 and eight W8 outputs
+are preserved; W4 and group-32 campaign runs did not start. No candidate has
+been frozen or evaluated on the held-out set. Do not restart automatically.
+
+### Full-Model Memory Measurement
+
+The offline Windows sampler `tools/measure-translategemma-memory.py` measures the
+existing Stage 7 full-depth W4 restore/prompt gate without rebuilding contexts or
+changing production binaries. It records process working set/private bytes,
+peak working set/commit, system available RAM/commit and the native test log.
+It refuses to launch below 8 GiB available RAM. Run after the offline quality
+campaign has finished, using a new report path for each bucket:
+
+```powershell
+./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/measure-translategemma-memory.py --measure --bucket 512 --output experimental/snapdragon/models/translategemma-memory-512.json
+```
+
+Repeat serially for buckets 1024 and 2048. Omit `--measure` for preflight only.
+The September 16 preflight found 1,564,086,272 available physical bytes and
+correctly did not launch QNN. The 512 context occupies 1,966,356,568 bytes on disk;
+this is not its resident memory requirement. Actual full-model memory results
+remain pending. Native Windows counter tests pass, but the complete sampler run
+has not yet been exercised against QNN.
+
+Process counters do not account separately for DSP/driver memory, and system
+deltas include other applications. Sampling can miss brief peaks; process peak
+counters supplement it. This measures restore and 253/256-token prompt execution,
+not graph construction or autoregressive decoding. In particular, the serialized
+context buffer exists during deserialization, so loading peaks must be considered.
+
+12B feasibility remains an estimate: approximately 6 GB packed W4 weights plus
+0.75 GB group-32 FP16 scales, before KV/activations/runtime/loading copies. Do not
+extrapolate resident memory solely from the 4B context file size. No 12B weights
+have been downloaded or tested; retrieving the official configuration without
+authentication returned HTTP 401. Establish the 4B measured envelope first.
+
 ### QNN Block Validation
 
 Stage 6 builds a separate no-CRT ARM64 runner and tests local layer 0 and global

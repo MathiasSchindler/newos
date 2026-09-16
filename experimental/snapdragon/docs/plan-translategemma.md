@@ -988,6 +988,197 @@ Quality gates:
   do not select clipping or group size from a single language pair.
 - Review every changed translation in the small fixed regression corpus.
 
+### Quality Evaluation Workflow
+
+`tools/translategemma-quality.json` is a versioned pilot corpus: 24 diagnostic
+cases and 24 reserved held-out cases. The original three numerical regression
+fixtures remain unchanged. Coverage includes Japanese greetings/questions and
+reverse translation, explicitly optical Czech context, negation and role/order
+minimal pairs, numbers/dates/units, names, quotations, markup and short paragraphs.
+These assistant-authored examples and references have AI semantic approval by
+GitHub Copilot, as authorized by the user on 2026-09-16. This is author self-review,
+not independent human review. They are not a representative public benchmark, 55-language
+coverage, or a near-context-limit stress corpus.
+
+Split rules:
+
+- Calibration data is separate and is not supplied by this corpus. Neither
+   split may be added to quantizer calibration data.
+- Use only `diagnostic` for development and quantizer selection. The validator
+   rejects duplicate source text (case/whitespace/NFC normalized) across splits.
+   Reviewers must also check paraphrase and translation leakage.
+- Review held-out references and semantic rubrics before model evaluation.
+   Record `review.heldout.status=approved`, an actual reviewer identity in
+   `reviewer`, `reviewer_kind=ai` or `human`, and the `cases_sha256` printed by
+   `validate` after review. AI approval is sufficient for this pilot; human review
+   is not a required blocker. Changed
+   cases invalidate that hash. Do not mark assistant-generated references as
+   human-reviewed. An approval record is an audit trail, not authentication.
+- Freeze quantizer choices, decoding budget and comparison policy before the
+   held-out run. It requires all three baseline variants and forbids case filters.
+   Once results inform tuning, that split is development data; reserve a fresh
+   independently reviewed version for subsequent acceptance.
+
+Offline commands from the repository root (use a new output path for each run):
+
+```powershell
+$python = './experimental/snapdragon/build/calibration-venv/Scripts/python.exe'
+$quality = 'experimental/snapdragon/tools/translategemma-quality.py'
+& $python -m pip install -r experimental/snapdragon/tools/calibration-requirements.txt
+& $python -B $quality validate
+& $python -B $quality prepare --output experimental/snapdragon/models/quality-prompts-v1.json
+$env:OPENBLAS_NUM_THREADS = '4'
+& $python -B $quality run --output experimental/snapdragon/models/quality-diagnostic-v1.json
+& $python -B $quality score --report experimental/snapdragon/models/quality-diagnostic-v1.json
+# Run after the baseline, not concurrently on a 16 GB machine:
+& $python -B $quality run --variants candidate --candidate-base group32 --output experimental/snapdragon/models/quality-group32-v1.json
+# Complete the diagnostic candidate's AI/human review packet before freezing:
+& $python -B $quality freeze --report experimental/snapdragon/models/quality-group32-v1.json --reviews experimental/snapdragon/models/quality-group32-v1.json.reviews.json --output experimental/snapdragon/models/quality-selection-v1.json
+& $python -B $quality run --split heldout --variants bf16 w8a16 w4a16 candidate --candidate-base group32 --frozen experimental/snapdragon/models/quality-selection-v1.json --output experimental/snapdragon/models/quality-heldout-v1.json
+# Complete the held-out review packet before evaluating:
+& $python -B $quality evaluate --report experimental/snapdragon/models/quality-heldout-v1.json --reviews experimental/snapdragon/models/quality-heldout-v1.json.reviews.json --frozen experimental/snapdragon/models/quality-selection-v1.json
+```
+
+The default run evaluates 24 prompts serially in BF16, W8A16 and the published
+W4A16 format. `--variants candidate --candidate-base group32` evaluates group-32
+offline without exporting deployment weights. `--candidate-base w4a16` retains
+the published row quantizer. Repeated `--w8-layer N` promotes selected decoder
+layers (0..33); `--w8-head` promotes only the vocabulary projection, retaining
+the base input embedding. Candidate reports record configuration, implementation
+hash and logical packed payload bytes, including the extra W8 head when selected.
+These are diagnostic substitutions, not full-model hardware acceptance.
+`--case d01` and
+`--variants w8a16` support diagnostic smoke tests. The new corpus has a fixed
+default 128-new-token budget (configurable before evaluation, never extended
+after observing repetition); the legacy three-case gate remains at 64. The
+runner validates prompt plus output budget against 2048 tokens. Token IDs and
+hashes of the corpus, tokenizer/configuration, model configuration, weight
+manifest and numerical reference source are saved. Partial runs are marked
+incomplete, existing report paths are rejected, and scoring refuses incomplete
+or duplicate/missing results. Writes are atomic; `run --resume <checkpoint>`
+requires a new output path and identical case prompts, provenance, variants and
+decoding settings, validates saved result health and review IDs, and skips only
+completed cases. Do not resume a checkpoint that another process is still writing.
+Token-limit and repeated-four-gram flags are
+diagnostics, not stopping-rule changes; repetition flags require semantic review.
+
+Every completed run writes a `.reviews.json` packet without variant labels,
+ordered by opaque review ID. A human or AI reviewer rates `meaning`, `omission`,
+`hallucination`, `terminology` and `unwanted_content` as `correct` (no error),
+`minor` (usable despite a small error), or `major` (meaning changed or unusable),
+with notes explaining the judgment. Valid paraphrases are correct; changes of
+object, negation, roles, material numbers, or uncontrolled repetition are major
+when they defeat the source meaning or requested translation. Ambiguous cases
+must be flagged for discussion rather than forced into a confident verdict.
+BF16 is a baseline, not a gold answer. Fill the packet's reviewer identity and
+`reviewer_kind` (`ai` or `human`) and score with
+`--reviews <packet-path>`. Its report hash and complete review-ID inventory must
+match. Reports distinguish `semantic_review_complete` from
+`human_review_complete`; AI reviews never set the latter true. The packet is
+for ordinary blind review, not adversarial concealment.
+
+Scoring uses `sacrebleu==2.5.1` chrF++ (character order 6, word order 2, beta 2),
+records its signature, and reports corpus scores, per-language-pair mean sentence
+scores, health counts, exact BF16 token agreement, and attributed review error counts.
+Compare paired cases and per-language results, not only an aggregate. No metric
+threshold or automatic quality acceptance is inferred from chrF++;
+`quality_accepted` remains false. The separate predeclared pilot semantic gate
+requires all 24 cases, zero major-error cases, at most four minor-only cases, and
+termination without empty or replacement-character output. Valid paraphrases are
+correct. A candidate must pass this gate on reviewed diagnostic outputs before
+`freeze` creates the selection record. This conservative pilot rule is an
+engineering screen, not a statistically established general-quality threshold.
+`freeze` binds candidate settings, token budget, held-out cases, model/tokenizer/
+implementation hashes and diagnostic report/review hashes. Held-out runs require
+that exact selection plus all three baselines. `evaluate` reports
+`pilot_quality_accepted` separately from `deployment_accepted=false`; the latter
+still requires hardware and full-model gates. The held-out split becomes spent
+once used for selection or tuning, regardless of a pilot pass/fail result.
+Reference approval only approves
+the test material, not the generated translations. New reports retain the AI
+reference-review provenance; historical reports keep their original status.
+
+Validation on 2026-09-16: 18 Python tests pass, including split/review/hash locks,
+duplicate rejection, generation failure cleanup, report packets and metric
+scoring. All 24 diagnostic prompts prepared successfully. A real W8 `d01` smoke
+run produced the evening greeting and stopped with IDs `[197339,236924,106]`;
+chrF++ is 100 against its draft reference, without a quality-acceptance claim.
+The full 72-generation diagnostic run and held-out evaluation have not been run.
+
+Campaign stopped by user request on 2026-09-16 at approximately 12:58 local time:
+completion within another 30 minutes was not realistic. All 24 BF16 cases and
+W8 cases d01..d08 (32 completed outputs) remain in
+`models/translategemma-quality-diagnostic-v2.json` and the separate snapshot
+`models/translategemma-quality-stopped-20260916-125804.json`. Both are explicitly
+incomplete. No quality workers remain; the queued group-32 run did not start.
+Earlier reports and checkpoints are retained. Do not restart this campaign or
+its queued work without a new user request. No candidate has been selected or frozen, and
+held-out generation remains locked pending completed diagnostic review. Twenty
+Python tests pass, including mixed-precision routing, group reconstruction,
+resume/atomic-write failure handling and held-out freeze/policy checks.
+
+### Hardware Diagnostic Cases
+
+Follow-up hardware investigation on 2026-09-16: explicit `Dequantize` before
+MatMul and mapped blockwise expansion (encoding 10, channel-first group
+multipliers) both reproduce 39/48 failures with raw-integer-like outputs.
+The legacy inline block encoding (4) with S8 storage crashes with Windows
+integer-divide exception `0xc0000094`; it is a negative control, not a supported
+W4 path. ABI layouts were checked against the pinned SDK. Active HTP backend,
+prepare, V73 stub and V73 skeleton hashes match the standard SDK archive files.
+This narrows the failure but does not establish a general claim about all HTP
+grouped formats or explain the backend's internal cause.
+
+An explicit composition works: represent each 32-input group using the proven
+per-axis W4 encoding, compute a partial MatMul, then sum FP16 partial outputs.
+Both the tiny 48-output fixture and the `[1,2560] x [2560,2560]` projection pass
+the existing scalar gates, along with the rest of Stage 1. The large control uses
+80 MatMuls, 79 Adds and 80 host input slices. This establishes a projection-level
+alternative, not efficient full-model execution; extra FP16 partial rounding,
+graph size, memory and throughput need full-model validation before adoption.
+The offline group-32 oracle still performs a single FP32 accumulation per
+projection and must not be described as bit-exact to the composed HTP graph.
+
+Use `build.ps1 -GemmaGroup32Diagnostic -GemmaGroup32Encoding composed` for this
+isolated builder; modes `mapped` (default), `dequantize`, `expansion` and
+`legacy-block` retain negative reproducers. The last three vary the tiny probe;
+their subsequent large probe, if reached, is still mapped. Every opted-in
+grouped gate now fails closed. Separate binaries/logs under `build/` preserve
+the production Whisper binary and contexts. Logs are
+`gemma-group-{dequantize,expansion,legacy,composition}.log`.
+
+The existing Gemma probe now runs a tiny `[12,64] x [64,4]` per-axis control before
+the model-shaped projection. Eight positive basis inputs select columns
+0/1/30/31/32/33/62/63; two negative inputs select 31/32; the remaining inputs test
+within-group cancellation and cross-group addition. Signed weights alternate by
+input column and output channel; scales differ by channel and by group. All
+expected values are exactly representable. Outputs start as NaNs; nonfinite
+outputs fail explicitly in both tiny and model-shaped projection checks.
+
+`build.ps1 -GemmaGroup32Diagnostic` enables the grouped tiny cases before the
+large grouped projection and defaults to `build/gemma-group32-probe/`. It rejects
+the production output directory and conflicting Whisper candidate switches.
+Stage the pinned QNN runtime using the existing fetch script into that directory,
+then run its `npu_probe_builder.exe --gemma-stage1`. Normal builds omit grouped
+experiments; production Whisper source and contexts are unchanged. Script
+execution remains subject to the user's PowerShell policy; this session used
+the equivalent direct Clang commands, and separately parsed the build script.
+
+Measured: all 48 per-axis outputs are exact and normal capability/cleanup gates
+pass. The opt-in `BW_BLOCK_MAPPED` group-32 path fails 39/48 outputs (exit 126).
+Basis values match raw signed integers, not dequantized weights: for example,
+column 0/output 0 is 1 instead of 0.125, and the cross-group sum is zero instead
+of 0.875. Cancellation alone passes and therefore cannot validate scaling. This
+localizes the observed behavior to unapplied scales in the attempted encoding
+path, not FP16 accumulation noise; it does not establish backend-wide support or
+identify a deployment fix. Logs are retained as `build/gemma-basis-axis.log` and
+`build/gemma-basis-group32.log`. Do not suppress exit 126 in acceptance jobs.
+
+The earlier full group-32 three-case run is now complete: Japanese matches BF16
+and stops, German is the valid paraphrase "The train is due to arrive at 3:30 PM.",
+and Czech remains "Im schlimmsten Fall, bis zum Platzen der Scheibe." (wrong
+object). This reinforces the need for the separate broader evaluation.
+
 Benchmark reporting:
 
 - Separate cold process, runtime load, context restore, tokenization, prompt

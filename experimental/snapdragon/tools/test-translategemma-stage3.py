@@ -7,7 +7,9 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -18,6 +20,9 @@ SPEC = importlib.util.spec_from_file_location(
 )
 EXPORTER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(EXPORTER)
+QUALITY_SPEC = importlib.util.spec_from_file_location("translategemma_quality", TOOLS / "translategemma-quality.py")
+QUALITY = importlib.util.module_from_spec(QUALITY_SPEC)
+QUALITY_SPEC.loader.exec_module(QUALITY)
 
 
 def write_safetensors(path, tensors):
@@ -52,22 +57,285 @@ def quantize_row_mse(values, bits):
 
 
 def quantize_grouped_w4(values, group_size):
-    values = np.asarray(values, dtype=np.float32)
-    if values.ndim != 2 or group_size <= 0 or group_size % 2 or values.shape[1] == 0 or values.shape[1] % group_size:
-        raise ValueError("grouped W4 requires nonempty rows divisible by an even group size")
-    quantized, scales = EXPORTER.quantize_groups(values.reshape(-1, group_size), 4)
-    return EXPORTER.pack_s4(quantized.reshape(values.shape)), scales.reshape(values.shape[0], -1)
+    return QUALITY.quantize_grouped_w4(values, group_size, EXPORTER)
 
 
 def dequantize_grouped_w4(packed, scales, group_size):
-    quantized = np.empty((packed.shape[0], packed.shape[1] * 2), dtype=np.int8)
-    quantized[:, 0::2] = (packed << np.uint8(4)).view(np.int8) >> 4
-    quantized[:, 1::2] = packed.view(np.int8) >> 4
-    grouped = quantized.reshape(packed.shape[0], -1, group_size).astype(np.float32)
-    return (grouped * scales.astype(np.float32)[..., None]).reshape(quantized.shape)
+    return QUALITY.dequantize_grouped_w4(packed, scales, group_size)
 
 
 class Stage3Tests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "Windows memory counters")
+    def test_quality_memory_counters(self):
+        import ctypes
+        import os
+
+        spec = importlib.util.spec_from_file_location("gemma_memory", TOOLS / "measure-translategemma-memory.py")
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        api = probe.windows_api()
+        memory = probe.system_memory(api)
+        self.assertGreater(memory["total_physical_bytes"], 0)
+        self.assertGreaterEqual(memory["total_physical_bytes"], memory["available_physical_bytes"])
+        handle = api.OpenProcess(0x0410, False, os.getpid())
+        self.assertTrue(handle)
+        try:
+            counters = probe.ProcessMemory()
+            counters.size = ctypes.sizeof(counters)
+            self.assertTrue(api.K32GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.size))
+            self.assertGreater(counters.working_set, 0)
+            self.assertGreater(counters.private_bytes, 0)
+            self.assertGreaterEqual(counters.peak_working_set, counters.working_set)
+        finally:
+            self.assertTrue(api.CloseHandle(handle))
+
+    @unittest.skipUnless(importlib.util.find_spec("sacrebleu"), "optional offline scoring dependency")
+    def test_quality_frozen_evaluation(self):
+        corpus = QUALITY.load_corpus()
+        config = QUALITY.candidate_config("group32")
+        provenance = {key: "test-only" for key in ("corpus_sha256", "reference_sha256", "weight_manifest_sha256",
+                                                  "tokenizer_sha256", "tokenizer_config_sha256", "config_sha256")}
+        provenance["candidate_implementation_sha256"] = QUALITY.digest(QUALITY.__file__)
+
+        def fixture(split, variants):
+            cases = QUALITY.select_cases(corpus, split)
+            report = {**provenance, "split": split, "candidate": config, "complete": True,
+                      "maximum_new_tokens": 128, "variants": variants, "cases": cases,
+                      "reference_review": corpus["review"][split], "results": []}
+            packet = {"reviewer": "unit-test-only", "reviewer_kind": "ai", "ratings": []}
+            for variant in variants:
+                for case in cases:
+                    review_id = variant + case["id"]
+                    text = case["references"][0]
+                    report["results"].append({"case_id": case["id"], "variant": variant, "review_id": review_id,
+                        "generated_ids": [42, 106], "translation": text, "health": QUALITY.output_health([42, 106], text, 128)})
+                    packet["ratings"].append({"review_id": review_id, **{key: "correct" for key in QUALITY.RATINGS}})
+            return report, packet
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path, review_path, frozen_path = [Path(temporary) / name for name in ("report.json", "reviews.json", "frozen.json")]
+            report, packet = fixture("diagnostic", ["candidate"])
+            QUALITY.save(path, report)
+            packet["report_sha256"] = QUALITY.digest(path)
+            QUALITY.save(review_path, packet)
+            frozen = QUALITY.freeze_candidate(path, review_path, QUALITY.CORPUS)
+            self.assertEqual(frozen["candidate"], config)
+            packet["ratings"][0]["meaning"] = "major"
+            QUALITY.save(review_path, packet)
+            with self.assertRaises(ValueError):
+                QUALITY.freeze_candidate(path, review_path, QUALITY.CORPUS)
+            report, packet = fixture("heldout", [*QUALITY.VARIANTS, "candidate"])
+            QUALITY.save(frozen_path, frozen)
+            report["frozen_selection_sha256"] = QUALITY.digest(frozen_path)
+            QUALITY.save(path, report)
+            packet["report_sha256"] = QUALITY.digest(path)
+            QUALITY.save(review_path, packet)
+            evaluated = QUALITY.evaluate_heldout(path, review_path, frozen_path, QUALITY.CORPUS)
+            self.assertTrue(evaluated["pilot_quality_accepted"])
+            self.assertFalse(evaluated["deployment_accepted"])
+            report["maximum_new_tokens"] = 129
+            with self.assertRaises(ValueError):
+                QUALITY.validate_frozen(frozen, report, report["variants"])
+            report["maximum_new_tokens"] = 128
+            report["candidate"] = QUALITY.candidate_config("group32", [0])
+            with self.assertRaises(ValueError):
+                QUALITY.validate_frozen(frozen, report, report["variants"])
+            report["candidate"] = config
+            for item in packet["ratings"][-5:]:
+                item["terminology"] = "minor"
+            self.assertFalse(QUALITY.semantic_gate(report, packet, "candidate")["passed"])
+            packet["ratings"][-5]["terminology"] = "correct"
+            self.assertTrue(QUALITY.semantic_gate(report, packet, "candidate")["passed"])
+            report["results"][-1]["generated_ids"] = [42] * 128
+            self.assertFalse(QUALITY.semantic_gate(report, packet, "candidate")["passed"])
+
+    def test_quality_candidate_weights(self):
+        handles = []
+        values = np.arange(64, dtype=np.float32).reshape(1, 64) / 32
+        class FakeWeights:
+            def __init__(self, exporter, model_dir, artifact_dir, variant):
+                self.model_dir, self.artifact_dir, self.variant = model_dir, artifact_dir, variant
+                self.entries = {name: {"shape": [1, 64]} for name in ("embed_tokens.weight", "layers.0.weight", "layers.1.weight")}
+                self.mappings = {}
+                self.closed = False
+                handles.append(self)
+
+            def rows(self, name, start=None, end=None):
+                return np.full((1, 64), 8 if self.variant == "w8a16" else 4, dtype=np.float32)
+
+            def source(self, name):
+                self.mappings[name] = values
+                return values
+
+            def linear(self, inputs, name, rows):
+                return inputs @ self.rows(name).T
+
+            def close(self):
+                self.closed = True
+
+        reference = SimpleNamespace(Weights=FakeWeights, PREFIX="")
+        exporter = SimpleNamespace(bf16_to_f32=lambda data: data, close_memmap=mock.Mock(),
+                                   quantize_groups=EXPORTER.quantize_groups, pack_s4=EXPORTER.pack_s4)
+        candidate = QUALITY.candidate_weights(reference, exporter, QUALITY.candidate_config("group32", [1], True))
+        np.testing.assert_array_equal(candidate.rows("layers.1.weight"), 8)
+        packed, scales = quantize_grouped_w4(values, 32)
+        expected = dequantize_grouped_w4(packed, scales, 32)
+        np.testing.assert_array_equal(candidate.rows("layers.0.weight"), expected)
+        np.testing.assert_array_equal(candidate.rows("layers.0.weight"), expected)
+        self.assertEqual(exporter.close_memmap.call_count, 1)
+        np.testing.assert_array_equal(candidate.rows("embed_tokens.weight"), expected)
+        np.testing.assert_array_equal(candidate.linear(np.ones((1, 64)), "embed_tokens.weight", 1), [[512]])
+        candidate.close()
+        self.assertFalse(candidate.quantized_rows)
+        self.assertTrue(all(handle.closed for handle in handles))
+        for base, layers in (("unknown", []), ("group32", [34]), ("w4a16", [-1]), ("group32", [1, 1])):
+            with self.assertRaises(ValueError):
+                QUALITY.candidate_config(base, layers)
+
+    def test_quality_corpus_isolation(self):
+        corpus = QUALITY.load_corpus()
+        self.assertEqual(len(QUALITY.select_cases(corpus, "diagnostic")), 24)
+        self.assertEqual(len(QUALITY.select_cases(corpus, "diagnostic", ["d01"])), 1)
+        with self.assertRaises(ValueError):
+            QUALITY.select_cases(corpus, "diagnostic", ["h01"])
+        self.assertEqual(corpus["review"]["heldout"]["reviewer_kind"], "ai")
+        self.assertEqual(len(QUALITY.select_cases(corpus, "heldout")), 24)
+        corpus["review"]["heldout"]["status"] = "pending"
+        with self.assertRaises(ValueError):
+            QUALITY.select_cases(corpus, "heldout")
+        corpus["review"]["heldout"] = {"status": "approved", "reviewer": "unit-test-only", "reviewer_kind": "human"}
+        with self.assertRaises(ValueError):
+            QUALITY.select_cases(corpus, "heldout")
+        corpus["review"]["heldout"]["cases_sha256"] = QUALITY.split_digest(corpus, "heldout")
+        self.assertEqual(len(QUALITY.select_cases(corpus, "heldout")), 24)
+        with self.assertRaises(ValueError):
+            QUALITY.select_cases(corpus, "heldout", ["h01"])
+        corpus["cases"][-1]["meaning"] += " Modified after review."
+        with self.assertRaises(ValueError):
+            QUALITY.select_cases(corpus, "heldout")
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "corpus.json"
+            corpus["cases"][-1]["text"] = corpus["cases"][0]["text"].upper()
+            QUALITY.save(path, corpus)
+            with self.assertRaises(ValueError):
+                QUALITY.load_corpus(path)
+
+    def test_quality_generation_report(self):
+        tokenizer = SimpleNamespace(decode=lambda tokens, **kwargs: "Guten Abend.")
+        transformers = SimpleNamespace(AutoTokenizer=SimpleNamespace(from_pretrained=lambda *args, **kwargs: tokenizer))
+        handles = []
+
+        def weights(*args):
+            handle = mock.Mock()
+            handles.append(handle)
+            return handle
+
+        engine = mock.Mock()
+        engine.generate.return_value = [42, 106]
+        reference = SimpleNamespace(Weights=weights, Reference=lambda *args, **kwargs: engine)
+        case = {"id": "d01", "source": "en", "target": "de", "text": "Good evening.",
+                "references": ["Guten Abend."], "meaning": "Greeting only", "prompt_ids": [2, 42]}
+        prepared = {"maximum_new_tokens": 8, "cases": [case], "reference_review": {"status": "pending"}}
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(sys.modules, {"transformers": transformers}), \
+                mock.patch.object(QUALITY, "module", return_value=reference):
+            path = Path(temporary) / "generated.json"
+            QUALITY.generate(prepared, list(QUALITY.VARIANTS), path)
+            report = json.loads(path.read_text())
+            packet = json.loads(Path(str(path) + ".reviews.json").read_text())
+            self.assertTrue(report["complete"])
+            self.assertFalse(report["quality_accepted"])
+            self.assertEqual(len(report["results"]), 3)
+            self.assertEqual(len(packet["ratings"]), 3)
+            self.assertEqual(packet["report_sha256"], QUALITY.digest(path))
+            self.assertTrue(all("variant" not in item and item["meaning"] is None for item in packet["ratings"]))
+            self.assertTrue(all(handle.close.call_count == 1 for handle in handles))
+            checkpoint = Path(temporary) / "checkpoint.json"
+            report["results"] = report["results"][:1]
+            report["complete"] = False
+            QUALITY.save(checkpoint, report)
+            resumed = Path(temporary) / "resumed.json"
+            engine.generate.reset_mock()
+            QUALITY.generate(prepared, list(QUALITY.VARIANTS), resumed, checkpoint)
+            self.assertEqual(engine.generate.call_count, 2)
+            resumed_report = json.loads(resumed.read_text())
+            self.assertTrue(resumed_report["complete"])
+            self.assertEqual(resumed_report["results"][0], report["results"][0])
+            self.assertEqual(resumed_report["resumed_from_sha256"], QUALITY.digest(checkpoint))
+            with self.assertRaises(ValueError):
+                QUALITY.resume_results({**prepared, "maximum_new_tokens": 9}, list(QUALITY.VARIANTS), checkpoint)
+            report["results"][0]["health"]["terminated"] = False
+            QUALITY.save(checkpoint, report)
+            with self.assertRaises(ValueError):
+                QUALITY.resume_results(prepared, list(QUALITY.VARIANTS), checkpoint)
+            original = resumed.read_bytes()
+            with self.assertRaises(TypeError):
+                QUALITY.save(resumed, {"bad": object()})
+            self.assertEqual(resumed.read_bytes(), original)
+            self.assertFalse(list(Path(temporary).glob("*.tmp")))
+            engine.generate.side_effect = ValueError("injected inference failure")
+            failed = Path(temporary) / "failed.json"
+            with self.assertRaises(ValueError):
+                QUALITY.generate(prepared, ["bf16"], failed)
+            self.assertFalse(json.loads(failed.read_text())["complete"])
+            self.assertEqual(handles[-1].close.call_count, 1)
+            self.assertFalse(Path(str(failed) + ".reviews.json").exists())
+
+    def test_quality_health(self):
+        self.assertTrue(QUALITY.output_health([42, 106], "Hello.", 8)["terminated"])
+        health = QUALITY.output_health([42] * 16, "repeated", 16)
+        self.assertTrue(health["token_limit"])
+        self.assertTrue(health["repeated_4gram_flag"])
+        for tokens in ([], [106, 42], [262145, 106], [42]):
+            with self.assertRaises(ValueError):
+                QUALITY.output_health(tokens, "text", 8)
+        with self.assertRaises(UnicodeEncodeError):
+            QUALITY.output_health([42, 106], "\ud800", 8)
+
+    @unittest.skipUnless(importlib.util.find_spec("sacrebleu"), "optional offline scoring dependency")
+    def test_quality_scoring_and_reviews(self):
+        case = {"id": "test", "source": "en", "target": "de", "references": ["Guten Tag."]}
+        result = {"case_id": "test", "variant": "bf16", "review_id": "test-review",
+                  "translation": "Guten Tag.", "generated_ids": [42, 106],
+                  "health": QUALITY.output_health([42, 106], "Guten Tag.", 8)}
+        report = {"complete": True, "cases": [case], "variants": ["bf16"], "results": [result],
+                  "reference_review": {"status": "pending", "reviewer": ""}}
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "report.json"
+            QUALITY.save(path, report)
+            scored = QUALITY.score(path)
+            self.assertAlmostEqual(scored["variants"]["bf16"]["chrf_pp"], 100)
+            self.assertEqual(scored["variants"]["bf16"]["exact_bf16_sequences"], 1)
+            self.assertFalse(scored["quality_accepted"])
+            self.assertFalse(scored["human_review_complete"])
+            reviews = {"report_sha256": QUALITY.digest(path), "reviewer": "unit-test-only", "reviewer_kind": "human",
+                       "ratings": [{"review_id": "test-review", **{key: "correct" for key in QUALITY.RATINGS}}]}
+            review_path = Path(temporary) / "reviews.json"
+            QUALITY.save(review_path, reviews)
+            self.assertTrue(QUALITY.score(path, review_path)["human_review_complete"])
+            reviews["reviewer_kind"] = "ai"
+            QUALITY.save(review_path, reviews)
+            ai_score = QUALITY.score(path, review_path)
+            self.assertTrue(ai_score["semantic_review_complete"])
+            self.assertFalse(ai_score["human_review_complete"])
+            self.assertEqual(ai_score["reviewer_kind"], "ai")
+            reviews["reviewer_kind"] = "unknown"
+            QUALITY.save(review_path, reviews)
+            with self.assertRaises(ValueError):
+                QUALITY.score(path, review_path)
+            reviews["reviewer_kind"] = "ai"
+            reviews["ratings"][0]["meaning"] = None
+            QUALITY.save(review_path, reviews)
+            with self.assertRaises(ValueError):
+                QUALITY.score(path, review_path)
+            report["results"].append(result)
+            QUALITY.save(path, report)
+            with self.assertRaises(ValueError):
+                QUALITY.score(path)
+            report["complete"] = False
+            QUALITY.save(path, report)
+            with self.assertRaises(ValueError):
+                QUALITY.score(path)
+
     def test_diagnostic_grouped_w4(self):
         values = np.random.default_rng(19).normal(0, 0.1, (2, 64)).astype(np.float32)
         values[0, 0] = 7; values[1, 32:] = 0

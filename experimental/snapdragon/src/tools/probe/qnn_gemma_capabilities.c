@@ -192,6 +192,268 @@ static u64 add_node(
     return api->graph_add_node(graph, operation);
 }
 
+static u32 run_w4_basis(const QnnInterfaceV2 *api, QnnContextHandle context, u32 grouped) {
+    typedef struct GemmaBasisBlockEncoding {
+        u32 bitwidth;
+        u32 mapping;
+        u32 *block_size;
+        QnnScaleOffset *scale_offset;
+    } GemmaBasisBlockEncoding;
+    static const u32 active_columns[8] = {0U, 1U, 30U, 31U, 32U, 33U, 62U, 63U};
+    static const char *const names[12] = {
+        "basis-0", "basis-1", "basis-30", "basis-31", "basis-32", "basis-33", "basis-62", "basis-63",
+        "negative-31", "negative-32", "within-group-cancellation", "cross-group-sum"
+    };
+    u32 input_dimensions[2] = {12U, 64U};
+    u32 weight_dimensions[2] = {64U, 4U};
+    u32 output_dimensions[2] = {12U, 4U};
+    u32 block_dimensions[2] = {32U, 1U};
+    u16 input[12U * 64U] = {0};
+    u16 output[12U * 4U];
+    i8 weights[64U * 4U];
+    float scales[4] = {0.125f, 0.0625f, 0.03125f, 0.015625f};
+    QnnScaleOffset blocks[8];
+    GemmaBasisBlockEncoding encoding = {4U, 0U, block_dimensions, blocks};
+#ifdef GEMMA_GROUP32_EXPANSION
+    struct {
+        u32 bitwidth;
+        u32 mapping;
+        i32 axis;
+        QnnScaleOffset *scale_offsets;
+        u32 num_blocks;
+        u32 scale_bitwidth;
+        u32 scale_storage;
+        u8 *multipliers;
+    } expansion;
+    u8 multipliers[8] = {1U, 8U, 1U, 8U, 1U, 8U, 1U, 8U};
+    _Static_assert(sizeof(expansion) == 48U, "QNN mapped expansion ABI size");
+    expansion.bitwidth = 4U;
+    expansion.mapping = 0U;
+    expansion.axis = 1;
+    expansion.scale_offsets = blocks;
+    expansion.num_blocks = 2U;
+    expansion.scale_bitwidth = 4U;
+    expansion.scale_storage = 0U;
+    expansion.multipliers = multipliers;
+#endif
+    QnnTensor inputs[2], outputs[1];
+    QnnGraphHandle graph = 0;
+    u32 probe, column, row, failures = 0U;
+    u64 status;
+    write_text(grouped ? "TranslateGemma tiny group-32 basis tests\n" : "TranslateGemma tiny per-axis basis control\n");
+    for (probe = 0U; probe < 8U; ++probe) input[probe * 64U + active_columns[probe]] = 0x3c00U;
+    input[8U * 64U + 31U] = 0xbc00U;
+    input[9U * 64U + 32U] = 0xbc00U;
+    input[10U * 64U] = 0x3c00U;
+    input[10U * 64U + 1U] = 0x3c00U;
+    input[11U * 64U + 31U] = 0x3c00U;
+    input[11U * 64U + 32U] = 0x3c00U;
+    for (row = 0U; row < 4U; ++row) {
+        blocks[row].scale = scales[row]; blocks[row].offset = 0;
+        blocks[4U + row].scale = scales[row] * 8.0f; blocks[4U + row].offset = 0;
+        for (column = 0U; column < 64U; ++column) {
+            i32 magnitude = (i32)(row + 1U);
+            weights[column * 4U + row] = (i8)(((column + row) & 1U) ? -magnitude : magnitude);
+        }
+    }
+    for (row = 0U; row < 48U; ++row) output[row] = 0x7e00U;
+    status = api->graph_create(context, grouped ? "gemma_basis_group32" : "gemma_basis_axis", 0, &graph);
+    if (status != 0U) { write_status("  basis graphCreate", status); return 121U; }
+#ifdef GEMMA_GROUP32_COMPOSE
+    if (grouped) {
+        u32 group_input_dimensions[2] = {12U, 32U}, group_weight_dimensions[2] = {32U, 4U};
+        u16 group_input[2][12U * 32U];
+        i8 group_weight[2][32U * 4U];
+        float group_scales[2][4];
+        QnnTensor group_inputs[2], partials[2];
+        static const char *const input_names[2] = {"group_input_0", "group_input_1"};
+        static const char *const weight_names[2] = {"group_weight_0", "group_weight_1"};
+        static const char *const partial_names[2] = {"group_partial_0", "group_partial_1"};
+        static const char *const node_names[2] = {"group_matmul_0", "group_matmul_1"};
+        write_text("  representation: two per-axis W4 group MatMuls plus FP16 Add\n");
+        for (u32 group = 0U; group < 2U; ++group) {
+            QnnTensor operands[2];
+            for (probe = 0U; probe < 12U; ++probe)
+                for (column = 0U; column < 32U; ++column)
+                    group_input[group][probe * 32U + column] = input[probe * 64U + group * 32U + column];
+            for (column = 0U; column < 32U; ++column)
+                for (row = 0U; row < 4U; ++row)
+                    group_weight[group][column * 4U + row] = weights[(group * 32U + column) * 4U + row];
+            for (row = 0U; row < 4U; ++row) group_scales[group][row] = blocks[group * 4U + row].scale;
+            operands[0] = make_plain_tensor(input_names[group], QNN_TENSOR_TYPE_APP_WRITE,
+                                            QNN_DATATYPE_FLOAT_16, group_input_dimensions, 2U);
+            operands[1] = make_bw_axis_tensor(weight_names[group], QNN_TENSOR_TYPE_STATIC,
+                QNN_DATATYPE_SFIXED_POINT_8, group_weight_dimensions, 2U, 1, 4U, group_scales[group]);
+            operands[1].data.v1.memory.client_buffer.data = group_weight[group];
+            operands[1].data.v1.memory.client_buffer.data_size = sizeof(group_weight[group]);
+            partials[group] = make_plain_tensor(partial_names[group], QNN_TENSOR_TYPE_NATIVE,
+                                                QNN_DATATYPE_FLOAT_16, output_dimensions, 2U);
+            status = api->tensor_create_graph_tensor(graph, &operands[0]);
+            if (!status) status = api->tensor_create_graph_tensor(graph, &operands[1]);
+            if (!status) status = api->tensor_create_graph_tensor(graph, &partials[group]);
+            if (!status) status = add_node(api, graph, node_names[group], "MatMul", operands, 2U, &partials[group], 1U, 0, 0U);
+            if (status) { write_status("  group partial", status); return 123U; }
+            group_inputs[group] = operands[0];
+            group_inputs[group].data.v1.memory.client_buffer.data = group_input[group];
+            group_inputs[group].data.v1.memory.client_buffer.data_size = sizeof(group_input[group]);
+        }
+        outputs[0] = make_plain_tensor("group_sum", QNN_TENSOR_TYPE_APP_READ,
+                                       QNN_DATATYPE_FLOAT_16, output_dimensions, 2U);
+        status = api->tensor_create_graph_tensor(graph, &outputs[0]);
+        if (!status) status = add_node(api, graph, "group_add", "ElementWiseAdd", partials, 2U, outputs, 1U, 0, 0U);
+        if (!status) status = api->graph_finalize(graph, 0, 0);
+        if (status) { write_status("  group finalize", status); return 124U; }
+        outputs[0].data.v1.memory.client_buffer.data = output;
+        outputs[0].data.v1.memory.client_buffer.data_size = sizeof(output);
+        status = api->graph_execute(graph, group_inputs, 2U, outputs, 1U, 0, 0);
+        if (status) { write_status("  group execute", status); return 125U; }
+        goto basis_verify;
+    }
+#endif
+    inputs[0] = make_plain_tensor("basis_input", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_16, input_dimensions, 2U);
+    inputs[1] = make_bw_axis_tensor("basis_weight", QNN_TENSOR_TYPE_STATIC, QNN_DATATYPE_SFIXED_POINT_8,
+                                    weight_dimensions, 2U, 1, 4U, scales);
+    if (grouped) {
+        inputs[1].data.v1.quantize_params.quantization_encoding = 9U;
+        inputs[1].data.v1.quantize_params.encoding = (QnnQuantizeEncoding){0};
+        inputs[1].data.v1.quantize_params.encoding.reserved[0] = (usize)&encoding;
+    #ifdef GEMMA_GROUP32_EXPANSION
+        inputs[1].data.v1.quantize_params.quantization_encoding = 10U;
+        inputs[1].data.v1.quantize_params.encoding.reserved[0] = (usize)&expansion;
+    #endif
+    #ifdef GEMMA_GROUP32_LEGACY_BLOCK
+        inputs[1].data.v1.quantize_params.quantization_encoding = 4U;
+        inputs[1].data.v1.quantize_params.encoding.reserved[0] = (usize)block_dimensions;
+        inputs[1].data.v1.quantize_params.encoding.reserved[1] = (usize)blocks;
+    #endif
+    }
+    inputs[1].data.v1.memory.client_buffer.data = weights;
+    inputs[1].data.v1.memory.client_buffer.data_size = sizeof(weights);
+    outputs[0] = make_plain_tensor("basis_output", QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_16, output_dimensions, 2U);
+    status = api->tensor_create_graph_tensor(graph, &inputs[0]);
+    if (!status) status = api->tensor_create_graph_tensor(graph, &inputs[1]);
+    if (!status) status = api->tensor_create_graph_tensor(graph, &outputs[0]);
+    if (status) { write_status("  basis tensorCreate", status); return 122U; }
+#ifdef GEMMA_GROUP32_DEQUANTIZE
+    if (grouped) {
+        QnnTensor dequantized = make_plain_tensor("basis_dequantized", QNN_TENSOR_TYPE_NATIVE,
+                                                  QNN_DATATYPE_FLOAT_16, weight_dimensions, 2U);
+        status = api->tensor_create_graph_tensor(graph, &dequantized);
+        if (!status) status = add_node(api, graph, "basis_dequantize", "Dequantize",
+                                       &inputs[1], 1U, &dequantized, 1U, 0, 0U);
+        if (status) { write_status("  basis Dequantize", status); return 123U; }
+        inputs[1] = dequantized;
+    }
+#endif
+    status = add_node(api, graph, "basis_matmul", "MatMul", inputs, 2U, outputs, 1U, 0, 0U);
+    if (status) { write_status("  basis graphAddNode", status); return 123U; }
+    status = api->graph_finalize(graph, 0, 0);
+    if (status) { write_status("  basis graphFinalize", status); return 124U; }
+    inputs[0].data.v1.memory.client_buffer.data = input;
+    inputs[0].data.v1.memory.client_buffer.data_size = sizeof(input);
+    outputs[0].data.v1.memory.client_buffer.data = output;
+    outputs[0].data.v1.memory.client_buffer.data_size = sizeof(output);
+    status = api->graph_execute(graph, inputs, 1U, outputs, 1U, 0, 0);
+    if (status) { write_status("  basis graphExecute", status); return 125U; }
+#ifdef GEMMA_GROUP32_COMPOSE
+basis_verify:
+#endif
+    for (probe = 0U; probe < 12U; ++probe) {
+        u32 mismatches = 0U;
+        for (row = 0U; row < 4U; ++row) {
+            float expected = 0.0f;
+            u16 actual = output[probe * 4U + row];
+            for (column = 0U; column < 64U; ++column) {
+                float scale = grouped ? blocks[(column / 32U) * 4U + row].scale : scales[row];
+                expected += half_to_float(input[probe * 64U + column]) * (float)weights[column * 4U + row] * scale;
+            }
+            if ((actual & 0x7c00U) == 0x7c00U || half_to_float(actual) != expected) {
+                union { float value; u32 bits; } reference_bits;
+                reference_bits.value = expected;
+                ++mismatches;
+                write_text("  mismatch "); write_text(names[probe]); write_text(" output "); write_u32(row);
+                write_text(" actual-f16="); write_hex64(actual);
+                write_text(" expected-f32="); write_hex64(reference_bits.bits); write_text("\n");
+            }
+        }
+        failures += mismatches;
+        write_text("  "); write_text(names[probe]);
+        write_text(mismatches ? ": FAIL\n" : ": PASS exact\n");
+    }
+    write_text("  basis mismatched outputs: "); write_u32(failures); write_text(" / 48\n");
+    return failures ? 126U : 0U;
+}
+
+#ifdef GEMMA_GROUP32_COMPOSE
+static u32 run_composed_projection(const QnnInterfaceV2 *api, QnnGraphHandle graph,
+                                   u16 *input, i8 *weights, QnnScaleOffset *scales, u16 *output) {
+    enum { GROUPS = GEMMA_HIDDEN_WIDTH / 32U };
+    struct Workspace {
+        QnnTensor inputs[GROUPS];
+        float scales[GROUPS][GEMMA_HIDDEN_WIDTH];
+        char names[GROUPS][6][24];
+    } *workspace = VirtualAlloc(0, sizeof(*workspace), 0x3000U, 0x04U);
+    static const char *const labels[6] = {"input", "weight", "partial", "sum", "matmul", "add"};
+    u32 input_dimensions[2] = {1U, 32U}, weight_dimensions[2] = {32U, GEMMA_HIDDEN_WIDTH};
+    u32 output_dimensions[2] = {1U, GEMMA_HIDDEN_WIDTH};
+    QnnTensor accumulated = {0};
+    u32 result = 0U;
+    u64 status = 0U;
+    if (!workspace) return 120U;
+    write_text("  representation: 80 per-axis W4 group MatMuls, 79 FP16 Adds\n");
+    for (u32 group = 0U; group < GROUPS; ++group) {
+        QnnTensor operands[2], partial;
+        for (u32 label = 0U; label < 6U; ++label) {
+            char *name = workspace->names[group][label];
+            u32 position = 0U;
+            name[0] = 'g'; name[1] = (char)('0' + group / 10U);
+            name[2] = (char)('0' + group % 10U); name[3] = '_';
+            do { name[4U + position] = labels[label][position]; } while (labels[label][position++]);
+        }
+        for (u32 channel = 0U; channel < GEMMA_HIDDEN_WIDTH; ++channel)
+            workspace->scales[group][channel] = scales[group * GEMMA_HIDDEN_WIDTH + channel].scale;
+        operands[0] = make_plain_tensor(workspace->names[group][0], QNN_TENSOR_TYPE_APP_WRITE,
+                                        QNN_DATATYPE_FLOAT_16, input_dimensions, 2U);
+        operands[1] = make_bw_axis_tensor(workspace->names[group][1], QNN_TENSOR_TYPE_STATIC,
+            QNN_DATATYPE_SFIXED_POINT_8, weight_dimensions, 2U, 1, GEMMA_HIDDEN_WIDTH, workspace->scales[group]);
+        operands[1].data.v1.memory.client_buffer.data = weights + group * 32U * GEMMA_HIDDEN_WIDTH;
+        operands[1].data.v1.memory.client_buffer.data_size = 32U * GEMMA_HIDDEN_WIDTH;
+        partial = make_plain_tensor(workspace->names[group][2], QNN_TENSOR_TYPE_NATIVE,
+                                    QNN_DATATYPE_FLOAT_16, output_dimensions, 2U);
+        status = api->tensor_create_graph_tensor(graph, &operands[0]);
+        if (!status) status = api->tensor_create_graph_tensor(graph, &operands[1]);
+        if (!status) status = api->tensor_create_graph_tensor(graph, &partial);
+        if (!status) status = add_node(api, graph, workspace->names[group][4], "MatMul", operands, 2U, &partial, 1U, 0, 0U);
+        if (status) { write_status("  composed partial", status); result = 123U; goto cleanup; }
+        workspace->inputs[group] = operands[0];
+        workspace->inputs[group].data.v1.memory.client_buffer.data = input + group * 32U;
+        workspace->inputs[group].data.v1.memory.client_buffer.data_size = 32U * sizeof(u16);
+        if (group == 0U) accumulated = partial;
+        else {
+            QnnTensor terms[2] = {accumulated, partial};
+            QnnTensor sum = make_plain_tensor(workspace->names[group][3],
+                group + 1U == GROUPS ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE,
+                QNN_DATATYPE_FLOAT_16, output_dimensions, 2U);
+            status = api->tensor_create_graph_tensor(graph, &sum);
+            if (!status) status = add_node(api, graph, workspace->names[group][5], "ElementWiseAdd", terms, 2U, &sum, 1U, 0, 0U);
+            if (status) { write_status("  composed sum", status); result = 123U; goto cleanup; }
+            accumulated = sum;
+        }
+    }
+    status = api->graph_finalize(graph, 0, 0);
+    write_status("  composed graphFinalize", status);
+    if (status) { result = 124U; goto cleanup; }
+    accumulated.data.v1.memory.client_buffer.data = output;
+    accumulated.data.v1.memory.client_buffer.data_size = GEMMA_HIDDEN_WIDTH * sizeof(u16);
+    status = api->graph_execute(graph, workspace->inputs, GROUPS, &accumulated, 1U, 0, 0);
+    write_status("  composed graphExecute", status);
+    if (status) result = 125U;
+cleanup:
+    VirtualFree(workspace, 0U, 0x8000U);
+    return result;
+}
+#endif
+
 static u32 run_w4a16_projection(
     const QnnInterfaceV2 *api,
     QnnContextHandle context,
@@ -248,6 +510,7 @@ static u32 run_w4a16_projection(
     for (output_index = 0U; output_index < GEMMA_HIDDEN_WIDTH; ++output_index) {
         scales[output_index] = 0.015625f * (float)(1U + output_index % 4U);
         references[output_index] = 0.0f;
+        output[output_index] = 0x7e00U;
     }
     for (input_index = 0U; input_index < GEMMA_HIDDEN_WIDTH; ++input_index) {
         float input_value = half_to_float(input[input_index]);
@@ -273,6 +536,13 @@ static u32 run_w4a16_projection(
         result = 121U;
         goto cleanup;
     }
+#ifdef GEMMA_GROUP32_COMPOSE
+    if (grouped) {
+        result = run_composed_projection(api, graph, input, weights, block_scales, output);
+        if (result) goto cleanup;
+        goto projection_verify;
+    }
+#endif
     inputs[0] = make_plain_tensor(
         "gemma_projection_input", QNN_TENSOR_TYPE_APP_WRITE,
         QNN_DATATYPE_FLOAT_16, input_dimensions, 2U
@@ -331,7 +601,15 @@ static u32 run_w4a16_projection(
         result = 125U;
         goto cleanup;
     }
+#ifdef GEMMA_GROUP32_COMPOSE
+projection_verify:
+#endif
     for (output_index = 0U; output_index < GEMMA_HIDDEN_WIDTH; ++output_index) {
+        if ((output[output_index] & 0x7c00U) == 0x7c00U) {
+            write_text("  nonfinite projection output\n");
+            result = 126U;
+            goto cleanup;
+        }
         float delta = absolute_float(
             half_to_float(output[output_index]) - references[output_index]
         );
@@ -1365,15 +1643,16 @@ u32 qnn_gemma_stage1_probe(
 ) {
     u32 result;
     report_quantization_properties(api);
-    result = run_w4a16_projection(api, context, 0U);
+    result = run_w4_basis(api, context, 0U);
+    if (result == 0U) result = run_w4a16_projection(api, context, 0U);
 #ifdef GEMMA_GROUP32_DIAGNOSTIC
+    if (result == 0U) result = run_w4_basis(api, context, 1U);
     if (result == 0U) {
         u32 grouped_result = run_w4a16_projection(api, context, 1U);
         if (grouped_result >= 122U && grouped_result <= 124U) {
-            write_text("  result: group-32 block-mapped graph unavailable; no deployment acceptance\n");
-        } else {
-            result = grouped_result;
+            write_text("  result: group-32 graph unavailable; diagnostic gate failed\n");
         }
+        result = grouped_result;
     }
 #endif
     if (result == 0U) result = run_rms_norm(api, context);
