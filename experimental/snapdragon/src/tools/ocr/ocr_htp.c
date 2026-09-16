@@ -11,7 +11,7 @@ __declspec(dllimport) int GetFileSizeEx(void *, long long *);
 __declspec(dllimport) int ReadFile(void *, void *, u32, u32 *, void *);
 __declspec(dllimport) int CloseHandle(void *);
 
-static u8 fixture_data[16U * 1024U * 1024U];
+static u8 fixture_data[64U * 1024U * 1024U];
 static u16 oracle_output[16384];
 
 static u32 load32(const u8 *data) {
@@ -225,7 +225,295 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
     return 1;
 }
 
+typedef struct {
+    const QnnInterfaceV2 *api;
+    QnnGraphHandle graph;
+    QnnTensor tensors[128];
+    u32 dimensions[128][4];
+    char names[128][5];
+    u32 count;
+    int good;
+} OcrAttentionGraph;
+
+static u16 attention_output[2097152];
+
+static u32 attention_elements(u32 tap) {
+    return tap == 1 ? 196608 : tap >= 12 && tap <= 15 ? 262144 : 65536;
+}
+
+static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32 rank, const u32 *shape, void *data) {
+    u32 index = builder->count, elements = 1;
+    if (!builder->good || index >= 128 || !rank || rank > 4) { builder->good = 0; return 0; }
+    ++builder->count;
+    builder->names[index][0] = 't';
+    builder->names[index][1] = '0'+index/100;
+    builder->names[index][2] = '0'+index/10%10;
+    builder->names[index][3] = '0'+index%10;
+    builder->names[index][4] = 0;
+    for (u32 axis = 0; axis < rank; ++axis) { builder->dimensions[index][axis] = shape[axis]; elements *= shape[axis]; }
+    QnnTensor *value = &builder->tensors[index];
+    *value = tensor(builder->names[index],type,builder->dimensions[index]);
+    value->data.v1.rank = rank;
+    value->data.v1.data_type = dtype;
+    value->data.v1.memory.client_buffer.data = data;
+    value->data.v1.memory.client_buffer.data_size = data ? elements * (dtype == QNN_DATATYPE_FLOAT_16 ? 2 : 4) : 0;
+    if (!checked("attention_tensor",builder->api->tensor_create_graph_tensor(builder->graph,value))) builder->good = 0;
+    return index;
+}
+
+static u32 attention_op(OcrAttentionGraph *builder, const char *operation, const u32 *ids, u32 count, u32 rank, const u32 *shape,
+                        u32 dtype, int tap, QnnParam *parameters, u32 parameter_count) {
+    QnnTensor inputs[3];
+    if (!builder->good || count > 3) { builder->good = 0; return 0; }
+    for (u32 index = 0; index < count; ++index) inputs[index] = builder->tensors[ids[index]];
+    u32 output = attention_tensor(builder,tap ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE,dtype,rank,shape,0);
+    if (builder->good && !node(builder->api,builder->graph,builder->names[output],operation,inputs,count,&builder->tensors[output],parameters,parameter_count)) builder->good = 0;
+    return output;
+}
+
+static QnnParam attention_axis(const char *name, u32 axis) {
+    QnnParam result = {0};
+    result.name = name; result.type = QNN_PARAMTYPE_SCALAR;
+    result.value.scalar.data_type = QNN_DATATYPE_INT_32;
+    result.value.scalar.value.int32_value = (int)axis;
+    return result;
+}
+
+static u32 attention_norm(OcrAttentionGraph *builder, u32 input, u32 gamma, u32 rank, const u32 *shape, u32 *axis) {
+    u32 one[1] = {1}, ids[2] = {input,gamma};
+    u32 axis_id = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,one,axis);
+    QnnParam parameters[2] = {0};
+    parameters[0].name = "epsilon"; parameters[0].type = QNN_PARAMTYPE_SCALAR;
+    parameters[0].value.scalar.data_type = QNN_DATATYPE_FLOAT_32;
+    parameters[0].value.scalar.value.float_value = 1e-5f;
+    parameters[1].name = "axes"; parameters[1].type = QNN_PARAMTYPE_TENSOR;
+    parameters[1].value.tensor = builder->tensors[axis_id];
+    return attention_op(builder,"RmsNorm",ids,2,rank,shape,QNN_DATATYPE_FLOAT_16,1,parameters,2);
+}
+
+static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 *shape, u32 *permutation) {
+    u32 shape_perm[1] = {3};
+    u32 perm_id = attention_tensor(builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,shape_perm,permutation);
+    QnnParam parameter = {0}; parameter.name = "perm"; parameter.type = QNN_PARAMTYPE_TENSOR;
+    parameter.value.tensor = builder->tensors[perm_id];
+    return attention_op(builder,"Transpose",&input,1,3,shape,QNN_DATATYPE_FLOAT_16,0,&parameter,1);
+}
+
+static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block) {
+    OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
+    u32 flat[2] = {64,1024}, fused[2] = {64,3072}, heads[3] = {64,16,64}, batched[3] = {16,64,64};
+    u32 shape_qkv[2] = {1024,3072}, shape_proj[2] = {1024,1024}, width[1] = {1024}, qkv_width[1] = {3072}, head_width[1] = {64};
+    u32 frequency_shape[3] = {64,1,64}, scalar_shape[1] = {1}, scalar_axis = 1, head_axis = 2;
+    u32 permutation[3] = {1,0,2}, key_permutation[3] = {0,2,1};
+    u32 selections[3][1024], rotation[64]; float signs[64]; _Float16 scale = (_Float16)0.125f;
+    for (u32 part = 0; part < 3; ++part) for (u32 index = 0; index < 1024; ++index) selections[part][index] = part*1024+index;
+    for (u32 index = 0; index < 64; ++index) { rotation[index] = (index+32)%64; signs[index] = index < 32 ? -1.0f : 1.0f; }
+    if (!checked("attention_graph",api->graph_create(context,"vision_attention_0",0,&builder.graph))) return 0;
+    u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
+    u32 gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
+    u32 qkv_weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,shape_qkv,constants); constants += 6291456;
+    u32 qkv_bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,qkv_width,constants); constants += 6144;
+    u32 q_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,head_width,constants); constants += 128;
+    u32 k_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,head_width,constants); constants += 128;
+    u32 cosine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += 16384;
+    u32 sine = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,constants); constants += 16384;
+    u32 proj_weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,shape_proj,constants); constants += 2097152;
+    u32 proj_bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
+    u32 rotate_indices = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,head_width,rotation);
+    u32 sign_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,1,head_width,signs);
+    u32 scale_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,scalar_shape,&scale);
+    u32 taps[18], branches[3], ids[2];
+    u32 tap_count = full_block ? 18 : 11, total_elements = full_block ? 2097152 : 851968;
+    u32 wide[2] = {64,4096}, expanded_weight[2] = {1024,4096}, reduced_weight[2] = {4096,1024}, expanded_width[1] = {4096};
+    _Float16 zero = 0, one = 1;
+    taps[0] = attention_norm(&builder,input,gamma,2,flat,&scalar_axis);
+    ids[0] = taps[0]; ids[1] = qkv_weight;
+    u32 product = attention_op(&builder,"MatMul",ids,2,2,fused,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = product; ids[1] = qkv_bias;
+    taps[1] = attention_op(&builder,"ElementWiseAdd",ids,2,2,fused,QNN_DATATYPE_FLOAT_16,1,0,0);
+    for (u32 part = 0; part < 3; ++part) {
+        ids[0] = taps[1]; ids[1] = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,width,selections[part]);
+        QnnParam axis = attention_axis("axis",1);
+        u32 selected = attention_op(&builder,"Gather",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,0,&axis,1);
+        branches[part] = attention_op(&builder,"Reshape",&selected,1,3,heads,QNN_DATATYPE_FLOAT_16,0,0,0);
+    }
+    taps[2] = attention_norm(&builder,branches[0],q_gamma,3,heads,&head_axis);
+    taps[3] = attention_norm(&builder,branches[1],k_gamma,3,heads,&head_axis);
+    for (u32 part = 0; part < 2; ++part) {
+        u32 promoted = attention_op(&builder,"Cast",&taps[2+part],1,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        ids[0] = promoted; ids[1] = rotate_indices;
+        QnnParam axis = attention_axis("axis",2);
+        u32 swapped = attention_op(&builder,"Gather",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,&axis,1);
+        ids[0] = swapped; ids[1] = sign_tensor;
+        u32 rotated = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        ids[0] = promoted; ids[1] = cosine;
+        u32 real = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        ids[0] = rotated; ids[1] = sine;
+        u32 imaginary = attention_op(&builder,"ElementWiseMultiply",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        ids[0] = real; ids[1] = imaginary;
+        u32 sum = attention_op(&builder,"ElementWiseAdd",ids,2,3,heads,QNN_DATATYPE_FLOAT_32,0,0,0);
+        taps[4+part] = attention_op(&builder,"Cast",&sum,1,3,heads,QNN_DATATYPE_FLOAT_16,1,0,0);
+        branches[part] = attention_transpose(&builder,taps[4+part],batched,permutation);
+    }
+    branches[2] = attention_transpose(&builder,branches[2],batched,permutation);
+    u32 key_transposed = attention_transpose(&builder,branches[1],batched,key_permutation);
+    ids[0] = branches[0]; ids[1] = key_transposed;
+    product = attention_op(&builder,"MatMul",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = product; ids[1] = scale_tensor;
+    taps[6] = attention_op(&builder,"ElementWiseMultiply",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,1,0,0);
+    u32 reduced_shape[2] = {16,64}, broadcast_shape[3] = {16,64,1};
+    u32 reduction_axis = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,scalar_shape,&head_axis);
+    QnnParam reduction = {0}; reduction.name = "axes"; reduction.type = QNN_PARAMTYPE_TENSOR;
+    reduction.value.tensor = builder.tensors[reduction_axis];
+    u32 maximum = attention_op(&builder,"ReduceMax",&taps[6],1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,0,&reduction,1);
+    u32 maximum_broadcast = attention_op(&builder,"Reshape",&maximum,1,3,broadcast_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = taps[6]; ids[1] = maximum_broadcast;
+    u32 shifted = attention_op(&builder,"ElementWiseSubtract",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 exponential = attention_op(&builder,"ElementWiseExp",&shifted,1,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 denominator = attention_op(&builder,"ReduceSum",&exponential,1,2,reduced_shape,QNN_DATATYPE_FLOAT_16,0,&reduction,1);
+    u32 denominator_broadcast = attention_op(&builder,"Reshape",&denominator,1,3,broadcast_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = exponential; ids[1] = denominator_broadcast;
+    taps[7] = attention_op(&builder,"ElementWiseDivide",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,1,0,0);
+    ids[0] = taps[7]; ids[1] = branches[2];
+    u32 attended = attention_op(&builder,"MatMul",ids,2,3,batched,QNN_DATATYPE_FLOAT_16,0,0,0);
+    u32 context_layout = attention_transpose(&builder,attended,heads,permutation);
+    taps[8] = attention_op(&builder,"Reshape",&context_layout,1,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    ids[0] = taps[8]; ids[1] = proj_weight;
+    product = attention_op(&builder,"MatMul",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,0,0,0);
+    ids[0] = product; ids[1] = proj_bias;
+    taps[9] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    ids[0] = input; ids[1] = taps[9];
+    taps[10] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    if (full_block) {
+        u32 second_gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
+        taps[11] = attention_norm(&builder,taps[10],second_gamma,2,flat,&scalar_axis);
+        for (u32 branch = 0; branch < 2; ++branch) {
+            u32 weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,expanded_weight,constants); constants += 8388608;
+            u32 bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,expanded_width,constants); constants += 8192;
+            ids[0] = taps[11]; ids[1] = weight;
+            u32 projected = attention_op(&builder,"MatMul",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+            ids[0] = projected; ids[1] = bias;
+            taps[12+branch] = attention_op(&builder,"ElementWiseAdd",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,1,0,0);
+        }
+        u32 zero_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,scalar_shape,&zero);
+        u32 one_tensor = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,scalar_shape,&one);
+        u32 absolute = attention_op(&builder,"ElementWiseAbs",&taps[12],1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 negative_absolute = attention_op(&builder,"ElementWiseNeg",&absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 decay = attention_op(&builder,"ElementWiseExp",&negative_absolute,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = one_tensor; ids[1] = decay;
+        u32 divisor = attention_op(&builder,"ElementWiseAdd",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = taps[12]; ids[1] = zero_tensor;
+        u32 negative_part = attention_op(&builder,"ElementWiseMinimum",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        u32 numerator_scale = attention_op(&builder,"ElementWiseExp",&negative_part,1,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = numerator_scale; ids[1] = divisor;
+        u32 sigmoid = attention_op(&builder,"ElementWiseDivide",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = taps[12]; ids[1] = sigmoid;
+        taps[14] = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,1,0,0);
+        ids[0] = taps[14]; ids[1] = taps[13];
+        taps[15] = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,1,0,0);
+        u32 down_weight = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,2,reduced_weight,constants); constants += 8388608;
+        u32 down_bias = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants);
+        ids[0] = taps[15]; ids[1] = down_weight;
+        u32 down_product = attention_op(&builder,"MatMul",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,0,0,0);
+        ids[0] = down_product; ids[1] = down_bias;
+        taps[16] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+        ids[0] = taps[10]; ids[1] = taps[16];
+        taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    }
+    if (!builder.good || !checked("attention_finalize",api->graph_finalize(builder.graph,0,0))) return 0;
+    QnnTensor outputs[18], source_tensor = builder.tensors[input];
+    source_tensor.data.v1.memory.client_buffer.data = source;
+    source_tensor.data.v1.memory.client_buffer.data_size = 131072;
+    u32 offset = 0;
+    for (u32 tap = 0; tap < tap_count; ++tap) {
+        u32 elements = attention_elements(tap);
+        outputs[tap] = builder.tensors[taps[tap]];
+        outputs[tap].data.v1.memory.client_buffer.data = attention_output+offset;
+        outputs[tap].data.v1.memory.client_buffer.data_size = elements*2;
+        offset += elements;
+    }
+    static const char *const names[] = {"norm1","qkv","q_norm","k_norm","q_rope","k_rope","scores","probabilities","context","projection","residual",
+        "norm2","gate","up","silu","gated","down","block_output"};
+    int good = 1;
+    for (u32 run = 0; run < 3; ++run) {
+        for (u32 index = 0; index < total_elements; ++index) attention_output[index] = 0x7e00;
+        if (!checked("attention_execute",api->graph_execute(builder.graph,&source_tensor,1,outputs,tap_count,execution_profile,0))) return 0;
+        const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
+        if (api->profile_get_events(execution_profile,&events,&event_count) || !profile_events(api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
+        checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
+        for (u32 row = 0; row < 1024; ++row) {
+            float sum = 0;
+            for (u32 column = 0; column < 64; ++column) {
+                union {u16 bits; _Float16 value;} probability;
+                probability.bits = attention_output[589824+row*64+column];
+                if (!(probability.value >= 0 && probability.value <= 1)) { text("FAIL probability range\n"); return 0; }
+                sum += (float)probability.value;
+            }
+            if (!(sum >= 0.997f && sum <= 1.003f)) { text("FAIL probability row sum\n"); return 0; }
+        }
+        text("PASS probability range and row sums\n");
+        for (u32 scope = 0; scope < 2; ++scope) {
+            text(scope ? "candidate_fp32\n" : "original_fp32\n"); offset = 0;
+            for (u32 tap = 0; tap < tap_count; ++tap) {
+                float maximum = 0; u32 failures = 0, elements = attention_elements(tap);
+                for (u32 index = 0; index < elements; ++index) {
+                    union {u32 bits; float value;} expected;
+                    union {u16 bits; _Float16 value;} actual;
+                    expected.bits = load32(references+(scope*total_elements+offset+index)*4);
+                    actual.bits = attention_output[offset+index];
+                    float error = (float)actual.value-expected.value; if (error < 0) error = -error;
+                    float magnitude = expected.value < 0 ? -expected.value : expected.value;
+                    if ((actual.bits & 0x7c00) == 0x7c00 || !(error <= 0.003f+0.005f*magnitude)) {
+                        ++failures;
+                        if (!run && tap == 17 && failures <= 16) {
+                            checked("block_failure_index",index);
+                            checked("block_actual_fp16_bits",actual.bits);
+                            checked("block_expected_fp32_bits",expected.bits);
+                            checked("block_residual_fp16_bits",attention_output[786432+index]);
+                            checked("block_down_fp16_bits",attention_output[offset-65536+index]);
+                            checked("block_reference_residual_fp32_bits",load32(references+(scope*total_elements+786432+index)*4));
+                            checked("block_reference_down_fp32_bits",load32(references+(scope*total_elements+offset-65536+index)*4));
+                        }
+                        if (!run && !scope && tap == 10 && failures <= 16) {
+                            checked("residual_failure_index",index);
+                            checked("input_fp16_bits",source[index*2] | (u32)source[index*2+1] << 8);
+                            checked("projection_fp16_bits",attention_output[offset-65536+index]);
+                            checked("residual_fp16_bits",actual.bits);
+                            checked("original_projection_fp32_bits",load32(references+(offset-65536+index)*4));
+                            checked("original_residual_fp32_bits",expected.bits);
+                            checked("candidate_projection_fp32_bits",load32(references+(total_elements+offset-65536+index)*4));
+                            checked("candidate_residual_fp32_bits",load32(references+(total_elements+offset+index)*4));
+                            static const char hex[] = "0123456789abcdef";
+                            char context_row[4097];
+                            for (u32 channel = 0; channel < 1024; ++channel) {
+                                u16 bits = attention_output[655360+(index/1024)*1024+channel];
+                                for (u32 digit = 0; digit < 4; ++digit) context_row[channel*4+digit] = hex[(bits >> (12-digit*4)) & 15];
+                            }
+                            context_row[4096] = 0;
+                            text("context_row_fp16_hex: "); text(context_row); text("\n");
+                        }
+                    }
+                    if (error > maximum && error < 1e10f) maximum = error;
+                }
+                text(names[tap]); text("\n"); checked("max_absolute_error_micro_units_ceil",(u64)(maximum*1000000.0f+0.999f));
+                checked("out_of_tolerance",failures); if (failures) good = 0;
+                offset += elements;
+            }
+        }
+    }
+    text(full_block ? (good ? "PASS learned vision block taps\n" : "FAIL learned vision block taps\n") :
+                     (good ? "PASS learned vision attention taps\n" : "FAIL learned vision attention taps\n"));
+    return good;
+}
+
 static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 size, u32 kind) {
+    if (kind == 7 || kind == 8) {
+        u32 constant_bytes = kind == 8 ? 33618176 : 8431872, reference_bytes = kind == 8 ? 16777216 : 6815744;
+        if (size != 192+131072+constant_bytes+reference_bytes || load32(fixture_data+160) != 1 || load32(fixture_data+164) != (kind == 8 ? 9U : 8U) ||
+            load32(fixture_data+168) != 64 || load32(fixture_data+172) != 1024 || load32(fixture_data+176) != 1024 ||
+            load32(fixture_data+180) != 131072 || load32(fixture_data+184) != constant_bytes || load32(fixture_data+188) != reference_bytes) return 0;
+        return !api || attention_probe(api,context,fixture_data+192,fixture_data+192+131072,fixture_data+192+131072+constant_bytes,kind == 8);
+    }
     static const char *const names[] = {"patch_projection","vision_qkv","text_query","rmsnorm_64","rmsnorm_128","rmsnorm_1024","rmsnorm_1536",
         "connector_layernorm","mlp_silu","connector_gelu","attention_softmax"};
     static const char *const learned_names[] = {"patch_pattern_original_fp32","patch_pattern_candidate_fp32","patch_noise_original_fp32",
@@ -306,8 +594,8 @@ int ocr_htp_test(const unsigned short *library, const unsigned short *fixtures) 
     execution_profile = 0;
     u32 fixture_size = read_fixtures(fixtures);
     u32 kind = fixture_size >= 128 ? load32(fixture_data+12) : 0;
-    if ((kind != 5 && kind != 6) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
-    if (kind == 6) {
+    if ((kind != 5 && kind != 6 && kind != 7 && kind != 8) || !ocr_artifact(fixture_data,fixture_size,kind)) { text("FAIL HTP fixture verification\n"); return 0; }
+    if (kind == 6 || kind == 7 || kind == 8) {
         static const char source_sha[] = "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815";
         static const char hex[] = "0123456789abcdef";
         if (fixture_size < 164) { text("FAIL learned weight identity\n"); return 0; }

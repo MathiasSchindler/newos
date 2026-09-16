@@ -2,6 +2,76 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "GLM-OCR vision block text HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-block-v1/text", "-BuildDir", "experimental/snapdragon/build/ocr-block/text"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision block corpus HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference='Stop'; foreach ($case in @('','noise','text')) { & ./experimental/snapdragon/tools/build-ocr.ps1 -TestHtp -HtpDir ('experimental/snapdragon/models/glm-ocr-block-v1/' + $case) -BuildDir ('experimental/snapdragon/build/ocr-block/' + $case) }"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision block HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-block-v1", "-BuildDir", "experimental/snapdragon/build/ocr-block"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision block oracle",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-vision-block", "--attention-case", "all"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR attention corpus oracle",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-vision-attention", "--attention-case", "all"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR attention corpus HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference = 'Stop'; foreach ($case in @('','noise','text')) { & ./experimental/snapdragon/tools/build-ocr.ps1 -TestHtp -HtpDir ('experimental/snapdragon/models/glm-ocr-attention-v1/' + $case) -BuildDir ('experimental/snapdragon/build/ocr-attention-precision/' + $case) }"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR attention precision HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-attention-v1", "-BuildDir", "experimental/snapdragon/build/ocr-attention-precision"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR residual investigation",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--analyze-attention-failures"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision attention HTP",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/build-ocr.ps1", "-TestHtp", "-HtpDir", "experimental/snapdragon/models/glm-ocr-attention-v1", "-BuildDir", "experimental/snapdragon/build/ocr-attention-precision"],
+			"problemMatcher": []
+		},
+		{
+			"label": "GLM-OCR vision attention oracle",
+			"type": "process",
+			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
+			"args": ["-B", "experimental/snapdragon/tools/export-glm-ocr.py", "--export-vision-attention"],
+			"problemMatcher": []
+		},
+		{
 			"label": "GLM-OCR learned patch HTP",
 			"type": "process",
 			"command": "powershell.exe",

@@ -343,8 +343,10 @@ try {
             Assert-Native @('--test-htp', $missing, $badFixture) 1 'FAIL HTP fixture verification'
             $negativeCount = 4
             $originalFixture = [IO.File]::ReadAllBytes($fixturePath)
-            if ([BitConverter]::ToUInt32($originalFixture,12) -eq 6) {
-                foreach ($offset in @(128,168)) {
+            $fixtureKind = [BitConverter]::ToUInt32($originalFixture,12)
+            if ($fixtureKind -in @(6,7,8)) {
+                $invalidOffsets = if ($fixtureKind -eq 8) { @(128,164,168,172,176,180,184,188) } else { @(128,168) }
+                foreach ($offset in $invalidOffsets) {
                     $damaged = [byte[]]$originalFixture.Clone()
                     $damaged[$offset] = $damaged[$offset] -bxor 1
                     $hash = [Security.Cryptography.SHA256]::Create()

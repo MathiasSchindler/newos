@@ -7,6 +7,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import struct
 import sys
@@ -168,6 +169,264 @@ def export_learned_htp(model, output):
     print("PASS learned patch oracle:",len(records),"cases",len(data),"bytes",sha(data),flush=True)
 
 
+def export_vision_attention(model, output, case="pattern", full_block=False):
+    import inspect as source_inspect
+    import numpy as np
+    torch, processor_class, _, versions = image_reference()
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrVisionConfig
+    module_hash = sha(Path(source_inspect.getfile(reference)).read_bytes())
+    if module_hash != "aea6387985dad1f0f5124f9344cc98849be8a7f2c26652ac3d914f6eefac6cc6" or torch.version.git_version != "08187d9e0fba026dc8217405802ab5381dc88d90":
+        raise ValueError("Attention reference source drift")
+    state = {}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        for name,tensor in tensors.items():
+            if not (name.startswith("model.visual.patch_embed.") or name.startswith("model.visual.blocks.0.attn.") or name == "model.visual.blocks.0.norm1.weight" or
+                    (full_block and name.startswith("model.visual.blocks.0."))):
+                continue
+            start,end = tensor["data_offsets"]
+            stream.seek(payload+start)
+            raw = stream.read(end-start)
+            if len(raw) != end-start:
+                raise ValueError("Truncated attention tensor")
+            values = (np.frombuffer(raw,dtype="<u2").astype(np.uint32) << 16).view(np.float32).reshape(tensor["shape"])
+            state[name.removeprefix("model.visual.")] = torch.from_numpy(values.copy())
+    config = GlmOcrVisionConfig(**read_json(model/"config.json")["vision_config"])
+    config._attn_implementation = "eager"
+    patch = reference.GlmOcrVisionPatchEmbed(config).eval()
+    patch.load_state_dict({name.removeprefix("patch_embed."):value for name,value in state.items() if name.startswith("patch_embed.")},strict=True)
+    processor = processor_class.from_pretrained(str(model),local_files_only=True)
+    row_ids,column_ids = np.indices((112,112))
+    image = np.stack(((row_ids*17+column_ids*7)%256,(row_ids*3+column_ids*23)%256,(row_ids*31+column_ids*5)%256),axis=-1).astype(np.uint8)
+    font_sha = None
+    if case == "noise":
+        image = np.random.default_rng(20260916).integers(0,256,size=(112,112,3),dtype=np.uint8)
+    elif case == "text":
+        from PIL import Image, ImageDraw, ImageFont
+        font_path = Path(os.environ["WINDIR"])/"Fonts/segoeui.ttf"
+        page = Image.new("RGB",(112,112),"white")
+        ImageDraw.Draw(page).multiline_text((3,3),"OCR 1042\n19,95 EUR\n16.09.2026\nHello!",font=ImageFont.truetype(str(font_path),14),fill="black",spacing=4)
+        image = np.asarray(page).copy()
+        font_sha = sha(font_path.read_bytes())
+    elif case != "pattern":
+        raise ValueError("Unknown attention image case")
+    processed = processor(images=torch.from_numpy(image).permute(2,0,1),return_tensors="pt",input_data_format="channels_first")
+    if processed["image_grid_thw"].tolist() != [[1,8,8]]:
+        raise ValueError("Unexpected attention grid")
+    positions = reference.get_vision_position_ids(processed["image_grid_thw"],2)
+    with torch.inference_mode():
+        hidden = patch(processed["pixel_values"].float())
+        cos,sin = reference.GlmOcrVisionRotaryEmbedding(config)(hidden,positions)
+    scopes,tap_names,statistics = [],None,{}
+    for scope in ("original_fp32","candidate_fp32"):
+        attention = reference.GlmOcrVisionAttention(config).eval()
+        norm = reference.GlmOcrRMSNorm(1024,eps=config.rms_norm_eps).eval()
+        weights = {name.removeprefix("blocks.0.attn."):value for name,value in state.items() if name.startswith("blocks.0.attn.")}
+        norm_weight = state["blocks.0.norm1.weight"]
+        inputs = hidden
+        if scope == "candidate_fp32":
+            weights = {name:value.half().float() for name,value in weights.items()}
+            norm_weight = norm_weight.half().float()
+            inputs = hidden.half().float()
+        attention.load_state_dict(weights,strict=True)
+        norm.load_state_dict({"weight":norm_weight},strict=True)
+        block = None
+        if full_block:
+            block = reference.GlmOcrVisionBlock(config).eval()
+            block_weights = {name.removeprefix("blocks.0."):value for name,value in state.items() if name.startswith("blocks.0.")}
+            if scope == "candidate_fp32":
+                block_weights = {name:value.half().float() for name,value in block_weights.items()}
+            block.load_state_dict(block_weights,strict=True)
+            attention,norm = block.attn,block.norm1
+        captured = {}
+        def capture(name):
+            def hook(module, arguments, result):
+                captured[name] = result.detach().clone()
+            return hook
+        hooks = [module.register_forward_hook(capture(name)) for name,module in (("qkv",attention.qkv),("q_norm",attention.q_norm),("k_norm",attention.k_norm))]
+        def capture_context(module, arguments):
+            captured["context"] = arguments[0].detach().clone()
+        hooks.append(attention.proj.register_forward_pre_hook(capture_context))
+        if full_block:
+            hooks += [module.register_forward_hook(capture(name)) for name,module in
+                      (("norm1",norm),("projection",attention.proj),("norm2",block.norm2),
+                       ("gate",block.mlp.gate_proj),("up",block.mlp.up_proj),("down",block.mlp.down_proj))]
+            def capture_gated(module, arguments):
+                captured["gated"] = arguments[0].detach().clone()
+            hooks.append(block.mlp.down_proj.register_forward_pre_hook(capture_gated))
+        try:
+            with torch.inference_mode():
+                if full_block:
+                    block_output = block(inputs,torch.tensor([0,64],dtype=torch.int32),position_embeddings=(cos,sin))
+                    normalized,projected = captured["norm1"],captured["projection"]
+                else:
+                    normalized = norm(inputs)
+                    projected = attention(normalized,torch.tensor([0,64],dtype=torch.int32),position_embeddings=(cos,sin))
+                query,key = reference.apply_rotary_pos_emb_vision(captured["q_norm"],captured["k_norm"],cos,sin)
+                value = captured["qkv"].reshape(64,3,16,64)[:,2].transpose(0,1)
+                scores = (query.transpose(0,1) @ key.transpose(0,1).transpose(-1,-2))*0.125
+                probabilities = torch.softmax(scores,dim=-1)
+                context = (probabilities @ value).transpose(0,1).reshape(64,1024)
+                torch.testing.assert_close(context,captured["context"],atol=1e-6,rtol=1e-5)
+                taps = {"norm1":normalized,"qkv":captured["qkv"],"q_norm":captured["q_norm"],"k_norm":captured["k_norm"],
+                        "q_rope":query,"k_rope":key,"scores":scores,"probabilities":probabilities,"context":context,
+                        "projection":projected,"residual":inputs+projected}
+                if full_block:
+                    activated = block.mlp.act_fn(captured["gate"])
+                    torch.testing.assert_close(activated*captured["up"],captured["gated"],atol=0,rtol=0)
+                    torch.testing.assert_close(taps["residual"]+captured["down"],block_output,atol=0,rtol=0)
+                    taps.update(norm2=captured["norm2"],gate=captured["gate"],up=captured["up"],silu=activated,
+                                gated=captured["gated"],down=captured["down"],block_output=block_output)
+                if any(not torch.isfinite(value).all() for value in taps.values()):
+                    raise ValueError("Nonfinite attention oracle")
+                tap_names = list(taps)
+                statistics[scope] = {name:{"shape":list(value.shape),"min":float(value.min()),"max":float(value.max()),"max_magnitude":float(value.abs().max())} for name,value in taps.items()}
+                scopes.append(b"".join(value.contiguous().numpy().astype("<f4").tobytes() for value in taps.values()))
+        finally:
+            for hook in hooks:
+                hook.remove()
+    def half_bytes(value):
+        return value.detach().half().contiguous().numpy().astype("<f2").tobytes()
+    constants = half_bytes(state["blocks.0.norm1.weight"])
+    for name in ("qkv.weight","qkv.bias","q_norm.weight","k_norm.weight"):
+        value = state["blocks.0.attn."+name]
+        constants += half_bytes(value.t() if name.endswith(".weight") and value.ndim == 2 else value)
+    constants += cos.contiguous().numpy().astype("<f4").tobytes()+sin.contiguous().numpy().astype("<f4").tobytes()
+    constants += half_bytes(state["blocks.0.attn.proj.weight"].t())+half_bytes(state["blocks.0.attn.proj.bias"])
+    if full_block:
+        constants += half_bytes(state["blocks.0.norm2.weight"])
+        for projection in ("gate_proj","up_proj","down_proj"):
+            constants += half_bytes(state["blocks.0.mlp."+projection+".weight"].t())+half_bytes(state["blocks.0.mlp."+projection+".bias"])
+    source = half_bytes(hidden)
+    references = b"".join(scopes)
+    original_sha = next(item["sha256"] for item in catalog["files"] if item["name"] == "model.safetensors")
+    record = struct.pack("<7I",9 if full_block else 8,64,1024,1024,len(source),len(constants),len(references))+source+constants+references
+    data = envelope(bytes.fromhex(original_sha)+struct.pack("<I",1)+record,8 if full_block else 7,catalog)
+    output.mkdir(parents=True,exist_ok=True)
+    target = output/"htp-fixtures.got"
+    if target.exists() and target.read_bytes() != data:
+        raise ValueError("Existing attention fixtures differ; choose a new output directory")
+    if not target.exists():
+        temporary = target.with_suffix(".partial")
+        temporary.write_bytes(data)
+        os.replace(temporary,target)
+    report = {"schema_version":1,"source_revision":catalog["revision"],"source_sha256":original_sha,"modeling_sha256":module_hash,
+              "exporter_sha256":sha(Path(__file__).read_bytes()),"versions":versions,"sha256":sha(data),"size":len(data),
+              "input_bytes":len(source),"constant_bytes":len(constants),"reference_bytes":len(references),"tap_order":tap_names,"taps":statistics,
+              "rgb_sha256":sha(image.tobytes()),"case":case,"font_sha256":font_sha,"positions":positions.tolist(),"full_model_inference":False,
+              "scope":"Complete vision block 0 on one 8x8 grid" if full_block else "Vision block 0 attention branch and first residual only, one complete 8x8 patch grid; no MLP"}
+    (output/"manifest.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    print("PASS vision block oracle:" if full_block else "PASS vision attention oracle:",len(tap_names),"taps, two references,",len(data),"bytes",sha(data),flush=True)
+
+
+def analyze_attention_failures(output, build):
+    import numpy as np
+    fixture = (output/"htp-fixtures.got").read_bytes()
+    manifest = read_json(output/"manifest.json")
+    run = json.loads((build/"htp-probe.json").read_text(encoding="utf-8-sig"))
+    log_bytes = (build/"htp-probe.log").read_bytes()
+    log = log_bytes.decode("utf-16" if log_bytes.startswith((b"\xff\xfe",b"\xfe\xff")) else "utf-8-sig")
+    if len(fixture) != 15378880 or sha(fixture) != manifest["sha256"] or sha(fixture) != run["fixtures_sha256"]:
+        raise ValueError("Attention fixture/run identity mismatch")
+    if hashlib.sha256(fixture[:96]+fixture[128:]).digest() != fixture[96:128] or struct.unpack_from("<I",fixture,12)[0] != 7:
+        raise ValueError("Attention envelope mismatch")
+    if fixture[128:160].hex() != "a16eb0de98d199293371c560f95f83130d2a2c9612449df16839f08ff9498815":
+        raise ValueError("Attention weight identity mismatch")
+    if sha((build/"ocr-htp-test.exe").read_bytes()) != run["executable_sha256"]:
+        raise ValueError("Attention executable identity mismatch")
+    if struct.unpack_from("<8I",fixture,160) != (1,8,64,1024,1024,131072,8431872,6815744):
+        raise ValueError("Attention fixture geometry mismatch")
+    source = np.frombuffer(fixture,dtype="<f2",count=65536,offset=192).astype(np.float64)
+    constants_offset = 192+131072
+    proj_offset = constants_offset+6332672
+    weights = np.frombuffer(fixture,dtype="<f2",count=1024*1024,offset=proj_offset).reshape(1024,1024)
+    bias = np.frombuffer(fixture,dtype="<f2",count=1024,offset=proj_offset+2097152)
+    references = np.frombuffer(fixture,dtype="<f4",count=1703936,offset=constants_offset+8431872).reshape(2,851968)
+    captures = []
+    for line in log.splitlines():
+        match = re.fullmatch(r"(\w+): (?:0x)?([0-9a-f]+)",line.strip())
+        if not match:
+            continue
+        name,value = match.groups()
+        if name == "residual_failure_index":
+            captures.append({name:int(value,16)})
+        elif captures and (name.endswith("_bits") or name == "context_row_fp16_hex"):
+            captures[-1][name] = value if name == "context_row_fp16_hex" else int(value,16)
+    if len(captures) != 2 or len({item["residual_failure_index"] for item in captures}) != 2 or run["exit_code"] != 1:
+        raise ValueError("Expected exactly two reproduced residual failures and nonzero hardware gate")
+    failures = []
+    for capture in captures:
+        index = capture["residual_failure_index"]
+        if not 0 <= index < 65536:
+            raise ValueError("Residual index bounds")
+        patch_index,channel = divmod(index,1024)
+        def decoded(name,code):
+            bits = capture[name]
+            return struct.unpack("<"+code,bits.to_bytes(2 if code == "e" else 4,"little"))[0]
+        actual_input = decoded("input_fp16_bits","e")
+        actual_proj = decoded("projection_fp16_bits","e")
+        actual_residual = decoded("residual_fp16_bits","e")
+        original_proj = float(references[0,720896+index])
+        original_residual = float(references[0,786432+index])
+        candidate_proj = float(references[1,720896+index])
+        candidate_residual = float(references[1,786432+index])
+        for scope in ("original","candidate"):
+            for name,offset in (("projection",720896),("residual",786432)):
+                expected_bits = struct.unpack("<I",struct.pack("<f",references[int(scope == "candidate"),offset+index]))[0]
+                if expected_bits != capture[scope+"_"+name+"_fp32_bits"]:
+                    raise ValueError("Logged oracle does not match immutable fixture")
+        if actual_input != source[index]:
+            raise ValueError("Logged input differs from fixture")
+        encoded_row = capture["context_row_fp16_hex"]
+        if len(encoded_row) != 4096:
+            raise ValueError("Context capture bounds")
+        actual_context = np.array([int(encoded_row[start:start+4],16) for start in range(0,4096,4)],dtype=np.uint16).view(np.float16).astype(np.float64)
+        candidate_context = references[1,655360+patch_index*1024:655360+(patch_index+1)*1024].astype(np.float64)
+        column = weights[:,channel].astype(np.float64)
+        exact_actual_projection = float(actual_context @ column+float(bias[channel]))
+        exact_candidate_projection = float(candidate_context @ column+float(bias[channel]))
+        original_input_reconstructed = original_residual-original_proj
+        input_error = actual_input-original_input_reconstructed
+        projection_conversion_error = candidate_proj-original_proj
+        context_error = exact_actual_projection-exact_candidate_projection
+        projection_execution_error = actual_proj-exact_actual_projection
+        oracle_fp32_rounding = exact_candidate_projection-candidate_proj
+        addition_error = actual_residual-(actual_input+actual_proj)
+        residual_error = actual_residual-original_residual
+        decomposition = input_error+projection_conversion_error+context_error+projection_execution_error+oracle_fp32_rounding+addition_error
+        if abs(decomposition-residual_error) > 1e-12 or not np.isfinite(actual_context).all():
+            raise ValueError("Residual error decomposition inconsistent")
+        threshold = float(np.float32(0.003)+np.float32(0.005)*abs(np.float32(original_residual)))
+        candidate_threshold = float(np.float32(0.003)+np.float32(0.005)*abs(np.float32(candidate_residual)))
+        if abs(residual_error) <= threshold or abs(actual_residual-candidate_residual) > candidate_threshold:
+            raise ValueError("Expected original-fail/candidate-pass behavior not reproduced")
+        result = {"index":index,"patch":patch_index,"channel":channel,
+                  "input_fp16":actual_input,"original_input_reconstructed":original_input_reconstructed,
+                  "original_projection":original_proj,"candidate_projection":candidate_proj,"htp_projection":actual_proj,
+                  "original_residual":original_residual,"candidate_residual":candidate_residual,"htp_residual":actual_residual,
+                  "original_absolute_error":abs(residual_error),"original_threshold":threshold,"excess":abs(residual_error)-threshold,
+                  "candidate_absolute_error":abs(actual_residual-candidate_residual),"candidate_threshold":candidate_threshold,
+                  "cancellation_factor":(abs(original_input_reconstructed)+abs(original_proj))/abs(original_residual),
+                  "signed_error_terms":{"input_conversion_with_original_add_roundoff":input_error,
+                    "projection_input_weight_conversion":projection_conversion_error,"propagated_context_error":context_error,
+                    "projection_execution_vs_fp64_dot":projection_execution_error,"fp32_oracle_dot_roundoff":oracle_fp32_rounding,
+                    "final_addition":addition_error},
+                  "fp16_addition_exact":addition_error == 0,
+                  "counterfactual_error_original_input":abs(original_input_reconstructed+actual_proj-original_residual),
+                  "counterfactual_error_exact_projection":abs(actual_input+exact_actual_projection-original_residual)}
+        failures.append(result)
+        print(json.dumps(result,allow_nan=False),flush=True)
+    report = {"schema_version":1,"fixtures_sha256":sha(fixture),"log_sha256":sha(log_bytes),"run":run,
+              "analysis_exporter_sha256":sha(Path(__file__).read_bytes()),"failures":failures,
+              "limitations":["Original input reconstructed from FP32 residual minus projection; its term includes original addition roundoff.",
+                             "Context term aggregates upstream HTP errors; does not identify an individual attention kernel.",
+                             "FP32 tensor declarations do not prove physical FP32 execution on HTP.",
+                             "One image/grid, attention branch only, no MLP or full-model quality acceptance."],
+              "hardware_gate_passed":False}
+    (build/"residual-analysis.json").write_text(json.dumps(report,indent=2,allow_nan=False)+"\n",encoding="utf-8")
+    print("PASS residual investigation: two oracle-bound failures decomposed; hardware gate remains FAIL",flush=True)
+
+
 def export_positions(model, output):
     import inspect as source_inspect
     from types import SimpleNamespace, MethodType
@@ -321,8 +580,8 @@ def envelope(payload, kind, catalog):
     header[:8] = b"GLMOCR2\0"
     struct.pack_into("<III", header, 8, 1, kind, len(payload))
     header[32:52] = bytes.fromhex(catalog["revision"])
-    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5,6) else "tokenizer.json"]["git_blob_sha1"])
-    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5,6) else "tokenizer_config.json"]["git_blob_sha1"])
+    header[52:72] = bytes.fromhex(sources["preprocessor_config.json" if kind in (3,4,5,6,7,8) else "tokenizer.json"]["git_blob_sha1"])
+    header[72:92] = bytes.fromhex(sources["config.json" if kind in (3,4,5,6,7,8) else "tokenizer_config.json"]["git_blob_sha1"])
     header[96:128] = hashlib.sha256(header[:96] + payload).digest()
     return bytes(header) + payload
 
@@ -719,6 +978,13 @@ def main():
     parser.add_argument("--export-htp", action="store_true")
     parser.add_argument("--audit-precision", action="store_true")
     parser.add_argument("--export-learned-htp", action="store_true")
+    parser.add_argument("--export-vision-attention", action="store_true")
+    parser.add_argument("--export-vision-block", action="store_true")
+    parser.add_argument("--vision-block-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-block-v1")
+    parser.add_argument("--attention-case", choices=("pattern","noise","text","all"), default="pattern")
+    parser.add_argument("--analyze-attention-failures", action="store_true")
+    parser.add_argument("--attention-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-attention")
+    parser.add_argument("--vision-attention-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-attention-v1")
     parser.add_argument("--learned-htp-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-learned-htp-v1")
     parser.add_argument("--precision-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-precision-v1")
     parser.add_argument("--htp-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-htp-v1")
@@ -736,10 +1002,23 @@ def main():
         from transformers.image_processing_backends import TorchvisionBackend
         print(source_inspect.getsource(TorchvisionBackend.resize))
         print(source_inspect.getsource(TorchvisionBackend.rescale_and_normalize))
+    elif args.analyze_attention_failures:
+        analyze_attention_failures(args.vision_attention_output,args.attention_build)
     elif args.audit_precision:
         audit_precision(args.model_dir,args.precision_output)
     elif args.export_learned_htp:
         export_learned_htp(args.model_dir,args.learned_htp_output)
+    elif args.export_vision_block:
+        cases = ("pattern","noise","text") if args.attention_case == "all" else (args.attention_case,)
+        for case in cases:
+            destination = args.vision_block_output if case == "pattern" else args.vision_block_output/case
+            export_vision_attention(args.model_dir,destination,case,full_block=True)
+    elif args.export_vision_attention:
+        if args.attention_case == "all":
+            for case in ("pattern","noise","text"):
+                export_vision_attention(args.model_dir,args.vision_attention_output if case == "pattern" else args.vision_attention_output/case,case)
+        else:
+            export_vision_attention(args.model_dir,args.vision_attention_output,args.attention_case)
     elif args.export_htp:
         export_htp(args.model_dir,args.htp_output)
     elif args.export_positions:
@@ -753,7 +1032,7 @@ def main():
     elif args.wrapper_check:
         wrapper_check(args.model_dir, args.output)
     else:
-        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images, --export-positions, --export-htp, --audit-precision or --export-learned-htp")
+        parser.error("select --inspect, --export-tokenizer, --wrapper-check, --inspect-images, --export-images, --export-positions, --export-htp, --audit-precision, --export-learned-htp, --export-vision-attention, --export-vision-block or --analyze-attention-failures")
 
 
 if __name__ == "__main__":

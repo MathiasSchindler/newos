@@ -51,6 +51,16 @@ and validates the first learned patch projection with bias on HTP. Use the VS Co
 tasks `GLM-OCR precision audit`, `GLM-OCR learned patch oracle` and
 `GLM-OCR learned patch HTP`. Three image cases pass against both original-value and
 FP16-candidate FP32 references. Full encoder/decoder accuracy is still unvalidated.
+Stage 4c validates the first learned vision-attention branch on three complete
+8x8 patch grids. A stable HTP Softmax composition fixes two residual precision
+failures without loosening tolerances or adding CPU inference. The tasks
+`GLM-OCR attention corpus oracle` and `GLM-OCR attention corpus HTP` reproduce
+the reference exports and hardware gates.
+Stage 4d extends this to the complete first vision block, including second RMSNorm,
+gated SiLU MLP and final residual. All eighteen taps pass both oracles on the same
+three grids at unchanged tolerances. Use `GLM-OCR vision block oracle` and
+`GLM-OCR vision block corpus HTP`; results are separate under `build/ocr-block/`.
+Larger grids, accumulated multi-block precision and full-encoder validation remain open.
 See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 

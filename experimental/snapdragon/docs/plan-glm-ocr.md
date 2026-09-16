@@ -502,6 +502,255 @@ Next: learned vision-block taps including Q/K norms, attention and split-half Ro
 then merger/connector. Patch success does not validate those layers, activation
 ranges, the complete vision encoder, text decoder, OCR quality or performance.
 
+## Stage 4c: initial learned attention validation
+
+The first learned attention branch of vision block 0 now has a diagnostic HTP
+graph: norm1, QKV, Q/K RMSNorm, axial split-half RoPE, scaled QK attention,
+softmax, context, output projection and first residual. It uses one complete
+8x8 patch grid from a deterministic RGB pattern. No MLP or full encoder is run.
+
+`--export-vision-attention` in the existing offline exporter invokes the pinned
+Transformers 5.17 attention module with eager attention and captures eleven taps.
+Its independently reconstructed context is checked against the module's actual
+projection input. Original weights are fully SHA-256 verified before loading.
+The two references are original BF16 values expanded to FP32, and the same module
+with FP16-rounded weights and input expanded to FP32. The second is NOT an
+emulator of HTP kernels or FP16 rounding after every intermediate operation.
+
+Artifacts: `models/glm-ocr-attention-v1/htp-fixtures.got`, 15,378,880 bytes,
+SHA-256 `1660d931b593aa0545a909eecd7db3dd103affb6f46def5c0719a72b94a4144b`.
+Kind 7 binds the source weight hash and exact geometry. The original failing run
+is preserved under `build/ocr-attention/`; corrected runs use
+`build/ocr-attention-precision/`. Tasks: `GLM-OCR vision attention oracle` and
+`GLM-OCR vision attention HTP`. Six artifact negative checks and native no-CRT
+build audits pass. The historical failure and its verified fix are described below.
+
+With the original native Softmax node, all eleven taps passed against the
+FP16-input/weight candidate reference. Against the original reference, the first
+ten taps passed but two of 65,536 residual values failed the unchanged
+`0.003 + 0.005 * abs(reference)` bound, reproducibly over three executions.
+Accelerator profiling and resource cleanup succeeded. Declaring FP32 softmax with
+casts did not change the result and was reverted; graph-local HTP precision
+compensation also did not change it and has now been removed. FP32 declarations
+in the RoPE subgraph do not establish the physical
+arithmetic precision used by the optimizer; that remains a separate question.
+
+### Residual failure investigation
+
+Run `GLM-OCR residual investigation`, or offline:
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --analyze-attention-failures
+```
+
+It consumes the hardware log and immutable oracle fixture, verifies fixture and
+executable hashes against the run report, matches logged reference bits exactly,
+and writes `build/ocr-attention/residual-analysis.json`. The native diagnostic
+logs both failing operands and their context rows without changing graph math.
+Only the offline analyzer recomputes the two projection dot products in FP64.
+The analysis succeeds when the two failures are reproduced and their signed error
+decomposition closes; it does not convert the failing hardware gate into a pass.
+
+Indices are zero-based, flattened as `patch * 1024 + channel`:
+
+| Metric | Index 2471 (patch 2, channel 423) | Index 19669 (patch 19, channel 213) |
+| --- | ---: | ---: |
+| HTP input | 1.8857421875 | 1.79296875 |
+| HTP projection | -1.94921875 | -1.7666015625 |
+| Original residual | -0.0668313503 | 0.0232105255 |
+| HTP residual | -0.0634765625 | 0.0263671875 |
+| Absolute error | 0.0033547878 | 0.0031566620 |
+| Allowed error | 0.0033341567 | 0.0031160526 |
+| Excess over bound | 0.0000206311 | 0.0000406094 |
+| Cancellation factor | 57.42 | 153.49 |
+
+The cancellation factor is the sum of the absolute original operands divided by
+the absolute original residual. Cancellation reduces the output magnitude and
+thus the relative part of the error budget; it does not create a new arithmetic
+error in these additions. The HTP residual is exactly the sum of the two observed
+FP16 operands in BOTH cases. Promoting just that addition cannot recover lost
+input or projection information.
+
+Signed error contributions, summed to `HTP residual - original residual`:
+
+| Contribution | Index 2471 | Index 19669 |
+| --- | ---: | ---: |
+| Input conversion, including original-add roundoff | +0.0003877878 | +0.0001173019 |
+| Projection shift from input/weight conversion in FP32 oracle | +0.0000203848 | -0.0000147820 |
+| Propagated context error through fixed candidate weights | +0.0025443705 | +0.0026717248 |
+| HTP projection versus FP64 dot on observed context | +0.0004021755 | +0.0003823291 |
+| Candidate FP32 oracle dot roundoff | +0.0000000693 | +0.0000000881 |
+| Final HTP addition | 0 | 0 |
+
+The dominant contribution is the already-perturbed attention context, followed by
+projection execution/output rounding and input rounding. The context term combines
+all upstream numerical differences; it does not identify softmax, RoPE, norms or
+QKV individually as the cause. The projection term includes accumulation, bias
+and output representation effects, not just one known kernel's rounding mode.
+Original input is reconstructed from original FP32 residual minus projection, so
+the input term explicitly includes original-add roundoff.
+
+Counterfactual arithmetic with the original input but unchanged HTP projection
+would leave errors 0.0029670000 and 0.0030393600, both inside the current bounds.
+Using the FP64 projection of observed HTP context with the existing FP16 input
+would also bring both inside. These are localization checks, not validated fixes:
+neither establishes what an alternative HTP precision configuration will execute.
+These observations motivated the following experiments, without relaxing any
+tolerance. Full-model acceptance remains open.
+
+### Verified Softmax fix
+
+Promoting the output projection, bias and residual sum to FP32-declared tensors
+also produced unchanged results. Those casts were removed. Replacing the native
+Softmax node by a stable HTP composition fixed the two failures:
+
+`maximum = ReduceMax(scores)`; `exp = Exp(scores - maximum)`;
+`probabilities = exp / ReduceSum(exp)`.
+
+Reductions use the last axis and explicit broadcast reshapes. All operations stay
+inside the same HTP graph; there is no CPU neural fallback or intermediate CPU
+readback used to compute results. Subtracting the maximum bounds each exponential
+input at zero or below. Diagnostic tap readbacks remain for reference comparison.
+
+The input, QKV, norms, RoPE, score computation and output projection are unchanged.
+Measured pre-Softmax maximum errors remain unchanged. This isolates the Softmax
+implementation path as a contributor to the accumulated context error. It does
+not establish which undocumented approximation or rounding strategy the native
+HTP Softmax kernel uses. Its earlier output was within the per-tap tolerance but
+left insufficient accuracy after projection and cancellation in the residual.
+
+Pattern case, maximum absolute error against original FP32, rounded up:
+
+| Tap | Native Softmax baseline | Stable HTP composition |
+| --- | ---: | ---: |
+| Probabilities | 0.001909 | 0.000969 |
+| Context | 0.008436 | 0.005732 |
+| Projection | 0.022313 | 0.009318 |
+| Residual | 0.024205 | 0.016055 |
+| Residual values outside tolerance | 2 | 0 |
+
+These are maxima over entire tensors, not just the two originally failing values.
+The original fixture and both reference arrays remain byte-identical. The gate
+still checks every value against `0.003 + 0.005 * abs(reference)`.
+
+The fix also passes two additional full 8x8 grids: seeded random RGB and a small
+synthetic text page, each 112x112 pixels. `--attention-case pattern|noise|text|all`
+selects export cases. `all` retains the original fixture at the output root and
+adds `noise/` and `text/`, each with its own manifest and immutable fixture. The
+text case records the Segoe UI font hash; these are development fixtures, not
+held-out scan quality evidence.
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-vision-attention --attention-case all
+```
+
+VS Code tasks `GLM-OCR attention corpus oracle` and `GLM-OCR attention corpus HTP`
+reproduce all three exports and serial hardware runs. Results are stored under
+`build/ocr-attention-precision/`, with `noise/` and `text/` subdirectories. The
+single-case `GLM-OCR vision attention HTP` task also uses the corrected directory,
+preserving the original failure log, executable and residual-analysis report.
+
+All three cases pass all eleven taps against both oracles for three executions:
+15,335,424 value comparisons. Each execution additionally checks all 1,024
+probability rows for values in `[0,1]` and sums within `1 +/- 0.003`. Including
+the residual smoke graphs, all 27 graph executions provide positive accelerator
+profile evidence, with successful cleanup. Six negative tests per case pass.
+ARM64, Kernel32-only/no-CRT audits and the existing 46 verifier, 180,712 tokenizer
+and complete image/position regressions pass. No speed claim follows from these
+profiled, tap-heavy diagnostic graphs; a deployment graph requires separate timing.
+
+Fixture SHA-256 values (each 15,378,880 bytes):
+- Pattern: `1660d931b593aa0545a909eecd7db3dd103affb6f46def5c0719a72b94a4144b`.
+- Noise: `3e89e48f4b223a573e6775f596a68d30c81988b341f1b2a1509a569546f651de`.
+- Text: `4851d7b8b0a2fdab9d47928edbc35f1cdeb678fe6a276c0b34b6041b4adb90a2`.
+
+This stage establishes attention-branch acceptance on three small grids. The
+complete first block is covered below; larger grids, more document varieties and
+accumulated multi-block precision remain separate gates.
+
+## Stage 4d: complete first vision block
+
+The native diagnostic now runs the complete learned vision block 0 on HTP:
+the Stage 4c attention branch, second RMSNorm, gate/up projections, SiLU,
+elementwise gating, down projection with bias and the second residual addition.
+The seven additional taps are `norm2`, `gate`, `up`, `silu`, `gated`, `down` and
+`block_output`, for eighteen taps in total. All neural operations remain inside
+one graph; CPU tap readbacks only check results, never supply a neural fallback.
+
+The existing exporter invokes the pinned Transformers `GlmOcrVisionBlock`
+forward and captures its actual module inputs/outputs. Exact cross-checks compare
+the gated product and final residual to that forward. Both original-value FP32
+and independently FP16-rounded input/weight FP32 references are retained; neither
+is an emulator of physical HTP arithmetic. The input is the offline original
+patch-embedding output rounded to FP16, not an integrated native patch-to-block
+pipeline. Original checkpoints and previous attention fixtures are unchanged.
+
+### Stable SiLU and precision
+
+The block computes `factor = exp(min(gate, 0)) / (1 + exp(-abs(gate)))`, then
+`silu = gate * factor`. Both exponential inputs are nonpositive, avoiding the
+overflow risk of directly evaluating `exp(-gate)` for large negative FP16 values.
+The implementation uses HTP elementary operations, not its native Sigmoid kernel.
+This establishes an overflow-safe algebraic form, not full-range FP16 accuracy:
+the learned gate ranges tested here are listed below.
+
+An initial equivalent ordering, `(gate * exp(min(gate, 0))) / denominator`, left
+one final residual outside the original-reference tolerance on the text case:
+index 39446 (patch 38, channel 534). The final addition was exact for its observed
+FP16 operands, so promoting only that addition could not recover the lost values.
+Replacing down MatMul/bias with FullyConnected gave identical failing bits;
+an explicit FP32-declared second RMSNorm introduced additional failures. Both
+experiments were removed. Computing the stable factor before multiplying the gate
+fixed the remaining failure, with no reference or tolerance changes. This measures
+an operation-order effect; it does not identify undocumented HTP rounding rules.
+
+| Case | Original gate min / max | Block output max error vs original FP32 | vs candidate FP32 |
+| --- | ---: | ---: | ---: |
+| Pattern | -7.372252 / 7.607652 | 0.021523 | 0.020916 |
+| Noise | -4.469445 / 2.846380 | 0.034089 | 0.032616 |
+| Text | -6.158003 / 5.352229 | 0.023938 | 0.023354 |
+
+Output errors are rounded up over whole tensors, not just near-zero values.
+Every value passes `abs(error) <= 0.003 + 0.005 * abs(reference)` and finiteness
+checks. All eighteen taps pass against both oracles over three executions for
+each of the three complete 8x8 grids: 37,748,736 comparisons. Probability range
+and row-sum checks remain enabled. All 27 executions including residual smokes
+have positive accelerator profile evidence and successful resource cleanup.
+The binary remains ARM64, Kernel32-only imports, no CRT or exception/CLR tables.
+The prior attention corpus and native verifier/tokenizer/image/position gates pass.
+
+### Artifacts and reproduction
+
+Envelope kind 8 contains one operation-9 record, source input 131,072 bytes,
+constants 33,618,176 bytes and references 16,777,216 bytes. Native validation
+enforces exact geometry and original weight identity before QNN loading. The
+diagnostic fixture buffer is bounded at 64 MiB and output scratch at 2,097,152
+half values. Twelve negative checks per case cover missing files/DLL, corrupt
+or truncated envelopes, wrong source identity, operation, dimensions and lengths,
+including recomputed hashes so a missing DLL cannot mask bad structure.
+
+Each immutable fixture is 50,526,656 bytes under `models/glm-ocr-block-v1/`:
+- Pattern/root SHA-256: `6bd28ef10138ec4722d637620b883a24ba26d1dede41103c4a0cf3f980328305`.
+- Noise SHA-256: `47669a93b5eaa29f3e531fb0c319f70fff6217106daa5cdc14e70175f0a5b709`.
+- Text SHA-256: `63643d72d71898145823686793aa58efa906a5c1d4b2c2f15764e593eb907194`.
+
+```powershell
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/export-glm-ocr.py --export-vision-block --attention-case all
+.\experimental\snapdragon\tools\build-ocr.ps1 -TestHtp -HtpDir experimental/snapdragon/models/glm-ocr-block-v1 -BuildDir experimental/snapdragon/build/ocr-block
+```
+
+Tasks `GLM-OCR vision block oracle` and `GLM-OCR vision block corpus HTP` reproduce
+the three exports and serial hardware tests. `GLM-OCR vision block HTP` checks
+the pattern; `GLM-OCR vision block text HTP` is the focused precision regression.
+Reports, runtime/executable/fixture hashes and logs use `build/ocr-block/`, with
+`noise/` and `text/` subdirectories. `--vision-block-output` selects an alternate
+offline destination; `--attention-case` also applies to full-block export.
+
+Next: larger grids, additional documents and accumulated multi-block accuracy,
+then spatial merger/connector and text prefill/decode. This is initial block-0
+acceptance, not a complete 24-block encoder, image-to-text pipeline or performance
+result. Python remains confined to optional offline oracle generation.
+
 ## Next stages
 
 1. **Execution contract and tokenizer: completed above.** Initial source audit and
@@ -510,8 +759,8 @@ ranges, the complete vision encoder, text decoder, OCR quality or performance.
    and real scan fixtures remain separate integration work. Extend the numerical
    oracle to learned-layer taps before claiming a correct model forward pass.
    PDF rasterization is a separate feature, not an implicit external dependency.
-3. **HTP capability and precision probes: primitives, weight audit and patch tap completed above.** Continue with
-   vision attention/axial RoPE, merger, text attention/mRoPE, norms, SiLU and KV
+3. **HTP capability and precision probes: primitives, weight audit, patch and block 0 completed above.** Continue with
+   larger vision grids, accumulated block error, merger, text attention/mRoPE and KV
    updates. Test real dimensions, finite outputs and cleanup on the installed SDK.
    Weight casting ranges are audited; activation and accumulated errors remain open. No blind
    cast, silent clamping, assumed BF16 HTP support or premature W4 conversion.
@@ -532,6 +781,7 @@ ranges, the complete vision encoder, text decoder, OCR quality or performance.
 
 Current status: source acquisition, verification, bounded native tokenizer/prompt
 runtime, RGB resize/normalization/patch packing, single-image positions, isolated
-FP16 HTP primitives, complete weight range audit and a learned patch-projection tap.
+FP16 HTP primitives, complete weight range audit, learned patch projection and
+complete vision block 0 on three small grids against two numerical oracles.
 No image-to-text inference, full-model FP16 accuracy, PDF support or OCR quality
 acceptance is claimed. No previous Whisper or TranslateGemma campaign is restarted.
