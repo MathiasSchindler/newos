@@ -20,6 +20,8 @@ param(
     [switch]$Generate,
     [switch]$TestGenerate,
     [switch]$ReuseDecode,
+    [switch]$AppMode,
+    [switch]$GraphCache,
     [switch]$LargeImages,
     [ValidateRange(1,256)][int]$MaxNewTokens = 3,
     [string]$GenerationDir = 'experimental/snapdragon/models/glm-ocr-generation-v2',
@@ -45,6 +47,8 @@ if ($TestGenerate) { $Generate = $true }
 if ($Generate) { $Prefill = $true }
 if ($LargeImages -and -not $PSBoundParameters.ContainsKey('VisionDir')) { $VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v2' }
 if ($ReuseDecode -and -not $Generate) { throw '-ReuseDecode requires -Generate or -TestGenerate' }
+if ($AppMode -and -not $Generate) { throw '-AppMode requires -Generate or -TestGenerate' }
+if ($GraphCache -and -not $Generate) { throw '-GraphCache requires -Generate or -TestGenerate' }
 if ($TestVision) { $Vision = $true }
 if ($TestPrefill) { $Prefill = $true }
 if ($Prefill) { $Vision = $true }
@@ -505,6 +509,8 @@ try {
         if ($Prefill) { $binary = Join-Path $BuildDir 'ocr-prefill.exe'; $flags += '-DOCR_TEXT_DECODER' }
         if ($Generate) { $binary = Join-Path $BuildDir 'ocr-generate.exe' }
         if ($ReuseDecode) { $flags += '-DOCR_REUSE_DECODE' }
+        if ($AppMode) { $flags += '-DOCR_APP_MODE' }
+        if ($GraphCache) { $flags += '-DOCR_GRAPH_CACHE' }
         if ($LargeImages) { $flags += '-DOCR_LARGE_IMAGES' }
         if ($MatrixRope -or $SplitRope) { $flags += '-DOCR_MATRIX_ROPE' }
         if ($SplitRope) { $flags += '-DOCR_SPLIT_ROPE' }

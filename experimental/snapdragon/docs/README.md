@@ -41,14 +41,21 @@ applications. The current GUI binaries remain at their original paths.
 The native OCR test GUI is `build/ocr-app/ocr-gui.exe`, built with the tasks
 `GLM-OCR app engine build` and `GLM-OCR GUI build`. It follows the TranslateGemma
 Win32 style: image chooser/preview, Text/Formula/Table mode, streaming result,
-Copy and Cancel. It runs a separate native OCR process per request, not a
-resident model server. See [OCR GUI](plan-glm-ocr.md#native-ocr-gui).
+Copy and Cancel. It now keeps a native OCR server between requests, reuses
+decoder/head graphs, and reloads prepared Vision/prefill contexts from a bounded
+cache. App builds use `-GraphCache -AppMode` and omit large tensor capture files.
+See [OCR GUI](plan-glm-ocr.md#native-ocr-gui) and
+[resident/cache results](plan-glm-ocr.md#resident-engine-and-bounded-graph-cache).
 
 The [numerical investigation](plan-glm-ocr.md#full-vision-numerical-cause-analysis)
 isolates a historical candidate RoPE-buffer mismatch and predominantly MLP-driven
 amplification of accumulated errors. Original-reference tolerances still fail.
 The [first benchmark](plan-glm-ocr.md#ocr-profiling-and-benchmark) measures a
 122.78 s receipt median, with graph finalization the main optimization target.
+The subsequent screenshot comparison measures 135.21 s without caching versus
+37.59 s for a resident warm request, with exactly matching generated token IDs.
+These are individual observations, not a general speedup guarantee; initial
+cache creation costs extra time. Original numerical acceptance remains open.
 
 **Current image support:** native BMP24 and static PNG, including palette,
 1/2/4-bit grayscale, 8/16-bit channels, tRNS/alpha and Adam7 interlacing.

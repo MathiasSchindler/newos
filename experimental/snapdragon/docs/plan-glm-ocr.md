@@ -2390,10 +2390,10 @@ Cancel, Copy, read-only scrolling output and status. Controls scale with per-mon
 DPI and remain bounded at the minimum 460x620 logical-pixel window size.
 
 The GUI reuses the native image decoders and fitted shape policy before launching
-inference; common dimensions no longer fail with "Unsupported grid". It is a small process-based front end, not a
-resident model GUI: each request starts its adjacent `ocr-generate.exe`, with
-large images and retained decode/head graphs inside that request. Repeating an
-image therefore still repeats Vision/prefill graph construction. The UI remains
+inference; common dimensions no longer fail with "Unsupported grid". It starts
+the adjacent `ocr-generate.exe --serve` once and retains that child between
+requests, with large images and reusable decode/head graphs. Vision/prefill
+contexts reload from the bounded cache described below. The UI remains
 responsive and reads stable UTF-8 output through its timer. Native diagnostics
 and partial captures stay under `build/ocr-app/runs/<tick>-<pid>/`, including
 `execution.log` and `stdout.txt`. Paths are quoted for CreateProcess directly;
@@ -2402,14 +2402,16 @@ no shell or Python participates in production execution.
 Cancel and closing during recognition terminate only the child process owned
 by that GUI instance. This is process cancellation, **not graceful QNN context
 teardown**; partial text/captures are explicitly incomplete. Normal completion
-uses the engine's checked teardown. The GUI exposes EOS completion, context-limit
+frees the request's transient context; retained graphs remain until server EOF
+or process termination. CLI completion and normal server EOF use checked teardown.
+Closing the GUI also terminates an idle owned server. The GUI exposes EOS completion, context-limit
 incompletion and engine errors as distinct statuses. Existing model/runtime
 integrity checks remain in the child engine.
 
 Build from the repository root:
 
 ```powershell
-.\experimental\snapdragon\tools\build-ocr.ps1 -Generate -LargeImages -ReuseDecode -Test -BuildDir experimental/snapdragon/build/ocr-app
+.\experimental\snapdragon\tools\build-ocr.ps1 -Generate -LargeImages -ReuseDecode -GraphCache -AppMode -Test -BuildDir experimental/snapdragon/build/ocr-app
 .\experimental\snapdragon\tools\build-ocr.ps1 -Gui -BuildDir experimental/snapdragon/build/ocr-app
 ```
 
@@ -2548,13 +2550,16 @@ The header contains version, QPC frequency, row count, capture ticks and bytes.
 Each seven-u64 row contains phase, layer/chunk, build ticks, finalize ticks,
 execute ticks, accelerator cycles and accelerator microseconds. Phases 1-8 are
 patch, Vision block, connector, prefill, prefill norm, decode, decode norm, head.
-Cached executions have zero finalize ticks. Build timing starts at first tensor
+Retained decode/head executions have zero finalize ticks. Serialized Vision/prefill
+cache hits include loading and integrity validation in the preparation/finalize
+column, not actual graph finalization. Build timing starts at first tensor
 registration and excludes earlier graph/context preparation. The existing
 `0.timing.u64` counters overlap phases and must not be added to these totals.
 This is graph-level profiling with accelerator counters, not a per-operator
 kernel report. Row capacity and expected phase counts are checked.
 
-Prioritized follow-up, **not implemented speedups**:
+Original prioritized follow-up (the first item and capture-file suppression are
+now implemented below; lean graph outputs and the other items remain):
 1. Retain or serialize/reload Vision and prefill contexts across requests; measure
    reload time and memory with explicit model/shape/runtime identity checks.
    A resident GUI engine is useful only if it actually retains these graphs.
@@ -2564,6 +2569,83 @@ Prioritized follow-up, **not implemented speedups**:
    memory/copy costs and output equivalence. Retain the small decode norm graph.
 4. After startup costs fall, examine decode execution and device-resident KV
    updates with a genuine operator-level profile.
+
+## Resident engine and bounded graph cache
+
+The September 17 app update adds `-GraphCache` and `-AppMode` to the existing
+freestanding build. Neither changes weights, operators, tensor precision or the
+numerical gate. The diagnostic build without `-AppMode` still writes all taps;
+app mode skips `.f16`/`.f32` capture files, while preserving text, IDs, small state
+records, profiles and finite/mask checks. Diagnostic APP_READ graph outputs and
+their host transfers remain, so this is not yet a lean-output graph optimization.
+
+`ocr_graph_cache.c` stores at most 40 fixed files beside the executable under
+`graph-cache/`: 24 Vision blocks and 16 prefill layers. Each slot holds only the
+last matching shape/constants, rather than accumulating entries for every image.
+Each file is capped at 128 MiB (5 GiB total upper bound); the tested 16x16 raster
+uses 1,837,819,136 bytes (1.71 GiB). Switching incompatible rasters replaces slots.
+The key hashes the executable, all four deployed QNN runtime files, tensor
+descriptors and every STATIC tensor's bytes, including RoPE/mask constants.
+The versioned header, saved tensor IDs and binary payload are SHA-256 checked.
+Tensor IDs are rebound after restore because QNN assigns different IDs within a
+resident process. Missing, stale or damaged files trigger normal HTP compilation;
+a rejected QNN restore fails the request. There is no CPU neural fallback.
+Readers cannot open an entry while it is being written. Partial files after
+termination are detected on the next request. Graph construction and weight
+verification still occur before restore; only finalization is replaced.
+
+The server fixes model/runtime directories at launch. Each pipe request contains
+four little-endian u32 values (image UTF-16 code-unit count, capture-directory
+count, task 0..2, token limit 1..256), followed by both non-NUL UTF-16 paths.
+Image paths are bounded below 32768 units, capture paths below 32700. It writes
+streamed `stdout.txt`, `execution.log` and a closed `done.u32` status (0 EOS,
+3 incomplete, 1 failure) inside the supplied new capture directory. It retains
+the backend/device, profile, 16 decoder and eight head contexts; KV contents and
+counts reset for every request. Failure exits the server. GUI cancellation and
+close terminate only its owned child, and the next request starts cleanly.
+The resident RAM/HTP working set remains allocated while the GUI is open.
+
+Verification used the user's `build/ocr-app/gui-compact.png`, serially on the
+same Snapdragon machine with unchanged model/runtime files. Single observations:
+
+| Full screenshot request | Native total | Preparation/finalization | Graph execution |
+| --- | ---: | ---: | ---: |
+| Previous fresh-process diagnostic engine | 135.207 s | 109.579 s | 7.994 s |
+| New app, cache creation and first resident request | 174.871 s | 146.273 s | 8.301 s |
+| New app, second request in same process | 37.588 s | 9.772 s | 8.401 s |
+
+The warm sample is 3.60x faster end to end, not a measurement of NPU utilization
+or a general throughput guarantee. Preparation timings varied noticeably across
+runs. Native times exclude GUI startup and do not provide operator-level HMX
+occupancy. Cache creation is expensive; deployment can carry forward the cache
+only with the exact tested executable/runtime. No sleeps or parallel inference
+were introduced for these comparisons.
+
+All generated IDs through EOS, UTF-8 and 1,062 small captures match the previous
+engine exactly. An earlier three-token diagnostic comparison checked all 208
+capture files, including every FP16/FP32 tensor, across two resident requests;
+the second loaded all 40 cached layers with zero decoder/head re-finalization.
+The full app run also verifies zero decoder/head re-finalization and no large
+tensor capture files. Seventeen EOF/truncation/length/task/limit/NUL protocol
+cases pass. Mutating a tensor ID, payload byte and truncating another entry
+rebuilds exactly three entries, keeps 37 hits and preserves output tokens.
+Native verifier/prefill/generation gates and ARM64/no-CRT PE audits pass.
+
+The real GUI test recognizes its 896x896 PNG in 33.150 s (first text 20.522 s)
+with a warm disk cache, and 26.509 s (first text 21.941 s) on repetition. Both
+texts match the expected four lines; Unicode input, preview/layout, invalid image,
+cancel/restart, close-active and missing-engine tests pass. This is a different
+image and must not be compared directly with the screenshot timings above.
+Full numerical acceptance remains false; identical outputs are regression
+evidence, not proof that the original-model tolerance violations were fixed.
+
+Reproduce using `export-glm-ocr.py --test-graph-cache --test-resident` with a
+diagnostic cache build, or add `--test-app` with an app build for full EOS output
+and cache-corruption checks. Supply `--vision-output`, `--generation-build` and
+`--baseline-build` explicitly; the baseline must be the prior uncached engine.
+`--test-server-protocol` is hardware-independent. Compact evidence is archived
+under `data/ocr-performance-*/`; large temporary comparison captures are removed
+after successful installation, while pre-existing user GUI runs are untouched.
 
 ## Concrete image-to-text gaps
 
@@ -2575,8 +2657,8 @@ Prioritized follow-up, **not implemented speedups**:
    additional aspect ratios or tiling and their memory/numerical checks remain.
 3. **Vision accuracy and lifecycle optimization.** All 24 blocks and postnorm now
    execute with checked handoffs and reference reports. Accumulated FP16 error
-   remains unaccepted; resident graph/context caching and lean output buffers are
-   still needed for an efficient serving path.
+   remains unaccepted; bounded context caching is implemented, but lean graph
+   outputs and avoiding repeated construction/weight loads remain useful work.
 4. **Connector accuracy.** Learned 2x2 downsampling and the complete merger to
    1536-wide features now execute, but their full-chain numerical gate remains
    unaccepted. Their direct connection to text input is implemented above.
@@ -2586,14 +2668,16 @@ Prioritized follow-up, **not implemented speedups**:
 6. **Text accuracy and device caching.** All 16 decoder layers and final norm now
    execute on HTP with checked positions, masks and handoffs. Resolve the remaining
    numerical differences; optional reusable decode/head graphs now exist, while
-   device-resident cache updates and retained Vision/prefill graphs remain work.
+   device-resident KV updates remain work; Vision/prefill contexts now reload
+   from a bounded disk cache.
 7. **Broader decode validation.** Head, greedy selection, EOS/limits, UTF-8 and
    incremental KV updates are implemented for the bounded context. Cover larger
    contexts, richer prompts and multilingual generation beyond tokenizer fixtures.
 8. **Serving lifecycle.** A single-image end-to-end command now exists with failure
    propagation and cleanup. The native GUI now provides tested process-based
-   repeat/cancel behavior. Graceful cancellation, persistent multi-request caching,
-   resident-request isolation and a lean nondiagnostic mode remain.
+   repeat/cancel behavior with resident decoder/head reuse, bounded disk caching
+   and per-request KV isolation. Graceful cancellation and lean graph outputs
+   remain; large tensor capture files are disabled in app mode.
 9. **Acceptance and performance.** An independent end-to-end comparison now exists
    for the small and larger development images. Still needed: a held-out
    image/text corpus, digits/punctuation, omissions, repetition, reading order,

@@ -2,6 +2,8 @@ LIBRARY KERNEL32.dll
 EXPORTS
     CreateDirectoryW
     CreateProcessW
+    CreatePipe
+    SetHandleInformation
     GetCurrentProcessId
     GetTickCount64
     GetExitCodeProcess

@@ -90,6 +90,8 @@
 				"-Generate",
 				"-LargeImages",
 				"-ReuseDecode",
+				"-GraphCache",
+				"-AppMode",
 				"-Test",
 				"-BuildDir",
 				"experimental/snapdragon/build/ocr-app"

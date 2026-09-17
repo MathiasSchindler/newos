@@ -1,5 +1,6 @@
 #include "../../shared/qnn_abi.h"
 #include "ocr_tokenizer.h"
+#include "crypto/sha256.h"
 #ifdef OCR_VISION_RUN
 #include "ocr_image.h"
 #endif
@@ -71,6 +72,13 @@ static QnnProfileHandle execution_profile;
 static const unsigned short *capture_directory;
 
 static int capture_tensor(u32 block_index, const char *suffix, const void *data, u32 bytes) {
+#ifdef OCR_APP_MODE
+    u32 suffix_length = 0;
+    while (suffix[suffix_length]) ++suffix_length;
+    if (suffix_length >= 4 && suffix[suffix_length-4] == '.' && suffix[suffix_length-3] == 'f' &&
+        ((suffix[suffix_length-2] == '1' && suffix[suffix_length-1] == '6') ||
+         (suffix[suffix_length-2] == '3' && suffix[suffix_length-1] == '2'))) return 1;
+#endif
     u64 capture_started = runtime_clock();
     unsigned short path[32768];
     u32 length = 0, written = 0;
@@ -293,11 +301,18 @@ typedef struct {
     char names[OCR_ATTENTION_TENSORS][5];
     u32 count;
     int good;
+#ifdef OCR_GRAPH_CACHE
+    CryptoSha256Context cache_hash;
+#endif
 #ifdef OCR_MATRIX_RESIDUAL
     u32 diagnostic_quotient;
     u32 diagnostic_residual;
 #endif
 } OcrAttentionGraph;
+
+#ifdef OCR_GRAPH_CACHE
+#include "ocr_graph_cache.c"
+#endif
 
 #ifdef OCR_LARGE_IMAGES
 #define OCR_VISION_PATCHES 512U
@@ -351,6 +366,16 @@ static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32
     value->data.v1.data_type = dtype;
     value->data.v1.memory.client_buffer.data = data;
     value->data.v1.memory.client_buffer.data_size = data ? elements * (dtype == QNN_DATATYPE_FLOAT_16 ? 2 : 4) : 0;
+#ifdef OCR_GRAPH_CACHE
+    if (graph_cache_active && (profile_phase == 2 || profile_phase == 4)) {
+        if (!index) { crypto_sha256_init(&builder->cache_hash); crypto_sha256_update(&builder->cache_hash,graph_cache_identity,32); }
+        u32 descriptor[4] = {index,type,dtype,rank};
+        crypto_sha256_update(&builder->cache_hash,(const u8 *)descriptor,sizeof(descriptor));
+        crypto_sha256_update(&builder->cache_hash,(const u8 *)shape,rank*sizeof(u32));
+        if (type == QNN_TENSOR_TYPE_STATIC && data)
+            crypto_sha256_update(&builder->cache_hash,data,value->data.v1.memory.client_buffer.data_size);
+    }
+#endif
     if (!checked("attention_tensor",builder->api->tensor_create_graph_tensor(builder->graph,value))) builder->good = 0;
     return index;
 }
@@ -685,7 +710,13 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     if (!builder.good) return 0;
     u64 finalize_started = runtime_clock();
     u64 build_ticks = finalize_started-builder.build_started;
-    if (!checked("attention_finalize",api->graph_finalize(builder.graph,0,0))) return 0;
+        if (!
+    #ifdef OCR_GRAPH_CACHE
+        graph_cache_finalize(&builder)
+    #else
+        checked("attention_finalize",api->graph_finalize(builder.graph,0,0))
+    #endif
+        ) return 0;
     u64 finalize_ticks = runtime_clock()-finalize_started;
     QnnTensor outputs[28], source_tensor = builder.tensors[input];
     u32 output_count = tap_count;
@@ -1025,10 +1056,25 @@ static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *source
     if (!builder->good || count > 8) return 0;
     u64 started = runtime_clock();
     u64 build_ticks = finalize ? started-builder->build_started : 0;
-    int finalized = !finalize || checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0));
+        int finalized = !finalize ||
+    #ifdef OCR_GRAPH_CACHE
+        graph_cache_finalize(builder);
+    #else
+        checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0));
+    #endif
     u64 finalize_ticks = finalize ? runtime_clock()-started : 0;
     runtime_ticks[1] += finalize_ticks;
     if (!finalized) return 0;
+#ifdef OCR_GRAPH_CACHE
+    if (graph_cache_active && profile_phase == 4) {
+        for (u32 source = 0; source < source_count; ++source) {
+            const char *name = sources[source].data.v1.name;
+            u32 index = (u32)(name[1]-'0')*100+(u32)(name[2]-'0')*10+(u32)(name[3]-'0');
+            if (index >= builder->count) return 0;
+            sources[source].data.v1.id = builder->tensors[index].data.v1.id;
+        }
+    }
+#endif
     QnnTensor outputs[8];
     u32 total = 0;
     for (u32 index = 0; index < count; ++index) {
@@ -1171,6 +1217,11 @@ static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
 #endif
 
 #ifdef OCR_TEXT_DECODER
+static int ocr_resident;
+static void *ocr_resident_module;
+static const QnnInterfaceV2 *ocr_resident_api;
+static QnnBackendHandle ocr_resident_backend;
+static QnnDeviceHandle ocr_resident_device;
 #include "ocr_prefill.c"
 #include "ocr_generate.c"
 #endif
@@ -1194,12 +1245,18 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     u32 count = 0;
     int good = 0, clean = 1;
     output_good = 1;
+#ifdef OCR_TEXT_DECODER
+    module = ocr_resident_module; api = ocr_resident_api;
+    backend = ocr_resident_backend; device = ocr_resident_device;
+    ocr_resident_module = 0; ocr_resident_api = 0; ocr_resident_backend = 0; ocr_resident_device = 0;
+    if (!module)
+#endif
     execution_profile = 0;
     (void)text_directory; (void)task;
     u32 fixture_size = 0, kind = 0;
 #ifdef OCR_VISION_RUN
     if (image_path) {
-        if (!capture || !ocr_image_load_fitted(image_path,&vision_image,OCR_VISION_PATCHES > 128)) { text("FAIL vision image input\n"); return 0; }
+        if (!capture || !ocr_image_load_fitted(image_path,&vision_image,OCR_VISION_PATCHES > 128)) { text("FAIL vision image input\n"); goto done; }
         int grid_valid = vision_image.shape.grid_height == 8 && (vision_image.shape.grid_width == 8 || vision_image.shape.grid_width == 16);
     #ifdef OCR_LARGE_IMAGES
         grid_valid = grid_valid || (vision_image.shape.grid_height == 16 && (vision_image.shape.grid_width == 16 || vision_image.shape.grid_width == 32));
@@ -1232,6 +1289,7 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     }
     if (!primitives(0,0,fixture_size,kind)) { text("FAIL HTP fixture structure\n"); return 0; }
     }
+    if (!module) {
     module = LoadLibraryExW(library,0,0x1100);
     if (!module) { text("FAIL loading explicit HTP library\n"); goto done; }
     get_providers = (QnnInterfaceGetProviders)GetProcAddress(module,"QnnInterface_getProviders");
@@ -1251,6 +1309,10 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     if (!checked("backend_create",api->backend_create(0,0,&backend)) || !checked("device_create",api->device_create(0,0,&device)) ||
         !checked("context_create",api->context_create(backend,device,0,&context))) goto done;
     if (!checked("profile_create",api->profile_create(backend,2,&execution_profile))) goto done;
+    } else if (!checked("resident_context_create",api->context_create(backend,device,0,&context))) goto done;
+#ifdef OCR_GRAPH_CACHE
+    if (image_path && !graph_cache_begin(library,backend,device,&context)) goto done;
+#endif
     #ifdef OCR_VISION_RUN
     if (image_path) {
         u64 started = runtime_clock(); good = vision_forward(api,backend,device,&context,fixtures);
@@ -1268,13 +1330,24 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
 #endif
 done:
     if (context && !checked("context_free",api->context_free(context,0))) clean = 0;
+#ifdef OCR_GRAPH_CACHE
+    if (!graph_cache_end()) clean = 0;
+#endif
 #ifdef OCR_TEXT_DECODER
+    if (ocr_resident && good && clean && output_good) {
+        ocr_resident_module = module; ocr_resident_api = api;
+        ocr_resident_backend = backend; ocr_resident_device = device;
+    } else {
     if (!generation_release(api)) clean = 0;
 #endif
     if (execution_profile && !checked("profile_free",api->profile_free(execution_profile))) clean = 0;
+    execution_profile = 0;
     if (device && !checked("device_free",api->device_free(device))) clean = 0;
     if (backend && !checked("backend_free",api->backend_free(backend))) clean = 0;
     if (module && !FreeLibrary(module)) clean = 0;
+#ifdef OCR_TEXT_DECODER
+    }
+#endif
 #ifdef OCR_VISION_RUN
     ocr_image_release(&vision_image);
 #endif
@@ -1325,4 +1398,6 @@ int ocr_generate_run(const unsigned short *library, const unsigned short *vision
     generation_directory = 0; diagnostic_stream = (u32)-11;
     return good ? (generation_reason == 1 ? 1 : 2) : 0;
 }
+
+#include "ocr_server.c"
 #endif

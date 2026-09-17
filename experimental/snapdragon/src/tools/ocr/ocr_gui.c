@@ -68,6 +68,9 @@ IMPORT int CloseHandle(void *);
 IMPORT void *CreateFileW(const u16 *,u32,u32,void *,u32,u32,void *);
 IMPORT int GetFileSizeEx(void *,Result *);
 IMPORT int ReadFile(void *,void *,u32,u32 *,void *);
+IMPORT int WriteFile(void *,const void *,u32,u32 *,void *);
+IMPORT int CreatePipe(void **,void **,Security *,u32);
+IMPORT int SetHandleInformation(void *,u32,u32);
 IMPORT u32 GetModuleFileNameW(void *,u16 *,u32);
 IMPORT u32 GetCurrentProcessId(void);
 IMPORT u64 GetTickCount64(void);
@@ -87,7 +90,7 @@ void *memcpy(void *destination,const void *source,size_t size) {
 }
 
 static void *window, *path_box, *open_button, *mode_box, *run_button, *cancel_button, *copy_button, *output_box, *status_box, *font;
-static void *labels[3], *process;
+static void *labels[3], *process, *request_pipe;
 static u16 base[32768], image_path[32768], capture_path[32768], stdout_path[32768], command[32768];
 static u8 text_bytes[98304];
 static u16 text_wide[196608];
@@ -95,7 +98,7 @@ static u8 *pixels;
 static u32 image_width, image_height, dpi = 96, command_size, displayed_bytes;
 static u64 started;
 static Rect preview;
-static int cancelled;
+static int cancelled, busy;
 
 static int append(u16 *target,const u16 *source,u32 capacity) {
     u32 length = 0; while (length < capacity && target[length]) ++length;
@@ -127,8 +130,8 @@ static int argument(const u16 *value) {
 }
 static int scale(int value) { return value*(int)dpi/96; }
 static void controls(void) {
-    EnableWindow(path_box,!process); EnableWindow(open_button,!process); EnableWindow(mode_box,!process);
-    EnableWindow(run_button,!process && pixels != 0); EnableWindow(cancel_button,process != 0 && !cancelled);
+    EnableWindow(path_box,!busy); EnableWindow(open_button,!busy); EnableWindow(mode_box,!busy);
+    EnableWindow(run_button,!busy && pixels != 0); EnableWindow(cancel_button,busy && !cancelled);
     EnableWindow(copy_button,displayed_bytes != 0);
 }
 static void layout(void) {
@@ -216,19 +219,38 @@ static void refresh_output(void) {
 }
 static void tick(void) {
     if (!process) return;
-    refresh_output();
+    if (busy) refresh_output();
     if (WaitForSingleObject(process,0) == 0) {
         u32 code = 1; GetExitCodeProcess(process,&code); CloseHandle(process); process = 0; KillTimer(window,1);
+        if (request_pipe) CloseHandle(request_pipe);
+        request_pipe = 0; busy = 0;
         SetWindowTextW(status_box,cancelled ? W("Cancelled; partial output.") : code == 0 ? W("Ready") :
                        code == 3 ? W("Incomplete: token/context limit.") : W("OCR failed. See the run log."));
-    } else {
+    } else if (busy) {
+        u16 done_path[32768] = {0}; u32 code = 1, received = 0;
+        append(done_path,capture_path,32768); append(done_path,W("\\done.u32"),32768);
+        void *done = CreateFileW(done_path,0x80000000,1,0,3,0x80,0);
+        if (done != (void *)-1) {
+            Result size = 0;
+            int good = GetFileSizeEx(done,&size) && size == 4 && ReadFile(done,&code,4,&received,0) && received == 4;
+            CloseHandle(done);
+            if (good) {
+                refresh_output(); busy = 0;
+                SetWindowTextW(status_box,code == 0 ? W("Ready") : code == 3 ? W("Incomplete: token/context limit.") : W("OCR failed. See the run log."));
+                if (code != 0 && code != 3) {
+                    TerminateProcess(process,1); WaitForSingleObject(process,0xffffffff); CloseHandle(process); process = 0;
+                    CloseHandle(request_pipe); request_pipe = 0; KillTimer(window,1);
+                }
+                controls(); return;
+            }
+        }
         u16 status[96] = {0}, elapsed[24]; number(elapsed,(GetTickCount64()-started)/1000);
         append(status,W("Recognizing... "),96); append(status,elapsed,96); append(status,W(" s"),96); SetWindowTextW(status_box,status);
     }
     controls();
 }
 static void submit(void) {
-    if (process || !load_image()) return;
+    if (busy || !load_image()) return;
     u16 engine[32768], asset[32768], suffix[96] = {0}, serial[24], log_path[32768];
     path(engine,W("ocr-generate.exe")); path(capture_path,W("runs")); CreateDirectoryW(capture_path,0);
     number(serial,GetTickCount64()); append(suffix,W("runs\\"),96); append(suffix,serial,96);
@@ -238,23 +260,34 @@ static void submit(void) {
     append(stdout_path,capture_path,32768); append(stdout_path,W("\\stdout.txt"),32768);
     append(log_path,capture_path,32768); append(log_path,W("\\execution.log"),32768);
     command_size = 0; Result mode = SendMessageW(mode_box,0x147,0,0);
-    int good = argument(engine) && argument(mode == 1 ? W("--generate-formula") : mode == 2 ? W("--generate-table") : W("--generate-text"));
+    int good = argument(engine) && argument(W("--serve"));
     const u16 *assets[] = {W("..\\QnnHtp.dll"),W("..\\..\\models\\glm-ocr-vision-v2"),W("..\\..\\models\\glm-ocr-text-v1"),W("..\\..\\models\\glm-ocr-generation-v2")};
     for (u32 index = 0; good && index < 4; ++index) good = path(asset,assets[index]) && argument(asset);
-    good = good && argument(image_path) && argument(capture_path) && argument(W("256"));
-    Security security = {sizeof(security),0,1};
-    void *output = CreateFileW(stdout_path,0x40000000,1,&security,1,0x80,0);
-    void *error = CreateFileW(log_path,0x40000000,1,&security,1,0x80,0);
-    void *input = CreateFileW(W("NUL"),0x80000000,1,&security,3,0x80,0);
-    Startup startup = {0}; Process child = {0}; startup.size = sizeof(startup); startup.flags = 0x100;
-    startup.input = input; startup.output = output; startup.error = error;
-    good = good && output != (void *)-1 && error != (void *)-1 && input != (void *)-1 &&
-           CreateProcessW(engine,command,0,0,1,0x08000000,0,0,&startup,&child);
-    if (output != (void *)-1) CloseHandle(output);
-    if (error != (void *)-1) CloseHandle(error);
-    if (input != (void *)-1) CloseHandle(input);
+    if (!process && good) {
+        Security security = {sizeof(security),0,1}; void *input = 0;
+        log_path[0] = 0; append(log_path,capture_path,32768); append(log_path,W("\\server.log"),32768);
+        void *error = CreateFileW(log_path,0x40000000,1,&security,1,0x80,0);
+        Startup startup = {0}; Process child = {0}; startup.size = sizeof(startup); startup.flags = 0x100;
+        good = error != (void *)-1 && CreatePipe(&input,&request_pipe,&security,262144) && SetHandleInformation(request_pipe,1,0);
+        startup.input = input; startup.output = error; startup.error = error;
+        good = good && CreateProcessW(engine,command,0,0,1,0x08000000,0,0,&startup,&child);
+        if (error != (void *)-1) CloseHandle(error);
+        if (input) CloseHandle(input);
+        if (good) { CloseHandle(child.thread); process = child.process; }
+        else if (request_pipe) { CloseHandle(request_pipe); request_pipe = 0; }
+    }
+    u32 header[4] = {0,0,mode == 1 ? 1 : mode == 2 ? 2 : 0,256}, written = 0;
+    while (image_path[header[0]]) ++header[0];
+    while (capture_path[header[1]]) ++header[1];
+    good = good && WriteFile(request_pipe,header,sizeof(header),&written,0) && written == sizeof(header) &&
+        WriteFile(request_pipe,image_path,header[0]*2,&written,0) && written == header[0]*2 &&
+        WriteFile(request_pipe,capture_path,header[1]*2,&written,0) && written == header[1]*2;
+    if (!good && process) {
+        TerminateProcess(process,1); WaitForSingleObject(process,0xffffffff); CloseHandle(process); process = 0;
+        CloseHandle(request_pipe); request_pipe = 0;
+    }
     if (!good) { SetWindowTextW(status_box,W("Cannot start OCR. Check engine and run directory.")); return; }
-    CloseHandle(child.thread); process = child.process; cancelled = 0; started = GetTickCount64(); displayed_bytes = 0;
+    busy = 1; cancelled = 0; started = GetTickCount64(); displayed_bytes = 0;
     SetWindowTextW(output_box,W("")); SetWindowTextW(status_box,W("Recognizing...")); controls();
     if (!SetTimer(window,1,150,0)) { TerminateProcess(process,1); WaitForSingleObject(process,0xffffffff); tick(); }
 }
@@ -279,16 +312,17 @@ static Result procedure(void *handle,u32 message,u64 word,Result data) {
             EndPaint(handle,&paint); return 0;
         }
         case 0x111:
-            if ((word&65535) == 101 && word>>16 == 0x200 && !process) load_image();
+            if ((word&65535) == 101 && word>>16 == 0x200 && !busy) load_image();
             if (word>>16 != 0) return 0;
-            if ((word&65535) == 102 && !process) open_image();
+            if ((word&65535) == 102 && !busy) open_image();
             if ((word&65535) == 105) submit();
-            if ((word&65535) == 107 && process && TerminateProcess(process,4)) { cancelled = 1; controls(); }
+            if ((word&65535) == 107 && busy && process && TerminateProcess(process,4)) { cancelled = 1; controls(); }
             if ((word&65535) == 108) { SendMessageW(output_box,0xb1,0,-1); SendMessageW(output_box,0x301,0,0); }
             return 0;
         case 0x113: tick(); return 0;
         case 0x10:
             if (process) { TerminateProcess(process,4); WaitForSingleObject(process,0xffffffff); CloseHandle(process); process = 0; }
+            if (request_pipe) { CloseHandle(request_pipe); request_pipe = 0; }
             DestroyWindow(handle); return 0;
         case 2: PostQuitMessage(0); return 0;
     }

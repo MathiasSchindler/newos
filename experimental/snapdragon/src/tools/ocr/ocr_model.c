@@ -4,6 +4,7 @@ int ocr_prefill_run(const unsigned short *, const unsigned short *, const unsign
 int ocr_prefill_input_test(const unsigned short *);
 int ocr_generate_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *, unsigned int, unsigned int);
 int ocr_generation_test(const unsigned short *);
+int ocr_generate_server(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *);
 #endif
 #ifdef OCR_VISION_RUN
 int ocr_vision_run(const unsigned short *, const unsigned short *, const unsigned short *, const unsigned short *);
@@ -184,6 +185,9 @@ void mainCRTStartup(void) {
     if (count == 2U && word(arguments[1], "--self-test")) {
         result = self_test();
 #ifdef OCR_TEXT_DECODER
+    } else if (count == 6U && word(arguments[1], "--serve")) {
+        result = ocr_generate_server(arguments[2],arguments[3],arguments[4],arguments[5]);
+        ExitProcess(result ? 0U : 1U); return;
     } else if (count == 3U && word(arguments[1], "--test-generation")) {
         result = ocr_generation_test(arguments[2]);
     } else if (count == 9U && (word(arguments[1], "--generate-text") || word(arguments[1], "--generate-formula") || word(arguments[1], "--generate-table"))) {

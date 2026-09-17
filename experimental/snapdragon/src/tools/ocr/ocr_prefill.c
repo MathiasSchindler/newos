@@ -146,7 +146,7 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
     for (u32 head = 0; head < 16; ++head) groups[head] = head/2;
     for (u32 part = 0; part < 2; ++part) for (u32 channel = 0; channel < 4608; ++channel) selections[part][channel] = part*4608+channel;
     input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
-    u8 *weight_base = reuse ? text_retained_weights[index] : fixture_data;
+    u8 *weight_base = text_retained_weights[index] ? text_retained_weights[index] : fixture_data;
     u8 *constants = weight_base+164;
     u32 norm0 = prefill_norm(&builder,input,&constants,&scalar_axis,rows);
     u32 query_raw = vision_linear(&builder,norm0,rows,1536,2048,&constants,0,0);

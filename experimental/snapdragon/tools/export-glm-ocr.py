@@ -584,6 +584,109 @@ def analyze_vision_encoder(output, build):
     print("PASS vision structure/identity/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
 
 
+def test_server_protocol(build):
+    import struct
+    import subprocess
+    binary = (build/'ocr-generate.exe').resolve()
+    cases = [(b'',0)]+[(b'\x01'*length,1) for length in (1,4,15)]
+    for header in ((0,1,0,1),(32768,1,0,1),(1,0,0,1),(1,32700,0,1),(1,1,3,1),(1,1,0,0),(1,1,0,257)):
+        cases.append((struct.pack('<4I',*header),1))
+    for payload in (b'',b'x',b'x\0',b'x\0y',b'\0\0y\0',b'x\0\0\0'):
+        cases.append((struct.pack('<4I',1,1,0,1)+payload,1))
+    for payload,expected in cases:
+        result = subprocess.run([str(binary),'--serve','missing','missing','missing','missing'],input=payload,capture_output=True,timeout=10)
+        if result.returncode != expected: raise ValueError(('Server protocol accepted malformed input',payload,result.returncode,expected))
+    print('PASS server protocol',len(cases),'EOF, truncated, bounded and embedded-NUL cases',flush=True)
+
+
+def test_graph_cache(vision_output, text_output, generation_output, build, baseline, resident=False, app=False, integrity_only=False):
+    import struct
+    import subprocess
+    import time
+    import uuid
+    image = ROOT/'experimental/snapdragon/build/ocr-app/gui-compact.png'
+    if resident: test_server_protocol(build)
+    report = dict(complete=False, numerical_acceptance=False, runs=[])
+    expected = None
+    schedule = [('baseline',baseline/'ocr-generate.exe'),('cache-first',build/'ocr-generate.exe'),('cache-repeat',build/'ocr-generate.exe')]
+    resident_captures = []
+    report_path = build/('app-results.json' if app else 'resident-results.json' if resident else 'cache-results.json')
+    if integrity_only:
+        if not app: raise ValueError('Cache integrity check requires app mode')
+        report = read_json(report_path)
+        if not report.get('complete') or report['runs'][-1]['executable_sha256'] != sha((build/'ocr-generate.exe').read_bytes()): raise ValueError('Cache integrity requires matching completed app report')
+        schedule = []
+    for label, binary in schedule:
+        capture = (build/(label+'-'+uuid.uuid4().hex)).resolve(); capture.mkdir()
+        command = [str(binary.resolve()),'--generate-text',str(ROOT/'experimental/snapdragon/build/QnnHtp.dll'),
+                   str(vision_output.resolve()),str(text_output.resolve()),str(generation_output.resolve()),str(image),str(capture),'256' if app else '3' if resident else '1']
+        started = time.perf_counter()
+        if resident and label == 'cache-first':
+            second = (build/('resident-repeat-'+uuid.uuid4().hex)).resolve(); second.mkdir()
+            payload = bytearray()
+            for destination in (capture,second):
+                image_bytes = str(image).encode('utf-16-le'); capture_bytes = str(destination).encode('utf-16-le')
+                payload += struct.pack('<4I',len(image_bytes)//2,len(capture_bytes)//2,0,int(command[-1]))+image_bytes+capture_bytes
+            with (build/'resident-process.log').open('wb') as log:
+                result = subprocess.run([command[0],'--serve',*command[2:6]],input=payload,stdout=log,stderr=log,timeout=900)
+            if result.returncode: raise ValueError(('Resident process failed',result.returncode,str(capture)))
+            resident_captures = [capture,second]
+        elif resident and label == 'cache-repeat':
+            capture.rmdir(); capture = resident_captures[1]
+        else:
+            with (capture/'execution.log').open('wb') as log, (capture/'stdout.txt').open('wb') as output:
+                result = subprocess.run(command,stdout=output,stderr=log,stdin=subprocess.DEVNULL,timeout=600)
+            if result.returncode != (0 if app else 3): raise ValueError(('Cache hardware test failed',label,result.returncode,str(capture)))
+        if resident and label != 'baseline' and (capture/'done.u32').read_bytes() != struct.pack('<I',0 if app else 3): raise ValueError('Resident completion status mismatch')
+        captures = {}
+        for path in capture.iterdir():
+            if path.suffix in ('.log','.u64') or path.name == 'done.u32': continue
+            if app and path.suffix in ('.f16','.f32'):
+                if label != 'baseline': raise ValueError('App emitted large tensor captures')
+                continue
+            with path.open('rb') as stream: captures[path.name] = hashlib.file_digest(stream,'sha256').hexdigest()
+        if expected is None: expected = captures
+        if captures != expected: raise ValueError(('Cache changed captures',label,[name for name in expected if expected[name] != captures.get(name)]))
+        timing = struct.unpack('<10Q',(capture/'0.timing.u64').read_bytes())
+        rows = list(struct.iter_unpack('<7Q',(capture/'0.profile-graphs.u64').read_bytes()))
+        log = (capture/'execution.log').read_text(encoding='utf-8',errors='replace')
+        record = dict(label=label,wall_seconds=time.perf_counter()-started if not resident or label == 'baseline' else None,native_seconds=timing[9]/timing[0],
+                      prepare_seconds=sum(row[3] for row in rows)/timing[0],execute_seconds=sum(row[4] for row in rows)/timing[0],
+                      capture_bytes=sum(path.stat().st_size for path in capture.iterdir()),
+                      hits=log.count('CACHE hit'),stored=log.count('CACHE stored'),capture=str(capture),captures=captures,
+                      executable_sha256=sha(binary.read_bytes()))
+        report['runs'].append(record)
+        report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+        print('PASS cache hardware',label,record['native_seconds'],'seconds',record['hits'],'hits; all',len(captures),'captures exact',flush=True)
+        if label == 'cache-repeat' and record['hits'] != 40: raise ValueError('Expected all 40 cached layers')
+        if resident and label == 'cache-repeat' and any(row[3] for row in rows if row[0] in (6,8)): raise ValueError('Resident decoder/head finalized again')
+    if app:
+        cache_files = list((build/'graph-cache').glob('*.qoc'))
+        if len(cache_files) != 40 or any(path.stat().st_size > 128*1024*1024 for path in cache_files): raise ValueError('Unbounded cache')
+        for index in range(3):
+            path = build/'graph-cache'/('2-0'+str(index)+'.qoc')
+            with path.open('r+b') as stream:
+                if index == 2: stream.truncate(128)
+                else:
+                    stream.seek(80 if index == 0 else -1,0 if index == 0 else 2)
+                    value = stream.read(1); stream.seek(-1,1); stream.write(bytes([value[0]^1]))
+        capture = (build/('cache-corruption-'+uuid.uuid4().hex)).resolve(); capture.mkdir()
+        command = [str((build/'ocr-generate.exe').resolve()),'--generate-text',str(ROOT/'experimental/snapdragon/build/QnnHtp.dll'),
+               str(vision_output.resolve()),str(text_output.resolve()),str(generation_output.resolve()),str(image),str(capture),'3']
+        with (capture/'execution.log').open('wb') as log, (capture/'stdout.txt').open('wb') as output:
+            result = subprocess.run(command,stdout=output,stderr=log,stdin=subprocess.DEVNULL,timeout=300)
+        if result.returncode != 3: raise ValueError('Corrupt cache recovery failed')
+        log = (capture/'execution.log').read_text(encoding='utf-8',errors='replace')
+        if log.count('CACHE hit') != 37 or log.count('CACHE stored') != 3: raise ValueError('Corrupt cache was not rebuilt selectively')
+        baseline_capture = Path(report['runs'][0]['capture'])
+        if (capture/'0.generated-ids.u32').read_bytes() != (baseline_capture/'0.generated-ids.u32').read_bytes()[:12]: raise ValueError('Cache recovery changed tokens')
+        report['corruption_test'] = dict(passed=True,hits=37,rebuilt=3,cases=['tensor-id','payload','truncated'],capture=str(capture))
+        report['cache_bytes'] = sum(path.stat().st_size for path in cache_files)
+        print('PASS corrupt cache: tensor ID, payload and truncated entry rebuilt; 37 hits, 3 replacements; tokens exact',flush=True)
+    report['complete'] = True
+    report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+
+
 def benchmark_ocr(vision_output, text_output, generation_output, build, baseline, supplement=False):
     import ctypes as ct
     import statistics
@@ -3170,6 +3273,11 @@ def main():
     parser.add_argument("--test-png", action="store_true")
     parser.add_argument("--diagnose-vision", action="store_true")
     parser.add_argument("--benchmark-ocr", action="store_true")
+    parser.add_argument("--test-graph-cache", action="store_true")
+    parser.add_argument("--test-resident", action="store_true")
+    parser.add_argument("--test-app", action="store_true")
+    parser.add_argument("--test-server-protocol", action="store_true")
+    parser.add_argument("--cache-integrity-only", action="store_true")
     parser.add_argument("--benchmark-supplement", action="store_true")
     parser.add_argument("--baseline-build", type=Path, default=ROOT/'experimental/snapdragon/build/ocr-large-png')
     parser.add_argument("--image-build", type=Path, default=ROOT/"experimental/snapdragon/build/ocr-image-files")
@@ -3225,6 +3333,10 @@ def main():
         analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
     elif args.benchmark_ocr:
         benchmark_ocr(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build,args.benchmark_supplement)
+    elif args.test_graph_cache:
+        test_graph_cache(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build,args.test_resident,args.test_app,args.cache_integrity_only)
+    elif args.test_server_protocol:
+        test_server_protocol(args.generation_build)
     elif args.diagnose_vision:
         diagnose_vision(args.model_dir,args.vision_output,args.generation_build)
     elif args.test_png:

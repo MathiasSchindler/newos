@@ -230,11 +230,11 @@ static int generation_release(const QnnInterfaceV2 *api) {
 
 static int generation_reset(void) {
     for (u32 index = 0; index < 16; ++index) {
-        if (text_retained_contexts[index] || text_retained_weights[index]) return 0;
+        if (!ocr_resident && (text_retained_contexts[index] || text_retained_weights[index])) return 0;
         text_cache_count[index] = 0;
         for (u32 offset = 0; offset < OCR_DECODE_CONTEXT*1024; ++offset) text_keys[index][offset] = text_values[index][offset] = 0;
     }
-    for (u32 index = 0; index < 8; ++index) if (generation_head_contexts[index] || generation_head_weights[index]) return 0;
+    for (u32 index = 0; index < 8; ++index) if (!ocr_resident && (generation_head_contexts[index] || generation_head_weights[index])) return 0;
     generation_reason = 0; runtime_clock_good = 1;
     return 1;
 }
