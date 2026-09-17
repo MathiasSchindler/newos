@@ -2,6 +2,42 @@
 	"version": "2.0.0",
 	"tasks": [
 		{
+			"label": "Snapdragon build",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "build"],
+			"group": "build",
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon clean",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "clean"],
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon rebuild",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "rebuild"],
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon clean contract test",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "test"],
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon build status",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "status"],
+			"problemMatcher": []
+		},
+		{
 			"label": "Snapdragon check layout",
 			"type": "process",
 			"command": "powershell.exe",

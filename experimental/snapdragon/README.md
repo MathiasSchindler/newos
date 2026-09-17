@@ -27,9 +27,9 @@ models/                  Model weights, prepared artifacts and reference fixture
 build/                   Native binaries, QNN runtime, compiled contexts and scratch builds
 ```
 
-`data/`, `models/` and `build/` are local, Git-ignored storage. Their existing
-contents were not relocated or deleted during the source reorganization: runtime
-asset lookup, cache identities and historical report paths depend on them.
+`data/`, `models/` and `build/` are local, Git-ignored storage. The central
+build/clean entry point preserves non-rebuildable inputs outside `build/`, so
+the complete build directory can be removed without deleting models.
 There are no compatibility copies of the moved source files or scripts.
 
 ## Applications and shared code
@@ -74,8 +74,83 @@ application records; reorganizing files is not a new model-quality acceptance.
 
 ## Binaries and builds
 
-All commands below run from the repository root. Use `-BuildDir` for isolated
-builds instead of overwriting an application that is open.
+From this directory, use [make.cmd](make.cmd) on Windows:
+
+```powershell
+.\make.cmd                 # Build all three applications and both GUIs
+.\make.cmd clean           # Preserve inputs, then remove the entire build directory
+.\make.cmd rebuild         # Clean followed by build
+.\make.cmd clean -WhatIf   # Preview without changing files
+.\make.cmd status          # Inventory and processes blocking clean/build
+.\make.cmd test            # Isolated tests of the clean/preservation contract
+```
+
+The equivalent PowerShell entry is [make.ps1](make.ps1), for example
+`./make.ps1 clean`. The CMD wrapper uses a process-local execution-policy bypass;
+it does not change machine or user policy. VS Code tasks **Snapdragon build**,
+**Snapdragon clean** and **Snapdragon rebuild** invoke the same implementation.
+Commands work independently of the current working directory.
+
+Build requires Clang/LLVM and the pinned QAIRT archive in
+`data/v2.50.0.260828.zip`. It extracts and verifies the QNN runtime locally,
+then compiles Whisper, TranslateGemma CLI/GUI and the production OCR engine/GUI.
+Whisper uses the deployed Self-Fusion variant matching the preserved Medium
+context; it is built under `build/whisper/` and its executables are installed at
+the existing build-root paths.
+No model download, model conversion or quality campaign is started. Existing
+prepared model/context artifacts are required for inference; build does not
+invent missing ones. OCR can regenerate its disposable graph cache as needed.
+
+### Clean and preserved inputs
+
+`clean` removes **all of `build/`**, not only executables. Before deletion it
+preserves non-rebuildable files in `data/build-state/files/` and records their
+SHA-256 hashes in `data/build-state/manifest.json`. This includes prepared
+Gemma/Whisper contexts and bindings, original-looking or unknown model files,
+development Python environments, OCR input images/runs and other evidence.
+Unchanged saved files are reused. Changed older versions are retained under
+`data/build-state/history/` as short archive filenames with JSON sidecars recording
+the original path and hash; preservation is deliberately conservative.
+
+Reproducible native binaries, objects, import libraries, Python bytecode caches
+and QNN runtime copies are discarded. Old experimental OCR `.qob`/`.qoc` caches are disposable; the
+deployed `ocr-app/graph-cache/` is preserved to avoid unnecessary recompilation.
+`models/`, the SDK archive and existing data archives are never deletion targets.
+The first preservation requires additional disk space and time; it is not an
+attempt to purge every historical artifact from the machine.
+
+The next build restores the default Gemma 512-token binding/contexts, root
+Whisper contexts, deployed OCR cache/input/runs and development environments.
+Other experimental artifacts and reports remain in the preserved tree instead
+of repopulating `build/`. Restores are hash-checked, and an already present build
+file is not overwritten by a saved copy. Do not delete `data/build-state/` unless
+its retained inputs and evidence are no longer needed.
+
+Clean/build refuse active processes using the build tree and reject junctions
+or symbolic links rather than following them. Close application windows before
+running either operation. A preservation failure prevents deletion; if a later
+compile fails, fix the reported prerequisite and rerun build. The clean contract
+tests cover full removal, model preservation, selective restore, version history,
+corruption, path traversal and reparse-point rejection using synthetic files.
+The last operation's log and explicit completion/error status are recorded in
+`data/build-state/last-operation.log` and `last-operation.json`.
+
+The full clean/rebuild was exercised on 2026-09-17: 102,106 files (11.49 GiB of
+inputs, development dependencies and evidence) were preserved from a 23.04 GiB
+build tree, the build directory was completely removed, and all three native
+applications plus both GUIs were rebuilt successfully. Preserving large existing
+development environments takes time; the initial migration is not a quick delete.
+After matching Whisper's deployed Self-Fusion configuration, the rebuilt
+TranslateGemma produced the exact reference translation, OCR verified all 26
+Vision artifacts, and Whisper transcribed the 35-second sample with the unchanged
+transcript hash and 6,384 NPU self-attention submissions. The final report is
+`data/rebuild-verification-1199df64e0284cd2ad9495de7cfda07a/results.json`.
+
+### Individual builds
+
+The following lower-level commands run from the repository root. Use `-BuildDir`
+for isolated builds instead of overwriting an application that is open. Their
+individual switches are not substitutes for the central model-preserving clean.
 
 ```powershell
 & ./experimental/snapdragon/tools/whisper/build.ps1 -BuildDir experimental/snapdragon/build/layout-check/whisper
@@ -91,7 +166,7 @@ builds instead of overwriting an application that is open.
 | TranslateGemma | `build/translate.exe`, `build/translate-gui.exe` | `build/gemma-block/`, QNN runtime; tokenizer and weights under `models/` |
 | OCR | `build/ocr-app/ocr-generate.exe`, `build/ocr-app/ocr-gui.exe` | `build/ocr-app/graph-cache/`, parent QNN runtime and model assets |
 
-The installed paths are deliberately unchanged. A freshly built executable is
+The application paths are deliberately unchanged. A freshly built executable is
 not automatically a deployed application: do not move it alone without its
 required runtime, models and context bindings. QNN binaries include DLL, SO and
 CAT files; keep their licenses and version record together. Prepared `.context`,
@@ -112,7 +187,8 @@ documentation links, catalog JSON and source/script references in VS Code tasks.
 models, execute inference or regenerate caches. `-Python` selects another
 development interpreter.
 
-The reorganization was validated with all three native builds, both GUI builds,
+The source reorganization was validated with all three native builds, both GUI builds,
 Whisper mock/cleanup tests, 33 Python module tests, 7,470 tokenizer cases,
 416 document cases, 323 numerical cases, 164 envelope corruption cases and OCR
-artifact/prefill/generation regressions. No installed application was replaced.
+artifact/prefill/generation regressions. These are separate from the clean
+contract tests above.

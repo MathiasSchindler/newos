@@ -16,7 +16,7 @@ if ($CheckLayout) {
         if (Test-Path (Join-Path $root $directory)) { throw ('Obsolete source directory: ' + $directory) }
     }
     if (@(Get-ChildItem (Join-Path $root 'tools') -File).Count) { throw 'Developer files must belong to a tools group' }
-    $scripts = @(Get-ChildItem (Join-Path $root 'tools') -Recurse -File -Filter '*.ps1')
+    $scripts = @(Get-Item (Join-Path $root 'make.ps1')) + @(Get-ChildItem (Join-Path $root 'tools') -Recurse -File -Filter '*.ps1')
     foreach ($script in $scripts) {
         $tokens = $null
         $parseErrors = $null

@@ -6,6 +6,11 @@ shared code, developer tools, datasets and installed binaries. Application
 records live in `apps/`; hardware/NPU/QNN records live in `platform/`.
 The native applications use no C runtime or SDK headers; QNN is loaded separately.
 
+For the current model-preserving `clean` and complete native rebuild, use the
+[central build entry](../README.md#binaries-and-builds). `build/` can now be
+removed completely; preserved inputs and evidence live under `data/build-state/`.
+The cleanup records below describe earlier, selective manual cleanups.
+
 For Medium execution events, CPU accounting, latency distributions, and timeline
 capture, see [diagnostics.md](apps/whisper-diagnostics.md).
 
