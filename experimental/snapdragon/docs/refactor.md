@@ -114,8 +114,8 @@ Exit criteria: Small runs within an explicit memory budget and its speed/quality
 
 For every phase that changes runtime code:
 
-- `experimental/snapdragon/tools/build.ps1`
-- `experimental/snapdragon/tools/test-npu-probe.ps1`
+- `experimental/snapdragon/tools/whisper/build.ps1`
+- `experimental/snapdragon/tools/whisper/test-npu-probe.ps1`
 - Native 35-second, two-window HTP transcription in default and `--quiet` modes
 - Transcript equality or an explicitly reviewed model-specific reference
 - ARM64 PE inspection: no exception table and only expected static imports

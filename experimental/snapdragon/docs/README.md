@@ -1,9 +1,13 @@
 # Snapdragon experiments
 
-This directory documents freestanding Windows ARM64 experiments for the Snapdragon X Elite. Probe source and import definitions live under `src/`, scripts under `tools/`, and downloaded or generated model assets under the ignored `models/` directory. The native probe uses no C runtime, SDK headers, or bundled runtime libraries.
+This directory documents freestanding Windows ARM64 experiments for the Snapdragon X Elite.
+The [project directory guide](../README.md) describes application sources,
+shared code, developer tools, datasets and installed binaries. Application
+records live in `apps/`; hardware/NPU/QNN records live in `platform/`.
+The native applications use no C runtime or SDK headers; QNN is loaded separately.
 
 For Medium execution events, CPU accounting, latency distributions, and timeline
-capture, see [diagnostics.md](diagnostics.md).
+capture, see [diagnostics.md](apps/whisper-diagnostics.md).
 
 ## Current build after cleanup (2026-09-17)
 
@@ -49,20 +53,20 @@ are loaded directly without QNN graph construction. App builds use
 write prefill K/V directly to host cache buffers. The verified update reduced
 warm median latency from 25.78 to 17.22 seconds and first text from 17.77 to
 9.32 seconds on the comparison screenshot. See
-[grouped serving and limits](plan-glm-ocr.md#bounded-grouped-serving).
-See [OCR GUI](plan-glm-ocr.md#native-ocr-gui) and
-[resident/cache results](plan-glm-ocr.md#resident-engine-and-bounded-graph-cache).
+[grouped serving and limits](apps/ocr.md#bounded-grouped-serving).
+See [OCR GUI](apps/ocr.md#native-ocr-gui) and
+[resident/cache results](apps/ocr.md#resident-engine-and-bounded-graph-cache).
 
-The [numerical investigation](plan-glm-ocr.md#full-vision-numerical-cause-analysis)
+The [numerical investigation](apps/ocr.md#full-vision-numerical-cause-analysis)
 isolates a historical candidate RoPE-buffer mismatch and predominantly MLP-driven
 amplification of accumulated errors. Original-reference tolerances still fail.
-The [first benchmark](plan-glm-ocr.md#ocr-profiling-and-benchmark) measures a
+The [first benchmark](apps/ocr.md#ocr-profiling-and-benchmark) measures a
 122.78 s receipt median, with graph finalization the main optimization target.
 The subsequent screenshot comparison measures 135.21 s without caching versus
 37.59 s for a resident warm request, with exactly matching generated token IDs.
 These are individual observations, not a general speedup guarantee; initial
 cache creation costs extra time. Original numerical acceptance remains open.
-The next [serving profile](plan-glm-ocr.md#serving-cpu-and-accelerator-profile)
+The next [serving profile](apps/ocr.md#serving-cpu-and-accelerator-profile)
 compares four warm requests per version: median latency 35.06 to 28.71 s,
 engine CPU time 17.98 to 13.38 s, with identical outputs. Verified model files
 stay read-locked for the server lifetime, redundant weight reloads are avoided,
@@ -85,7 +89,7 @@ Both larger PNG test images reached EOS on HTP and matched the independently
 executed original model byte for byte. Numerical tolerance checks still fail.
 Run `GLM-OCR large image export`, `GLM-OCR large PNG hardware`, then the large
 PNG vision/generation analyses and independent reference tasks. See
-[PNG and larger image grids](plan-glm-ocr.md#png-and-larger-image-grids) for
+[PNG and larger image grids](apps/ocr.md#png-and-larger-image-grids) for
 commands, supported PNG variants, limits and results. `GLM-OCR PNG import tests`
 checks 486 cases after `GLM-OCR image file build`.
 
@@ -119,16 +123,16 @@ Use `-ReuseDecode` for optional retained decode/head graphs. Their dynamic cache
 mask and RoPE inputs are checked on hardware, but their later logits are not
 bit-identical to the default variable-length mode. The package is now
 `models/glm-ocr-generation-v2/`; timing and independent references are documented in
-[the extended-context milestone](plan-glm-ocr.md#extended-context-and-retained-graphs).
+[the extended-context milestone](apps/ocr.md#extended-context-and-retained-graphs).
 The 256-token total budget and two image buckets remain limits of that small build;
 exit 0 means EOS and exit 3 means incomplete output at a limit. See the
-[generation CLI and execution contract](plan-glm-ocr.md#native-autoregressive-generation).
+[generation CLI and execution contract](apps/ocr.md#native-autoregressive-generation).
 For prefill-only diagnostics, use `GLM-OCR text
 decoder export`, `GLM-OCR multimodal input tests`, `GLM-OCR multimodal prefill
 hardware` and `GLM-OCR multimodal prefill analysis`; see the
-[multimodal prefill contract](plan-glm-ocr.md#multimodal-decoder-input-and-text-prefill)
+[multimodal prefill contract](apps/ocr.md#multimodal-decoder-input-and-text-prefill)
 and the earlier Vision
-[runtime contract and results](plan-glm-ocr.md#complete-native-vision-execution).
+[runtime contract and results](apps/ocr.md#complete-native-vision-execution).
 The stage history below records the earlier bounded experiments.
 
 GLM-OCR is the third independent freestanding C/QNN experiment, alongside Whisper
@@ -171,7 +175,7 @@ with geometry JSON on stdout, not recognized text. Sixteen file-to-patch oracle
 comparisons are byte-exact; 828 native decoder checks and the existing regressions
 pass. Only bounded uncompressed BMP24 is supported, with no Python/codec runtime
 dependency. PNG/JPEG and the full inference connection remain open; see the
-[concrete pipeline gaps](plan-glm-ocr.md#concrete-image-to-text-gaps).
+[concrete pipeline gaps](apps/ocr.md#concrete-image-to-text-gaps).
 
 Stage 4a adds isolated HTP primitive probes with numerical reference comparisons
 and accelerator profiling evidence:
@@ -250,14 +254,14 @@ pass, but score violations rise from 10/7 to 14/12 (original/candidate), includi
 seven matched-input failures. Paired conditional analysis shows that local
 QKV/QK-normalization errors change with the input; a frozen-error prediction is
 not a reliable gate. This variant also remains diagnostic, not a chain fix.
-See [plan-glm-ocr.md](plan-glm-ocr.md) for source identity, current limitations,
+See [OCR](apps/ocr.md) for source identity, current limitations,
 licensing provenance and the staged tokenizer/vision/decoder/QNN roadmap.
 
 ## TranslateGemma development
 
 TranslateGemma currently has pinned W4/W8 weight artifacts and a freestanding C
 tokenizer/prompt implementation. It does not yet execute the translation model.
-See [plan-translategemma.md](plan-translategemma.md) for the stage record and
+See [TranslateGemma](apps/translate.md) for the stage record and
 the Stage 5 numerical reference's explicit precision and RoPE contracts.
 
 With the exported Stage 4 artifacts present, the normal build and regression gate
@@ -292,7 +296,7 @@ tokenizer. Table-only export from the authenticated, hash-pinned Stage 2 downloa
 works with Python's standard library alone:
 
 ```powershell
-python experimental/snapdragon/tools/export-translategemma.py --tokenizer-only --output experimental/snapdragon/models/translategemma-4b-tokenizer
+python experimental/snapdragon/tools/translate/export-translategemma.py --tokenizer-only --output experimental/snapdragon/models/translategemma-4b-tokenizer
 ```
 
 Use `--replace` explicitly to replace an existing export directory. Reference
@@ -300,7 +304,7 @@ generation checks the loaded backend against the pinned tokenizer rather than
 applying automatic tokenizer rewrites. Generated manifests record versions and
 payload SHA-256 values. Python packages and PowerShell are not inference dependencies.
 
-The C API lives in `src/tools/gemma/gemma_tokenizer.h`. Keep validated artifact
+The C API lives in `src/apps/translate/gemma_tokenizer.h`. Keep validated artifact
 bytes alive and immutable while the tokenizer is in use. Each concurrent request
 needs its own caller-owned `GemmaTokenizerWork` (5,701,636 bytes) and output buffers;
 the table view itself is read-only and shareable. Calls allocate no memory and
@@ -327,7 +331,7 @@ the C tests. It uses the existing NumPy/tokenizer reference environment:
 
 ```powershell
 .\experimental\snapdragon\tools\build-gemma.ps1 -ExportNumerics -TestNumerics
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/export-translategemma.py --numerical-reference --verify-only
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/translate/export-translategemma.py --numerical-reference --verify-only
 ```
 
 Output lives under `models/translategemma-4b-stage5-v2/`. Its manifest describes the
@@ -369,14 +373,14 @@ W8 and W4 as described below.
 
 ### Translation Quality Tests
 
-The separate [quality corpus](../tools/translategemma-quality.json) contains 24
+The separate [quality corpus](../tools/translate/translategemma-quality.json) contains 24
 diagnostic cases and 24 reserved held-out cases, without changing the published
 three-sentence fixtures. References have AI semantic approval by GitHub Copilot
 at the user's request; this is not independent human review. The
-[quality runner](../tools/translategemma-quality.py) prepares exact prompts,
+[quality runner](../tools/translate/translategemma-quality.py) prepares exact prompts,
 compares BF16/W8/W4, records termination/repetition flags, exports variant-blinded
 review packets, and scores pinned chrF++. Held-out use requires attributed semantic review
-and a matching frozen case hash. See the [evaluation workflow](plan-translategemma.md#quality-evaluation-workflow).
+and a matching frozen case hash. See the [evaluation workflow](apps/translate.md#quality-evaluation-workflow).
 
 The hardware probe also has 12 tiny basis/sign/cancellation cases. All 48 per-axis
 outputs are exact; direct mapped grouped encoding, explicit dequantization and
@@ -397,7 +401,7 @@ been frozen or evaluated on the held-out set. Do not restart automatically.
 
 ### Full-Model Memory Measurement
 
-The offline Windows sampler `tools/measure-translategemma-memory.py` measures the
+The offline Windows sampler `tools/translate/measure-translategemma-memory.py` measures the
 existing Stage 7 full-depth W4 restore/prompt gate without rebuilding contexts or
 changing production binaries. It records process working set/private bytes,
 peak working set/commit, system available RAM/commit and the native test log.
@@ -405,7 +409,7 @@ It refuses to launch below 8 GiB available RAM. Run after the offline quality
 campaign has finished, using a new report path for each bucket:
 
 ```powershell
-./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/measure-translategemma-memory.py --measure --bucket 512 --output experimental/snapdragon/models/translategemma-memory-512.json
+./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -B experimental/snapdragon/tools/translate/measure-translategemma-memory.py --measure --bucket 512 --output experimental/snapdragon/models/translategemma-memory-512.json
 ```
 
 Repeat serially for buckets 1024 and 2048. Omit `--measure` for preflight only.
@@ -449,8 +453,8 @@ NumPy environment; this does not regenerate the full translation corpus:
 
 ```powershell
 $env:OPENBLAS_NUM_THREADS = '4'
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --block-reference --replace
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --block-reference --verify-only
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/export-translategemma.py --block-reference --replace
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/export-translategemma.py --block-reference --verify-only
 ```
 
 The 209 artifacts in `models/translategemma-4b-stage6/` cover two three-token
@@ -460,7 +464,7 @@ runtime RoPE positions, and prior KV consumption. All four hardware cases pass
 cached-row influence/restoration, and deterministic warm replay. Five injected
 failure stages pass cleanup checks. The retained diagnostic outputs and internal
 KV expansion make these correctness graphs, not the final prompt/decode design.
-The [Stage 6 report](plan-translategemma.md#stage-6-qnn-transformer-block) records
+The [Stage 6 report](apps/translate.md#stage-6-qnn-transformer-block) records
 tolerances, timing results, fixture limits, and remaining full-model obligations.
 
 ### Prompt Processor Bring-up
@@ -473,12 +477,12 @@ deterministic replay, and the throughput gate at 488/449/353 input tokens/s,
 respectively, using the 253/256-token fixtures. Exact IO-schema validation,
 75 envelope-corruption cases, and nine truncated-file cases pass. Existing
 Stage 6 gates also pass. Stage 5 W4 translation quality remains independently blocked.
-See the [Stage 7 status](plan-translategemma.md#stage-7-prompt-processor) for the
+See the [Stage 7 status](apps/translate.md#stage-7-prompt-processor) for the
 isolation results and version 4 context contract.
 
 ```powershell
 $env:OPENBLAS_NUM_THREADS = '4'
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/export-translategemma.py --prompt-reference --replace
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/export-translategemma.py --prompt-reference --replace
 foreach ($bucket in 512, 1024, 2048) {
 	.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -PromptBucket $bucket
 	.\experimental\snapdragon\tools\build-gemma.ps1 -TestPrompt -RestorePrompt -PromptBucket $bucket
@@ -495,11 +499,11 @@ remain separate under `build/gemma-block/`.
 Optional independent development checks reuse the existing test file:
 
 ```powershell
-.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --torch-oracle
+.\experimental\snapdragon\build\gemma-oracle-x64\python.exe -B experimental/snapdragon/tools/translate/test-translategemma-stage3.py --torch-oracle
 $env:OPENBLAS_NUM_THREADS = '4'
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-audit
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-rounding-audit
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/test-translategemma-stage3.py --residual-bound-audit
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/test-translategemma-stage3.py --residual-audit
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/test-translategemma-stage3.py --residual-rounding-audit
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe -B experimental/snapdragon/tools/translate/test-translategemma-stage3.py --residual-bound-audit
 ```
 
 The first command requires the isolated x64 Python 3.14 environment with torch
@@ -521,7 +525,7 @@ fails. This separate build leaves the retained production Whisper binary intact.
 For a fast scalar-only development check, deliberately publish to scratch space:
 
 ```powershell
-.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/export-translategemma.py --numerical-reference --primitives-only --output tests/tmp/gemma-numeric-primitives --replace
+.\experimental\snapdragon\build\calibration-venv\Scripts\python.exe experimental/snapdragon/tools/translate/export-translategemma.py --numerical-reference --primitives-only --output tests/tmp/gemma-numeric-primitives --replace
 .\experimental\snapdragon\tools\build-gemma.ps1 -TestNumerics -NumericDir tests/tmp/gemma-numeric-primitives
 ```
 
@@ -555,7 +559,7 @@ fallback. Inventory and verification logs are in
 and `bitcast-symbols/` executable/PDB pairs. Historical paths in benchmark and
 trace reports describe the original runs, not the current deployment.
 
-Build defaults have not changed: use `tools/build.ps1 -SelfFusionCandidate` to
+Build defaults have not changed: use `tools/whisper/build.ps1 -SelfFusionCandidate` to
 rebuild this variant in its isolated directory, then copy its `npu_probe.exe`
 into `build/` while preserving the matching fused context and QNN runtime.
 Do not use `-Clean` on the retained runtime directory. Repeating historical
@@ -694,7 +698,7 @@ to stderr and exits with status 130. Repeated interrupts continue to request the
 same orderly shutdown. An active QNN call must return before cleanup can begin;
 closing the console, ending the process in Task Manager, or a hung driver cannot
 be guaranteed graceful cleanup. The optional development-time hardware check is
-`tools/test-whisper-cancellation.py`, which sends actual Ctrl+C/Ctrl+Break events
+`tools/whisper/test-whisper-cancellation.py`, which sends actual Ctrl+C/Ctrl+Break events
 inside isolated Windows consoles without signalling the user's terminal.
 
 The updated candidate passes the strict 15-profile hardware regression including
@@ -736,13 +740,13 @@ Base, Small, and Medium. Its runtime matched the then-validated
 `627ecfd72c850fae237c968aed6103f98c28211c586c79b582637aadc52cca6d`.
 
 For isolated bring-up, build with
-`tools/build.ps1 -BuildDir experimental/snapdragon/build/medium-candidate`
+`tools/whisper/build.ps1 -BuildDir experimental/snapdragon/build/medium-candidate`
 and stage the same QNN DLLs,
 DSP `.so` files, and `.cat` files beside the candidate. The original executable
 and unsuffixed contexts can then remain in place for comparison. After building
 the three smaller `-l24` contexts and Medium's `cross,mlp` and `fused,logits`
 contexts, run
-`experimental/snapdragon/tools/test-whisper-medium.ps1` from the repository root.
+`experimental/snapdragon/tools/whisper/test-whisper-medium.ps1` from the repository root.
 It defaults to the isolated candidate and existing 35-second WAV, checks
 Tiny/Base/Small transcripts against `-ReferenceProbePath` (the main build by
 default) in both decoder
@@ -816,13 +820,13 @@ Python and NumPy remain development-only exporters. Runtime token generation and
 
 `npu_probe.exe` is a no-CRT ARM64 PE that imports only `KERNEL32.dll`. It dynamically loads the unavoidable proprietary `QnnHtp.dll` backend, obtains its QNN 2.39 function table, and creates logging, backend, device, profile, and context handles; it does not load ONNX Runtime. Freestanding C parses a fixed 16 kHz WAV and computes Whisper log-mel features. Two cached FP16 QNN graphs run the frontend convolutions, GELUs, and position addition before passing their result directly to a model-generated encoder graph: 88 nodes for Tiny, 132 for Base, or 264 for Small. Runtime activation buffers and temporary builder weights are descriptor-sized; builder weights are released after context restoration. Handles are released in reverse order on success and failure.
 
-The diagnostic path reports peak/current working set and private committed bytes through `GetCurrentProcess` and `K32GetProcessMemoryInfo`, both exported by Kernel32 on the supported Windows target. The original Small CPU-decoder reference peaked at 715,628,544 resident bytes and 494,174,208 private committed bytes. The current all-ablation context, including separate and fused decoder graphs, reached about 1.63 GB resident while private committed memory remained about 498 MB. Production-context pruning is required before treating that measurement as a deployment budget. See [snapdragon-x-qnn.md](snapdragon-x-qnn.md) for reusable Windows on Snapdragon and QNN integration findings.
+The diagnostic path reports peak/current working set and private committed bytes through `GetCurrentProcess` and `K32GetProcessMemoryInfo`, both exported by Kernel32 on the supported Windows target. The original Small CPU-decoder reference peaked at 715,628,544 resident bytes and 494,174,208 private committed bytes. The current all-ablation context, including separate and fused decoder graphs, reached about 1.63 GB resident while private committed memory remained about 498 MB. Production-context pruning is required before treating that measurement as a deployment budget. See [snapdragon-x-qnn.md](platform/snapdragon-x-qnn.md) for reusable Windows on Snapdragon and QNN integration findings.
 
-The stable decoder uses separate cached cross-attention and MLP graphs. The experimental `fused` mode performs cross-attention, both residuals, final LayerNorm, and MLP in one graph per layer, halving those submissions. Stateful self-attention uses two HTP submissions per layer and final LayerNorm plus vocabulary projection uses one submission per token. All paths retain CPU fallbacks and exact CPU suppression/sampling. Fusion improves focused Tiny and Small latency, but the first five-minute Small run remained slower overall; `fused,self,logits` raised host-call duty to 61.2% and reduced CPU time by 14.0% versus the same-context stable mode while missing its wall-time gate by 1.5%. Detailed timings and the repeatable `benchmark-whisper-offloads.ps1` runner are documented in [benchmark.md](benchmark.md).
+The stable decoder uses separate cached cross-attention and MLP graphs. The experimental `fused` mode performs cross-attention, both residuals, final LayerNorm, and MLP in one graph per layer, halving those submissions. Stateful self-attention uses two HTP submissions per layer and final LayerNorm plus vocabulary projection uses one submission per token. All paths retain CPU fallbacks and exact CPU suppression/sampling. Fusion improves focused Tiny and Small latency, but the first five-minute Small run remained slower overall; `fused,self,logits` raised host-call duty to 61.2% and reduced CPU time by 14.0% versus the same-context stable mode while missing its wall-time gate by 1.5%. Detailed timings and the repeatable `benchmark-whisper-offloads.ps1` runner are documented in [benchmark.md](apps/whisper-benchmark.md).
 
 The QNN staging script verifies the pinned official `data/v2.50.0.260828.zip` archive, confirms its QAIRT and QNN API metadata, and extracts the Windows ARM64 HTP/System files, V73/V81 skels, notices, and hashes into the ignored build directory. The latest validated SDK is the single working baseline: an upgrade replaces the staged runtime and contexts rather than creating parallel active versions. The model script pins multilingual `openai/whisper-tiny` revision `169d4a4341b33bc18d8881c4b69c2e104e1cc0af` and verifies the checkpoint's size and SHA-256. Calibration uses one pinned validation clip from each of 16 FLEURS languages. Model and corpus licenses, source revisions, file hashes, quantization errors, calibrated encodings, and deployment artifact hashes are recorded under the ignored `build/` tree. Python and NumPy are development-time preparation tools only; the deployed graph loader remains freestanding C. Review `build/qnn-licenses/LICENSE.pdf`, the accompanying notices, the model card, and the FLEURS CC BY 4.0 attribution before redistribution.
 
-The narrow ABI in `../src/shared/qnn_abi.h` was checked against exact QAIRT `2.50.0.260828` QNN core 2.39 headers from the pinned official SDK archive. Compiler-derived ARM64 sizes and offsets are enforced with static assertions; no offsets are inferred from binaries and no proprietary SDK headers are copied into the repository. The validated provider on this machine is `HTP_QTI_AISW`, backend ID 6, with QNN core API 2.39.0 and HTP backend API 5.50.0. See [npu-plan.md](npu-plan.md) for the incremental path to a Whisper-like model.
+The narrow ABI in `../src/shared/qnn_abi.h` was checked against exact QAIRT `2.50.0.260828` QNN core 2.39 headers from the pinned official SDK archive. Compiler-derived ARM64 sizes and offsets are enforced with static assertions; no offsets are inferred from binaries and no proprietary SDK headers are copied into the repository. The validated provider on this machine is `HTP_QTI_AISW`, backend ID 6, with QNN core API 2.39.0 and HTP backend API 5.50.0. See [npu-plan.md](platform/npu-plan.md) for the incremental path to a Whisper-like model.
 
 Run the deterministic failure-path suite with:
 
@@ -848,7 +852,7 @@ For CPU-first Small transcription, explicitly select the measured high-offload p
 .\experimental\snapdragon\build\npu_probe.exe --model=small --decoder-offload=fused,self,logits <compatible.wav>
 ```
 
-Rebuild the executable with `tools/build.ps1` before using the decoder work-reuse changes; existing QNN contexts remain compatible. Three interleaved five-minute before/after pairs in this mode reduced median CPU-seconds from 70.91 to 27.17 and elapsed time from 75.83 to 57.24 seconds, with identical transcripts. Median NPU host-call duty rose from 59.35% to 78.69%; it is not a hardware occupancy measurement. Optional exact sampling caching increases private commitment by roughly 94 MB. See [benchmark.md](benchmark.md) for binary identities, variability, and validation. Changing the offload mode itself can change model output, even though these work-reuse changes preserve each tested mode's transcript.
+Rebuild the executable with `tools/whisper/build.ps1` before using the decoder work-reuse changes; existing QNN contexts remain compatible. Three interleaved five-minute before/after pairs in this mode reduced median CPU-seconds from 70.91 to 27.17 and elapsed time from 75.83 to 57.24 seconds, with identical transcripts. Median NPU host-call duty rose from 59.35% to 78.69%; it is not a hardware occupancy measurement. Optional exact sampling caching increases private commitment by roughly 94 MB. See [benchmark.md](apps/whisper-benchmark.md) for binary identities, variability, and validation. Changing the offload mode itself can change model output, even though these work-reuse changes preserve each tested mode's transcript.
 
 On the Surface Laptop 7 used for bring-up:
 
