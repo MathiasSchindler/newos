@@ -44,6 +44,9 @@ int ocr_generate_server(const unsigned short *library, const unsigned short *vis
         if (!result || !good) { good = 0; break; }
     }
     diagnostic_stream = (u32)-12;
+#ifdef OCR_GRAPH_CACHE
+    if (!graph_resident_release(ocr_resident_api)) good = 0;
+#endif
     if (!generation_release(ocr_resident_api)) good = 0;
     if (ocr_resident_api) {
         if (execution_profile && !checked("server_profile_free",ocr_resident_api->profile_free(execution_profile))) good = 0;
@@ -52,5 +55,6 @@ int ocr_generate_server(const unsigned short *library, const unsigned short *vis
         if (!FreeLibrary(ocr_resident_module)) good = 0;
     }
     ocr_resident = 0; ocr_resident_module = 0; ocr_resident_api = 0; ocr_resident_backend = 0; ocr_resident_device = 0; execution_profile = 0;
+    if (!resident_files_release()) good = 0;
     return good;
 }

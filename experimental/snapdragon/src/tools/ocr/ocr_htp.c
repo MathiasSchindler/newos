@@ -41,9 +41,41 @@ static u32 load32(const u8 *data) {
     return data[0] | (u32)data[1] << 8 | (u32)data[2] << 16 | (u32)data[3] << 24;
 }
 
+#ifdef OCR_TEXT_DECODER
+static int ocr_resident;
+static void *resident_files[64];
+static unsigned short resident_file_paths[64][32768];
+static u32 resident_file_count;
+__declspec(dllimport) int SetFilePointerEx(void *, long long, long long *, u32);
+
+static void *resident_file_find(const unsigned short *path) {
+    for (u32 file = 0; file < resident_file_count; ++file) {
+        u32 offset = 0;
+        while (path[offset] && path[offset] == resident_file_paths[file][offset]) ++offset;
+        if (!path[offset] && !resident_file_paths[file][offset]) return resident_files[file];
+    }
+    return 0;
+}
+
+static int resident_files_release(void) {
+    int good = 1;
+    for (u32 index = 0; index < resident_file_count; ++index) if (!CloseHandle(resident_files[index])) good = 0;
+    resident_file_count = 0;
+    return good;
+}
+#endif
+
 static u32 read_blob(const unsigned short *path, u8 *data, u32 capacity) {
     u64 started = runtime_clock();
-    void *file = CreateFileW(path,0x80000000U,1,0,3,0x08000080U,0);
+    void *file = 0; int retained = 0;
+#ifdef OCR_TEXT_DECODER
+    if (ocr_resident) file = resident_file_find(path);
+    if (file) {
+        retained = 1;
+        if (!SetFilePointerEx(file,0,0,0)) return 0;
+    }
+#endif
+    if (!file) file = CreateFileW(path,0x80000000U,1,0,3,0x08000080U,0);
     long long size = 0;
     u32 total = 0, received;
     int valid = 0;
@@ -57,7 +89,17 @@ static u32 read_blob(const unsigned short *path, u8 *data, u32 capacity) {
     if (!ReadFile(file,&extra,1,&received,0) || received) goto done;
     valid = 1;
 done:
-    if (!CloseHandle(file)) valid = 0;
+#ifdef OCR_TEXT_DECODER
+    if (ocr_resident && valid && !retained) {
+        u32 length = 0; while (length < 32768 && path[length]) ++length;
+        if (resident_file_count >= 64 || length >= 32768) valid = 0;
+        else {
+            for (u32 offset = 0; offset <= length; ++offset) resident_file_paths[resident_file_count][offset] = path[offset];
+            resident_files[resident_file_count++] = file; retained = 1;
+        }
+    }
+#endif
+    if (!retained && !CloseHandle(file)) valid = 0;
     runtime_ticks[0] += runtime_clock()-started;
     return valid ? total : 0;
 }
@@ -295,6 +337,7 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
 typedef struct {
     const QnnInterfaceV2 *api;
     QnnGraphHandle graph;
+    int lean;
     u64 build_started;
     QnnTensor tensors[OCR_ATTENTION_TENSORS];
     u32 dimensions[OCR_ATTENTION_TENSORS][4];
@@ -303,6 +346,8 @@ typedef struct {
     int good;
 #ifdef OCR_GRAPH_CACHE
     CryptoSha256Context cache_hash;
+    u8 cache_key[32];
+    u32 cached_count, cached_ids[OCR_ATTENTION_TENSORS];
 #endif
 #ifdef OCR_MATRIX_RESIDUAL
     u32 diagnostic_quotient;
@@ -367,13 +412,10 @@ static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32
     value->data.v1.memory.client_buffer.data = data;
     value->data.v1.memory.client_buffer.data_size = data ? elements * (dtype == QNN_DATATYPE_FLOAT_16 ? 2 : 4) : 0;
 #ifdef OCR_GRAPH_CACHE
-    if (graph_cache_active && (profile_phase == 2 || profile_phase == 4)) {
-        if (!index) { crypto_sha256_init(&builder->cache_hash); crypto_sha256_update(&builder->cache_hash,graph_cache_identity,32); }
-        u32 descriptor[4] = {index,type,dtype,rank};
-        crypto_sha256_update(&builder->cache_hash,(const u8 *)descriptor,sizeof(descriptor));
-        crypto_sha256_update(&builder->cache_hash,(const u8 *)shape,rank*sizeof(u32));
-        if (type == QNN_TENSOR_TYPE_STATIC && data)
-            crypto_sha256_update(&builder->cache_hash,data,value->data.v1.memory.client_buffer.data_size);
+    if (builder->cached_count) {
+        if (index >= builder->cached_count) builder->good = 0;
+        else value->data.v1.id = builder->cached_ids[index];
+        return index;
     }
 #endif
     if (!checked("attention_tensor",builder->api->tensor_create_graph_tensor(builder->graph,value))) builder->good = 0;
@@ -383,9 +425,13 @@ static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32
 static u32 attention_op(OcrAttentionGraph *builder, const char *operation, const u32 *ids, u32 count, u32 rank, const u32 *shape,
                         u32 dtype, int tap, QnnParam *parameters, u32 parameter_count) {
     QnnTensor inputs[3];
+    if (builder->lean && tap == 1) tap = 0;
     if (!builder->good || count > 3) { builder->good = 0; return 0; }
     for (u32 index = 0; index < count; ++index) inputs[index] = builder->tensors[ids[index]];
     u32 output = attention_tensor(builder,tap ? QNN_TENSOR_TYPE_APP_READ : QNN_TENSOR_TYPE_NATIVE,dtype,rank,shape,0);
+#ifdef OCR_GRAPH_CACHE
+    if (builder->cached_count) return output;
+#endif
     if (builder->good && !node(builder->api,builder->graph,builder->names[output],operation,inputs,count,&builder->tensors[output],parameters,parameter_count)) builder->good = 0;
     return output;
 }
@@ -495,10 +541,14 @@ static u32 attention_transpose(OcrAttentionGraph *builder, u32 input, const u32 
         return attention_op(builder,"Transpose",&input,1,3,shape,QNN_DATATYPE_FLOAT_16,0,&parameter,1);
 }
 
-static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block, u32 tokens, u32 block_index, u16 *next_input) {
+static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, u8 *source, u8 *constants, const u8 *references, int full_block, u32 tokens, u32 block_index, u16 *next_input, const u8 *weight_identity) {
+    (void)weight_identity;
     if ((tokens != 64 && tokens != 128 && !(OCR_VISION_PATCHES == 512 && !references && (tokens == 256 || tokens == 512))) || block_index >= 24 || (!references && (!full_block || !next_input))) return 0;
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
     u32 flat[2] = {tokens,1024}, fused[2] = {tokens,3072}, heads[3] = {tokens,16,64}, batched[3] = {16,tokens,64};
+#ifdef OCR_APP_MODE
+    builder.lean = !references;
+#endif
     u32 key_shape[3] = {16,64,tokens}, score_shape[3] = {16,tokens,tokens};
     u32 shape_qkv[2] = {1024,3072}, shape_proj[2] = {1024,1024}, width[1] = {1024}, qkv_width[1] = {3072}, head_width[1] = {64};
     u32 frequency_shape[3] = {tokens,1,64}, scalar_shape[1] = {1}, scalar_axis = 1, head_axis = 2;
@@ -507,6 +557,15 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     for (u32 part = 0; part < 3; ++part) for (u32 index = 0; index < 1024; ++index) selections[part][index] = part*1024+index;
     for (u32 index = 0; index < 64; ++index) { rotation[index] = (index+32)%64; signs[index] = index < 32 ? -1.0f : 1.0f; }
     checked("vision_block_index",block_index);
+#ifdef OCR_GRAPH_CACHE
+    if (graph_cache_active) {
+        if (!weight_identity) return 0;
+        graph_cache_key_begin(&builder,tokens,tokens);
+        crypto_sha256_update(&builder.cache_hash,weight_identity,32);
+        crypto_sha256_update(&builder.cache_hash,graph_cache_current()->header.key,32);
+        if (!graph_cache_open(&builder,context,block_index ? "vision_attention_1" : "vision_attention_0")) return 0;
+    } else
+#endif
     if (!checked("attention_graph",api->graph_create(context,block_index ? "vision_attention_1" : "vision_attention_0",0,&builder.graph))) return 0;
     u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
     u32 gamma = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_16,1,width,constants); constants += 2048;
@@ -697,7 +756,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
 #endif
         {
             ids[0] = taps[10]; ids[1] = taps[16];
-            taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+            taps[17] = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,2,0,0);
         }
     }
 #ifdef OCR_MATRIX_RESIDUAL
@@ -719,17 +778,19 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         ) return 0;
     u64 finalize_ticks = runtime_clock()-finalize_started;
     QnnTensor outputs[28], source_tensor = builder.tensors[input];
-    u32 output_count = tap_count;
+    u32 output_count = builder.lean ? 1 : tap_count;
     source_tensor.data.v1.memory.client_buffer.data = source;
     source_tensor.data.v1.memory.client_buffer.data_size = tokens*2048;
     u32 offset = 0;
-    for (u32 tap = 0; tap < tap_count; ++tap) {
+    for (u32 output_index = 0; output_index < output_count; ++output_index) {
+        u32 tap = builder.lean ? 17 : output_index;
         u32 elements = attention_elements(tap,tokens);
-        outputs[tap] = builder.tensors[taps[tap]];
-        outputs[tap].data.v1.memory.client_buffer.data = attention_output+offset;
-        outputs[tap].data.v1.memory.client_buffer.data_size = elements*2;
+        outputs[output_index] = builder.tensors[taps[tap]];
+        outputs[output_index].data.v1.memory.client_buffer.data = attention_output+offset;
+        outputs[output_index].data.v1.memory.client_buffer.data_size = elements*2;
         offset += elements;
     }
+    if (builder.lean) { total_elements = tokens*1024; tap_offsets[17] = 0; }
 #ifdef OCR_CAPTURE_INTERNALS
     for (u32 index = 0; index < internal_count; ++index) {
         QnnTensor value = builder.tensors[internal_ids[index]];
@@ -768,7 +829,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         if (api->profile_get_events(execution_profile,&events,&event_count) || !profile_events(api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
         checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
         profile_record(run ? 0 : build_ticks,run ? 0 : finalize_ticks,execute_ticks,cycles,microseconds);
-        for (u32 row = 0; row < 16*tokens; ++row) {
+        for (u32 row = 0; !builder.lean && row < 16*tokens; ++row) {
             float sum = 0;
             for (u32 column = 0; column < tokens; ++column) {
                 union {u16 bits; _Float16 value;} probability;
@@ -778,7 +839,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
             }
             if (!(sum >= 0.997f && sum <= 1.003f)) { text("FAIL probability row sum\n"); return 0; }
         }
-        text("PASS probability range and row sums\n");
+        if (!builder.lean) text("PASS probability range and row sums\n");
         for (u32 scope = 0; references && scope < 2; ++scope) {
             text(scope ? "candidate_fp32\n" : "original_fp32\n"); offset = 0;
             for (u32 tap = 0; tap < tap_count; ++tap) {
@@ -885,7 +946,7 @@ static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 s
         for (u32 block_index = 0; block_index < 2; ++block_index) {
             u8 *source = block_index ? (u8 *)chain_input : fixture_data+records[0];
             u8 *weights = fixture_data+records[block_index]+(block_index ? 0 : tokens*2048);
-            if (!attention_probe(api,context,source,weights,weights+constants,1,tokens,block_index,block_index ? 0 : chain_input)) return 0;
+            if (!attention_probe(api,context,source,weights,weights+constants,1,tokens,block_index,block_index ? 0 : chain_input,0)) return 0;
         }
         text("PASS sequential vision blocks 0 and 1\n");
         return 1;
@@ -899,7 +960,7 @@ static int primitives(const QnnInterfaceV2 *api, QnnContextHandle context, u32 s
         if (size != 192+input_bytes+constant_bytes+reference_bytes || load32(fixture_data+160) != 1 || load32(fixture_data+164) != (kind == 8 ? 9U : 8U) ||
             load32(fixture_data+172) != 1024 || load32(fixture_data+176) != 1024 ||
             load32(fixture_data+180) != input_bytes || load32(fixture_data+184) != constant_bytes || load32(fixture_data+188) != reference_bytes) return 0;
-        return !api || attention_probe(api,context,fixture_data+192,fixture_data+192+input_bytes,fixture_data+192+input_bytes+constant_bytes,kind == 8,tokens,0,0);
+        return !api || attention_probe(api,context,fixture_data+192,fixture_data+192+input_bytes,fixture_data+192+input_bytes+constant_bytes,kind == 8,tokens,0,0,0);
     }
     static const char *const names[] = {"patch_projection","vision_qkv","text_query","rmsnorm_64","rmsnorm_128","rmsnorm_1024","rmsnorm_1536",
         "connector_layernorm","mlp_silu","connector_gelu","attention_softmax"};
@@ -1051,8 +1112,8 @@ int ocr_vision_check(const unsigned short *directory) {
     return 1;
 }
 
-static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *sources, u32 source_count,
-                                   const u32 *ids, u32 count, u16 *destination, int finalize) {
+static int vision_execution_buffers(OcrAttentionGraph *builder, QnnTensor *sources, u32 source_count,
+                                    const u32 *ids, u32 count, u16 *destination, int finalize, u16 *const *buffers) {
     if (!builder->good || count > 8) return 0;
     u64 started = runtime_clock();
     u64 build_ticks = finalize ? started-builder->build_started : 0;
@@ -1081,24 +1142,33 @@ static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *source
         outputs[index] = builder->tensors[ids[index]];
         u32 elements = 1;
         for (u32 axis = 0; axis < outputs[index].data.v1.rank; ++axis) elements *= outputs[index].data.v1.dimensions[axis];
-        outputs[index].data.v1.memory.client_buffer.data = destination+total;
+        u16 *output = buffers ? buffers[index] : destination+total;
+        outputs[index].data.v1.memory.client_buffer.data = output;
         outputs[index].data.v1.memory.client_buffer.data_size = elements*2;
+        for (u32 element = 0; element < elements; ++element) output[element] = 0x7e00;
         total += elements;
     }
-    for (u32 index = 0; index < total; ++index) destination[index] = 0x7e00;
     started = runtime_clock();
     int executed = checked("vision_execute",builder->api->graph_execute(builder->graph,sources,source_count,outputs,count,execution_profile,0));
     u64 execute_ticks = runtime_clock()-started;
     runtime_ticks[2] += execute_ticks;
     if (!executed) return 0;
-    for (u32 index = 0; index < total; ++index)
-        if ((destination[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision output\n"); return 0; }
+    for (u32 index = 0; index < count; ++index) {
+        const u16 *output = outputs[index].data.v1.memory.client_buffer.data;
+        for (u32 element = 0; element < outputs[index].data.v1.memory.client_buffer.data_size/2; ++element)
+            if ((output[element] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision output\n"); return 0; }
+    }
     const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
     if (builder->api->profile_get_events(execution_profile,&events,&event_count) ||
         !profile_events(builder->api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
     checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
     profile_record(build_ticks,finalize_ticks,execute_ticks,cycles,microseconds);
     return 1;
+}
+
+static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *sources, u32 source_count,
+                                   const u32 *ids, u32 count, u16 *destination, int finalize) {
+    return vision_execution_buffers(builder,sources,source_count,ids,count,destination,finalize,0);
 }
 
 static int vision_execution(OcrAttentionGraph *builder, u32 input, u16 *source, u32 input_elements,
@@ -1142,6 +1212,9 @@ static int vision_patch(const QnnInterfaceV2 *api, QnnContextHandle context, u32
 
 static int vision_tail(const QnnInterfaceV2 *api, QnnContextHandle context, u32 tokens) {
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
+#ifdef OCR_APP_MODE
+    builder.lean = 1;
+#endif
     if (!checked("vision_tail_graph",api->graph_create(context,"vision_tail",0,&builder.graph))) return 0;
     u32 flat[2] = {tokens,1024}, width[1] = {1024}, axis = 1;
     u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
@@ -1181,8 +1254,10 @@ static int vision_tail(const QnnInterfaceV2 *api, QnnContextHandle context, u32 
     u32 silu = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
     ids[0] = silu; ids[1] = up;
     u32 gated = attention_op(&builder,"ElementWiseMultiply",ids,2,2,wide,QNN_DATATYPE_FLOAT_16,0,0,0);
-    u32 output = vision_linear(&builder,gated,tokens/4,4608,1536,&constants,0,1);
+    u32 output = vision_linear(&builder,gated,tokens/4,4608,1536,&constants,0,2);
     u32 output_ids[3] = {normalized,downsample,output};
+    if (builder.lean) return constants == fixture_data+59780256 &&
+        vision_execution(&builder,input,chain_input,tokens*1024,&output,1,vision_tail_output+tokens*1024+tokens/4*1536);
     if (constants != fixture_data+59780256 || !vision_execution(&builder,input,chain_input,tokens*1024,output_ids,3,vision_tail_output)) return 0;
     return capture_tensor(24,".postnorm.f16",vision_tail_output,tokens*2048) &&
         capture_tensor(25,".downsample.f16",vision_tail_output+tokens*1024,tokens/4*3072) &&
@@ -1195,29 +1270,38 @@ static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, Q
     profile_phase = 1; profile_layer = 0;
     if (!vision_patch(api,*context,tokens)) return 0;
     ocr_image_release(&vision_image);
+    const u8 *rope = vision_shared+160+2410496+(tokens == 128 ? 64*512 : 0);
+#ifdef OCR_LARGE_IMAGES
+    if (tokens >= 256) rope = vision_large_rope+160+(tokens == 512 ? 256*512 : 0);
+#endif
     for (u32 index = 0; index < 25; ++index) {
         profile_phase = index == 24 ? 3 : 2; profile_layer = index;
+#ifdef OCR_GRAPH_CACHE
+        if (index < 24 && !(index%2) && graph_cache_active &&
+            !graph_cache_stage(api,2,tokens,tokens,vision_hashes,sizeof(vision_hashes),vision_shared,sizeof(vision_shared),rope,tokens*512)) return 0;
+#endif
         if (!checked("vision_context_free",api->context_free(*context,0))) return 0;
         *context = 0;
-        if (!vision_asset(directory,index < 24 ? index : 25,0) ||
+        int cached = 0;
+#ifdef OCR_GRAPH_CACHE
+        cached = index < 24 && graph_cache_active && graph_cache_current()->ready;
+#endif
+        if ((!cached && !vision_asset(directory,index < 24 ? index : 25,0)) ||
             !checked("vision_context_create",api->context_create(backend,device,0,context))) return 0;
         if (index == 24) return vision_tail(api,*context,tokens);
+        if (!cached) {
         u32 prefix = 6299904;
         for (u32 offset = 0; offset < prefix; ++offset) vision_constants[offset] = fixture_data[164+offset];
-        const u8 *rope = vision_shared+160+2410496+(tokens == 128 ? 64*512 : 0);
-    #ifdef OCR_LARGE_IMAGES
-        if (tokens >= 256) rope = vision_large_rope+160+(tokens == 512 ? 256*512 : 0);
-    #endif
         for (u32 offset = 0; offset < tokens*512; ++offset) vision_constants[prefix+offset] = rope[offset];
         for (u32 offset = prefix; offset < 33585408; ++offset) vision_constants[offset+tokens*512] = fixture_data[164+offset];
-        if (!attention_probe(api,*context,(u8 *)chain_input,vision_constants,0,1,tokens,index,chain_input)) return 0;
+        }
+        if (!attention_probe(api,*context,(u8 *)chain_input,vision_constants,0,1,tokens,index,chain_input,vision_hashes[index])) return 0;
     }
     return 0;
 }
 #endif
 
 #ifdef OCR_TEXT_DECODER
-static int ocr_resident;
 static void *ocr_resident_module;
 static const QnnInterfaceV2 *ocr_resident_api;
 static QnnBackendHandle ocr_resident_backend;
@@ -1244,9 +1328,11 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     QnnInterfaceGetProviders get_providers;
     u32 count = 0;
     int good = 0, clean = 1;
+    int verified_session = 0;
     output_good = 1;
 #ifdef OCR_TEXT_DECODER
     module = ocr_resident_module; api = ocr_resident_api;
+    verified_session = module != 0;
     backend = ocr_resident_backend; device = ocr_resident_device;
     ocr_resident_module = 0; ocr_resident_api = 0; ocr_resident_backend = 0; ocr_resident_device = 0;
     if (!module)
@@ -1262,11 +1348,11 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
         grid_valid = grid_valid || (vision_image.shape.grid_height == 16 && (vision_image.shape.grid_width == 16 || vision_image.shape.grid_width == 32));
     #endif
         if (!grid_valid ||
-            !ocr_vision_check(fixtures)) { text("FAIL vision bucket or weights\n"); goto done; }
+            (!verified_session && !ocr_vision_check(fixtures))) { text("FAIL vision bucket or weights\n"); goto done; }
         checked("vision_grid_height",vision_image.shape.grid_height); checked("vision_grid_width",vision_image.shape.grid_width);
     #ifdef OCR_TEXT_DECODER
-        if (text_directory && !prefill_check(text_directory)) { text("FAIL text weights\n"); goto done; }
-        if (generation_directory && !generation_check(generation_directory)) { text("FAIL generation weights/tokenizer\n"); goto done; }
+        if (!verified_session && text_directory && !prefill_check(text_directory)) { text("FAIL text weights\n"); goto done; }
+        if (!verified_session && generation_directory && !generation_check(generation_directory)) { text("FAIL generation weights/tokenizer\n"); goto done; }
         prefill_grid_width = vision_image.shape.grid_width;
         prefill_grid_height = vision_image.shape.grid_height;
     #endif
@@ -1326,6 +1412,16 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
         u64 started = runtime_clock(); good = prefill_forward(api,backend,device,&context,text_directory,task);
         runtime_ticks[5] += runtime_clock()-started;
     }
+#ifdef OCR_GRAPH_CACHE
+    if (good && generation_directory && graph_cache_active) good = graph_cache_trim(api,20);
+    if (good && generation_directory && graph_cache_active && !text_retained_ready[0] &&
+        !graph_cache_memory_available(3ULL*1024*1024*1024,0)) {
+        text("CACHE evict vision for decode reserve\n");
+        good = graph_bundle_release(api,&graph_bundles[0]);
+        if (good && !graph_cache_memory_available(3ULL*1024*1024*1024,0)) good = graph_bundle_release(api,&graph_bundles[12]);
+        if (good) good = graph_cache_budget(3ULL*1024*1024*1024);
+    }
+#endif
     if (good && generation_directory) good = generation_forward(api,backend,device,&context,text_directory);
 #endif
 done:
@@ -1338,6 +1434,9 @@ done:
         ocr_resident_module = module; ocr_resident_api = api;
         ocr_resident_backend = backend; ocr_resident_device = device;
     } else {
+#ifdef OCR_GRAPH_CACHE
+    if (!graph_resident_release(api)) clean = 0;
+#endif
     if (!generation_release(api)) clean = 0;
 #endif
     if (execution_profile && !checked("profile_free",api->profile_free(execution_profile))) clean = 0;
@@ -1368,6 +1467,7 @@ done:
     else if (image_path) text(good && clean ? "PASS full vision execution; precision unaccepted, no text decoding\n" : "FAIL full vision execution\n");
     else text(good && clean ? "PASS OCR HTP probe\n" : "FAIL OCR HTP probe\n");
     (void)run_started;
+    (void)verified_session;
     return good && clean && output_good;
 }
 

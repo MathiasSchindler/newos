@@ -8,6 +8,7 @@ static OcrTextInput prefill_input;
 static u16 prefill_output[OCR_TEXT_CONTEXT*9728+16*OCR_TEXT_CONTEXT*OCR_TEXT_CONTEXT];
 static float prefill_cosine[OCR_TEXT_CONTEXT*128], prefill_sine[OCR_TEXT_CONTEXT*128];
 static u32 prefill_grid_width, prefill_grid_height;
+static u32 prefill_rows = OCR_TEXT_CONTEXT;
 #define OCR_DECODE_CONTEXT 256U
 static u16 text_keys[16][OCR_DECODE_CONTEXT*1024], text_values[16][OCR_DECODE_CONTEXT*1024];
 static u32 text_cache_count[16];
@@ -122,7 +123,11 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
     profile_phase = past ? 6 : 4; profile_layer = index;
     if (index >= 16 || past >= OCR_DECODE_CONTEXT || (past && text_cache_count[index] != past)) return 0;
     int reuse = past && text_reuse_enabled;
-    u32 rows = past ? 1 : OCR_TEXT_CONTEXT, length = reuse ? OCR_DECODE_CONTEXT : past ? past+1 : OCR_TEXT_CONTEXT;
+    u32 output_count = 8, hidden_slot = 4, key_slot = 5;
+#ifdef OCR_APP_MODE
+    output_count = 3; hidden_slot = 0; key_slot = 1;
+#endif
+    u32 rows = past ? 1 : prefill_rows, length = reuse ? OCR_DECODE_CONTEXT : past ? past+1 : prefill_rows;
     if (past) {
         CryptoSha256Context hash; u8 digests[64]; char suffix[32];
         text_decode_suffix(suffix,past,"-cache.u8");
@@ -136,6 +141,20 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
 #define builder (*selected_builder)
     if (!reuse || !text_retained_ready[index]) {
     builder.api = api; builder.good = 1;
+#ifdef OCR_APP_MODE
+    builder.lean = 1;
+#endif
+    u8 *weight_base = text_retained_weights[index] ? text_retained_weights[index] : fixture_data;
+#ifdef OCR_GRAPH_CACHE
+    if (graph_cache_active && !past) {
+        graph_cache_key_begin(&builder,rows,length);
+        crypto_sha256_update(&builder.cache_hash,prefill_hashes[index],32);
+        crypto_sha256_update(&builder.cache_hash,(const u8 *)prefill_cosine,rows*512);
+        crypto_sha256_update(&builder.cache_hash,(const u8 *)prefill_sine,rows*512);
+        crypto_sha256_update(&builder.cache_hash,(const u8 *)prefill_input.mask,rows*length*2);
+        if (!graph_cache_open(&builder,context,"text_prefill_layer")) return 0;
+    } else
+#endif
     if (!checked("text_graph_create",api->graph_create(context,"text_prefill_layer",0,&builder.graph))) return 0;
     u32 flat[2] = {rows,1536}, head_shape[3] = {rows,16,128}, batch[3] = {16,rows,128}, keys[3] = {16,128,length};
     u32 all_heads[3] = {length,16,128}, all_batch[3] = {16,length,128};
@@ -146,19 +165,18 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
     for (u32 head = 0; head < 16; ++head) groups[head] = head/2;
     for (u32 part = 0; part < 2; ++part) for (u32 channel = 0; channel < 4608; ++channel) selections[part][channel] = part*4608+channel;
     input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,flat,0);
-    u8 *weight_base = text_retained_weights[index] ? text_retained_weights[index] : fixture_data;
     u8 *constants = weight_base+164;
     u32 norm0 = prefill_norm(&builder,input,&constants,&scalar_axis,rows);
     u32 query_raw = vision_linear(&builder,norm0,rows,1536,2048,&constants,0,0);
     u32 key_raw = vision_linear(&builder,norm0,rows,1536,1024,&constants,0,0);
-    u32 value_raw = vision_linear(&builder,norm0,rows,1536,1024,&constants,0,1);
+    u32 value_raw = vision_linear(&builder,norm0,rows,1536,1024,&constants,0,2);
     u32 cosine = attention_tensor(&builder,reuse ? QNN_TENSOR_TYPE_APP_WRITE : QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,reuse ? 0 : prefill_cosine);
     u32 sine = attention_tensor(&builder,reuse ? QNN_TENSOR_TYPE_APP_WRITE : QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,3,frequency_shape,reuse ? 0 : prefill_sine);
     if (reuse) { text_retained_inputs[index][0] = input; text_retained_inputs[index][1] = cosine; text_retained_inputs[index][2] = sine; }
     u32 rotation = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_UINT_32,1,head_width,rotations);
     u32 sign = attention_tensor(&builder,QNN_TENSOR_TYPE_STATIC,QNN_DATATYPE_FLOAT_32,1,head_width,signs);
     u32 query = prefill_rope(&builder,query_raw,16,cosine,sine,rotation,sign,0,rows);
-    u32 key = prefill_rope(&builder,key_raw,8,cosine,sine,rotation,sign,1,rows);
+    u32 key = prefill_rope(&builder,key_raw,8,cosine,sine,rotation,sign,2,rows);
     u32 kv_shape[3] = {rows,8,128};
     u32 value = attention_op(&builder,"Reshape",&value_raw,1,3,kv_shape,QNN_DATATYPE_FLOAT_16,0,0,0);
     u32 all_key = key, all_value = value;
@@ -236,9 +254,10 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
     u32 down = vision_linear(&builder,gated,rows,4608,1536,&constants,0,0);
     u32 norm3 = prefill_norm(&builder,down,&constants,&scalar_axis,rows);
     ids[0] = residual; ids[1] = norm3;
-    u32 output = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,1,0,0);
+    u32 output = attention_op(&builder,"ElementWiseAdd",ids,2,2,flat,QNN_DATATYPE_FLOAT_16,2,0,0);
     u32 selected_outputs[8] = {norm0,norm1,norm2,norm3,output,key,value_raw,probabilities};
-    for (u32 tap = 0; tap < 8; ++tap) {
+    if (builder.lean) { selected_outputs[0] = output; selected_outputs[1] = key; selected_outputs[2] = value_raw; }
+    for (u32 tap = 0; tap < output_count; ++tap) {
         outputs[tap] = selected_outputs[tap];
         if (reuse) text_retained_outputs[index][tap] = outputs[tap];
     }
@@ -253,12 +272,18 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
             sources[source].data.v1.memory.client_buffer.data = buffers[source];
             sources[source].data.v1.memory.client_buffer.data_size = bytes[source];
         }
-        if (!vision_execution_inputs(&builder,sources,6,text_retained_outputs[index],8,prefill_output,!text_retained_ready[index])) return 0;
+        if (!vision_execution_inputs(&builder,sources,6,text_retained_outputs[index],output_count,prefill_output,!text_retained_ready[index])) return 0;
         text_retained_ready[index] = 1;
-    } else if (!vision_execution(&builder,input,prefill_input.embeddings,rows*1536,outputs,8,prefill_output)) return 0;
+    } else if (!past && output_count == 3) {
+        QnnTensor source = builder.tensors[input];
+        source.data.v1.memory.client_buffer.data = prefill_input.embeddings;
+        source.data.v1.memory.client_buffer.data_size = rows*3072;
+        u16 *buffers[3] = {prefill_output,text_keys[index],text_values[index]};
+        if (!vision_execution_buffers(&builder,&source,1,outputs,output_count,prefill_output,1,buffers)) return 0;
+    } else if (!vision_execution(&builder,input,prefill_input.embeddings,rows*1536,outputs,output_count,prefill_output)) return 0;
 #undef builder
     u32 probability_offset = rows*(5*1536+2*1024);
-    for (u32 row = 0; row < 16*rows; ++row) {
+    for (u32 row = 0; output_count == 8 && row < 16*rows; ++row) {
         float total = 0;
         for (u32 column = 0; column < length; ++column) {
             union {u16 bits; _Float16 value;} probability; probability.bits = prefill_output[probability_offset+row*length+column];
@@ -274,13 +299,14 @@ static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u3
     if (!capture_tensor(index,past ? input_suffix : ".text-input.f16",prefill_input.embeddings,rows*1536*2) ||
         !capture_tensor(index,past ? taps_suffix : ".text-taps.f16",prefill_output,(probability_offset+16*rows*length)*2)) return 0;
     u32 retained = past ? 1 : prefill_input.count;
-    for (u32 offset = 0; offset < retained*1024; ++offset) {
-        text_keys[index][past*1024+offset] = prefill_output[5*rows*1536+offset];
-        text_values[index][past*1024+offset] = prefill_output[5*rows*1536+rows*1024+offset];
+    for (u32 offset = 0; (past || output_count == 8) && offset < retained*1024; ++offset) {
+        text_keys[index][past*1024+offset] = prefill_output[key_slot*rows*1536+offset];
+        text_values[index][past*1024+offset] = prefill_output[key_slot*rows*1536+rows*1024+offset];
     }
     text_cache_count[index] = past+retained;
-    for (u32 offset = 0; offset < rows*1536; ++offset) prefill_input.embeddings[offset] = prefill_output[4*rows*1536+offset];
-    checked("text_layer_completed",index); text("PASS causal/padding attention and exact text handoff\n"); return 1;
+    for (u32 offset = 0; offset < rows*1536; ++offset) prefill_input.embeddings[offset] = prefill_output[hidden_slot*rows*1536+offset];
+    checked("text_layer_completed",index);
+    text(output_count == 8 ? "PASS causal/padding attention and exact text handoff\n" : "PASS finite hidden state and KV handoff\n"); return 1;
 }
 
 static int prefill_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
@@ -295,6 +321,14 @@ static int prefill_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, 
         !capture_tensor(0,".text-modalities.u8",prefill_input.modalities,sizeof(prefill_input.modalities)) ||
         !capture_tensor(0,".text-mask.f16",prefill_input.mask,sizeof(prefill_input.mask)) ||
         !capture_tensor(0,".text-embeddings.f16",prefill_input.embeddings,sizeof(prefill_input.embeddings))) return 0;
+#ifdef OCR_APP_MODE
+    prefill_rows = (prefill_input.count+31U)&~31U;
+    if (!prefill_rows || prefill_rows > OCR_TEXT_CONTEXT) return 0;
+    for (u32 row = 0; row < prefill_rows; ++row)
+        for (u32 column = 0; column < prefill_rows; ++column)
+            prefill_input.mask[row*prefill_rows+column] = prefill_input.mask[row*OCR_TEXT_CONTEXT+column];
+#endif
+    checked("prefill_rows",prefill_rows);
     for (u32 row = 0; row < OCR_TEXT_CONTEXT; ++row) for (u32 channel = 0; channel < 128; ++channel) {
         u32 axis = channel < 32 ? 0 : channel < 80 ? 1 : 2;
         int position = prefill_input.positions[axis*OCR_TEXT_CONTEXT+row];
@@ -305,20 +339,36 @@ static int prefill_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, 
         prefill_cosine[row*128+channel] = cosine.value; prefill_sine[row*128+channel] = sine.value;
     }
     if (!capture_tensor(0,".text-cosine.f32",prefill_cosine,sizeof(prefill_cosine)) || !capture_tensor(0,".text-sine.f32",prefill_sine,sizeof(prefill_sine))) return 0;
+#ifdef OCR_GRAPH_CACHE
+    u8 frequency_key[32]; CryptoSha256Context frequency_hash; crypto_sha256_init(&frequency_hash);
+    crypto_sha256_update(&frequency_hash,(const u8 *)prefill_cosine,prefill_rows*512);
+    crypto_sha256_update(&frequency_hash,(const u8 *)prefill_sine,prefill_rows*512);
+    crypto_sha256_final(&frequency_hash,frequency_key);
+#endif
     for (u32 index = 0; index <= 16; ++index) {
+#ifdef OCR_GRAPH_CACHE
+        profile_phase = index == 16 ? 5 : 4; profile_layer = index;
+        if (index < 16 && !(index%2) && graph_cache_active &&
+            !graph_cache_stage(api,4,prefill_rows,prefill_rows,prefill_hashes,sizeof(prefill_hashes),
+                frequency_key,sizeof(frequency_key),prefill_input.mask,prefill_rows*prefill_rows*2)) return 0;
+#endif
         if (!checked("text_context_free",api->context_free(*context,0))) return 0;
         *context = 0;
-        if ((index < 16 && !prefill_asset(directory,index,0)) || !checked("text_context_create",api->context_create(backend,device,0,context))) return 0;
+        int cached = 0;
+    #ifdef OCR_GRAPH_CACHE
+        cached = index < 16 && graph_cache_active && graph_cache_current()->ready;
+    #endif
+        if ((index < 16 && !cached && (!text_retained_ready[index] || !text_retained_weights[index]) && !prefill_asset(directory,index,0)) || !checked("text_context_create",api->context_create(backend,device,0,context))) return 0;
         if (index < 16) { if (!prefill_layer(api,*context,index,0)) return 0; }
         else {
             profile_phase = 5; profile_layer = 16;
             OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
             if (!checked("text_norm_graph",api->graph_create(*context,"text_final_norm",0,&builder.graph))) return 0;
-            u32 shape[2] = {OCR_TEXT_CONTEXT,1536}, axis = 1;
+            u32 shape[2] = {prefill_rows,1536}, axis = 1;
             u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,shape,0);
-            u8 *gamma = prefill_shared+160; u32 normalized = prefill_norm(&builder,input,&gamma,&axis,OCR_TEXT_CONTEXT);
-            if (!vision_execution(&builder,input,prefill_input.embeddings,OCR_TEXT_CONTEXT*1536,&normalized,1,prefill_output) ||
-                !capture_tensor(16,".text-norm.f16",prefill_output,OCR_TEXT_CONTEXT*1536*2)) return 0;
+            u8 *gamma = prefill_shared+160; u32 normalized = prefill_norm(&builder,input,&gamma,&axis,prefill_rows);
+            if (!vision_execution(&builder,input,prefill_input.embeddings,prefill_rows*1536,&normalized,1,prefill_output) ||
+                !capture_tensor(16,".text-norm.f16",prefill_output,prefill_rows*1536*2)) return 0;
         }
     }
     return 1;

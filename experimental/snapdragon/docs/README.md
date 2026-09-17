@@ -43,7 +43,13 @@ The native OCR test GUI is `build/ocr-app/ocr-gui.exe`, built with the tasks
 Win32 style: image chooser/preview, Text/Formula/Table mode, streaming result,
 Copy and Cancel. It now keeps a native OCR server between requests, reuses
 decoder/head graphs, and reloads prepared Vision/prefill contexts from a bounded
-cache. App builds use `-GraphCache -AppMode` and omit large tensor capture files.
+two-layer-group cache. Two small groups can remain resident; additional groups
+are loaded directly without QNN graph construction. App builds use
+`-GraphCache -AppMode`, remove diagnostic graph outputs, right-size prefill and
+write prefill K/V directly to host cache buffers. The verified update reduced
+warm median latency from 25.78 to 17.22 seconds and first text from 17.77 to
+9.32 seconds on the comparison screenshot. See
+[grouped serving and limits](plan-glm-ocr.md#bounded-grouped-serving).
 See [OCR GUI](plan-glm-ocr.md#native-ocr-gui) and
 [resident/cache results](plan-glm-ocr.md#resident-engine-and-bounded-graph-cache).
 
@@ -56,6 +62,12 @@ The subsequent screenshot comparison measures 135.21 s without caching versus
 37.59 s for a resident warm request, with exactly matching generated token IDs.
 These are individual observations, not a general speedup guarantee; initial
 cache creation costs extra time. Original numerical acceptance remains open.
+The next [serving profile](plan-glm-ocr.md#serving-cpu-and-accelerator-profile)
+compares four warm requests per version: median latency 35.06 to 28.71 s,
+engine CPU time 17.98 to 13.38 s, with identical outputs. Verified model files
+stay read-locked for the server lifetime, redundant weight reloads are avoided,
+and the decoder's final normalization graph is retained. The QNN accelerator-time
+share rises from 7.77% to 9.23%; this is not a hardware occupancy measurement.
 
 **Current image support:** native BMP24 and static PNG, including palette,
 1/2/4-bit grayscale, 8/16-bit channels, tRNS/alpha and Adam7 interlacing.

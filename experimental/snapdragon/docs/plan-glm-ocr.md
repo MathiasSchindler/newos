@@ -2591,8 +2591,8 @@ Tensor IDs are rebound after restore because QNN assigns different IDs within a
 resident process. Missing, stale or damaged files trigger normal HTP compilation;
 a rejected QNN restore fails the request. There is no CPU neural fallback.
 Readers cannot open an entry while it is being written. Partial files after
-termination are detected on the next request. Graph construction and weight
-verification still occur before restore; only finalization is replaced.
+termination are detected on the next request. Graph construction and cache
+validation still occur before restore; only finalization is replaced.
 
 The server fixes model/runtime directories at launch. Each pipe request contains
 four little-endian u32 values (image UTF-16 code-unit count, capture-directory
@@ -2646,6 +2646,163 @@ and cache-corruption checks. Supply `--vision-output`, `--generation-build` and
 `--test-server-protocol` is hardware-independent. Compact evidence is archived
 under `data/ocr-performance-*/`; large temporary comparison captures are removed
 after successful installation, while pre-existing user GUI runs are untouched.
+
+## Serving CPU and accelerator profile
+
+The next September 17 update targets the warm serving path rather than cache
+creation. `export-glm-ocr.py --profile-serving` starts a native server, sends three
+complete screenshot requests serially, excludes the first as warm-up, and records
+wall/first-output time, engine-process user+kernel CPU seconds, logical process
+read/write bytes, exact output hashes and all eight QNN graph phases. It waits on
+the process handle between completion-file checks; no busy-spin load is used.
+`--profile-reference PATH` requires exact agreement with an earlier completed
+report. `--check-model-locks` also attempts write-open access without modifying
+files and requires Windows sharing violations for all used model artifacts.
+`--compare-serving --generation-build CANDIDATE --baseline-build BASELINE` combines
+only completed reports matching each executable hash and the same input/output,
+requires at least four warm samples each, checks all 40 cache hits, and verifies
+zero warm decoder, final-normalization and head finalizations in the candidate.
+
+Profiling found about 6.01 GB of logical reads per warm request, while registration
+of Vision/prefill graphs cost only about 1.7 s. The engine now holds at most 64
+read-only file handles for verified model artifacts during a server session,
+allowing read sharing but denying writes and deletion. Initial full verification
+is unchanged. A successful resident session reuses shared weights, embeddings,
+tokenizer and existing decoder/head weight buffers rather than reloading and
+revalidating all artifacts. Vision block reads still use the same held handles
+and retain their artifact checks. Handles are released on server shutdown; to
+replace model files, close their server first. Image inputs and mutable graph
+cache files are not held in this table. The table costs about 4 MiB for bounded
+UTF-16 paths and does not introduce another full weight copy.
+
+`ocr_generate.c` now retains the final decoder RMSNorm graph alongside the
+decoder and head, avoiding the former per-token context creation/finalization.
+The ordinary non-reuse path remains available. All retained contexts are released
+through the common shutdown path. Operations, weights, finite checks, precision,
+KV reset, masks and generated-token selection are unchanged.
+
+Two independent server runs per executable provide four warm requests each on
+the user's unchanged `gui-compact.png`. The intermediate weight-reuse-only build
+is excluded from the final aggregate. No concurrent agent inference or build ran
+during timed requests. Clock/power/background-system load were not controlled;
+baseline time varied 31.65..38.87 s and candidate time 26.78..29.23 s. Medians:
+
+| Metric | Previous resident app | Updated resident app | Change |
+| --- | ---: | ---: | ---: |
+| Request wall time | 35.056 s | 28.710 s | -18.1% |
+| First output | 24.903 s | 20.514 s | -17.6% |
+| Engine CPU time | 17.977 CPU-s | 13.383 CPU-s | -25.6% |
+| Mean CPU core equivalents | 0.522 | 0.462 | -11.4% |
+| Logical read bytes | 6,010,273,186 | 2,809,957,765 | -53.2% |
+| QNN accelerator time | 2.716 s | 2.636 s | -3.0% |
+| Accelerator time / request time | 7.77% | 9.23% | +1.46 percentage points |
+
+CPU core equivalents are CPU seconds divided by wall seconds, not a percentage
+of all machine cores. CPU time excludes other processes and uncharged driver work.
+The accelerator share is the median per-request ratio of QNN-reported accelerator
+microseconds to wall time: it indicates less host-side waiting, **not measured NPU
+hardware utilization, HMX occupancy or peak TOPS**. Absolute accelerator work stays
+approximately constant, as expected for unchanged graphs. This is a small repeated
+comparison, not a claim of steady-state production throughput or full NPU usage.
+
+All token IDs through EOS, text and small state captures match the reference;
+the model write locks and normal server cleanup pass. Native verifier/prefill/
+generation checks and ARM64/no-CRT audits pass. The separate 896x896 PNG GUI test
+matches its expected four lines: first 33.234 s, repeat 20.659 s; invalid input,
+cancel/restart, close-active, missing engine and layouts pass. Model numerical
+acceptance remains false. The next substantial targets are context loading and
+diagnostic output transfers/fusion, not increasing CPU concurrency or submitting
+extra NPU work simply to raise a utilization number.
+
+Compact comparison/profile evidence and prior executables are preserved under
+`data/ocr-serving-*/`. The executable-bound cache is replaced at installation,
+not accumulated alongside the old version. Production remains native no-CRT C;
+Python is used only for optional profiling and regression tests.
+
+## Bounded grouped serving
+
+The installed engine uses `-Generate -LargeImages -ReuseDecode -GraphCache
+-AppMode`. It was validated in `build/ocr-grouped` and installed at the existing
+`build/ocr-app` location, without changing the GUI executable or original weights.
+
+Production Vision blocks expose only their final hidden state; the connector
+exposes only image features. Text layers expose hidden state, K and V. Diagnostic
+builds retain their intermediate outputs and probability checks. Production
+still checks every returned element for finiteness. The original numerical
+acceptance threshold is unchanged and remains unfulfilled.
+
+Prefill uses 32-row buckets covering the actual prompt instead of always 256
+rows. The causal mask is packed to that stride, and final normalization uses the
+same row count. Decode capacity remains 256. Prefill writes K/V directly to the
+host cache buffers; decode still uploads host K/V prefixes. This is not an
+entirely device-resident KV implementation or fused transformer-layer graph.
+
+Cache v5 groups two graphs per context: twelve Vision and eight prefill `.qob`
+files. Each key binds executable/runtime hashes, verified model identities,
+geometry and static RoPE/mask data. Checksums cover binding metadata and binary
+payload. A cache hit restores the context before QNN tensor/node registration;
+only CPU-side I/O descriptors are reconstructed. A damaged group is rebuilt on
+HTP, never evaluated by a CPU neural fallback.
+
+The first two Vision and first two prefill layers may remain resident. At most
+one further group is active. Other groups are freed at the next group boundary;
+memory pressure can also evict the retained groups. Model files remain locked
+against writes for the session. Temporary decode/head weight copies are released
+after successful first execution; a prefill rebuild reloads and verifies them.
+Context binaries remain alive until their owning context is freed.
+
+The failed all-resident experiment is not a supported configuration. With both
+large bundles loaded, Decode layer 3 returned `0x1771` despite about 2.24 GiB
+reported available physical memory. Host counters do not measure all HTP resource
+limits. A separate bug counted decode RAM reserve against the binary-cache cap;
+those checks are now separate. The candidate checks a 3 GiB binary cap, 12 GiB
+private-process limit and 512 MiB physical reserve, with additional admission
+headroom. These are admission checks, not an OS-enforced QNN memory quota.
+
+Use `export-glm-ocr.py --test-graph-bundles` with separate staged candidate and
+baseline directories for task/grid transitions and binding/payload/truncation
+corruption. `--profile-serving --check-model-locks --profile-reference ...`
+compares all small captured states, including K/V prefix hashes and token IDs.
+Timing reports include process working set/private memory. Accelerator time
+divided by wall time is not Task Manager utilization.
+
+### Measured results (2026-09-17)
+
+Serial comparisons of four warm baseline and six warm grouped requests used the
+same screenshot and exact small-state/token/KV-hash comparison. The baseline
+engine was `5140b0f3...`, the installed grouped engine `318a0882...`.
+
+| Metric | Baseline median | Grouped median | Change |
+| --- | ---: | ---: | ---: |
+| Complete request | 25.780 s | 17.222 s | -33.2% |
+| First text | 17.772 s | 9.316 s | -47.6% |
+| Process CPU time | 11.406 s | 7.250 s | -36.4% |
+| Logical reads | 2,809,957,785 B | 1,803,911,757 B | -35.8% |
+
+Warm wall ranges were 21.904-28.075 s and 14.576-19.492 s. Clock, power and
+background activity were not fixed. Fresh cached grouped processes took
+37.14-37.39 s on their first request; creating an empty cache took 125.97 s.
+These first requests are excluded from the warm medians. An earlier empty-cache
+attempt exited during decode preparation without a captured exception code;
+its cause was not conclusively established. The subsequent empty-cache test,
+fresh-process tests, five task/grid transitions, three corruption recoveries,
+GUI tests and installed smoke check completed successfully. This is development
+regression evidence, not an exhaustive reliability or OCR-quality guarantee.
+
+The five task/grid transitions cover Text, Formula, Table, a wide image and
+return to the original image. All small states matched the previous engine.
+Tensor-ID, payload and truncation corruption each rebuilt exactly one group
+while restoring the other nineteen. Cache size was 1,831,658,304 bytes.
+Seventeen malformed/EOF server-protocol cases and native no-CRT tests passed.
+GUI recognition returned the expected four lines twice (23.627 s / 11.179 s),
+with cancellation, restart, resize and active-window close tests passing.
+
+The previous executables, comparison reports, corruption/transition evidence
+and installed hashes are archived under
+`data/ocr-serving-6e3b74d97ccb4618b64afc67df4606ef`. Installation verified twenty
+direct group restores, forty graph bindings, the exact three-token prefix and
+absence of large diagnostic captures. Original-reference numerical acceptance
+still fails; no tolerance or precision relaxation was used to accept this update.
 
 ## Concrete image-to-text gaps
 

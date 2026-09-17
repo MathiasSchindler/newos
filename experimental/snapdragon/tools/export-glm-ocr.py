@@ -687,6 +687,206 @@ def test_graph_cache(vision_output, text_output, generation_output, build, basel
     report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
 
 
+def profile_serving(vision_output, text_output, generation_output, build, reference=None, check_locks=False):
+    import ctypes as ct
+    import statistics
+    import struct
+    import subprocess
+    import time
+    import uuid
+    kernel = ct.WinDLL('kernel32',use_last_error=True)
+    times = kernel.GetProcessTimes; times.argtypes = [ct.c_void_p]+[ct.c_void_p]*4; times.restype = ct.c_int
+    class ProcessMemory(ct.Structure):
+        _fields_ = [('size',ct.c_uint32),('faults',ct.c_uint32)]+[(name,ct.c_size_t) for name in ('peak_working_set','working_set','peak_paged','paged','peak_nonpaged','nonpaged','pagefile','peak_pagefile','private_bytes')]
+    memory_info = kernel.K32GetProcessMemoryInfo; memory_info.argtypes = [ct.c_void_p,ct.c_void_p,ct.c_uint32]; memory_info.restype = ct.c_int
+    io_counters = kernel.GetProcessIoCounters; io_counters.argtypes = [ct.c_void_p,ct.c_void_p]; io_counters.restype = ct.c_int
+    wait = kernel.WaitForSingleObject; wait.argtypes = [ct.c_void_p,ct.c_uint32]; wait.restype = ct.c_uint32
+    open_file = kernel.CreateFileW; open_file.argtypes = [ct.c_wchar_p,ct.c_uint32,ct.c_uint32,ct.c_void_p,ct.c_uint32,ct.c_uint32,ct.c_void_p]; open_file.restype = ct.c_void_p
+    close = kernel.CloseHandle; close.argtypes = [ct.c_void_p]; close.restype = ct.c_int
+    binary = (build/'ocr-generate.exe').resolve()
+    image = ROOT/'experimental/snapdragon/build/ocr-app/gui-compact.png'
+    runtime = ROOT/'experimental/snapdragon/build/QnnHtp.dll'
+    directory = (build/('serving-profile-'+uuid.uuid4().hex)).resolve(); directory.mkdir()
+    report = dict(complete=False,executable_sha256=sha(binary.read_bytes()),input_sha256=sha(image.read_bytes()),numerical_acceptance=False,runs=[])
+    def accounting(process):
+        created,exited,kernel_time,user_time = (ct.c_uint64() for index in range(4))
+        counters = (ct.c_uint64*6)()
+        if not times(int(process._handle),ct.byref(created),ct.byref(exited),ct.byref(kernel_time),ct.byref(user_time)) or not io_counters(int(process._handle),ct.byref(counters)):
+            raise OSError(ct.get_last_error(),'Process accounting failed')
+        return ((kernel_time.value+user_time.value)/1e7,list(counters))
+    with (directory/'server.log').open('wb') as log:
+        process = subprocess.Popen([str(binary),'--serve',str(runtime),str(vision_output.resolve()),str(text_output.resolve()),str(generation_output.resolve())],stdin=subprocess.PIPE,stdout=log,stderr=log)
+        expected = None
+        if reference:
+            control = read_json(reference)
+            if not control.get('complete') or control['input_sha256'] != report['input_sha256']: raise ValueError('Profile reference is incomplete or has different input')
+            expected = control['runs'][1]['captures']
+            report['reference'] = str(reference.resolve())
+        try:
+            for iteration in range(3):
+                capture = directory/str(iteration); capture.mkdir()
+                image_bytes = str(image).encode('utf-16-le'); capture_bytes = str(capture).encode('utf-16-le')
+                before_cpu,before_io = accounting(process); started = time.perf_counter(); first = None
+                process.stdin.write(struct.pack('<4I',len(image_bytes)//2,len(capture_bytes)//2,0,256)+image_bytes+capture_bytes); process.stdin.flush()
+                while True:
+                    elapsed = time.perf_counter()-started
+                    output = capture/'stdout.txt'
+                    if first is None and output.exists() and output.stat().st_size: first = elapsed
+                    try: done = (capture/'done.u32').read_bytes()
+                    except (FileNotFoundError,PermissionError): done = None
+                    if done is not None:
+                        if done != struct.pack('<I',0): raise ValueError(('Serving failed',iteration,done,str(capture)))
+                        break
+                    if wait(int(process._handle),25) == 0:
+                        raise ValueError(('Serving process exit',iteration,hex(process.wait() & 0xffffffff),elapsed,str(capture)))
+                    if elapsed > 600: raise ValueError(('Serving timeout',iteration,elapsed,str(capture)))
+                wall = time.perf_counter()-started; after_cpu,after_io = accounting(process)
+                timing = struct.unpack('<10Q',(capture/'0.timing.u64').read_bytes())
+                rows = list(struct.iter_unpack('<7Q',(capture/'0.profile-graphs.u64').read_bytes()))
+                captures = {path.name:sha(path.read_bytes()) for path in capture.iterdir() if path.suffix not in ('.log','.u64') and path.name != 'done.u32'}
+                if expected is None: expected = captures
+                if captures != expected: raise ValueError('Resident profile changed outputs')
+                phases = {str(phase):dict(calls=sum(row[0]==phase for row in rows),build_seconds=sum(row[2] for row in rows if row[0]==phase)/timing[0],
+                          prepare_seconds=sum(row[3] for row in rows if row[0]==phase)/timing[0],execute_seconds=sum(row[4] for row in rows if row[0]==phase)/timing[0],
+                          accelerator_seconds=sum(row[6] for row in rows if row[0]==phase)/1e6) for phase in range(1,9)}
+                accelerator = sum(row[6] for row in rows)/1e6
+                memory = ProcessMemory(); memory.size = ct.sizeof(memory)
+                if not memory_info(int(process._handle),ct.byref(memory),ct.sizeof(memory)): raise OSError(ct.get_last_error(),'Memory accounting failed')
+                record = dict(iteration=iteration,warm=iteration>0,wall_seconds=wall,native_seconds=timing[9]/timing[0],first_seconds=first,
+                              working_set_bytes=memory.working_set,peak_working_set_bytes=memory.peak_working_set,private_bytes=memory.private_bytes,
+                              cpu_seconds=after_cpu-before_cpu,cpu_core_equivalents=(after_cpu-before_cpu)/wall,
+                              accelerator_seconds=accelerator,accelerator_duty_proxy=accelerator/wall,
+                              read_bytes=after_io[3]-before_io[3],write_bytes=after_io[4]-before_io[4],phases=phases,captures=captures)
+                report['runs'].append(record)
+                (directory/'results.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+                print('PASS serving profile',iteration,'wall',round(wall,3),'CPU seconds',round(record['cpu_seconds'],3),'accelerator seconds',round(accelerator,3),flush=True)
+                if check_locks and iteration == 0:
+                    for model in (vision_output,text_output,generation_output):
+                        for path in model.glob('*.got'):
+                            if path.name in ('input-fixtures.got',): continue
+                            handle = open_file(str(path.resolve()),0x40000000,7,None,3,0x80,None)
+                            if handle != ct.c_void_p(-1).value:
+                                close(handle); raise ValueError('Model file is not locked against writes: '+str(path))
+                            if ct.get_last_error() != 32: raise OSError(ct.get_last_error(),'Expected sharing violation: '+str(path))
+                    report['model_write_locks_verified'] = True
+            process.stdin.close()
+            if process.wait(timeout=60): raise ValueError('Resident cleanup failed')
+        finally:
+            if process.poll() is None: process.kill(); process.wait()
+            if not process.stdin.closed: process.stdin.close()
+    report['summary'] = {name:statistics.median(record[name] for record in report['runs'][1:]) for name in
+                         ('wall_seconds','native_seconds','first_seconds','cpu_seconds','cpu_core_equivalents','accelerator_seconds','accelerator_duty_proxy','read_bytes','write_bytes')}
+    report['complete'] = True
+    (directory/'results.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    print('PASS serving profile report',str(directory/'results.json'),json.dumps(report['summary']),flush=True)
+
+
+def test_graph_bundles(vision_output, text_output, generation_output, build, baseline):
+    import ctypes as ct
+    import shutil
+    import struct
+    import subprocess
+    import time
+    import uuid
+    app = ROOT/'experimental/snapdragon/build/ocr-app'
+    if baseline.resolve() == app.resolve() or build.resolve() == app.resolve(): raise ValueError('Bundle tests require staged builds')
+    directory = (build/('bundle-tests-'+uuid.uuid4().hex)).resolve(); directory.mkdir()
+    report = dict(complete=False,executable_sha256=sha((build/'ocr-generate.exe').read_bytes()),cases=[],corruption=[])
+    report_path = directory/'results.json'
+    def save(): report_path.write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    def captures(path):
+        return {item.name:sha(item.read_bytes()) for item in path.iterdir() if item.suffix not in ('.log','.u64') and item.name != 'done.u32'}
+    def command(owner):
+        return [str((owner/'ocr-generate.exe').resolve()),str(ROOT/'experimental/snapdragon/build/QnnHtp.dll'),str(vision_output.resolve()),str(text_output.resolve()),str(generation_output.resolve())]
+    def direct(owner,image,task,label):
+        capture = directory/label; capture.mkdir()
+        arguments = command(owner); arguments.insert(1,('--generate-text','--generate-formula','--generate-table')[task])
+        with (capture/'stdout.txt').open('wb') as output, (capture/'execution.log').open('wb') as log:
+            result = subprocess.run(arguments+[str(image.resolve()),str(capture),'3'],stdin=subprocess.DEVNULL,stdout=output,stderr=log,timeout=600)
+        if result.returncode not in (0,3): raise ValueError(('Bundle CLI failed',label,result.returncode))
+        return capture
+    if sha((baseline/'ocr-generate.exe').read_bytes()) == sha((app/'ocr-generate.exe').read_bytes()):
+        (baseline/'graph-cache').mkdir(exist_ok=True)
+        for source in (app/'graph-cache').glob('*.qoc'): shutil.copy2(source,baseline/'graph-cache'/source.name)
+    square = app/'gui-compact.png'
+    cases = [(square,0),(square,1),(square,2),(vision_output/'receipt.png',0),(square,0)]
+    controls = [direct(baseline,image,task,'control-'+str(index)) for index,(image,task) in enumerate(cases)]
+    wait = ct.WinDLL('kernel32',use_last_error=True).WaitForSingleObject
+    wait.argtypes = [ct.c_void_p,ct.c_uint32]; wait.restype = ct.c_uint32
+    arguments = command(build); arguments.insert(1,'--serve')
+    with (directory/'server.log').open('wb') as log:
+        process = subprocess.Popen(arguments,stdin=subprocess.PIPE,stdout=log,stderr=log)
+        try:
+            for index,(image,task) in enumerate(cases):
+                capture = directory/('resident-'+str(index)); capture.mkdir()
+                image_bytes = str(image.resolve()).encode('utf-16-le'); capture_bytes = str(capture).encode('utf-16-le')
+                process.stdin.write(struct.pack('<4I',len(image_bytes)//2,len(capture_bytes)//2,task,3)+image_bytes+capture_bytes); process.stdin.flush()
+                started = time.perf_counter()
+                while True:
+                    try: done = (capture/'done.u32').read_bytes()
+                    except (FileNotFoundError,PermissionError): done = None
+                    if done is not None:
+                        if done not in (struct.pack('<I',0),struct.pack('<I',3)): raise ValueError(('Bundle server failed',index,str(capture)))
+                        break
+                    if time.perf_counter()-started > 600 or wait(int(process._handle),25) == 0: raise ValueError(('Bundle server timeout/exit',index))
+                if captures(capture) != captures(controls[index]): raise ValueError(('Bundle task/grid state mismatch',index))
+                report['cases'].append(dict(index=index,image=str(image),task=task,capture=str(capture),control=str(controls[index]),exact=True))
+                save(); print('PASS bundle task/grid transition',index,flush=True)
+            process.stdin.close()
+            if process.wait(timeout=60): raise ValueError('Bundle shutdown failed')
+        finally:
+            if process.poll() is None: process.kill(); process.wait()
+            if not process.stdin.closed: process.stdin.close()
+    for kind in ('tensor-id','payload','truncated'):
+        path = build/'graph-cache'/'2-00.qob'
+        with path.open('r+b') as stream:
+            if kind == 'truncated': stream.truncate(128)
+            else:
+                stream.seek(84 if kind == 'tensor-id' else -1,0 if kind == 'tensor-id' else 2)
+                value = stream.read(1); stream.seek(-1,1); stream.write(bytes([value[0]^1]))
+        capture = direct(build,square,0,'corrupt-'+kind)
+        if captures(capture) != captures(controls[0]): raise ValueError(('Corrupt bundle changed state',kind))
+        log = (capture/'execution.log').read_text(encoding='utf-8',errors='replace')
+        if log.count('CACHE bundle stored') != 1 or log.count('CACHE bundle restored') != 19: raise ValueError(('Bundle corruption rebuilt wrong groups',kind))
+        report['corruption'].append(dict(kind=kind,capture=str(capture),exact=True)); save()
+        print('PASS bundle corruption',kind,flush=True)
+    files = [build/'graph-cache'/f'{phase}-{group:02}.qob' for phase,count in ((2,12),(4,8)) for group in range(count)]
+    if any(not path.is_file() or path.stat().st_size > 256*1024*1024 for path in files): raise ValueError('Unbounded bundle files')
+    report['cache_bytes'] = sum(path.stat().st_size for path in files)
+    report['complete'] = True; save(); print('PASS bundle regression',str(report_path),flush=True)
+
+
+def compare_serving(build, baseline):
+    import statistics
+    comparison = dict(complete=False,numerical_acceptance=False,conditions='Serial resident requests; first request excluded. CPU is engine-process user+kernel time. Read bytes are logical process I/O. Accelerator time/wall is a duty proxy, not hardware utilization or HMX occupancy.')
+    expected = None
+    fields = ('wall_seconds','first_seconds','cpu_seconds','cpu_core_equivalents','accelerator_seconds','accelerator_duty_proxy','read_bytes','write_bytes')
+    for label,directory in (('baseline',baseline),('candidate',build)):
+        identity = sha((directory/'ocr-generate.exe').read_bytes())
+        selected = []
+        sources = []
+        for path in sorted(directory.glob('serving-profile-*/results.json')):
+            report = read_json(path)
+            if not report.get('complete') or report['executable_sha256'] != identity: continue
+            if label == 'candidate' and not report.get('model_write_locks_verified'): raise ValueError('Candidate model locks not verified')
+            for run in report['runs']:
+                if expected is None: expected = (report['input_sha256'],run['captures'])
+                if (report['input_sha256'],run['captures']) != expected: raise ValueError('Profiling output/input differs')
+                if not run['warm']: continue
+                if label == 'candidate' and any(run['phases'][str(phase)]['prepare_seconds'] != 0 for phase in (6,7,8)): raise ValueError('Retained decode/norm/head finalized again')
+                log = (path.parent/str(run['iteration'])/'execution.log').read_text(encoding='utf-8',errors='replace')
+                expected_hits = log.count('CACHE resident hit') if label == 'candidate' else log.count('CACHE hit')
+                if expected_hits != 40 or 'cache_graph_build:' in log: raise ValueError('Profile was not a full cache-hit request')
+                selected.append(run)
+            sources.append(str(path.resolve()))
+        if len(selected) < 4: raise ValueError('Require at least four warm samples per executable')
+        comparison[label] = dict(executable_sha256=identity,reports=sources,samples=len(selected),metrics={name:dict(median=statistics.median(run[name] for run in selected),minimum=min(run[name] for run in selected),maximum=max(run[name] for run in selected)) for name in fields})
+    comparison['relative_change'] = {name:comparison['candidate']['metrics'][name]['median']/comparison['baseline']['metrics'][name]['median']-1 for name in fields}
+    comparison['complete'] = True
+    (build/'serving-comparison.json').write_text(json.dumps(comparison,indent=2)+'\n',encoding='utf-8')
+    print('PASS serving comparison',json.dumps({label:{name:comparison[label]['metrics'][name]['median'] for name in fields} for label in ('baseline','candidate')}),flush=True)
+
+
 def benchmark_ocr(vision_output, text_output, generation_output, build, baseline, supplement=False):
     import ctypes as ct
     import statistics
@@ -3254,6 +3454,7 @@ def main():
     parser = argparse.ArgumentParser(description="Offline GLM-OCR artifact preparation; never used by production inference")
     parser.add_argument("--model-dir", type=Path, default=MODEL)
     parser.add_argument("--inspect", action="store_true")
+    parser.add_argument("--test-graph-bundles", action="store_true")
     parser.add_argument("--export-tokenizer", action="store_true")
     parser.add_argument("--wrapper-check", action="store_true")
     parser.add_argument("--inspect-images", action="store_true")
@@ -3273,6 +3474,10 @@ def main():
     parser.add_argument("--test-png", action="store_true")
     parser.add_argument("--diagnose-vision", action="store_true")
     parser.add_argument("--benchmark-ocr", action="store_true")
+    parser.add_argument("--profile-serving", action="store_true")
+    parser.add_argument("--compare-serving", action="store_true")
+    parser.add_argument("--profile-reference", type=Path)
+    parser.add_argument("--check-model-locks", action="store_true")
     parser.add_argument("--test-graph-cache", action="store_true")
     parser.add_argument("--test-resident", action="store_true")
     parser.add_argument("--test-app", action="store_true")
@@ -3333,6 +3538,12 @@ def main():
         analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
     elif args.benchmark_ocr:
         benchmark_ocr(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build,args.benchmark_supplement)
+    elif args.profile_serving:
+        profile_serving(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.profile_reference,args.check_model_locks)
+    elif args.compare_serving:
+        compare_serving(args.generation_build,args.baseline_build)
+    elif args.test_graph_bundles:
+        test_graph_bundles(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build)
     elif args.test_graph_cache:
         test_graph_cache(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build,args.test_resident,args.test_app,args.cache_integrity_only)
     elif args.test_server_protocol:

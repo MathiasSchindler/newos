@@ -13,6 +13,10 @@ static QnnContextHandle generation_head_contexts[8];
 static u8 *generation_head_weights[8];
 static u32 generation_head_inputs[8], generation_head_outputs[8];
 static int generation_head_ready[8];
+static OcrAttentionGraph generation_norm_builder;
+static QnnContextHandle generation_norm_context;
+static u32 generation_norm_input, generation_norm_output;
+static int generation_norm_ready;
 
 static int generation_asset(const unsigned short *directory, u32 index, int remember) {
     unsigned short path[32768]; char name[] = "head-00.got";
@@ -125,6 +129,12 @@ static int generation_head(const QnnInterfaceV2 *api, QnnBackendHandle backend, 
         source.data.v1.memory.client_buffer.data = generation_hidden; source.data.v1.memory.client_buffer.data_size = 3072;
         if (!vision_execution_inputs(builder,&source,1,&logits,1,generation_logits+index*7424,!text_reuse_enabled || !generation_head_ready[index])) return 0;
         if (text_reuse_enabled) generation_head_ready[index] = 1;
+    #ifdef OCR_GRAPH_CACHE
+        if (generation_head_weights[index]) {
+            if (!VirtualFree(generation_head_weights[index],0,0x8000)) return 0;
+            generation_head_weights[index] = 0;
+        }
+    #endif
     }
     return capture_tensor(step,".head-input.f16",generation_hidden,sizeof(generation_hidden)) &&
         capture_tensor(step,".logits.f16",generation_logits,sizeof(generation_logits)) &&
@@ -151,6 +161,9 @@ static int generation_decode(const QnnInterfaceV2 *api, QnnBackendHandle backend
     for (u32 index = 0; index < 16; ++index) {
         QnnContextHandle *owner = text_reuse_enabled ? &text_retained_contexts[index] : context;
         if (!text_reuse_enabled || !text_retained_ready[index]) {
+#ifdef OCR_GRAPH_CACHE
+            graph_cache_memory_trace(index);
+#endif
             if (text_reuse_enabled) {
                 text_retained_weights[index] = VirtualAlloc(0,61354148,0x3000,4);
                 if (!text_retained_weights[index]) return 0;
@@ -158,16 +171,33 @@ static int generation_decode(const QnnInterfaceV2 *api, QnnBackendHandle backend
             if (!generation_context(api,backend,device,owner) || !prefill_asset(directory,index,0)) return 0;
         }
         if (!prefill_layer(api,*owner,index,past)) return 0;
+    #ifdef OCR_GRAPH_CACHE
+        if (text_retained_weights[index]) {
+            if (!VirtualFree(text_retained_weights[index],0,0x8000)) return 0;
+            text_retained_weights[index] = 0;
+        }
+    #endif
     }
-    if (!generation_context(api,backend,device,context)) return 0;
     profile_phase = 7; profile_layer = 16;
-    OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
-    if (!checked("decode_norm_graph",api->graph_create(*context,"decode_final_norm",0,&builder.graph))) return 0;
-    u32 shape[2] = {1,1536}, axis = 1; u8 *gamma = prefill_shared+160;
-    u32 input = attention_tensor(&builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,shape,0);
-    u32 normalized = prefill_norm(&builder,input,&gamma,&axis,1);
-    return vision_execution(&builder,input,prefill_input.embeddings,1536,&normalized,1,generation_hidden) &&
-        capture_tensor(past,".decode-norm.f16",generation_hidden,sizeof(generation_hidden));
+    OcrAttentionGraph local_builder = {0};
+    OcrAttentionGraph *builder = text_reuse_enabled ? &generation_norm_builder : &local_builder;
+    u32 input, normalized;
+    if (!text_reuse_enabled || !generation_norm_ready) {
+        QnnContextHandle *owner = text_reuse_enabled ? &generation_norm_context : context;
+        if (!generation_context(api,backend,device,owner)) return 0;
+        builder->api = api; builder->good = 1;
+        if (!checked("decode_norm_graph",api->graph_create(*owner,"decode_final_norm",0,&builder->graph))) return 0;
+        u32 shape[2] = {1,1536}, axis = 1; u8 *gamma = prefill_shared+160;
+        input = attention_tensor(builder,QNN_TENSOR_TYPE_APP_WRITE,QNN_DATATYPE_FLOAT_16,2,shape,0);
+        normalized = prefill_norm(builder,input,&gamma,&axis,1);
+        if (text_reuse_enabled) { generation_norm_input = input; generation_norm_output = normalized; }
+    } else { input = generation_norm_input; normalized = generation_norm_output; }
+    QnnTensor source = builder->tensors[input];
+    source.data.v1.memory.client_buffer.data = prefill_input.embeddings;
+    source.data.v1.memory.client_buffer.data_size = 3072;
+    if (!vision_execution_inputs(builder,&source,1,&normalized,1,generation_hidden,!text_reuse_enabled || !generation_norm_ready)) return 0;
+    if (text_reuse_enabled) generation_norm_ready = 1;
+    return capture_tensor(past,".decode-norm.f16",generation_hidden,sizeof(generation_hidden));
 }
 
 static int generation_emit(u32 count, u32 *emitted, int final) {
@@ -225,10 +255,16 @@ static int generation_release(const QnnInterfaceV2 *api) {
             generation_head_builders[index-16].good = 0;
         }
     }
+    if (generation_norm_context) {
+        if (!api || !checked("retained_norm_free",api->context_free(generation_norm_context,0))) good = 0;
+        else generation_norm_context = 0;
+    }
+    generation_norm_ready = 0; generation_norm_builder.count = 0; generation_norm_builder.good = 0;
     return good;
 }
 
 static int generation_reset(void) {
+    if (!ocr_resident && generation_norm_context) return 0;
     for (u32 index = 0; index < 16; ++index) {
         if (!ocr_resident && (text_retained_contexts[index] || text_retained_weights[index])) return 0;
         text_cache_count[index] = 0;

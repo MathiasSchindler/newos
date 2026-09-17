@@ -41,6 +41,7 @@ EXPORTS
     SetStdHandle
     IsProcessorFeaturePresent
     K32GetProcessMemoryInfo
+    GlobalMemoryStatusEx
     LoadLibraryA
     LoadLibraryExW
     VirtualAlloc
