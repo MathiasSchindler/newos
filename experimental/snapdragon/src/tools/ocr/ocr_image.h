@@ -13,9 +13,15 @@ typedef struct {
 } OcrPreparedImage;
 
 int ocr_image_load(const unsigned short *path, OcrPreparedImage *image);
+int ocr_image_load_fitted(const unsigned short *path, OcrPreparedImage *image, int large);
 void ocr_image_release(OcrPreparedImage *image);
-int ocr_image_export(const unsigned short *input_path, const unsigned short *output_path);
+int ocr_image_export(const unsigned short *input_path, const unsigned short *output_path, int fitted);
 int ocr_image_shape(unsigned int height, unsigned int width, OcrImageShape *shape);
+int ocr_image_fit_shape(unsigned int height, unsigned int width, int large, OcrImageShape *shape);
+int ocr_image_resize_fit(const unsigned char *rgb, unsigned long long size,
+                         unsigned int height, unsigned int width, unsigned int stride, int large,
+                         unsigned char *scratch, unsigned long long scratch_size,
+                         unsigned char *output, unsigned long long output_size);
 int ocr_image_bmp(const unsigned char *data, unsigned long long size,
                   unsigned char *rgb, unsigned long long capacity,
                   unsigned int *height, unsigned int *width);

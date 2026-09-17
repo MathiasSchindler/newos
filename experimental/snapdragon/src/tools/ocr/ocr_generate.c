@@ -103,6 +103,7 @@ static int generation_context(const QnnInterfaceV2 *api, QnnBackendHandle backen
 static int generation_head(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
                            QnnContextHandle *context, u32 step, u32 *selected) {
     for (u32 index = 0; index < 8; ++index) {
+                profile_phase = 8; profile_layer = index;
         OcrAttentionGraph local_builder = {0};
         OcrAttentionGraph *builder = text_reuse_enabled ? &generation_head_builders[index] : &local_builder;
         u32 input, logits;
@@ -159,6 +160,7 @@ static int generation_decode(const QnnInterfaceV2 *api, QnnBackendHandle backend
         if (!prefill_layer(api,*owner,index,past)) return 0;
     }
     if (!generation_context(api,backend,device,context)) return 0;
+    profile_phase = 7; profile_layer = 16;
     OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
     if (!checked("decode_norm_graph",api->graph_create(*context,"decode_final_norm",0,&builder.graph))) return 0;
     u32 shape[2] = {1,1536}, axis = 1; u8 *gamma = prefill_shared+160;

@@ -12,6 +12,7 @@ param(
     [switch]$TestTokenizer,
     [switch]$TestImages,
     [switch]$PrepareImages,
+    [switch]$Gui,
     [switch]$Vision,
     [switch]$TestVision,
     [switch]$Prefill,
@@ -39,6 +40,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Gui -and ($Generate -or $TestGenerate -or $Vision -or $TestVision -or $Prefill -or $TestPrefill -or $Test -or $TestImages -or $TestTokenizer -or $TestHtp)) { throw 'Build OCR GUI separately from engine/tests' }
 if ($TestGenerate) { $Generate = $true }
 if ($Generate) { $Prefill = $true }
 if ($LargeImages -and -not $PSBoundParameters.ContainsKey('VisionDir')) { $VisionDir = 'experimental/snapdragon/models/glm-ocr-vision-v2' }
@@ -518,17 +520,29 @@ try {
         $sources += 'experimental/snapdragon/src/tools/ocr/ocr_htp.c'
         if (-not ($TestTokenizer -or $TestImages)) { $sources += 'experimental/snapdragon/src/tools/ocr/ocr_tokenizer.c' }
     }
+    if ($Gui) {
+        $binary = Join-Path $BuildDir 'ocr-gui.exe'
+        foreach ($library in @('user32','gdi32','comdlg32')) {
+            & $dllTool -m arm64 -d "experimental/snapdragon/src/shared/imports/$library.def" -l "$BuildDir/lib$library.a"
+            if ($LASTEXITCODE -ne 0) { throw 'OCR GUI import library creation failed' }
+        }
+        $flags += @('-luser32','-lgdi32','-lcomdlg32','-Wl,--subsystem,windows','-fno-math-errno','-ffp-contract=off')
+        $sources = @('experimental/snapdragon/src/tools/ocr/ocr_gui.c','experimental/snapdragon/src/tools/ocr/ocr_image.c','experimental/snapdragon/src/tools/ocr/ocr_png.c','src/shared/compression/zlib.c')
+    }
     & $compilerPath @flags @sources -o $binary
     if ($LASTEXITCODE -ne 0) { throw 'OCR native build failed' }
     $audit = & $readObj --file-headers --coff-imports $binary | Out-String
     if ($LASTEXITCODE -ne 0) { throw 'OCR PE inspection failed' }
     $imports = @([regex]::Matches($audit, '(?m)^\s*Name: (.+\.dll)\s*$') | ForEach-Object { $_.Groups[1].Value.Trim() })
-    if ($audit -notmatch 'IMAGE_FILE_MACHINE_ARM64' -or $imports.Count -ne 1 -or $imports[0] -ine 'KERNEL32.dll' -or
+    $expectedImports = if ($Gui) { @('KERNEL32.dll','USER32.dll','GDI32.dll','COMDLG32.dll') } else { @('KERNEL32.dll') }
+    if ($audit -notmatch 'IMAGE_FILE_MACHINE_ARM64' -or @(Compare-Object $expectedImports $imports).Count -ne 0 -or
+        ($Gui -and $audit -notmatch 'IMAGE_SUBSYSTEM_WINDOWS_GUI') -or
         $audit -notmatch 'ExceptionTableRVA: 0x0\b' -or $audit -notmatch 'ExceptionTableSize: 0x0\b' -or
         $audit -notmatch 'CLRRuntimeHeaderRVA: 0x0\b' -or $audit -notmatch 'CLRRuntimeHeaderSize: 0x0\b') {
         throw 'OCR ARM64 no-CRT PE contract failed'
     }
-    Write-Output "Built $binary; ARM64, Kernel32 only, no CRT, no exception or CLR tables"
+    Write-Output "Built $binary; ARM64, imports: $($imports -join ', '); no CRT, no exception or CLR tables"
+    if ($Gui) { return }
     & $binary --self-test
     if ($LASTEXITCODE -ne 0) { throw 'OCR SHA-256 known-answer tests failed' }
     if ($Test) { Test-Ocr }
@@ -571,10 +585,10 @@ try {
                 [Array]::Copy([BitConverter]::GetBytes([uint32]$field[1]),0,$bitmap,$field[0],4)
             }
             [IO.File]::WriteAllBytes($missingImage, $bitmap)
-            Assert-Native @('--vision', $missingDll, $VisionDir, $missingImage, $negative) 1 'FAIL vision bucket or weights'
+            Assert-Native @('--vision', $missingDll, $VisionDir, $missingImage, $negative) 1 'FAIL loading explicit HTP library'
             Assert-Native @('--vision', $missingDll, $VisionDir, (Join-Path $VisionDir 'pattern.bmp'), $negative) 1 'FAIL loading explicit HTP library'
             Assert-Native @('--vision') 2
-            Write-Output 'PASS vision negative checks: 14; missing/corrupt/truncated weights, invalid image/bucket/runtime/arguments'
+            Write-Output 'PASS vision negative checks: 14; missing/corrupt/truncated weights, invalid image/runtime/arguments, fitted portrait reaches runtime loading'
             if ($LargeImages) {
                 foreach ($artifact in Get-ChildItem -LiteralPath $VisionDir -Filter '*.got') {
                     if ($artifact.Name -notin @('block-00.got','large-rope.got')) {

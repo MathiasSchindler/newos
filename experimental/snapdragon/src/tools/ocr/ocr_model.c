@@ -208,9 +208,9 @@ void mainCRTStartup(void) {
         result = ocr_vision_check(arguments[2]);
 #endif
 #ifdef OCR_IMAGE_FILE
-    } else if (count == 4U && word(arguments[1], "--prepare-image")) {
-        result = ocr_image_export(arguments[2], arguments[3]);
-        if (!result) print("FAIL image preparation: require bounded BMP24 or non-interlaced PNG8 (gray/RGB, optional alpha) and a new writable output path; no inference performed\n", (unsigned int)-12);
+    } else if (count == 4U && (word(arguments[1], "--prepare-image") || word(arguments[1], "--prepare-image-fit"))) {
+        result = ocr_image_export(arguments[2], arguments[3], word(arguments[1], "--prepare-image-fit"));
+        if (!result) print("FAIL image preparation: require bounded BMP24 or static PNG and a new writable output path; no inference performed\n", (unsigned int)-12);
         ExitProcess(result ? 0U : 1U);
         return;
 #endif
@@ -240,7 +240,7 @@ void mainCRTStartup(void) {
         print("Vision: --vision QnnHtp.dll WEIGHTS_DIR INPUT_IMAGE NEW_CAPTURE_DIR | --check-vision WEIGHTS_DIR\n", (unsigned int)-12);
     #endif
 #ifdef OCR_IMAGE_FILE
-        print("Image preprocessing only: --prepare-image INPUT_IMAGE OUTPUT.f32; BMP24 or PNG8 gray/RGB with optional alpha, non-interlaced\n", (unsigned int)-12);
+        print("Image preprocessing only: --prepare-image INPUT_IMAGE OUTPUT.f32; --prepare-image-fit fits the large OCR raster; BMP24 or static PNG\n", (unsigned int)-12);
 #endif
         print("Usage: ocr-model --self-test | --verify FILE SHA256 | --weights FILE SHA256\n", (unsigned int)-12);
         ExitProcess(2U);

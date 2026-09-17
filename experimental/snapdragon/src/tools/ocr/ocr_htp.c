@@ -17,6 +17,15 @@ __declspec(dllimport) int QueryPerformanceCounter(long long *);
 __declspec(dllimport) int QueryPerformanceFrequency(long long *);
 
 static u64 runtime_ticks[9], runtime_frequency;
+static u64 profile_rows[8192][7], profile_capture_ticks, profile_capture_bytes;
+static u32 profile_count, profile_phase, profile_layer;
+static int profile_good = 1;
+static void profile_record(u64 build, u64 finalize, u64 execute_ticks, u64 cycles, u64 microseconds) {
+    if (profile_count >= 8192) { profile_good = 0; return; }
+    u64 *row = profile_rows[profile_count++];
+    row[0] = profile_phase; row[1] = profile_layer; row[2] = build;
+    row[3] = finalize; row[4] = execute_ticks; row[5] = cycles; row[6] = microseconds;
+}
 static int runtime_clock_good = 1;
 static u64 runtime_clock(void) {
     long long value = 0;
@@ -62,6 +71,7 @@ static QnnProfileHandle execution_profile;
 static const unsigned short *capture_directory;
 
 static int capture_tensor(u32 block_index, const char *suffix, const void *data, u32 bytes) {
+    u64 capture_started = runtime_clock();
     unsigned short path[32768];
     u32 length = 0, written = 0;
     while (capture_directory[length]) {
@@ -78,6 +88,8 @@ static int capture_tensor(u32 block_index, const char *suffix, const void *data,
     if (file == (void *)~0ULL) return 0;
     int good = WriteFile(file,data,bytes,&written,0) && written == bytes;
     if (!CloseHandle(file)) good = 0;
+    profile_capture_ticks += runtime_clock()-capture_started;
+    if (good) profile_capture_bytes += bytes;
     return good;
 }
 
@@ -275,6 +287,7 @@ static int primitive(const QnnInterfaceV2 *api, QnnContextHandle context, u32 op
 typedef struct {
     const QnnInterfaceV2 *api;
     QnnGraphHandle graph;
+    u64 build_started;
     QnnTensor tensors[OCR_ATTENTION_TENSORS];
     u32 dimensions[OCR_ATTENTION_TENSORS][4];
     char names[OCR_ATTENTION_TENSORS][5];
@@ -323,6 +336,7 @@ static u32 attention_elements(u32 tap, u32 tokens) {
 
 static u32 attention_tensor(OcrAttentionGraph *builder, u32 type, u32 dtype, u32 rank, const u32 *shape, void *data) {
     u32 index = builder->count, elements = 1;
+    if (!index) builder->build_started = runtime_clock();
     if (!builder->good || index >= OCR_ATTENTION_TENSORS || !rank || rank > 4) { builder->good = 0; return 0; }
     ++builder->count;
     builder->names[index][0] = 't';
@@ -668,7 +682,11 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         internal_count = 10;
     }
 #endif
-    if (!builder.good || !checked("attention_finalize",api->graph_finalize(builder.graph,0,0))) return 0;
+    if (!builder.good) return 0;
+    u64 finalize_started = runtime_clock();
+    u64 build_ticks = finalize_started-builder.build_started;
+    if (!checked("attention_finalize",api->graph_finalize(builder.graph,0,0))) return 0;
+    u64 finalize_ticks = runtime_clock()-finalize_started;
     QnnTensor outputs[28], source_tensor = builder.tensors[input];
     u32 output_count = tap_count;
     source_tensor.data.v1.memory.client_buffer.data = source;
@@ -701,7 +719,9 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
     #ifdef OCR_CAPTURE_INTERNALS
         for (u32 index = 0; index < internal_elements; ++index) internal_output[index] = 0x7e00;
     #endif
+        u64 execute_started = runtime_clock();
         if (!checked("attention_execute",api->graph_execute(builder.graph,&source_tensor,1,outputs,output_count,execution_profile,0))) return 0;
+        u64 execute_ticks = runtime_clock()-execute_started;
         for (u32 index = 0; index < total_elements; ++index)
             if ((attention_output[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision activation\n"); return 0; }
     #ifdef OCR_CAPTURE_INTERNALS
@@ -716,6 +736,7 @@ static int attention_probe(const QnnInterfaceV2 *api, QnnContextHandle context, 
         const u64 *events = 0; u32 event_count = 0; u64 cycles = 0, microseconds = 0;
         if (api->profile_get_events(execution_profile,&events,&event_count) || !profile_events(api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
         checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
+        profile_record(run ? 0 : build_ticks,run ? 0 : finalize_ticks,execute_ticks,cycles,microseconds);
         for (u32 row = 0; row < 16*tokens; ++row) {
             float sum = 0;
             for (u32 column = 0; column < tokens; ++column) {
@@ -1003,8 +1024,10 @@ static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *source
                                    const u32 *ids, u32 count, u16 *destination, int finalize) {
     if (!builder->good || count > 8) return 0;
     u64 started = runtime_clock();
+    u64 build_ticks = finalize ? started-builder->build_started : 0;
     int finalized = !finalize || checked("vision_finalize",builder->api->graph_finalize(builder->graph,0,0));
-    runtime_ticks[1] += runtime_clock()-started;
+    u64 finalize_ticks = finalize ? runtime_clock()-started : 0;
+    runtime_ticks[1] += finalize_ticks;
     if (!finalized) return 0;
     QnnTensor outputs[8];
     u32 total = 0;
@@ -1019,7 +1042,8 @@ static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *source
     for (u32 index = 0; index < total; ++index) destination[index] = 0x7e00;
     started = runtime_clock();
     int executed = checked("vision_execute",builder->api->graph_execute(builder->graph,sources,source_count,outputs,count,execution_profile,0));
-    runtime_ticks[2] += runtime_clock()-started;
+    u64 execute_ticks = runtime_clock()-started;
+    runtime_ticks[2] += execute_ticks;
     if (!executed) return 0;
     for (u32 index = 0; index < total; ++index)
         if ((destination[index] & 0x7c00) == 0x7c00) { text("FAIL nonfinite vision output\n"); return 0; }
@@ -1027,6 +1051,7 @@ static int vision_execution_inputs(OcrAttentionGraph *builder, QnnTensor *source
     if (builder->api->profile_get_events(execution_profile,&events,&event_count) ||
         !profile_events(builder->api,events,event_count,0,&cycles,&microseconds) || (!cycles && !microseconds)) return 0;
     checked("accelerator_cycles",cycles); checked("accelerator_microseconds",microseconds);
+    profile_record(build_ticks,finalize_ticks,execute_ticks,cycles,microseconds);
     return 1;
 }
 
@@ -1121,9 +1146,11 @@ static int vision_tail(const QnnInterfaceV2 *api, QnnContextHandle context, u32 
 static int vision_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
                            QnnContextHandle *context, const unsigned short *directory) {
     u32 tokens = vision_image.shape.grid_height*vision_image.shape.grid_width;
+    profile_phase = 1; profile_layer = 0;
     if (!vision_patch(api,*context,tokens)) return 0;
     ocr_image_release(&vision_image);
     for (u32 index = 0; index < 25; ++index) {
+        profile_phase = index == 24 ? 3 : 2; profile_layer = index;
         if (!checked("vision_context_free",api->context_free(*context,0))) return 0;
         *context = 0;
         if (!vision_asset(directory,index < 24 ? index : 25,0) ||
@@ -1154,6 +1181,8 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     if (!QueryPerformanceFrequency(&frequency) || frequency <= 0) return 0;
     runtime_frequency = (u64)frequency;
     for (u32 index = 0; index < 9; ++index) runtime_ticks[index] = 0;
+    profile_count = profile_phase = profile_layer = 0; profile_good = 1;
+    profile_capture_ticks = profile_capture_bytes = 0;
     capture_directory = capture;
     void *module = 0;
     QnnBackendHandle backend = 0;
@@ -1170,7 +1199,7 @@ static int htp_run(const unsigned short *library, const unsigned short *fixtures
     u32 fixture_size = 0, kind = 0;
 #ifdef OCR_VISION_RUN
     if (image_path) {
-        if (!capture || !ocr_image_load(image_path,&vision_image)) { text("FAIL vision image input\n"); return 0; }
+        if (!capture || !ocr_image_load_fitted(image_path,&vision_image,OCR_VISION_PATCHES > 128)) { text("FAIL vision image input\n"); return 0; }
         int grid_valid = vision_image.shape.grid_height == 8 && (vision_image.shape.grid_width == 8 || vision_image.shape.grid_width == 16);
     #ifdef OCR_LARGE_IMAGES
         grid_valid = grid_valid || (vision_image.shape.grid_height == 16 && (vision_image.shape.grid_width == 16 || vision_image.shape.grid_width == 32));
@@ -1255,6 +1284,9 @@ done:
         u64 timing[10]; timing[0] = runtime_frequency;
         for (u32 index = 0; index < 9; ++index) timing[index+1] = runtime_ticks[index];
         if (!runtime_clock_good || !capture_tensor(0,".timing.u64",timing,sizeof(timing))) good = 0;
+        u64 profile_header[5] = {1,runtime_frequency,profile_count,profile_capture_ticks,profile_capture_bytes};
+        if (!profile_good || !capture_tensor(0,".profile-header.u64",profile_header,sizeof(profile_header)) ||
+            !capture_tensor(0,".profile-graphs.u64",profile_rows,profile_count*7*sizeof(u64))) good = 0;
     }
     if (generation_directory) text(good && clean ? "PASS native OCR generation execution; numerical acceptance remains open\n" : "FAIL native OCR generation\n");
     else

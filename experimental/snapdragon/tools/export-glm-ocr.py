@@ -584,11 +584,287 @@ def analyze_vision_encoder(output, build):
     print("PASS vision structure/identity/handoff analysis; numerical gate:",report["numerical_gate_pass"],flush=True)
 
 
+def benchmark_ocr(vision_output, text_output, generation_output, build, baseline, supplement=False):
+    import ctypes as ct
+    import statistics
+    import subprocess
+    import threading
+    import time
+    import uuid
+    import numpy as np
+    binary = (build/'ocr-generate.exe').resolve()
+    runtime_dir = ROOT/'experimental/snapdragon/build'
+    runtime = runtime_dir/'QnnHtp.dll'
+    manifests = [read_json(vision_output/'manifest.json'),read_json(text_output/'manifest.json'),read_json(generation_output/'generation-manifest.json')]
+    hashes = []
+    for directory,manifest in zip((vision_output,text_output,generation_output),manifests,strict=True):
+        records = {}
+        for path in directory.glob('*.got'):
+            with path.open('rb') as stream: digest = hashlib.file_digest(stream,'sha256').hexdigest()
+            if digest != manifest['files'][path.name]['sha256']: raise ValueError('Benchmark artifact drift: '+str(path))
+            records[path.name] = digest.upper()
+        hashes.append(records)
+    runtime_hashes = {name:sha((runtime_dir/name).read_bytes()).upper() for name in ('QnnHtp.dll','QnnHtpPrepare.dll','QnnHtpV73Stub.dll','libQnnHtpV73Skel.so')}
+    class Memory(ct.Structure):
+        _fields_ = [('size',ct.c_uint32),('faults',ct.c_uint32)]+[(name,ct.c_size_t) for name in ('peak_working_set','working_set','peak_paged','paged','peak_nonpaged','nonpaged','pagefile','peak_pagefile')]
+    kernel = ct.WinDLL('kernel32',use_last_error=True)
+    memory_info = kernel.K32GetProcessMemoryInfo; memory_info.argtypes = [ct.c_void_p,ct.c_void_p,ct.c_uint32]; memory_info.restype = ct.c_int
+    times = kernel.GetProcessTimes; times.argtypes = [ct.c_void_p]+[ct.c_void_p]*4; times.restype = ct.c_int
+    reports = []
+    schedule = [('pattern',0)]+[('receipt',index) for index in range(3)]
+    if supplement:
+        previous_path = build/'benchmark-results.json'
+        previous = read_json(previous_path)
+        if not previous.get('complete'): raise ValueError('Supplement requires completed initial report')
+        reports = previous['runs']
+        if any(record['run']['executable_sha256'] != sha(binary.read_bytes()).upper() or record['run']['runtime_hashes'] != runtime_hashes for record in reports):
+            raise ValueError('Cannot combine changed benchmark binaries or runtimes')
+        preserved = build/'benchmark-initial.json'
+        if not preserved.exists(): preserved.write_bytes(previous_path.read_bytes())
+        schedule = [(case,1+max(record['iteration'] for record in reports if record['case']==case)) for case in ('pattern','receipt')]
+    for case,iteration in schedule:
+        image = (vision_output/manifests[0]['cases'][case]['input']).resolve()
+        control = json.loads((baseline/(case+'-generate-run.json')).read_text(encoding='utf-8-sig'))
+        if control['input_sha256'] != sha(image.read_bytes()).upper(): raise ValueError('Baseline input differs')
+        capture = (build/(case+'-'+uuid.uuid4().hex)).resolve(); capture.mkdir()
+        command = [str(binary),'--generate-text',str(runtime),str(vision_output.resolve()),str(text_output.resolve()),str(generation_output.resolve()),str(image),str(capture),'212']
+        first = []; worker_errors = []
+        started = time.perf_counter()
+        with (capture/'execution.log').open('wb') as log, (capture/'stdout.txt').open('wb') as output:
+            process = subprocess.Popen(command,stdout=subprocess.PIPE,stderr=log,stdin=subprocess.DEVNULL)
+            def read_output():
+                try:
+                    while True:
+                        value = process.stdout.read(1)
+                        if not value: break
+                        if not first: first.append(time.perf_counter()-started)
+                        output.write(value)
+                except Exception as error: worker_errors.append(repr(error))
+            reader = threading.Thread(target=read_output); reader.start()
+            try:
+                code = process.wait(timeout=300); wall = time.perf_counter()-started
+                memory = Memory(); memory.size = ct.sizeof(memory)
+                created,exited,kernel_time,user_time = (ct.c_uint64() for _ in range(4))
+                if not memory_info(int(process._handle),ct.byref(memory),ct.sizeof(memory)) or not times(int(process._handle),ct.byref(created),ct.byref(exited),ct.byref(kernel_time),ct.byref(user_time)):
+                    raise OSError(ct.get_last_error(),'Cannot read process accounting')
+            finally:
+                if process.poll() is None: process.kill(); process.wait()
+                reader.join(); process.stdout.close()
+        if worker_errors or code != 0: raise ValueError(('Benchmark execution failed',code,worker_errors,str(capture)))
+        captures = {}
+        for path in capture.iterdir():
+            if path.suffix not in ('.f16','.f32','.u32','.i32','.u8','.u64','.txt'): continue
+            with path.open('rb') as stream: captures[path.name] = hashlib.file_digest(stream,'sha256').hexdigest().upper()
+        for name,digest in control['captures'].items():
+            if name.endswith('.u64'): continue
+            if captures.get(name) != digest: raise ValueError('Instrumentation changed captured values: '+name)
+        timing = np.fromfile(capture/'0.timing.u64',dtype='<u8')
+        header = np.fromfile(capture/'0.profile-header.u64',dtype='<u8')
+        if timing.size != 10 or header.size != 5 or header[0] != 1 or header[1] != timing[0]: raise ValueError('Profile format mismatch')
+        rows = np.fromfile(capture/'0.profile-graphs.u64',dtype='<u8').reshape(-1,7)
+        if len(rows) != header[2]: raise ValueError('Graph profile count mismatch')
+        generated = np.fromfile(capture/'0.generated-ids.u32',dtype='<u4')
+        counts = {1:1,2:24,3:1,4:16,5:1,6:16*(len(generated)-1),7:len(generated)-1,8:8*len(generated)}
+        phases = {}; names = {1:'patch',2:'vision_blocks',3:'connector',4:'prefill',5:'prefill_norm',6:'decode',7:'decode_norm',8:'head'}
+        for phase,name in names.items():
+            selected = rows[rows[:,0] == phase]
+            if len(selected) != counts[phase]: raise ValueError(('Missing profile phase',phase,len(selected),counts[phase]))
+            phases[name] = dict(graph_calls=len(selected),build_seconds=float(selected[:,2].sum()/timing[0]),finalize_seconds=float(selected[:,3].sum()/timing[0]),
+                                execute_seconds=float(selected[:,4].sum()/timing[0]),accelerator_cycles=int(selected[:,5].sum()),accelerator_microseconds=int(selected[:,6].sum()))
+        run = dict(case=case,exit_code=code,capture=str(capture),scope='generate',max_new_tokens=212,reuse_decode=True,large_images=True,prefill_context=256,
+                   executable_sha256=sha(binary.read_bytes()).upper(),runtime_sha256=runtime_hashes['QnnHtp.dll'],runtime_hashes=runtime_hashes,
+                   weight_hashes=hashes[0],text_weight_hashes=hashes[1],generation_weight_hashes=hashes[2],input_sha256=sha(image.read_bytes()).upper(),captures=captures,numerical_acceptance=False)
+        (build/(case+'-generate-run.json')).write_text(json.dumps(run,indent=2)+'\n',encoding='utf-8')
+        report = dict(case=case,iteration=iteration,wall_seconds=wall,first_output_seconds=first[0] if first else None,process_kernel_seconds=kernel_time.value/1e7,
+                      process_user_seconds=user_time.value/1e7,peak_working_set_bytes=memory.peak_working_set,peak_pagefile_bytes=memory.peak_pagefile,
+                      capture_seconds=float(header[3]/header[1]),capture_bytes=int(header[4]),phases=phases,exact_baseline_captures=True,run=run)
+        reports.append(report)
+        (build/'benchmark-results.json').write_text(json.dumps(dict(complete=False,runs=reports),indent=2)+'\n',encoding='utf-8')
+        print('PASS benchmark',case,iteration,'wall',wall,'first',report['first_output_seconds'],'capture seconds',report['capture_seconds'],
+              'peak working set MiB',memory.peak_working_set/1048576,flush=True)
+    for record in reports:
+        record['within_observation_budget'] = record['wall_seconds'] <= 300
+    receipt = [record for record in reports if record['case'] == 'receipt' and record['within_observation_budget']]
+    summary = {name:dict(median=statistics.median(record[name] for record in receipt),minimum=min(record[name] for record in receipt),maximum=max(record[name] for record in receipt))
+               for name in ('wall_seconds','first_output_seconds','capture_seconds','peak_working_set_bytes')}
+    report = dict(complete=True,conditions='Serial fresh processes, retained decode/head inside each request, filesystem caches not flushed; detailed QNN profile and full tensor captures enabled. Process peaks exclude separate DSP allocations. All runs retained; summary includes only runs within the original 300-second observation budget. Windows process waits did not enforce elapsed-wall timeout across the anomalous long gaps; cause of those gaps not established.',
+                  runs=reports,receipt_summary=summary,analyzer_sha256=sha(Path(__file__).read_bytes()))
+    (build/'benchmark-results.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    print('PASS serial benchmark',json.dumps(summary),flush=True)
+
+
+def diagnose_vision(model, vision_output, build):
+    import inspect
+    import numpy as np
+    torch, _, _, versions = image_reference()
+    from transformers.models.glm_ocr import modeling_glm_ocr as reference
+    from transformers.models.glm_ocr.configuration_glm_ocr import GlmOcrVisionConfig
+    module_hash = sha(Path(inspect.getfile(reference)).read_bytes())
+    manifest = read_json(vision_output/'manifest.json')
+    if module_hash != manifest['modeling_sha256']: raise ValueError('Reference source drift')
+    state = {}
+    with weight_source(model) as (stream,tensors,payload,catalog):
+        for name,tensor in tensors.items():
+            if not name.startswith('model.visual.'): continue
+            start,end = tensor['data_offsets']; stream.seek(payload+start); raw = stream.read(end-start)
+            if len(raw) != end-start: raise ValueError('Truncated original tensor')
+            values = (np.frombuffer(raw,dtype='<u2').astype(np.uint32)<<16).view(np.float32).reshape(tensor['shape'])
+            state[name.removeprefix('model.visual.')] = torch.from_numpy(values.copy())
+    config = GlmOcrVisionConfig(**read_json(model/'config.json')['vision_config']); config._attn_implementation = 'eager'
+    candidate = reference.GlmOcrVisionModel(config).eval()
+    candidate.load_state_dict(state,strict=True)
+    with torch.no_grad():
+        for parameter in candidate.parameters(): parameter.copy_(parameter.half().float())
+    def metric(actual,expected):
+        actual = np.asarray(actual,dtype=np.float64); expected = np.asarray(expected,dtype=np.float64)
+        if actual.shape != expected.shape or not np.isfinite(actual).all() or not np.isfinite(expected).all(): raise ValueError('Invalid diagnostic values')
+        error = actual-expected
+        return dict(elements=int(error.size),failures=int((np.abs(error)>0.003+0.005*np.abs(expected)).sum()),
+                    rmse=float(np.sqrt(np.mean(error*error))),max_absolute_error=float(np.abs(error).max()))
+    def rounded(actual,expected):
+        result = metric(actual,expected)
+        result['nearest_fp16_matches'] = int(np.count_nonzero(actual.astype('<f2').view('<u2') == np.asarray(expected).astype('<f2').view('<u2')))
+        return result
+    reports = {}
+    for case in ('pattern','receipt'):
+        run = json.loads((build/(case+'-generate-run.json')).read_text(encoding='utf-8-sig'))
+        if sha((build/'ocr-generate.exe').read_bytes()).upper() != run['executable_sha256']: raise ValueError('Executable drift')
+        if run['weight_hashes'] != {name:item['sha256'].upper() for name,item in manifest['files'].items() if name.endswith('.got')}: raise ValueError('Vision weights differ')
+        grid = manifest['cases'][case]['grid']; tokens = math.prod(grid); capture = Path(run['capture'])
+        def observed(name,shape):
+            raw = (capture/name).read_bytes()
+            if sha(raw).upper() != run['captures'][name]: raise ValueError('Capture drift: '+name)
+            value = np.frombuffer(raw,dtype='<f2').reshape(shape).astype(np.float32)
+            if not np.isfinite(value).all(): raise ValueError('Nonfinite capture')
+            return value
+        global_path = vision_output/(case+'.candidate.f32')
+        if sha(global_path.read_bytes()) != manifest['files'][global_path.name]['sha256']: raise ValueError('Global oracle drift')
+        historical_stages = np.fromfile(global_path,dtype='<f4')[:25*tokens*1024].reshape(25,tokens,1024)
+        patch_path = vision_output/(case+'.patches.f32')
+        if sha(patch_path.read_bytes()) != manifest['files'][patch_path.name]['sha256']: raise ValueError('Patch oracle drift')
+        patch_values = torch.from_numpy(np.fromfile(patch_path,dtype='<f4').reshape(tokens,1176)).half().float()
+        full_stages = []
+        def stage_hook(module,args,result): full_stages.append(result.detach().numpy().copy())
+        stage_handles = [module.register_forward_hook(stage_hook) for module in [candidate.patch_embed,*candidate.blocks]]
+        try:
+            with torch.inference_mode(): candidate(patch_values,torch.tensor([grid]))
+        finally:
+            for handle in stage_handles: handle.remove()
+        global_stages = np.stack(full_stages)
+        positions = reference.get_vision_position_ids(torch.tensor([grid]),2)
+        with torch.inference_mode(): cosine,sine = reference.GlmOcrVisionRotaryEmbedding(config)(torch.zeros(tokens,1024),positions)
+        names = ('norm1','qkv','q_norm','k_norm','q_rope','k_rope','scores','probabilities','context','projection','residual','norm2','gate','up','silu','gated','down','block_output')
+        shapes = [(tokens,1024),(tokens,3072)]+[(tokens,16,64)]*4+[(16,tokens,tokens)]*2+[(tokens,1024)]*4+[(tokens,4096)]*4+[(tokens,1024)]*2
+        blocks = []
+        for index in range(24):
+            source = observed(f'{index}.input.f16',(tokens,1024))
+            packed = observed(f'{index}.taps.f16',(30720*tokens+32*tokens*tokens,))
+            actual = {}; cursor = 0
+            for name,shape in zip(names,shapes,strict=True):
+                count = math.prod(shape); actual[name] = packed[cursor:cursor+count].reshape(shape); cursor += count
+            block = reference.GlmOcrVisionBlock(config).eval()
+            weights = {name.removeprefix(f'blocks.{index}.'):value.half().float() for name,value in state.items() if name.startswith(f'blocks.{index}.')}
+            block.load_state_dict(weights,strict=True)
+            deployed = vision_output/f'block-{index:02}.got'
+            constants = weights['norm1.weight'].half().numpy().tobytes()
+            for name in ('attn.qkv.weight','attn.qkv.bias','attn.q_norm.weight','attn.k_norm.weight','attn.proj.weight','attn.proj.bias','norm2.weight',
+                         'mlp.gate_proj.weight','mlp.gate_proj.bias','mlp.up_proj.weight','mlp.up_proj.bias','mlp.down_proj.weight','mlp.down_proj.bias'):
+                value = weights[name]; constants += (value.t() if value.ndim == 2 else value).half().contiguous().numpy().tobytes()
+            raw = deployed.read_bytes()
+            if sha(raw) != manifest['files'][deployed.name]['sha256'] or raw[164:] != constants: raise ValueError('Candidate weights not deployed weights')
+            captured = {}; handles = []
+            def hook(name):
+                def receive(module,args,result): captured[name] = result.detach().clone()
+                return receive
+            for name,module in (('norm1',block.norm1),('qkv',block.attn.qkv),('q_norm',block.attn.q_norm),('k_norm',block.attn.k_norm),
+                                ('projection',block.attn.proj),('norm2',block.norm2),('gate',block.mlp.gate_proj),('up',block.mlp.up_proj),('down',block.mlp.down_proj)):
+                handles.append(module.register_forward_hook(hook(name)))
+            def prehook(module,args): captured['context'] = args[0].detach().clone()
+            handles.append(block.attn.proj.register_forward_pre_hook(prehook))
+            try:
+                with torch.inference_mode():
+                    inputs = torch.from_numpy(source)
+                    result = block(inputs,torch.tensor([0,tokens],dtype=torch.int32),position_embeddings=(cosine,sine))
+                    query,key = reference.apply_rotary_pos_emb_vision(captured['q_norm'],captured['k_norm'],cosine,sine)
+                    scores = query.transpose(0,1)@key.transpose(0,1).transpose(-1,-2)*0.125
+                    probabilities = scores.softmax(-1)
+                    context = (probabilities@captured['qkv'].reshape(tokens,3,16,64)[:,2].transpose(0,1)).transpose(0,1).reshape(tokens,1024)
+                    torch.testing.assert_close(context,captured['context'],atol=1e-6,rtol=1e-5)
+                    captured.update(q_rope=query,k_rope=key,scores=scores,probabilities=probabilities,residual=inputs+captured['projection'],
+                                    silu=block.mlp.act_fn(captured['gate']),block_output=result)
+                    captured['gated'] = captured['silu']*captured['up']
+                local = result.numpy().astype(np.float64); global_output = global_stages[index+1].astype(np.float64)
+                inherited = local-global_output; introduced = actual['block_output'].astype(np.float64)-local
+                total = actual['block_output'].astype(np.float64)-global_output
+                closure = float(np.abs(total-inherited-introduced).max())
+                if closure > 1e-10: raise ValueError('Error decomposition does not close')
+                primitives = {}
+                def rms(value,gamma):
+                    value = value.astype(np.float64)
+                    return value/np.sqrt(np.mean(value*value,axis=-1,keepdims=True)+1e-5)*gamma.numpy().astype(np.float64)
+                for name,value,gamma in (('norm1',source,block.norm1.weight.detach()),('q_norm',actual['qkv'].reshape(tokens,3,16,64)[:,0],block.attn.q_norm.weight.detach()),
+                                        ('k_norm',actual['qkv'].reshape(tokens,3,16,64)[:,1],block.attn.k_norm.weight.detach()),('norm2',actual['residual'],block.norm2.weight.detach())):
+                    primitives[name] = rounded(actual[name],rms(value,gamma))
+                for name,operand in (('q_rope','q_norm'),('k_rope','k_norm')):
+                    value = actual[operand].astype(np.float64); rotated = np.concatenate((-value[:,:,32:],value[:,:,:32]),axis=-1)
+                    expected = value*cosine.numpy()[:,None,:]+rotated*sine.numpy()[:,None,:]
+                    primitives[name] = rounded(actual[name],expected)
+                score_values = actual['scores'].astype(np.float64); exponent = np.exp(score_values-score_values.max(-1,keepdims=True))
+                primitives['softmax'] = rounded(actual['probabilities'],exponent/exponent.sum(-1,keepdims=True))
+                gate = actual['gate'].astype(np.float64)
+                primitives['silu'] = rounded(actual['silu'],gate/(1+np.exp(-gate)))
+                primitives['gated'] = rounded(actual['gated'],actual['silu'].astype(np.float64)*actual['up'])
+                primitives['first_residual'] = rounded(actual['residual'],source.astype(np.float64)+actual['projection'])
+                primitives['last_residual'] = rounded(actual['block_output'],actual['residual'].astype(np.float64)+actual['down'])
+                matched_input = {name:metric(actual[name],captured[name].numpy()) for name in names}
+                amplification = None
+                if index in (13,15,23):
+                    local_residual = captured['residual'].numpy().astype(np.float64)
+                    local_down = captured['down'].numpy().astype(np.float64)
+                    with torch.inference_mode():
+                        global_input = torch.from_numpy(global_stages[index].copy())
+                        ideal_output = block(global_input,torch.tensor([0,tokens],dtype=torch.int32),position_embeddings=(cosine,sine))
+                    torch.testing.assert_close(ideal_output,torch.from_numpy(global_stages[index+1].copy()),atol=1e-5,rtol=1e-5)
+                    direct = source.astype(np.float64)-global_stages[index]
+                    attention_change = local_residual-(global_input.numpy()+captured['projection'].numpy()).astype(np.float64)-direct
+                    mlp_change = local_down-captured['down'].numpy().astype(np.float64)
+                    residual_roundoff = inherited-direct-attention_change-mlp_change
+                    amplification = dict(input_rmse=float(np.sqrt(np.mean(direct**2))),attention_change_rmse=float(np.sqrt(np.mean(attention_change**2))),
+                                         mlp_change_rmse=float(np.sqrt(np.mean(mlp_change**2))),fp32_addition_remainder_rmse=float(np.sqrt(np.mean(residual_roundoff**2))),
+                                         output_inherited_rmse=float(np.sqrt(np.mean(inherited**2))))
+                blocks.append(dict(index=index,global_output=metric(actual['block_output'],global_output),matched_input=matched_input,
+                                   inherited_rmse=float(np.sqrt(np.mean(inherited**2))),local_rmse=float(np.sqrt(np.mean(introduced**2))),
+                                   cross_term=float(2*np.mean(inherited*introduced)),closure_max_abs=closure,primitives=primitives,amplification=amplification))
+                print(case,'block',index,'global/local output failures',blocks[-1]['global_output']['failures'],blocks[-1]['matched_input']['block_output']['failures'],
+                      'inherited/local RMSE',blocks[-1]['inherited_rmse'],blocks[-1]['local_rmse'],flush=True)
+            finally:
+                for handle in handles: handle.remove()
+        text_rows = run.get('prefill_context',64)
+        text_taps = observed('15.text-taps.f16',(text_rows*9728+16*text_rows*text_rows,))
+        text_input = text_taps[4*text_rows*1536:5*text_rows*1536].reshape(text_rows,1536).astype(np.float64)
+        text_norm = observed('16.text-norm.f16',(text_rows,1536))
+        text_weights = ROOT/'experimental/snapdragon/models/glm-ocr-text-v1/text-shared.got'
+        if sha(text_weights.read_bytes()).upper() != run['text_weight_hashes']['text-shared.got']: raise ValueError('Text norm weights drift')
+        gamma = np.fromfile(text_weights,dtype='<f2',count=1536,offset=160).astype(np.float64)
+        expected = text_input/np.sqrt(np.mean(text_input**2,axis=-1,keepdims=True)+1e-5)*gamma
+        reports[case] = dict(run=run,blocks=blocks,text_final_norm_observed_input=rounded(text_norm,expected),
+                    historical_candidate_vs_deployed_rope_reference=metric(historical_stages[-1],global_stages[-1]))
+        print(case,'text final norm observed-input',json.dumps(reports[case]['text_final_norm_observed_input']),flush=True)
+        for index in (13,15,23): print(case,'amplification',index,json.dumps(blocks[index]['amplification']),flush=True)
+    report = dict(schema_version=1,versions=versions,modeling_sha256=module_hash,analyzer_sha256=sha(Path(__file__).read_bytes()),
+                  scope='Actual pinned Vision blocks with deployed FP16 weights expanded to FP32, original FP32 rotary buffers, and observed native inputs; FP64 primitive checks on observed operands. Historical half().float() candidate also rounded RoPE buffers and is not the deployed-constants oracle.',
+                  tolerance=dict(absolute=0.003,relative=0.005),cases=reports,numerical_acceptance=False)
+    (build/'vision-cause-analysis.json').write_text(json.dumps(report,indent=2)+'\n',encoding='utf-8')
+    print('PASS matched-input decomposition; no tolerance relaxation or native arithmetic change',flush=True)
+
+
 def test_png(build):
     import subprocess
     import zlib
     import numpy as np
-    image_reference()
+    torch, _, _, _ = image_reference()
+    from torchvision.transforms.v2.functional import resize
+    from torchvision.transforms import InterpolationMode
     from PIL import Image
     binary = build/"ocr-image.exe"
     def chunk(kind,payload):
@@ -597,13 +873,16 @@ def test_png(build):
     checks = 0
     with tempfile.TemporaryDirectory(prefix="ocr-png-",dir=ROOT/"tests/tmp") as scratch:
         scratch = Path(scratch)
-        def run(data,valid,expected=None):
+        def run(data,valid,expected=None,fitted=False):
             nonlocal checks
             source = scratch/f"input-{checks}.png"; destination = scratch/f"output-{checks}.f32"
             source.write_bytes(data)
-            result = subprocess.run([str(binary),"--prepare-image",str(source),str(destination)],capture_output=True)
+            result = subprocess.run([str(binary),"--prepare-image-fit" if fitted else "--prepare-image",str(source),str(destination)],capture_output=True)
             if (result.returncode == 0) != valid: raise ValueError("PNG acceptance failure: "+str(checks)+repr(result.stderr))
-            if valid and destination.read_bytes() != expected: raise ValueError("PNG/BMP patch mismatch")
+            if valid and destination.read_bytes() != expected:
+                actual = np.frombuffer(destination.read_bytes(),dtype='<f4'); reference = np.frombuffer(expected,dtype='<f4')
+                different = np.flatnonzero(actual != reference)
+                raise ValueError(('PNG/BMP patch mismatch',checks,result.stdout.decode(),len(different),int(different[0]),float(actual[different[0]]),float(reference[different[0]])))
             if not valid and destination.exists(): raise ValueError("Rejected PNG created output")
             checks += 1
         for color,channels in ((0,1),(2,3),(4,2),(6,4)):
@@ -659,7 +938,91 @@ def test_png(build):
             run(signature+header+chunk(b"IDAT",bad_adler)+chunk(b"IEND",b""),False)
             for level in (0,1,9):
                 run(signature+header+chunk(b"IDAT",zlib.compress(encoded,level))+chunk(b"IEND",b""),True,expected)
-    print("PASS PNG native file-to-patch cases:",checks,"all filters, RGB/gray/alpha, split IDAT, CRC/truncation/deflate/unsupported-format rejection",flush=True)
+        def reference_bytes(rgb):
+            bitmap = scratch/'reference.bmp'; patches = scratch/'reference.f32'
+            patches.unlink(missing_ok=True)
+            Image.fromarray(rgb).save(bitmap)
+            subprocess.run([str(binary),'--prepare-image',str(bitmap),str(patches)],check=True,capture_output=True)
+            return patches.read_bytes()
+        def encode_samples(values,depth,color,interlace,mode,extras=b''):
+            rows,columns,channels = values.shape
+            passes = ((0,0,8,8),(4,0,8,8),(0,4,4,8),(2,0,4,4),(0,2,2,4),(1,0,2,2),(0,1,1,2)) if interlace else ((0,0,1,1),)
+            encoded = bytearray(); pixel_bytes = max(1,(channels*depth+7)//8)
+            for start_x,start_y,step_x,step_y in passes:
+                previous = None
+                for row in values[start_y::step_y,start_x::step_x]:
+                    if not row.size: continue
+                    flat = row.reshape(-1)
+                    if depth == 16: raw = flat.astype('>u2').tobytes()
+                    elif depth == 8: raw = flat.astype('u1').tobytes()
+                    else:
+                        packed = bytearray((len(flat)*depth+7)//8)
+                        for index,value in enumerate(flat): packed[index*depth//8] |= int(value) << (8-depth-index*depth%8)
+                        raw = bytes(packed)
+                    encoded.append(mode)
+                    for index,value in enumerate(raw):
+                        left = raw[index-pixel_bytes] if index >= pixel_bytes else 0
+                        above = previous[index] if previous else 0
+                        diagonal = previous[index-pixel_bytes] if previous and index >= pixel_bytes else 0
+                        paeth = min((left,above,diagonal),key=lambda candidate:abs(left+above-diagonal-candidate))
+                        encoded.append((value-(0,left,above,(left+above)//2,paeth)[mode])&255)
+                    previous = raw
+            header = chunk(b'IHDR',struct.pack('>IIBBBBB',columns,rows,depth,color,0,0,interlace))
+            compressed = zlib.compress(encoded)
+            return signature+header+extras+chunk(b'IDAT',compressed)+chunk(b'IEND',b'')
+        for color,channels,depths in ((0,1,(1,2,4,8,16)),(2,3,(8,16)),(3,1,(1,2,4,8)),(4,2,(8,16)),(6,4,(8,16))):
+            for depth in depths:
+                maximum = (1<<depth)-1
+                for rows,columns in ((31,37),(1,1),(1,9),(9,1),(3,5)):
+                    values = ((np.arange(rows*columns*channels,dtype=np.uint64)*1297+31)%(maximum+1)).reshape(rows,columns,channels)
+                    extras = b''
+                    if color == 3:
+                        palette = ((np.arange((maximum+1)*3,dtype=np.uint64)*59+17)%256).astype('u1').reshape(-1,3)
+                        alpha_table = ((np.arange(maximum+1,dtype=np.uint64)*37)%256).astype('u1')
+                        extras = chunk(b'PLTE',palette.tobytes())+chunk(b'tRNS',alpha_table.tobytes())
+                        rgb = palette[values[:,:,0]].astype(np.uint64); alpha = alpha_table[values[:,:,0],None].astype(np.uint64); scale = 255
+                    else:
+                        scale = maximum
+                        rgb = np.repeat(values[:,:,:1],3,axis=2) if color in (0,4) else values[:,:,:3]
+                        alpha = values[:,:,-1:] if color in (4,6) else np.full((rows,columns,1),maximum,dtype=np.uint64)
+                        if color in (0,2):
+                            key = values[0,0]
+                            extras += chunk(b'tRNS',key.astype('>u2').tobytes())
+                            alpha = np.where(np.all(values == key,axis=-1,keepdims=True),0,maximum).astype(np.uint64)
+                    rgb = ((rgb*alpha+scale*(scale-alpha))*255+scale*scale//2)//(scale*scale)
+                    expected = reference_bytes(rgb.astype('u1'))
+                    for interlace in (0,1):
+                        for mode in (range(5) if rows == 31 else (4,)):
+                            data = encode_samples(values,depth,color,interlace,mode,extras)
+                            run(data,True,expected)
+                            if depth <= 8:
+                                import io
+                                with Image.open(io.BytesIO(data)) as decoded:
+                                    rgba = np.asarray(decoded.convert('RGBA')).astype(np.uint64)
+                                    independent = (rgba[:,:,:3]*rgba[:,:,3:]+255*(255-rgba[:,:,3:])+127)//255
+                                    if not np.array_equal(independent,rgb): raise ValueError('PNG fixture differs from Pillow')
+        samples = np.zeros((3,5,1),dtype=np.uint64)
+        run(encode_samples(samples,2,3,1,4),False)
+        run(encode_samples(samples+3,2,3,1,4,chunk(b'PLTE',b'\0\0\0')),False)
+        run(encode_samples(samples,2,3,1,4,chunk(b'tRNS',b'\0')+chunk(b'PLTE',b'\0\0\0')),False)
+        rgb_samples = np.full((112,224,3),67,dtype=np.uint64)
+        metadata = chunk(b'iCCP',b'profile\0\0'+zlib.compress(b'ignored color profile'))+chunk(b'pHYs',struct.pack('>IIB',3780,3780,1))+chunk(b'tEXt',b'Software\0PNG regression')
+        run(encode_samples(rgb_samples,8,2,1,4,metadata),True,reference_bytes(rgb_samples.astype('u1')))
+        for height,width in ((600,400),(1080,1920),(1024,1024),(301,999)):
+            pixels = ((np.arange(height*width*3,dtype=np.uint32)*7)%256).astype('u1').reshape(height,width,3)
+            image = Image.fromarray(pixels)
+            canvas_height,canvas_width = 224,448 if width*2 > height*3 else 224
+            if width*canvas_height > height*canvas_width:
+                inner_width,inner_height = canvas_width,(height*canvas_width+width//2)//width
+            else: inner_height,inner_width = canvas_height,(width*canvas_height+height//2)//height
+            canvas = Image.new('RGB',(canvas_width,canvas_height),'white')
+            tensor = torch.from_numpy(pixels).permute(2,0,1)
+            resized = resize(tensor,[inner_height,inner_width],interpolation=InterpolationMode.BICUBIC,antialias=True).permute(1,2,0).numpy()
+            canvas.paste(Image.fromarray(resized),((canvas_width-inner_width)//2,(canvas_height-inner_height)//2))
+            import io
+            encoded = io.BytesIO(); image.save(encoded,format='PNG')
+            run(encoded.getvalue(),True,reference_bytes(np.asarray(canvas)),fitted=True)
+    print("PASS PNG native file-to-patch cases:",checks,"all static color/depth modes, Adam7/filter combinations, Pillow parity, transparency, metadata, fitted portrait/landscape and corruption rejection",flush=True)
 
 
 def reference_generation(model, vision_output, build):
@@ -2805,6 +3168,10 @@ def main():
     parser.add_argument("--analyze-generation", action="store_true")
     parser.add_argument("--reference-generation", action="store_true")
     parser.add_argument("--test-png", action="store_true")
+    parser.add_argument("--diagnose-vision", action="store_true")
+    parser.add_argument("--benchmark-ocr", action="store_true")
+    parser.add_argument("--benchmark-supplement", action="store_true")
+    parser.add_argument("--baseline-build", type=Path, default=ROOT/'experimental/snapdragon/build/ocr-large-png')
     parser.add_argument("--image-build", type=Path, default=ROOT/"experimental/snapdragon/build/ocr-image-files")
     parser.add_argument("--generation-build", type=Path, default=ROOT / "experimental/snapdragon/build/ocr-generate")
     parser.add_argument("--generation-output", type=Path, default=ROOT / "experimental/snapdragon/models/glm-ocr-generation-v2")
@@ -2856,6 +3223,10 @@ def main():
         analyze_chain_scores(args.vision_block_output,args.chain_build)
     elif args.analyze_text_prefill:
         analyze_text_prefill(args.model_dir,args.text_output,args.text_build)
+    elif args.benchmark_ocr:
+        benchmark_ocr(args.vision_output,args.text_output,args.generation_output,args.generation_build,args.baseline_build,args.benchmark_supplement)
+    elif args.diagnose_vision:
+        diagnose_vision(args.model_dir,args.vision_output,args.generation_build)
     elif args.test_png:
         test_png(args.image_build)
     elif args.reference_generation:

@@ -213,8 +213,40 @@ static int position_test(const unsigned short *path) {
     return 1;
 }
 
+static int fit_test(void) {
+    const unsigned int cases[][6] = {
+        {600,400,224,224,224,149}, {1080,1920,224,448,224,398},
+        {1024,1024,224,224,224,224}, {10000,50,224,224,224,1},
+        {50,10000,224,448,2,448}, {301,999,224,448,135,448}
+    };
+    for (unsigned int index = 0; index < sizeof(cases)/sizeof(cases[0]); ++index) {
+        const unsigned int *item = cases[index]; OcrImageShape shape;
+        unsigned int height = item[0], width = item[1], bytes = height * width * 3;
+        if (!ocr_image_fit_shape(height,width,1,&shape) || shape.height != item[2] || shape.width != item[3]) return 0;
+        for (unsigned int offset = 0; offset < bytes; ++offset) fixtures[offset] = (unsigned char)(37 + offset % 3);
+        unsigned int output_size = shape.height * shape.width * 3;
+        table[output_size] = 0xa5;
+        if (!ocr_image_resize_fit(fixtures,bytes,height,width,width*3,1,image_scratch,sizeof(image_scratch),table,output_size)) return 0;
+        unsigned int top = (shape.height-item[4])/2, left = (shape.width-item[5])/2;
+        for (unsigned int row = 0; row < shape.height; ++row)
+            for (unsigned int column = 0; column < shape.width; ++column)
+                for (unsigned int channel = 0; channel < 3; ++channel) {
+                    unsigned char expected = row >= top && row < top+item[4] && column >= left && column < left+item[5] ? (unsigned char)(37+channel) : 255;
+                    if (table[(row*shape.width+column)*3+channel] != expected) return 0;
+                }
+        if (table[output_size] != 0xa5 ||
+            ocr_image_resize_fit(fixtures,bytes-1,height,width,width*3,1,image_scratch,sizeof(image_scratch),table,output_size) ||
+            ocr_image_resize_fit(fixtures,bytes,height,width,width*3,1,image_scratch,sizeof(image_scratch),table,output_size-1)) return 0;
+    }
+    OcrImageShape shape;
+    if (!ocr_image_fit_shape(600,400,0,&shape) || shape.height != 112 || shape.width != 112 ||
+        ocr_image_fit_shape(0,400,1,&shape) || ocr_image_fit_shape(600,400,1,0)) return 0;
+    report("PASS fitted image geometry/padding/resize cases: ", sizeof(cases)/sizeof(cases[0]));
+    return 1;
+}
+
 int ocr_image_test(const unsigned short *fixture_path, const unsigned short *position_path) {
-    if (!bmp_test() || !text_input_test()) return 0;
+    if (!bmp_test() || !text_input_test() || !fit_test()) return 0;
     unsigned int fixture_size = read_all(fixture_path, fixtures, sizeof(fixtures));
     if (!ocr_artifact(fixtures, fixture_size, 3) || fixture_size < 136) return 0;
     unsigned int geometry_count = number(fixtures + 128), image_count = number(fixtures + 132), cursor = 136;

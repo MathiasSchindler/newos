@@ -2232,17 +2232,20 @@ new binaries or weights.
 
 ## PNG and larger image grids
 
-Native file input now recognizes **BMP24 and PNG8 by signature**, including for
+Native file input now recognizes **BMP24 and static PNG by signature**, including for
 `--prepare-image`, `--vision`, `--prefill-*` and `--generate-*`. PNG decoding uses
 the existing in-tree zlib inflater through a tool-private Windows allocation
 bridge. It adds no CRT, image DLL, Python or neural CPU fallback to production.
 
-PNG support is deliberately bounded: non-interlaced 8-bit grayscale, RGB,
-grayscale-alpha and RGBA, all five scanline filters and consecutive split IDAT
-chunks. Alpha is composited on white using integer rounding. Palette/low-bit/
-16-bit/Adam7 images, tRNS, embedded ICC profiles, EXIF and APNG are rejected;
-there is no color-management or EXIF-orientation implementation. Ancillary chunks
-otherwise have no pixel effect. CRCs, zlib/Adler integrity, exact decoded length,
+PNG supports grayscale at 1/2/4/8/16 bits, palette at 1/2/4/8 bits, RGB,
+grayscale-alpha and RGBA at 8/16 bits, all five scanline filters, Adam7 and
+consecutive split IDAT chunks. Palette alpha and gray/RGB tRNS keys are supported.
+Alpha is composited on white in integer sample space; 16-bit samples are rounded
+to RGB8 using their full range, not truncated. Embedded ICC profile chunks are
+accepted but ignored after basic name/compression-method checks. There is no
+color management or gamma conversion. EXIF-bearing PNG and APNG remain rejected
+rather than silently discarding orientation/animation semantics. Other ancillary
+chunks have no pixel effect. CRCs, zlib/Adler integrity, exact decoded length,
 stream consumption, chunk names/order and IEND/EOF are checked. Duplicate PLTE,
 unknown critical chunks and decompression excesses are rejected.
 
@@ -2262,9 +2265,20 @@ Build with `-LargeImages` plus `-Vision`, `-Prefill` or `-Generate` to enable:
 | 16 x 16 | 224 x 224 | 64 |
 | 16 x 32 | 448 x 224 | 128 |
 
-These are exact accepted grids after the existing model-compatible resize;
-there is no arbitrary-page tiling or automatic fit to the nearest supported
-bucket. Other aspect ratios/grids still fail before loading QNN. The large build
+The 2026-09-17 import update keeps the existing model-compatible resize whenever
+it already selects a supported grid. Otherwise GUI and engine share a fitted
+shape policy: square canvas, or a 2:1 canvas when source width/height exceeds
+1.5; the entire source is antialiased-bicubic resized proportionally and centered
+on white. Canvas height is 224 in the large build, 112 in the small build.
+There is no cropping, rotation or tiling. The GUI previews the original image;
+the source's resolution is not the inference resolution. Small text in page-sized
+inputs may be lost by downsampling; accepting an image does not establish useful
+full-page OCR quality. Resource and extreme-aspect-ratio limits still apply.
+
+`--prepare-image` preserves the original model preprocessing contract.
+`--prepare-image-fit INPUT OUTPUT.f32` exports the large-build fitted patches
+and their geometry without QNN; `--vision`, `--prefill-*` and `--generate-*` use
+the fitted policy automatically. The large build
 uses 256-row prefill for all four grids. Total prompt plus generated output is
 still 256 tokens: the large default Text Recognition prompts contain 76/140
 tokens, leaving at most 180/116 output tokens, respectively. Longer documents
@@ -2289,10 +2303,26 @@ captures can consume gigabytes; this is still a diagnostic runtime.
 
 ### Validation and results
 
-`GLM-OCR image file build` followed by `GLM-OCR PNG import tests` passes 208
-native PNG cases: exact BMP/PNG patch equality across all filters and supported
-color types, split IDAT and compression levels, plus CRC/Adler/truncation,
+`GLM-OCR image file build` followed by `GLM-OCR PNG import tests` passes 486
+native PNG/fit cases: exact BMP/PNG patch equality across all legal color/depth
+combinations and filters, Adam7 including tiny/empty-pass geometries, palette
+and tRNS alpha, split IDAT and compression levels, plus CRC/Adler/truncation,
 chunk-order/name, dimension, unsupported-format and decompression-length errors.
+The <=8-bit generated PNG pixels are independently cross-checked with Pillow;
+16-bit compositing is checked against integer reference pixels. Four fitted
+portrait/landscape/square images are byte-exact against Torchvision's uint8
+antialiased bicubic resize plus white padding, the same resize backend as the
+model. Pillow's separate resize implementation rounds differently and is not
+used as the resize oracle. Six additional native fit cases check canvas geometry,
+padding, capacities and extreme legal aspect ratios. The GUI import tests cover
+a transparent 400x600 palette portrait and a 896x896 screenshot.
+The installed GUI/engine update completed two real screenshot-to-text requests
+with the exact expected four-line transcription, plus cancel, close-active and
+missing-engine tests. Desktop and compact screenshots were inspected. Reports,
+screenshots and previous executables are preserved under
+`data/ocr-png-import-717000672efc4aafaba60cd164f539c9/`; the new temporary raw
+tensor captures were removed after validation. Existing application runs were
+not deleted. Restart an older open OCR window to use the new importer.
 The existing image, resize, tokenizer and prompt fixtures still pass, including
 43305024 exact normalized patch values. Both small Vision-only and large
 generation builds pass the ARM64/Kernel32-only/no-CRT audit. Large-RoPE tests
@@ -2351,11 +2381,195 @@ Exit 0 means EOS, 3 means incomplete output at an explicit limit, and 1 means
 failure. Stdout is recognized UTF-8 text; diagnostics go to stderr. Original
 checkpoint files and earlier v1 packages/captures are preserved.
 
+## Native OCR GUI
+
+`src/tools/ocr/ocr_gui.c` is a native Win32 front end in the same visual style
+as the TranslateGemma experiment. It has a PNG/BMP file chooser, editable Unicode
+path, aspect-preserving image preview, Text/Formula/Table selector, Recognize,
+Cancel, Copy, read-only scrolling output and status. Controls scale with per-monitor
+DPI and remain bounded at the minimum 460x620 logical-pixel window size.
+
+The GUI reuses the native image decoders and fitted shape policy before launching
+inference; common dimensions no longer fail with "Unsupported grid". It is a small process-based front end, not a
+resident model GUI: each request starts its adjacent `ocr-generate.exe`, with
+large images and retained decode/head graphs inside that request. Repeating an
+image therefore still repeats Vision/prefill graph construction. The UI remains
+responsive and reads stable UTF-8 output through its timer. Native diagnostics
+and partial captures stay under `build/ocr-app/runs/<tick>-<pid>/`, including
+`execution.log` and `stdout.txt`. Paths are quoted for CreateProcess directly;
+no shell or Python participates in production execution.
+
+Cancel and closing during recognition terminate only the child process owned
+by that GUI instance. This is process cancellation, **not graceful QNN context
+teardown**; partial text/captures are explicitly incomplete. Normal completion
+uses the engine's checked teardown. The GUI exposes EOS completion, context-limit
+incompletion and engine errors as distinct statuses. Existing model/runtime
+integrity checks remain in the child engine.
+
+Build from the repository root:
+
+```powershell
+.\experimental\snapdragon\tools\build-ocr.ps1 -Generate -LargeImages -ReuseDecode -Test -BuildDir experimental/snapdragon/build/ocr-app
+.\experimental\snapdragon\tools\build-ocr.ps1 -Gui -BuildDir experimental/snapdragon/build/ocr-app
+```
+
+Use `GLM-OCR GUI integration` for native window tests and `GLM-OCR GUI layout
+check` for screenshots without inference. These extend the existing optional
+`test-translate-gui.py` helpers via `--ocr` and `--ocr-layout`; the default
+TranslateGemma test behavior remains unchanged. The GUI itself is ARM64/no-CRT,
+importing only Kernel32, User32, Gdi32 and the Windows Common Dialog API. The
+engine still imports Kernel32 only, with explicitly loaded QNN libraries.
+
+Verified: Unicode paths, real PNG preview, repeated complete Text Recognition,
+invalid-image rejection, missing engine, cancellation/recovery, closing during
+an active request, and desktop/compact layouts with all controls in bounds.
+The two GUI text requests matched the stored sample (excluding its terminal
+newline) and took 95.20/96.90 s, with first output at 81.28/82.83 s. These are
+integration observations, not controlled benchmarks. Formula/Table selectors
+route to the existing engine commands; their OCR quality is not established by
+the Text Recognition GUI fixtures. The Open file dialog and clipboard action
+use native Windows controls; their full interactive behavior is not exhaustively
+automated in the current tests.
+
+## Full Vision numerical cause analysis
+
+`GLM-OCR numerical cause analysis` runs `export-glm-ocr.py --diagnose-vision`
+against the preserved `build/ocr-large-png/` captures and Vision v2 artifacts.
+The report is `vision-cause-analysis.json`. It checks the pinned original model,
+reference source, native executable, captured tensors and deployed block weights.
+All 24 blocks on both larger images are compared with the actual reference block
+fed the **observed native input**, separating inherited error from new local
+execution error. The signed decomposition closes within 1e-10. Its components
+are correlated differences, not independent percentages of error.
+
+The additional ideal-input consistency check found a reference construction
+problem: historical full-Vision `candidate.half().float()` also rounded nonpersistent
+RoPE frequency buffers. The deployed rotary tables use original FP32 frequencies.
+The new diagnostic rounds parameters only, leaves buffers unchanged, and checks
+that blocks 13, 15 and 23 reproduce the corrected full-model stages on ideal
+inputs. Original FP32 references and historical artifacts were not overwritten.
+Historical candidate figures must therefore not be described as comparisons
+against precisely the deployed constants. At block 23, this reference mismatch
+alone has RMSE 0.12309 (pattern) / 0.39482 (receipt). It does **not** explain away
+the failures against the unchanged original model.
+
+With the corrected candidate, the strongest selected amplification occurs in
+the MLP branch (block numbers are zero-based):
+
+| Case / block | Incoming error RMS | Attention-branch change RMS | MLP-branch change RMS | Inherited output RMS | New local output RMS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Pattern / 13 | 0.007856 | 0.003535 | 0.081707 | 0.084749 | 0.001337 |
+| Pattern / 15 | 0.120267 | 0.009764 | 0.365011 | 0.433996 | 0.008223 |
+| Pattern / 23 | 0.488805 | 0.101309 | 3.867442 | 3.888558 | 0.059252 |
+| Receipt / 13 | 0.006138 | 0.003301 | 0.046725 | 0.048751 | 0.001356 |
+| Receipt / 15 | 0.056728 | 0.003721 | 0.164719 | 0.182077 | 0.006587 |
+| Receipt / 23 | 0.247014 | 0.055128 | 2.440612 | 2.449528 | 0.053487 |
+
+These are finite-input differences between reference executions, not derivatives
+or predictions for an untested precision fix. FP32 addition remainders are below
+4.5e-6 RMS in these decompositions. Block 23 still has 142,250 / 251,941 global
+output failures for pattern / receipt; local matched-input failures are 16,554 /
+32,424. A local pass is not a full-chain pass.
+
+FP64 checks on captured operands further distinguish implementation from input
+error. Both residual additions in blocks 0, 13, 15 and 23 match nearest-even FP16
+rounding at every element in both images. Softmax and SiLU are not generally
+single-round FP64 results, although these selected local primitive checks stay
+within the existing tolerance. Norm and rotary checks are also reported; there
+are isolated rotary violations. This is evidence of accumulated representation
+and approximation error amplified by the model, not a faulty copy or a proven
+last-addition bug. It does not identify every undocumented HTP kernel behavior.
+
+The text model's final RMSNorm has zero local tolerance violations on the actual
+layer-15 output in both images (393,216 values each, including padded rows), with
+RMSE 0.00036850 / 0.00036150. Its global mismatch therefore cannot be assigned to
+a bad final norm alone. The investigation does not yet decompose every text
+layer, connector or generation logit error.
+
+No native arithmetic, original weights or tolerance was changed for this
+investigation. Numerical acceptance remains **false** at
+`abs(error) <= 0.003 + 0.005 * abs(reference)`, with finiteness required. Next
+precision work should test better intermediate/residual precision before the
+sensitive MLP branches, then rerun full-chain gates; another isolated last-add
+or activation adjustment is not justified as a complete fix.
+
+## OCR profiling and benchmark
+
+`GLM-OCR profiling build` creates a separate large-image, retained-decode build
+under `build/ocr-benchmark/`. `GLM-OCR serial benchmark` runs fresh native processes
+serially, using the same two images and model/runtime identities as the preserved
+large-PNG baseline. `GLM-OCR benchmark supplement` appends one run of each image
+and preserves the initial report as `benchmark-initial.json`. Results and all
+individual run/capture hashes are in `benchmark-results.json`.
+
+The six measured runs all completed at EOS and matched **every baseline
+nontiming capture bit-for-bit**, including intermediate tensors, logits, cache
+hashes, token IDs and text. The added instrumentation did not change captured
+arithmetic. Three receipt runs met the original 300-second observation budget:
+
+| Measurement | Pattern (one in-budget run) | Receipt (three in-budget runs) |
+| --- | ---: | ---: |
+| Total elapsed seconds | 92.56 | median 122.78; range 120.36-128.62 |
+| First output seconds | 78.51 | median 104.52; range 102.43-110.25 |
+| Generated tokens, including EOS | 29 | 53 |
+| Process peak working set | 5083.78 MiB | median 5135.29 MiB |
+| Tensor capture time | 1.31 s | median 2.62 s |
+
+Two initial runs had extreme wall times: pattern 14,387.36 s and receipt
+8,720.94 s, with most of each gap recorded inside prefill finalization. Their
+process CPU times were only 138.30 / 136.02 s. The reason for the wall-time gaps
+is **not established**; suspension or an external stall cannot be distinguished
+from these counters. Windows process waits did not enforce elapsed-wall timeout
+across those gaps. They remain in the report, explicitly excluded from the
+in-budget summary rather than silently deleted. This small development benchmark
+is not a production latency guarantee or a quality-controlled CPU/NPU comparison.
+
+For the receipt run at the elapsed-time median (122.78 s):
+
+| Phase | Calls | Graph finalization seconds | Graph execution seconds |
+| --- | ---: | ---: | ---: |
+| Vision blocks | 24 | 49.29 | 3.23 |
+| Text prefill | 16 | 36.20 | 0.95 |
+| Incremental decode | 832 | 6.64 | 4.51 |
+| LM head | 424 | 1.02 | 0.66 |
+| Decode final norm | 52 | 0.81 | 0.04 |
+
+Vision plus prefill finalization alone costs 85.49 s, about 70% of elapsed time.
+All graph executions together take about 9.39 s. Capture I/O writes about
+1.26 GiB and takes 2.66 s in this run; disabling captures alone cannot remove
+the startup bottleneck. Execution includes host-side QNN overhead, not just DSP
+kernel time. Detailed QNN profiling and full APP_READ tensors are enabled;
+filesystem caches were not flushed. Peak working set is for the child process,
+not total system memory or separate DSP allocations. GUI polling/painting is
+excluded from this CLI benchmark.
+
+New capture files `0.profile-header.u64` and `0.profile-graphs.u64` use version 1.
+The header contains version, QPC frequency, row count, capture ticks and bytes.
+Each seven-u64 row contains phase, layer/chunk, build ticks, finalize ticks,
+execute ticks, accelerator cycles and accelerator microseconds. Phases 1-8 are
+patch, Vision block, connector, prefill, prefill norm, decode, decode norm, head.
+Cached executions have zero finalize ticks. Build timing starts at first tensor
+registration and excludes earlier graph/context preparation. The existing
+`0.timing.u64` counters overlap phases and must not be added to these totals.
+This is graph-level profiling with accelerator counters, not a per-operator
+kernel report. Row capacity and expected phase counts are checked.
+
+Prioritized follow-up, **not implemented speedups**:
+1. Retain or serialize/reload Vision and prefill contexts across requests; measure
+   reload time and memory with explicit model/shape/runtime identity checks.
+   A resident GUI engine is useful only if it actually retains these graphs.
+2. Specialize prefill buckets to real prompt lengths (76 / 140 rather than 256
+   padded rows), with new exact mask/KV and full numerical checks.
+3. Add a lean mode without diagnostic tensors, then measure changed fusion,
+   memory/copy costs and output equivalence. Retain the small decode norm graph.
+4. After startup costs fall, examine decode execution and device-resident KV
+   updates with a genuine operator-level profile.
+
 ## Concrete image-to-text gaps
 
-1. **Additional input formats.** BMP24 and bounded PNG8 RGB/grayscale/alpha now
-   work. JPEG, palette/interlaced/16-bit PNG, ICC color handling and EXIF
-   orientation remain unsupported.
+1. **Additional input formats.** BMP24 and bounded static PNG of all standard
+   color/depth modes now work, including palette transparency and Adam7. JPEG,
+   ICC color management, EXIF orientation and animation remain unsupported.
 2. **Larger image-to-vision buckets.** The native PNG/BMP-to-HTP connection now
    supports four grids through 16x32 patches in the large build. Full-page grids,
    additional aspect ratios or tiling and their memory/numerical checks remain.
@@ -2377,16 +2591,19 @@ checkpoint files and earlier v1 packages/captures are preserved.
    incremental KV updates are implemented for the bounded context. Cover larger
    contexts, richer prompts and multilingual generation beyond tokenizer fixtures.
 8. **Serving lifecycle.** A single-image end-to-end command now exists with failure
-   propagation and cleanup. Graceful cancellation, persistent multi-request caching,
-   repeated-request isolation and a lean nondiagnostic mode remain.
+   propagation and cleanup. The native GUI now provides tested process-based
+   repeat/cancel behavior. Graceful cancellation, persistent multi-request caching,
+   resident-request isolation and a lean nondiagnostic mode remain.
 9. **Acceptance and performance.** An independent end-to-end comparison now exists
    for the small and larger development images. Still needed: a held-out
    image/text corpus, digits/punctuation, omissions, repetition, reading order,
-   multilingual text and termination; then matched-quality cold/resident timing
-   and measured memory. No current OCR quality or latency acceptance exists.
+   multilingual text and termination; then matched-quality cold/resident timing.
+   Initial graph timings and process memory are measured above, but no current
+   OCR quality or latency acceptance exists.
 
-PDF rasterization, multi-page orchestration, GUI integration and optional layout
+PDF rasterization, multi-page orchestration and optional layout
 analysis are extensions, not prerequisites for a single-image-to-text baseline.
+The native testing GUI is implemented above.
 MTP and low-bit quantization are also not needed for that baseline.
 
 ## Next stages

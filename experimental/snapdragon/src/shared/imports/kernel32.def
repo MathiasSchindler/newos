@@ -1,5 +1,11 @@
 LIBRARY KERNEL32.dll
 EXPORTS
+    CreateDirectoryW
+    CreateProcessW
+    GetCurrentProcessId
+    GetTickCount64
+    GetExitCodeProcess
+    TerminateProcess
     CloseHandle
     CreateThread
     CreateSemaphoreA

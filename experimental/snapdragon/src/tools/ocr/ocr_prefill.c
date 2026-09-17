@@ -119,6 +119,7 @@ static u32 prefill_rope(OcrAttentionGraph *builder, u32 input, u32 heads, u32 co
 }
 
 static int prefill_layer(const QnnInterfaceV2 *api, QnnContextHandle context, u32 index, u32 past) {
+    profile_phase = past ? 6 : 4; profile_layer = index;
     if (index >= 16 || past >= OCR_DECODE_CONTEXT || (past && text_cache_count[index] != past)) return 0;
     int reuse = past && text_reuse_enabled;
     u32 rows = past ? 1 : OCR_TEXT_CONTEXT, length = reuse ? OCR_DECODE_CONTEXT : past ? past+1 : OCR_TEXT_CONTEXT;
@@ -310,6 +311,7 @@ static int prefill_forward(const QnnInterfaceV2 *api, QnnBackendHandle backend, 
         if ((index < 16 && !prefill_asset(directory,index,0)) || !checked("text_context_create",api->context_create(backend,device,0,context))) return 0;
         if (index < 16) { if (!prefill_layer(api,*context,index,0)) return 0; }
         else {
+            profile_phase = 5; profile_layer = 16;
             OcrAttentionGraph builder = {0}; builder.api = api; builder.good = 1;
             if (!checked("text_norm_graph",api->graph_create(*context,"text_final_norm",0,&builder.graph))) return 0;
             u32 shape[2] = {OCR_TEXT_CONTEXT,1536}, axis = 1;

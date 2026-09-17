@@ -5,10 +5,60 @@ This directory documents freestanding Windows ARM64 experiments for the Snapdrag
 For Medium execution events, CPU accounting, latency distributions, and timeline
 capture, see [diagnostics.md](diagnostics.md).
 
+## Current build after cleanup (2026-09-17)
+
+Obsolete test builds, diagnostic tensor captures, alternate Gemma graph builds,
+and intermediate objects/import libraries have been removed. Build size fell
+from 29.674 GiB to 9.419 GiB; about 57 MiB of reports were archived under
+`data/build-cleanup-20260917/reports/`. The inventory, removal list, protected
+SHA-256 identities and result are in that archive's parent directory.
+
+Retained unchanged: `build/translate.exe`, `build/translate-gui.exe`, all current
+512-row bindings/contexts including bundle, decode and selector variants under
+`build/gemma-block/`; `build/npu_probe.exe` and its fused Medium Whisper context;
+`build/ocr-app/ocr-generate.exe` and `ocr-gui.exe`; QNN DLL/SO/CAT files, licenses
+and version information. Original `models/`, existing `data/`, source, Python
+development environments and OCR GUI `runs/` were not deleted. No separate
+Whisper GUI was found in this build tree; only its identified native engine
+could be verified here. Files outside the explicit obsolete build list were
+left untouched.
+
+Post-cleanup checks passed: exact expected TranslateGemma sentence, Whisper
+35-second clip with unchanged transcript SHA-256 and 6,384 NPU self-attention
+submissions, OCR self-test and all 26 Vision weight artifacts, OCR GUI layout,
+TranslateGemma GUI window startup, and unchanged hashes of 34 protected files.
+Details are under `data/build-cleanup-20260917/verification-*/`.
+
+Historical build/report paths below describe the original experiments. Compact
+reports now live below the archive's `reports/` subtree with the former relative
+build path. Raw tensor captures were deleted: analysis-only tasks cannot replay
+them until the corresponding native build/capture tasks are rerun. The archived
+OCR baseline/profile executables are provenance evidence, not alternate deployed
+applications. The current GUI binaries remain at their original paths.
+
 ## GLM-OCR development
 
-**Current image support:** native BMP24 and non-interlaced PNG8 (RGB/grayscale,
-optional alpha composited on white). The `-LargeImages` build adds 16x16 and
+The native OCR test GUI is `build/ocr-app/ocr-gui.exe`, built with the tasks
+`GLM-OCR app engine build` and `GLM-OCR GUI build`. It follows the TranslateGemma
+Win32 style: image chooser/preview, Text/Formula/Table mode, streaming result,
+Copy and Cancel. It runs a separate native OCR process per request, not a
+resident model server. See [OCR GUI](plan-glm-ocr.md#native-ocr-gui).
+
+The [numerical investigation](plan-glm-ocr.md#full-vision-numerical-cause-analysis)
+isolates a historical candidate RoPE-buffer mismatch and predominantly MLP-driven
+amplification of accumulated errors. Original-reference tolerances still fail.
+The [first benchmark](plan-glm-ocr.md#ocr-profiling-and-benchmark) measures a
+122.78 s receipt median, with graph finalization the main optimization target.
+
+**Current image support:** native BMP24 and static PNG, including palette,
+1/2/4-bit grayscale, 8/16-bit channels, tRNS/alpha and Adam7 interlacing.
+Transparency is composited on white; embedded color profiles are ignored, not
+color-managed. EXIF-bearing PNG and APNG remain rejected. Arbitrary supported
+source dimensions now fit proportionally inside an OCR raster with white padding,
+without cropping. Existing accepted grids keep their reference-compatible resize.
+This fixes the GUI's former "Unsupported grid" rejection, but does not add
+full-resolution page OCR: the large build still caps inference at 224x224 or
+448x224 pixels, so small text may become unreadable. The `-LargeImages` build adds 16x16 and
 16x32 patch grids, corresponding to 224x224 and 448x224 pixels after resizing,
 alongside the existing 8x8/8x16 grids. It uses 256-row prefill and the separate
 `models/glm-ocr-vision-v2/` package; total prompt/output context remains 256.
@@ -18,7 +68,7 @@ Run `GLM-OCR large image export`, `GLM-OCR large PNG hardware`, then the large
 PNG vision/generation analyses and independent reference tasks. See
 [PNG and larger image grids](plan-glm-ocr.md#png-and-larger-image-grids) for
 commands, supported PNG variants, limits and results. `GLM-OCR PNG import tests`
-checks 208 cases after `GLM-OCR image file build`.
+checks 486 cases after `GLM-OCR image file build`.
 
 The following summarizes the earlier small-grid baseline:
 

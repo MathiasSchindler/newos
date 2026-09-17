@@ -1,4 +1,6 @@
 LIBRARY GDI32.dll
 EXPORTS
+    SetStretchBltMode
+    StretchDIBits
     CreateFontW
     DeleteObject

@@ -61,7 +61,7 @@ def wait(process, predicate, seconds=60):
     raise AssertionError('GUI deadline exceeded')
 
 
-def find(process):
+def find(process, expected_class='NewosTranslateGemma'):
     found = []
 
     @callback_type
@@ -70,7 +70,7 @@ def find(process):
         pid_of(window, ct.byref(owner))
         name = ct.create_unicode_buffer(128)
         class_name(window, name, len(name))
-        if owner.value == process.pid and name.value == 'NewosTranslateGemma':
+        if owner.value == process.pid and name.value == expected_class:
             found.append(window)
         return True
 
@@ -89,6 +89,7 @@ def choose(combo, code):
 
 
 def screenshot(window, path):
+    api(user,'RedrawWindow',wt.BOOL,wt.HWND,ct.c_void_p,wt.HANDLE,wt.UINT)(window,None,None,0x185)
     rect = wt.RECT()
     assert rect_of(window, ct.byref(rect))
     width, height = rect.right - rect.left, rect.bottom - rect.top
@@ -229,5 +230,104 @@ def main():
     print('PASS resident GUI, language changes, Unicode, long paragraphs and shutdown', flush=True)
 
 
+def test_ocr(layout_only=False,build=None):
+    import struct
+    import zlib
+    api(user, 'SetProcessDpiAwarenessContext', wt.BOOL, wt.HANDLE)(ct.c_void_p(-4))
+    build = (build or ROOT/'build/ocr-app').resolve()
+    records = []
+    process = subprocess.Popen([str(build/'ocr-gui.exe')],cwd=ROOT.parent.parent)
+    def open_path(value):
+        set_text(child(window,101),str(value))
+        send(window,0x111,101 | (0x200 << 16),child(window,101))
+    try:
+        window = wait(process,lambda:find(process,'NewosGlmOcr'))
+        status,button,output = [child(window,number) for number in (106,105,104)]
+        assert not enabled(button)
+        assert send(child(window,103),0x146,0,0) == 3
+        with tempfile.TemporaryDirectory(prefix='ocr-gui-',dir=ROOT/'build') as temporary:
+            image = Path(temporary)/'OCR \u00e4 test.png'
+            def chunk(kind,payload):
+                return struct.pack('>I',len(payload))+kind+payload+struct.pack('>I',zlib.crc32(kind+payload))
+            bitmap = (ROOT/'models/glm-ocr-vision-v2/pattern.bmp').read_bytes()
+            width,height = struct.unpack_from('<ii',bitmap,18)
+            assert width == height == 224 and struct.unpack_from('<H',bitmap,28)[0] == 24
+            offset = struct.unpack_from('<I',bitmap,10)[0]; raw = bytearray()
+            for row in range(height):
+                source = bitmap[offset+(height-row-1)*width*3:offset+(height-row)*width*3]
+                expanded = b''.join(source[column:column+3][::-1]*4 for column in range(0,len(source),3))
+                raw.extend((b'\0'+expanded)*4)
+            image.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',896,896,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b''))
+            portrait = Path(temporary)/'palette-portrait.png'
+            portrait.write_bytes(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',400,600,1,3,0,0,0))+
+                                 chunk(b'PLTE',b'\xff\xff\xff\x20\x40\x80')+chunk(b'tRNS',b'\0\xff')+
+                                 chunk(b'IDAT',zlib.compress((b'\0'+b'\x55'*50)*600))+chunk(b'IEND',b''))
+            open_path(portrait); assert enabled(button),text(status)
+            screenshot(window,build/'gui-portrait.png')
+            open_path(image)
+            assert enabled(button), text(status)
+            screenshot(window,build/'gui-preview.png')
+            for name in (() if layout_only else ('first','repeat')):
+                started = time.perf_counter(); send(button,0xf5,0,0)
+                assert not enabled(button) and enabled(child(window,107))
+                wait(process,lambda:bool(text(output)),seconds=240)
+                first = time.perf_counter()-started
+                wait(process,lambda:enabled(button),seconds=240)
+                assert text(status) == 'Ready',text(status)
+                actual = text(output).replace('\r\n','\n')
+                expected = (ROOT/'models/glm-ocr-vision-v2/pattern.expected.txt').read_text(encoding='utf-8').rstrip('\n')
+                assert actual == expected,actual
+                records.append(dict(case=name,seconds=time.perf_counter()-started,first_seconds=first,text=actual))
+            screenshot(window,build/'gui-desktop.png')
+            dpi = api(user,'GetDpiForWindow',wt.UINT,wt.HWND)(window)
+            assert move(window,30,30,460*dpi//96,620*dpi//96,True)
+            def settled():
+                outer = wt.RECT(); rect_of(window,ct.byref(outer))
+                for number in (101,102,103,104,105,106,107,108):
+                    editor = wt.RECT(); rect_of(child(window,number),ct.byref(editor))
+                    if not (outer.left < editor.left < editor.right < outer.right and editor.bottom < outer.bottom): return False
+                return True
+            wait(process,settled); screenshot(window,build/'gui-compact.png')
+            if layout_only:
+                print('PASS OCR large PNG / transparent palette portrait import and desktop/compact layout bounds',flush=True)
+                return
+            invalid = Path(temporary)/'invalid.png'; invalid.write_bytes(b'bad image')
+            open_path(invalid); assert not enabled(button) and text(status).startswith('Cannot open image')
+            open_path(ROOT/'models/glm-ocr-vision-v2/receipt.png'); assert enabled(button)
+            send(button,0xf5,0,0); send(child(window,107),0xf5,0,0)
+            wait(process,lambda:enabled(button),seconds=30)
+            assert text(status).startswith('Cancelled'),text(status)
+            records.append(dict(case='cancel',passed=True))
+            send(button,0xf5,0,0); post(window,0x10,0,0)
+            assert process.wait(timeout=30) == 0
+            records.append(dict(case='close-active',passed=True))
+    finally:
+        if process.poll() is None:
+            post(window,0x10,0,0)
+            process.wait(timeout=30)
+    with tempfile.TemporaryDirectory(prefix='ocr-gui-missing-') as temporary:
+        executable = Path(temporary)/'ocr-gui.exe'; shutil.copy2(build/'ocr-gui.exe',executable)
+        process = subprocess.Popen([str(executable)],cwd=temporary)
+        try:
+            window = wait(process,lambda:find(process,'NewosGlmOcr'))
+            open_path(ROOT/'models/glm-ocr-vision-v2/pattern.png')
+            send(child(window,105),0xf5,0,0)
+            assert text(child(window,106)).startswith('Cannot start OCR')
+            assert enabled(child(window,105))
+            post(window,0x10,0,0); assert process.wait(timeout=10) == 0
+        finally:
+            if process.poll() is None:
+                post(window,0x10,0,0); process.wait(timeout=30)
+    records.append(dict(case='missing-engine',passed=True))
+    (build/'gui-results.json').write_text(json.dumps(records,indent=2,ensure_ascii=False),encoding='utf-8')
+    print(json.dumps(records,ensure_ascii=True),flush=True)
+    print('PASS OCR GUI: Unicode paths, preview, repeated recognition, resize, invalid input, cancellation and shutdown',flush=True)
+
+
 if __name__ == '__main__':
-    main()
+    import sys
+    if sys.argv[1:] == ['--ocr']: test_ocr()
+    elif sys.argv[1:] == ['--ocr-layout']: test_ocr(layout_only=True)
+    elif len(sys.argv) == 3 and sys.argv[1] in ('--ocr','--ocr-layout'): test_ocr(sys.argv[1]=='--ocr-layout',Path(sys.argv[2]))
+    elif not sys.argv[1:]: main()
+    else: raise SystemExit('Expected --ocr or no arguments')

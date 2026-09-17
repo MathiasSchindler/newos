@@ -111,6 +111,18 @@ int ocr_image_shape(unsigned int height, unsigned int width, OcrImageShape *shap
     return 1;
 }
 
+int ocr_image_fit_shape(unsigned int height, unsigned int width, int large, OcrImageShape *shape) {
+    if (!ocr_image_shape(height, width, shape)) return 0;
+    if ((shape->grid_height == 8 && (shape->grid_width == 8 || shape->grid_width == 16)) ||
+        (large && shape->grid_height == 16 && (shape->grid_width == 16 || shape->grid_width == 32))) return 1;
+    shape->height = large ? 224 : 112;
+    shape->width = shape->height * ((unsigned long long)width * 2 > (unsigned long long)height * 3 ? 2 : 1);
+    shape->grid_height = shape->height / 14;
+    shape->grid_width = shape->width / 14;
+    shape->image_tokens = shape->grid_height * shape->grid_width / 4;
+    return 1;
+}
+
 static double cubic(double distance) {
     if (distance < 0) distance = -distance;
     if (distance < 1) return ((1.5 * distance - 2.5) * distance) * distance + 1;
@@ -128,7 +140,7 @@ static unsigned int coefficients(unsigned int source, unsigned int target, unsig
     if (first < 0) first = 0;
     if (end > (int)source) end = (int)source;
     unsigned int count = (unsigned int)(end - first);
-    if (!count || count > 2048) return 0;
+    if (!count || count > 10000) return 0;
     double total = 0;
     for (unsigned int index = 0; index < count; ++index) {
         weights[index] = cubic((index + first - center + 0.5) * inverse);
@@ -158,14 +170,14 @@ static unsigned char pixel(int sum, unsigned int bits) {
     return sum < 0 ? 0 : sum > 255 ? 255 : (unsigned char)sum;
 }
 
-int ocr_image_resize(const unsigned char *rgb, unsigned long long size,
+static int resize_to(const unsigned char *rgb, unsigned long long size,
                      unsigned int height, unsigned int width, unsigned int stride,
                      unsigned char *scratch, unsigned long long scratch_size,
-                     unsigned char *output, unsigned long long output_size) {
-    OcrImageShape shape;
-    double weights[2048];
-    int fixed[2048];
-    if (!rgb || !scratch || !output || !ocr_image_shape(height, width, &shape) ||
+                     unsigned char *output, unsigned long long output_size, OcrImageShape shape) {
+    double weights[10000];
+    int fixed[10000];
+    if (!rgb || !scratch || !output || !height || !width || height > 10000 || width > 10000 ||
+        !shape.height || !shape.width ||
         (unsigned long long)height * width > 16000000 || stride < width * 3 ||
         size < (unsigned long long)(height - 1) * stride + width * 3 ||
         scratch_size < (unsigned long long)height * shape.width * 3 ||
@@ -203,6 +215,44 @@ int ocr_image_resize(const unsigned char *rgb, unsigned long long size,
             output[(unsigned long long)row * shape.width * 3 + column] = pixel(sum, vertical);
         }
     }
+    return 1;
+}
+
+int ocr_image_resize(const unsigned char *rgb, unsigned long long size,
+                     unsigned int height, unsigned int width, unsigned int stride,
+                     unsigned char *scratch, unsigned long long scratch_size,
+                     unsigned char *output, unsigned long long output_size) {
+    OcrImageShape shape;
+    return ocr_image_shape(height, width, &shape) &&
+        resize_to(rgb, size, height, width, stride, scratch, scratch_size, output, output_size, shape);
+}
+
+int ocr_image_resize_fit(const unsigned char *rgb, unsigned long long size,
+                         unsigned int height, unsigned int width, unsigned int stride, int large,
+                         unsigned char *scratch, unsigned long long scratch_size,
+                         unsigned char *output, unsigned long long output_size) {
+    OcrImageShape natural, canvas, inner = {0};
+    if (!ocr_image_shape(height, width, &natural) || !ocr_image_fit_shape(height, width, large, &canvas) ||
+        output_size < (unsigned long long)canvas.height * canvas.width * 3) return 0;
+    if (natural.height == canvas.height && natural.width == canvas.width)
+        return ocr_image_resize(rgb, size, height, width, stride, scratch, scratch_size, output, output_size);
+    inner.height = canvas.height; inner.width = canvas.width;
+    if ((unsigned long long)width * canvas.height > (unsigned long long)height * canvas.width)
+        inner.height = (unsigned int)(((unsigned long long)height * canvas.width + width / 2) / width);
+    else inner.width = (unsigned int)(((unsigned long long)width * canvas.height + height / 2) / height);
+    if (!inner.height) inner.height = 1;
+    if (!inner.width) inner.width = 1;
+    if (!resize_to(rgb, size, height, width, stride, scratch, scratch_size, output, output_size, inner)) return 0;
+    unsigned int top = (canvas.height - inner.height) / 2, left = (canvas.width - inner.width) / 2;
+    for (unsigned int row = inner.height; row-- > 0;)
+        for (unsigned int column = inner.width * 3; column-- > 0;)
+            output[((unsigned long long)(row + top) * canvas.width + left) * 3 + column] =
+                output[(unsigned long long)row * inner.width * 3 + column];
+    for (unsigned int row = 0; row < canvas.height; ++row)
+        for (unsigned int column = 0; column < canvas.width; ++column)
+            if (row < top || row >= top + inner.height || column < left || column >= left + inner.width)
+                for (unsigned int channel = 0; channel < 3; ++channel)
+                    output[((unsigned long long)row * canvas.width + column) * 3 + channel] = 255;
     return 1;
 }
 
