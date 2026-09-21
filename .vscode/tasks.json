@@ -5,7 +5,14 @@
 			"label": "Snapdragon build",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "build"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/make.ps1",
+				"build"
+			],
 			"group": "build",
 			"problemMatcher": []
 		},
@@ -13,35 +20,70 @@
 			"label": "Snapdragon clean",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "clean"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/make.ps1",
+				"clean"
+			],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon rebuild",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "rebuild"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/make.ps1",
+				"rebuild"
+			],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon clean contract test",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "test"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/make.ps1",
+				"test"
+			],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon build status",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/make.ps1", "status"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/make.ps1",
+				"status"
+			],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon check layout",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/shared/inventory.ps1", "-CheckLayout"],
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/tools/shared/inventory.ps1",
+				"-CheckLayout"
+			],
 			"problemMatcher": []
 		},
 		{
@@ -1920,6 +1962,22 @@
 			"label": "TranslateGemma native document tests",
 			"type": "shell",
 			"command": "$source = Get-Content -Raw experimental/snapdragon/tools/translate/build-gemma.ps1; $source = $source.Replace('$PSScriptRoot', ([char]39 + (Resolve-Path experimental/snapdragon/tools/translate).Path + [char]39)); & ([scriptblock]::Create($source)) -TestDocuments; if ($LASTEXITCODE -ne 0) { throw 'Native document tests failed' }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon V73 runtime staging temporary",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}\\experimental\\snapdragon\\tools\\shared\\fetch-qnn-runtime.ps1",
+				"-BuildDir",
+				"${workspaceFolder}\\experimental\\snapdragon\\build"
+			],
 			"isBackground": false,
 			"problemMatcher": []
 		}

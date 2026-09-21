@@ -87,12 +87,8 @@ try {
             @("$sdkRoot/lib/aarch64-windows-msvc/QnnHtp.dll", "QnnHtp.dll"),
             @("$sdkRoot/lib/aarch64-windows-msvc/QnnHtpPrepare.dll", "QnnHtpPrepare.dll"),
             @("$sdkRoot/lib/aarch64-windows-msvc/QnnHtpV73Stub.dll", "QnnHtpV73Stub.dll"),
-            @("$sdkRoot/lib/aarch64-windows-msvc/QnnHtpV81Stub.dll", "QnnHtpV81Stub.dll"),
-            @("$sdkRoot/lib/aarch64-windows-msvc/QnnSystem.dll", "QnnSystem.dll"),
             @("$sdkRoot/lib/hexagon-v73/unsigned/libQnnHtpV73Skel.so", "libQnnHtpV73Skel.so"),
-            @("$sdkRoot/lib/hexagon-v81/unsigned/libQnnHtpV81Skel.so", "libQnnHtpV81Skel.so"),
-            @("$sdkRoot/lib/hexagon-v73/unsigned/libqnnhtpv73.cat", "libqnnhtpv73.cat"),
-            @("$sdkRoot/lib/hexagon-v81/unsigned/libqnnhtpv81.cat", "libqnnhtpv81.cat")
+            @("$sdkRoot/lib/hexagon-v73/unsigned/libqnnhtpv73.cat", "libqnnhtpv73.cat")
         )
         foreach ($runtimeEntry in $runtimeEntries) {
             Copy-ArchiveEntry $archive $runtimeEntry[0] (Join-Path $stageDir $runtimeEntry[1])
@@ -129,6 +125,13 @@ try {
         $target = Join-Path $BuildDir $runtimeEntry[1]
         Move-Item -LiteralPath (Join-Path $stageDir $runtimeEntry[1]) -Destination $target -Force
         Write-Output "Staged $target"
+    }
+    foreach ($obsolete in @('QnnHtpV81Stub.dll','QnnSystem.dll','libQnnHtpV81Skel.so','libqnnhtpv81.cat')) {
+        $target = Join-Path $BuildDir $obsolete
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Force
+            Write-Output "Removed obsolete runtime $target"
+        }
     }
     Move-Item -LiteralPath (Join-Path $stageDir "qnn-runtime-version.txt") `
         -Destination (Join-Path $BuildDir "qnn-runtime-version.txt") -Force

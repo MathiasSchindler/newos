@@ -94,6 +94,13 @@ Commands work independently of the current working directory.
 Build requires Clang/LLVM and the pinned QAIRT archive in
 `data/v2.50.0.260828.zip`. It extracts and verifies the QNN runtime locally,
 then compiles Whisper, TranslateGemma CLI/GUI and the production OCR engine/GUI.
+The runtime is centralized in `build/`; application and model subdirectories do
+not carry private copies. This V73 machine uses three Qualcomm DLLs:
+`QnnHtp.dll`, `QnnHtpV73Stub.dll` and `QnnHtpPrepare.dll`. The first two are the
+minimum for restored inference. `QnnHtpPrepare.dll` remains because OCR can
+rebuild its graph cache. `QnnSystem.dll` and the V81 runtime are not deployed.
+The matching `libQnnHtpV73Skel.so` and `libqnnhtpv73.cat` support files remain
+required even though they are not Windows DLLs.
 Whisper uses the deployed Self-Fusion variant matching the preserved Medium
 context; it is built under `build/whisper/` and its executables are installed at
 the existing build-root paths.
@@ -168,8 +175,8 @@ individual switches are not substitutes for the central model-preserving clean.
 
 The application paths are deliberately unchanged. A freshly built executable is
 not automatically a deployed application: do not move it alone without its
-required runtime, models and context bindings. QNN binaries include DLL, SO and
-CAT files; keep their licenses and version record together. Prepared `.context`,
+required runtime, models and context bindings. Keep the centralized V73 DLL, SO
+and CAT files with their licenses and version record. Prepared `.context`,
 `.qnnctx` and `.qob` files belong to a specific graph/runtime identity and are not
 interchangeable model weights. Python environments under `build/` are retained
 development dependencies, not application binaries.
