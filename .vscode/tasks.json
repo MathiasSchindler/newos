@@ -2126,6 +2126,34 @@
 			"command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./experimental/snapdragon/tools/shared/test-distro.ps1 -DistroDir experimental/snapdragon/distro -ReportDir experimental/snapdragon/data/main-w8-verification/distro -TranslateOnly",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 profile build",
+			"type": "shell",
+			"command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./experimental/snapdragon/tools/translate/build-gemma.ps1 -ProfileTranslate",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 profile",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --w8-profile",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 profile summary",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --w8-summary experimental/snapdragon/build/translate-w8-profile-results.json",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 release performance",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --w8-performance",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

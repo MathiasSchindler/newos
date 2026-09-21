@@ -59,6 +59,7 @@ static int translate_detect_partitions(void) {
     }
     if (!CloseHandle(file)) return 0;
     prompt_partitioned = 1; prompt_bundle = 1;
+    if (performance_requested >= 0) performance_requested = 1;
     if (!padded_decode) force_decode = 1;
     return 1;
 }
@@ -248,7 +249,8 @@ static int translate_arguments(void) {
              "Optional: --bindings PATH --tokenizer PATH --decode --padded-decode --qnn-profile --verify-decode\n"
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
              "Shared-weight bundles and partitions are automatic when installed; --bundle or --partitions requires them.\n"
-             "Diagnostics: --cpu-selection --compile-selection --serial-load --performance (scoped HTP power vote).\n"
+             "W8 uses request-scoped HTP performance votes; --balanced opts out. --performance forces a vote.\n"
+             "Diagnostics: --cpu-selection --compile-selection --serial-load.\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
              "Use --stdin instead of TEXT for a multiline UTF-8 document (up to 196607 bytes).\n"
@@ -278,6 +280,7 @@ static int translate_arguments(void) {
         if (equal(option, "--quiet")) { translate_quiet = 1; continue; }
         if (equal(option, "--no-stream")) { no_stream = 1; continue; }
         if (equal(option, "--performance")) { performance_requested = 1; continue; }
+        if (equal(option, "--balanced")) { performance_requested = -1; continue; }
         if (equal(option, "--cpu-selection")) { cpu_selection = 1; continue; }
         if (equal(option, "--compile-selection")) { compile_selection = 1; continue; }
         if (equal(option, "--serial-load")) { serial_bundle_read = 1; continue; }
@@ -369,8 +372,19 @@ static u64 translate_execute(const QnnInterfaceV2 *api, QnnProfileHandle sample)
                 }
             }
         }
+        PROFILE_START(partition_started);
         u64 code = api->graph_execute(prompt_blocks[begin].graph, inputs, input_count, outputs, output_count, sample, 0);
+    #ifdef GEMMA_TRANSLATE_PROFILE
+        text("PROFILE_PARTITION "); number(partition); text(prompt_rows == 1 ? " decode us=" : " prefill us=");
+        number((profile_clock() - partition_started) * 1000000 / (u64)frequency); text("\n");
+    #endif
         if (code) { status("failed partition", partition); return code; }
+        if (sample) {
+            const u64 *events = 0; u32 count_events = 0;
+            text("QNN_PARTITION "); number(partition); text(prompt_rows == 1 ? " decode\n" : " prefill\n");
+            qnn_event_count = 0;
+            if (api->profile_get_events(sample, &events, &count_events) || !profile_events(api, events, count_events, 0)) return 1;
+        }
         if (end != 34) {
             GemmaBlockTensor *output = prompt_tensor(end - 1, "output"), *input = prompt_tensor(end, "input");
             if (!output || !input || output->bytes != input->bytes) return 1;
@@ -431,7 +445,7 @@ static int translate_step(const QnnInterfaceV2 *api, const u8 *embedding_weights
         const u64 *events = 0; u32 count_events = 0;
         qnn_sampled |= sample_bit; qnn_event_count = 0;
         text(sample_bit == 1 ? "QNN_SAMPLE prefill\n" : "QNN_SAMPLE decode\n");
-        if (api->profile_get_events(sample, &events, &count_events) || !profile_events(api, events, count_events, 0)) return 0;
+        if (!prompt_partitioned && (api->profile_get_events(sample, &events, &count_events) || !profile_events(api, events, count_events, 0))) return 0;
     }
     PROFILE_START(kv_started);
     for (u32 layer_index = 0; layer_index < 34; ++layer_index) for (u32 kind = 0; kind < 2; ++kind) {
@@ -680,12 +694,39 @@ static void translate_quiet_finish(void) {
     }
 }
 
+static int translate_power_begin(void) {
+    if (performance_requested <= 0) return 1;
+    if (power_active || !performance || performance->create(0, 0, &power_id)) return 0;
+    power_active = 1;
+    struct {
+        u32 option, context_id, set_dcvs, dcvs, mode, set_latency, latency, set_sleep, sleep;
+        u32 set_bus, bus_min, bus_target, bus_max, set_core, core_min, core_target, core_max;
+    } config = {0};
+    _Static_assert(sizeof(config) == 68, "QNN HTP power config ABI");
+    config.option = 1; config.context_id = power_id; config.set_dcvs = 1; config.mode = 0x10;
+    config.set_latency = 1; config.latency = 40; config.set_sleep = 1; config.sleep = 1;
+    config.set_bus = 1; config.bus_min = 0x80; config.bus_target = 0x80; config.bus_max = 0x80;
+    config.set_core = 1; config.core_min = 0x80; config.core_target = 0x80; config.core_max = 0x80;
+    const void *configs[] = {&config, 0};
+    u64 code = performance->set(power_id, configs);
+    status("performance vote", code);
+    return code == 0;
+}
+
+static int translate_power_end(void) {
+    if (!power_active) return 1;
+    u64 code = performance->destroy(power_id);
+    status("performance release", code);
+    if (code) return 0;
+    power_active = 0;
+    return 1;
+}
+
 static int translate_release(const QnnInterfaceV2 *api, void (*rpc_free)(void *)) {
     int ok = !decode_context || !api->context_free(decode_context, 0);
     if (selection_context && api->context_free(selection_context, 0)) ok = 0;
     selection_context = 0;
-    if (power_active && performance->destroy(power_id)) ok = 0;
-    power_active = 0;
+    if (!translate_power_end()) ok = 0;
     if (execution_profile && api->profile_free(execution_profile)) ok = 0;
     execution_profile = 0;
     decode_context = 0;
@@ -772,25 +813,11 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
         timing("selection setup us", selection_started);
         PROFILE_END(PROFILE_DECODE_SETUP, selection_setup_started);
     }
-    if (performance_requested) {
+    if (performance_requested > 0) {
         typedef u64 (*GetInfrastructure)(const TranslatePerformance **);
         GetInfrastructure get_infrastructure = (GetInfrastructure)api->device_get_infrastructure;
         if (!get_infrastructure || get_infrastructure(&performance) || !performance || performance->type != 0 ||
-            !performance->create || !performance->destroy || !performance->set || performance->create(0, 0, &power_id)) return 0;
-        power_active = 1;
-        struct {
-            u32 option, context_id, set_dcvs, dcvs, mode, set_latency, latency, set_sleep, sleep;
-            u32 set_bus, bus_min, bus_target, bus_max, set_core, core_min, core_target, core_max;
-        } config = {0};
-        _Static_assert(sizeof(config) == 68, "QNN HTP power config ABI");
-        config.option = 1; config.context_id = power_id; config.set_dcvs = 1; config.mode = 0x10;
-        config.set_latency = 1; config.latency = 40; config.set_sleep = 1; config.sleep = 1;
-        config.set_bus = 1; config.bus_min = 0x80; config.bus_target = 0x80; config.bus_max = 0x80;
-        config.set_core = 1; config.core_min = 0x80; config.core_target = 0x80; config.core_max = 0x80;
-        const void *configs[] = {&config, 0};
-        u64 code = performance->set(power_id, configs);
-        status("performance vote", code);
-        if (code) return 0;
+            !performance->create || !performance->destroy || !performance->set) return 0;
     }
     if (qnn_profile_requested && (!api->profile_create || !api->profile_free || !api->profile_get_events ||
         !api->profile_get_sub_events || !api->profile_get_event_data || api->profile_create(backend, (u32)qnn_profile_requested, &execution_profile))) return 0;
@@ -860,7 +887,9 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
 #endif
         u32 checkpoint = allocation_count;
         u64 started = now();
+        if (!translate_power_begin()) return 0;
         int result = translate_document(api, embedding, &header);
+        if (!translate_power_end()) return 0;
         timing("request us", started);
         while (allocation_count > checkpoint) if (!VirtualFree(allocations[--allocation_count], 0, 0x8000U)) return 0;
     #ifdef GEMMA_GUI

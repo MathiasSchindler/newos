@@ -18,6 +18,10 @@ def main():
     parser.add_argument("--binary", type=Path, default=Path(__file__).resolve().parents[2] / "build/translate.exe")
     parser.add_argument("--hardware", action="store_true")
     parser.add_argument("--profile", action="store_true", help="Three bounded runs of translate-profile.exe")
+    parser.add_argument("--w8-profile", action="store_true", help="Partition timing, resident requests and scoped HTP power comparison")
+    parser.add_argument("--report", type=Path, help="Explicit results path, to preserve baseline measurements")
+    parser.add_argument("--w8-summary", type=Path, help="Summarize an existing W8 profile report without running inference")
+    parser.add_argument("--w8-performance", action="store_true", help="Uninstrumented interleaved W8 latency and vote lifecycle checks")
     parser.add_argument("--streaming", action="store_true", help="Quiet/streaming integration and first-byte timing")
     parser.add_argument("--bundle", action="store_true", help="Shared-weight candidate parity and latency")
     parser.add_argument("--performance", action="store_true", help="Interleaved scoped QNN performance-vote benchmark")
@@ -30,8 +34,26 @@ def main():
     parser.add_argument("--quality", choices=("smoke", "diagnostic"), help="Bounded NPU candidate evaluation; outputs require semantic review")
     parser.add_argument("--case", action="append", default=[], help="Filter diagnostic case IDs")
     options = parser.parse_args()
+    if options.w8_summary:
+        records = json.loads(options.w8_summary.read_text(encoding="utf-8"))
+        for power in (0, 1):
+            subset = [record for record in records if record["name"].startswith(f"resident-{power}-")]
+            assert len(subset) == 3
+            phases = {name: statistics.median(record["phases"][name]["us"] for record in subset)
+                      for name in subset[0]["phases"]}
+            print(json.dumps(dict(power=power,
+                wall_seconds=statistics.median(record["wall_seconds"] for record in subset),
+                request_us=statistics.median(value for record in subset for value in record["requests_us"]),
+                decode_step_us=statistics.median(record["phases"]["decode_execute"]["us"] / record["phases"]["decode_execute"]["calls"] for record in subset),
+                partition_decode_us=[statistics.median(int(elapsed) for record in subset for index, mode, elapsed in record["partitions"]
+                    if int(index) == partition and mode == "decode") for partition in range(3)], phases=phases)), flush=True)
+        for record in records:
+            if record["name"] == "partition-qnn-detail":
+                print("\n".join(line for line in record["stderr"].splitlines()
+                                if "QNN_PARTITION" in line or "Accelerator" in line or "RPC" in line), flush=True)
+        return
     binary = options.binary.resolve()
-    if options.profile:
+    if options.profile or options.w8_profile:
         binary = binary.with_name("translate-profile.exe")
     results = []
 
@@ -95,6 +117,64 @@ def main():
         return record
 
     try:
+        if options.w8_performance:
+            common = ["--from", "de", "--to", "en", "--max-tokens", "96"]
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            reference_tokens = None
+            samples = [[], []]
+            for repeat in range(3):
+                for optimized in (False, True) if repeat % 2 == 0 else (True, False):
+                    record = run(f"release-{int(optimized)}-{repeat}",
+                        [*common, *([] if optimized else ["--balanced"]), sentence], 0, observe=True)
+                    tokens = re.findall(r"generated token: (\d+)", record["stderr"])
+                    if reference_tokens is None:
+                        reference_tokens = tokens
+                    assert tokens and tokens == reference_tokens
+                    assert record["stderr"].count("performance vote: 0") == int(optimized)
+                    assert record["stderr"].count("performance release: 0") == int(optimized)
+                    record["request_us"] = int(re.search(r"request us: (\d+)", record["stderr"])[1])
+                    samples[int(optimized)].append(record)
+            parity = run("release-parity", [*common, "--verify-decode", sentence], 0)
+            assert "PASS decode KV/logits parity position:" in parity["stderr"]
+            batch = run("release-batch", [*common, "--batch"], 0,
+                        input_bytes=((sentence + "\n") * 2).encode())
+            assert batch["stdout"] == samples[1][0]["stdout"] * 2
+            assert batch["stderr"].count("performance release: 0") == 2
+            limited = run("release-limited", ["--from", "de", "--to", "en", "--max-tokens", "1", "Guten Morgen."], 2)
+            assert limited["stderr"].count("performance release: 0") == 1
+            run("release-quiet", [*common, "--quiet", sentence], 0, samples[1][0]["stdout"])
+            for optimized, subset in enumerate(samples):
+                print(json.dumps(dict(optimized=bool(optimized),
+                    median_wall_seconds=statistics.median(record["wall_seconds"] for record in subset),
+                    median_first_byte_seconds=statistics.median(record["first_byte_seconds"] for record in subset),
+                    median_request_us=statistics.median(record["request_us"] for record in subset))), flush=True)
+            print("PASS uninstrumented W8 timing, token/decode parity, batch, limit and quiet checks", flush=True)
+            return
+        if options.w8_profile:
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            common = ["--from", "de", "--to", "en", "--max-tokens", "96"]
+            reference_tokens = None
+            for repeat in range(3):
+                for power in (False, True) if repeat % 2 == 0 else (True, False):
+                    record = run(f"resident-{int(power)}-{repeat}",
+                                 [*common, "--batch", *([] if power else ["--balanced"])], 0,
+                                 input_bytes=((sentence + "\n") * 3).encode())
+                    tokens = re.findall(r"generated token: (\d+)", record["stderr"])
+                    assert tokens
+                    if reference_tokens is None:
+                        reference_tokens = tokens
+                    assert tokens == reference_tokens
+                    assert record["stderr"].count("bundle restore: 0") == 3
+                    assert record["stderr"].count("performance vote: 0") == (3 if power else 0)
+                    assert record["stderr"].count("performance release: 0") == (3 if power else 0)
+                    record["phases"] = {name: dict(us=int(elapsed), calls=int(calls)) for name, elapsed, calls in
+                        re.findall(r"^PROFILE (\w+) us=(\d+) calls=(\d+)$", record["stderr"], re.MULTILINE)}
+                    record["requests_us"] = [int(value) for value in re.findall(r"request us: (\d+)", record["stderr"])]
+                    record["partitions"] = re.findall(r"PROFILE_PARTITION (\d+) (\w+) us=(\d+)", record["stderr"])
+                    assert len(record["requests_us"]) == 3 and record["partitions"]
+            run("partition-qnn-detail", [*common, "--qnn-profile-detailed", "Guten Morgen."], 0, "Good morning.\n")
+            print("PASS W8 resident profiling and power-vote token parity", flush=True)
+            return
         if options.quality:
             if not options.case:
                 smoke = run("greeting-decode-parity", ["--from", "de", "--to", "en", "--max-tokens", "16",
@@ -390,8 +470,11 @@ def main():
             assert "QNN_SAMPLE decode" in sampled["stderr"] and "QNN_EVENT Accelerator" in sampled["stderr"], sampled
         print("PASS translator CLI" + (" and NPU integration" if options.hardware else ""), flush=True)
     finally:
-        report = binary.parent / ("translate-quality-" + options.quality + ("-" + "-".join(options.case) if options.case else "") + "-results.json" if options.quality else "translate-document-results.json" if options.documents else "translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
+        report = binary.parent / ("translate-w8-profile-results.json" if options.w8_profile else "translate-quality-" + options.quality + ("-" + "-".join(options.case) if options.case else "") + "-results.json" if options.quality else "translate-document-results.json" if options.documents else "translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
+        if options.w8_performance:
+            report = binary.parent / "translate-w8-performance-results.json"
+        report = options.report or report
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 

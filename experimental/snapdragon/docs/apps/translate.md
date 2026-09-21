@@ -70,6 +70,61 @@ diagnostic`, explicit `--binary`, `--bindings`, `--tokenizer`, and optional
 The 24-case pilot is AI-authored/reviewed, not an independent benchmark;
 held-out examples are not used for this candidate selection.
 
+### W8 Performance Policy (2026-09-21)
+
+Partitioned inference now uses the existing QNN HTP performance vote by default
+in the main CLI, resident GUI and normal portable package. Each translation
+request creates its vote and destroys it before returning to the GUI or waiting
+for another batch line, including cancellation and token-limit returns. Loading
+and idle time do not retain the vote. `--balanced` disables it; `--performance`
+explicitly requests it. Monolithic runtimes retain their previous default.
+Graphs, W8 weights, precision and token selection are unchanged.
+
+On this Snapdragon X Elite/V73, three interleaved repetitions per mode used
+the same German Hase sentence, English target and 96-token limit. All generated
+tokens matched. Medians from uninstrumented release binaries:
+
+| Measurement | Balanced | Default performance |
+| --- | ---: | ---: |
+| Translation request, excluding startup/teardown | 10.103 s | 3.484 s |
+| Fresh process, including startup/teardown | 17.237 s | 10.496 s |
+| First output byte from process launch | 6.510 s | 6.132 s |
+
+Translation is 2.90x faster (65.5% less time); process wall time is 39.1% lower.
+These are repeated launches with normal filesystem caching, not cold-boot
+measurements. Short greetings, longer documents and other languages can differ.
+
+Separate instrumented resident runs used three identical requests per process
+and three processes per mode. Request median was 10.648 -> 3.494 s. Decode graph
+execution averaged 651 -> 212 ms per step; partition decode medians changed
+from 199/200/250 ms to 63/65/82 ms. QNN traces now collect each partition's events
+immediately, rather than losing earlier partitions when reusing the profile
+handle. Accelerator timing supports an NPU execution bottleneck, not significant
+CPU preparation gaps. Detailed tracing is intrusive and is excluded from these
+wall-time comparisons. No utilization percentage, energy, bandwidth or sustained
+thermal measurement is claimed. A performance vote can increase active power;
+releasing it when idle avoids intentionally holding this application's vote.
+
+Remaining fixed costs include roughly 4.5 s for context restore, 0.9 s for
+embedding loading and 1.35 s for cleanup. Resident GUI/batch operation amortizes
+them. Host embedding/mask/KV work is small relative to NPU execution, so this
+change does not add speculative CPU rewrites or alter model quality.
+
+Reproduce with `build-gemma.ps1 -ProfileTranslate`, then
+`test-translate.py --w8-profile`; use `--w8-summary REPORT` to summarize saved
+profiles. `--w8-performance` benchmarks the normal binary and checks identical
+tokens, decode KV/logits parity, batch isolation, vote release, token limits and
+quiet output. `--report PATH` preserves earlier measurements. The older
+`--profile` suite has W4-specific expectations and is not the W8 gate.
+
+Evidence is archived in `data/w8-performance-verification/`:
+`baseline-profile.json`, `optimized-profile.json`, `release-performance.json`,
+main GUI screenshot, deployment receipt and relocated package checks. Native
+7,470 tokenizer references, 323 numerical cases and 416 document checks passed,
+as did ARM64/no-CRT import audits. Main and relocated CLI/GUI tests passed with
+the installed binaries. Previous binaries and package manifest are retained in
+`data/w8-performance-before-20260921-141632/`; model assets were not changed.
+
 ### Local Comparison
 
 The normal portable package is `distro/translate/` (25 files, 4.31 GiB).
