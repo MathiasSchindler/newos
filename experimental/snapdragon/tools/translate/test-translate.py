@@ -1,6 +1,7 @@
 """Bounded CLI checks for the freestanding translator; Python is test-only."""
 
 import argparse
+from collections import Counter
 import json
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ def main():
     parser.add_argument("--report", type=Path, help="Explicit results path, to preserve baseline measurements")
     parser.add_argument("--w8-summary", type=Path, help="Summarize an existing W8 profile report without running inference")
     parser.add_argument("--w8-performance", action="store_true", help="Uninstrumented interleaved W8 latency and vote lifecycle checks")
+    parser.add_argument("--embedding-load", action="store_true", help="Interleaved serial/overlapped embedding verification benchmark")
     parser.add_argument("--streaming", action="store_true", help="Quiet/streaming integration and first-byte timing")
     parser.add_argument("--bundle", action="store_true", help="Shared-weight candidate parity and latency")
     parser.add_argument("--performance", action="store_true", help="Interleaved scoped QNN performance-vote benchmark")
@@ -36,6 +38,20 @@ def main():
     options = parser.parse_args()
     if options.w8_summary:
         records = json.loads(options.w8_summary.read_text(encoding="utf-8"))
+        if records and records[0]["name"].startswith("embedding-"):
+            summary = []
+            for serial in (0, 1):
+                subset = [record for record in records if record["name"].startswith(f"embedding-{serial}-")]
+                assert len(subset) == 5 and all(record["exit_code"] == 0 for record in subset)
+                summary.append(dict(serial=bool(serial),
+                    wall_seconds=statistics.median(record["wall_seconds"] for record in subset),
+                    first_byte_seconds=statistics.median(record["first_byte_seconds"] for record in subset),
+                    phases_us={name: statistics.median(record["phases"][name]["us"] for record in subset)
+                               for name in subset[0]["phases"]}))
+                print(json.dumps(summary[-1]), flush=True)
+            if options.report:
+                options.report.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+            return
         for power in (0, 1):
             subset = [record for record in records if record["name"].startswith(f"resident-{power}-")]
             assert len(subset) == 3
@@ -51,6 +67,30 @@ def main():
             if record["name"] == "partition-qnn-detail":
                 print("\n".join(line for line in record["stderr"].splitlines()
                                 if "QNN_PARTITION" in line or "Accelerator" in line or "RPC" in line), flush=True)
+                mode = None
+                operators = Counter()
+                formats = Counter()
+                for line in record["stderr"].splitlines():
+                    if line.startswith("QNN_PARTITION "):
+                        mode = line.split()[-1]
+                    event = re.fullmatch(r"QNN_EVENT (.+) type=(\d+) unit=(\d+) value=(\d+) depth=(\d+)", line)
+                    if event and mode == "decode":
+                        name, kind, unit, value, depth = event.groups()
+                        formats[(kind, unit, depth)] += 1
+                        if depth == "1" and kind == "404" and unit == "3":
+                            operators[name] += int(value)
+                print("DECODE_EVENT_FORMATS " + str(dict(formats)), flush=True)
+                print("DECODE_TOP_EVENTS " + json.dumps(operators.most_common(30)), flush=True)
+                grouped = Counter()
+                for name, cycles in operators.items():
+                    grouped[re.sub(r"^layer-\d+\.", "", name.split(":OpId_", 1)[0])] += cycles
+                total_cycles = sum(operators.values())
+                groups = [
+                    dict(name=name, cycles=cycles, percent=100 * cycles / total_cycles)
+                    for name, cycles in grouped.most_common()]
+                print("DECODE_GROUPS " + json.dumps(groups), flush=True)
+                if options.report:
+                    options.report.write_text(json.dumps(dict(traced_decode_cycles=total_cycles, groups=groups), indent=2) + "\n", encoding="utf-8")
         return
     binary = options.binary.resolve()
     if options.profile or options.w8_profile:
@@ -103,7 +143,7 @@ def main():
             record["first_byte_seconds"] = arrivals[0]
             record["last_byte_seconds"] = arrivals[-1]
             record["byte_arrivals_seconds"] = arrivals
-        print(json.dumps({key: value for key, value in record.items() if key != "stderr"}, ensure_ascii=True), flush=True)
+        print(json.dumps({key: value for key, value in record.items() if key not in ("stderr", "byte_arrivals_seconds")}, ensure_ascii=True), flush=True)
         assert result.returncode in (expected_code if isinstance(expected_code, tuple) else (expected_code,)), name
         if expected_text is not None:
             assert output == expected_text, (name, output)
@@ -117,6 +157,31 @@ def main():
         return record
 
     try:
+        if options.embedding_load:
+            sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
+            common = ["--from", "de", "--to", "en", "--max-tokens", "96"]
+            reference = None
+            samples = [[], []]
+            for repeat in range(5):
+                for serial in (True, False) if repeat % 2 == 0 else (False, True):
+                    record = run(f"embedding-{int(serial)}-{repeat}",
+                        [*common, *(["--serial-embedding-load"] if serial else []), sentence], 0, observe=True)
+                    tokens = re.findall(r"generated token: (\d+)", record["stderr"])
+                    if reference is None:
+                        reference = (record["stdout"], tokens)
+                    assert tokens and (record["stdout"], tokens) == reference
+                    record["phases"] = {name: dict(us=int(elapsed), calls=int(calls))
+                        for name, elapsed, calls in re.findall(r"PROFILE (\w+) us=(\d+) calls=(\d+)", record["stderr"])}
+                    assert record["stderr"].count("performance release: 0") == 1
+                    samples[int(serial)].append(record)
+            for serial, subset in enumerate(samples):
+                print(json.dumps(dict(serial=bool(serial),
+                    wall_seconds=statistics.median(record["wall_seconds"] for record in subset),
+                    first_byte_seconds=statistics.median(record["first_byte_seconds"] for record in subset),
+                    embedding_us=statistics.median(record["phases"]["embedding_load"]["us"] for record in subset)
+                        if all("embedding_load" in record["phases"] for record in subset) else None)), flush=True)
+            print("PASS embedding load timing and token parity", flush=True)
+            return
         if options.w8_performance:
             common = ["--from", "de", "--to", "en", "--max-tokens", "96"]
             sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
@@ -474,6 +539,8 @@ def main():
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
         if options.w8_performance:
             report = binary.parent / "translate-w8-performance-results.json"
+        if options.embedding_load:
+            report = binary.parent / "translate-embedding-load-results.json"
         report = options.report or report
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

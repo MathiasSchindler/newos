@@ -30,6 +30,9 @@ __declspec(dllimport) void *CreateSemaphoreA(void *, i32, i32, const char *);
 __declspec(dllimport) int ReleaseSemaphore(void *, i32, i32 *);
 __declspec(dllimport) u32 WaitForSingleObject(void *, u32);
 static int serial_bundle_read;
+static int serial_embedding_read;
+static int transfer_file(void *file, void *data, u64 bytes, int writing);
+static int file_read_hash(void *file, const void *prefix, u64 prefix_size, void *binary, u64 bytes, u8 digest[32]);
 
 #ifdef GEMMA_TRANSLATE_PROFILE
 enum {
@@ -198,11 +201,32 @@ static int read_bindings(void) {
     join(weight_prefix, "language_model.model.layers.", layer == 0 ? "0." : "5.");
     return 1;
 }
+static const void *artifact_read_hashed(void *file, const char *name, GemmaArtifactHeader *header) {
+    u8 encoded[256], digest[32]; long long file_size = 0;
+    if (!SetFilePointerEx(file, 0, &file_size, 2) || !SetFilePointerEx(file, 0, 0, 0) ||
+        file_size < 256 || file_size > 1073741824 || !transfer_file(file, encoded, sizeof(encoded), 0) ||
+        !gemma_artifact_decode_header(encoded, header) ||
+        !gemma_artifact_header_valid(header, gemma_model_translategemma_4b()) ||
+        !gemma_artifact_header_matches_name(header, name) || header->payload_size != (u64)file_size - 256) return 0;
+    u8 *data = allocate(0, header->payload_size);
+    if (!data || !file_read_hash(file, 0, 0, data, header->payload_size, digest)) return 0;
+    for (u32 byte = 0; byte < 32; ++byte) if (digest[byte] != header->payload_sha256[byte]) return 0;
+    return data;
+}
+
 static const void *artifact(const char *name, GemmaArtifactHeader *header) {
     u32 index, size; u8 *data;
     for (index = 0; index < binding_count; ++index) if (equal(name, bindings[index].name)) break;
     if (index == binding_count) return 0;
     PROFILE_START(read_started);
+    if (!serial_embedding_read && equal(name, "language_model.model.embed_tokens.weight")) {
+        void *file = CreateFileA(bindings[index].path, 0x80000000U, 1, 0, 3, 0x80U, 0);
+        if (file == (void *)(u64)-1) return 0;
+        const void *payload = artifact_read_hashed(file, name, header);
+        if (!CloseHandle(file)) payload = 0;
+        PROFILE_END(PROFILE_ARTIFACT_READ, read_started);
+        return payload;
+    }
     data = read_file(bindings[index].path, &size);
     PROFILE_END(PROFILE_ARTIFACT_READ, read_started);
     PROFILE_START(hash_started);
@@ -1122,15 +1146,15 @@ static u32 bundle_reader(void *argument) {
     return 0;
 }
 
-static int bundle_read_hash(void *file, const PromptBundle *header, void *binary, u8 digest[32]) {
-    BundleReader reader = {file, 0, binary, header->graphs[0].binary_size, 0};
+static int file_read_hash(void *file, const void *prefix, u64 prefix_size, void *binary, u64 bytes, u8 digest[32]) {
+    BundleReader reader = {file, 0, binary, bytes, 0};
     reader.ready = CreateSemaphoreA(0, 0, 1024, 0);
     if (!reader.ready) return 0;
     void *thread = CreateThread(0, 0, bundle_reader, &reader, 0, 0);
     if (!thread) { CloseHandle(reader.ready); return 0; }
     CryptoSha256Context hash;
     crypto_sha256_init(&hash);
-    crypto_sha256_update(&hash, (const u8 *)header, __builtin_offsetof(PromptBundle, digest));
+    if (prefix_size) crypto_sha256_update(&hash, prefix, prefix_size);
     int ok = 1;
     for (u64 offset = 0; offset < reader.bytes; offset += 8388608) {
         u64 count = reader.bytes - offset < 8388608 ? reader.bytes - offset : 8388608;
@@ -1143,6 +1167,11 @@ static int bundle_read_hash(void *file, const PromptBundle *header, void *binary
     if (!CloseHandle(thread)) ok = 0;
     if (!CloseHandle(reader.ready)) ok = 0;
     return ok;
+}
+
+static int bundle_read_hash(void *file, const PromptBundle *header, void *binary, u8 digest[32]) {
+    return file_read_hash(file, header, __builtin_offsetof(PromptBundle, digest), binary,
+                          header->graphs[0].binary_size, digest);
 }
 
 static int bundle_reader_regression(void) {
@@ -1161,12 +1190,65 @@ static int bundle_reader_regression(void) {
     if (ok) ok = bundle_read_hash(file, &header, binary, actual);
     for (u32 index = 0; index < 32; ++index) if (actual[index] != expected[index]) ok = 0;
     if (ok) {
+        crypto_sha256_hash(binary, header.graphs[0].binary_size, expected);
+        memset(binary, 0, header.graphs[0].binary_size);
+        ok = SetFilePointerEx(file, 0, 0, 0) &&
+            file_read_hash(file, 0, 0, binary, header.graphs[0].binary_size, actual);
+        for (u32 index = 0; index < 32; ++index) if (actual[index] != expected[index]) ok = 0;
+    }
+    if (ok) {
         header.graphs[0].binary_size++;
         ok = SetFilePointerEx(file, 0, 0, 0) && !bundle_read_hash(file, &header, binary, actual);
     }
     if (!CloseHandle(file)) ok = 0;
     if (ok) text("PASS overlapped reader multi-chunk digest, invalid handle and short read\n");
     return ok;
+}
+
+static int artifact_reader_regression(void) {
+    const char *name = "language_model.model.embed_tokens.weight";
+    u8 encoded[256], payload[2562]; u32 checks = 0;
+    for (u32 precision = 4; precision <= 8; precision += 4) {
+        GemmaArtifactHeader header = {0}, decoded;
+        header.kind = GEMMA_ARTIFACT_KIND_TENSOR;
+        header.element_type = precision == 4 ? GEMMA_ARTIFACT_ELEMENT_S4 : GEMMA_ARTIFACT_ELEMENT_S8;
+        header.quantization = GEMMA_ARTIFACT_QUANTIZATION_SYMMETRIC_GROUP;
+        header.layout = GEMMA_ARTIFACT_LAYOUT_ROW_MAJOR;
+        header.rank = 2; header.group_size = 2560; header.quantization_axis = 1;
+        header.dimensions[0] = 1; header.dimensions[1] = 2560; header.element_count = 2560;
+        header.data_size = 2560 * precision / 8; header.scale_offset = header.data_size;
+        header.scale_count = 1; header.payload_size = header.data_size + 2;
+        header.tensor_id = gemma_artifact_tensor_id(name);
+        gemma_artifact_model_sha256(gemma_model_translategemma_4b(), header.model_sha256);
+        gemma_artifact_name_sha256(name, header.name_sha256);
+        for (u32 byte = 0; byte < header.payload_size; ++byte) payload[byte] = (u8)(byte * 17 + 3);
+        crypto_sha256_hash(payload, header.payload_size, header.payload_sha256);
+        gemma_artifact_encode_header(encoded, &header);
+        char path[1100]; join(path, binding_path, ".artifact-test");
+        void *file = CreateFileA(path, 0xc0000000U, 0, 0, 2, 0x04000100U, 0);
+        if (file == (void *)(u64)-1) return 0;
+        int ok = transfer_file(file, encoded, sizeof(encoded), 1) && transfer_file(file, payload, header.payload_size, 1);
+        const u8 *actual = ok ? artifact_read_hashed(file, name, &decoded) : 0;
+        if (!actual) ok = 0;
+        if (ok) for (u32 byte = 0; byte < header.payload_size; ++byte) if (actual[byte] != payload[byte]) ok = 0;
+        ++checks;
+        const u32 offsets[] = {0,8,12,16,20,24,28,32,36,40,44,48,56,64,72,80,88,96,104,160,192,224,256,
+                               256 + (u32)header.payload_size - 1};
+        for (u32 index = 0; ok && index < sizeof(offsets) / sizeof(offsets[0]); ++index) {
+            u32 offset = offsets[index];
+            u8 original = offset < 256 ? encoded[offset] : payload[offset - 256], changed = original ^ 1;
+            ok = SetFilePointerEx(file, offset, 0, 0) && transfer_file(file, &changed, 1, 1) &&
+                !artifact_read_hashed(file, name, &decoded) &&
+                SetFilePointerEx(file, offset, 0, 0) && transfer_file(file, &original, 1, 1);
+            ++checks;
+        }
+        if (ok && artifact_read_hashed(file, "wrong tensor", &decoded)) ok = 0;
+        ++checks;
+        if (!CloseHandle(file)) ok = 0;
+        if (!ok) return 0;
+    }
+    text("PASS overlapped W4/W8 artifact integrity checks: "); number(checks); text("\n");
+    return 1;
 }
 
 static int bundle_restore(const QnnInterfaceV2 *api, QnnBackendHandle backend, QnnDeviceHandle device,
@@ -1389,7 +1471,7 @@ void mainCRTStartup(void) {
     PROFILE_START(qnn_init_started);
     if (layer == 34 && equal(failure_point, "envelope-regression")) {
         u32 binding_bits = bits;
-        result = prompt_envelope_regression() && bundle_reader_regression() ? 0 : 1;
+        result = prompt_envelope_regression() && bundle_reader_regression() && artifact_reader_regression() ? 0 : 1;
         for (bits = 4; !result && bits <= 8; bits *= 2) if (!bundle_regression()) result = 1;
         bits = binding_bits;
         prompt_partitioned = 1;

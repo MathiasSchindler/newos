@@ -250,7 +250,7 @@ static int translate_arguments(void) {
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
              "Shared-weight bundles and partitions are automatic when installed; --bundle or --partitions requires them.\n"
              "W8 uses request-scoped HTP performance votes; --balanced opts out. --performance forces a vote.\n"
-             "Diagnostics: --cpu-selection --compile-selection --serial-load.\n"
+             "Diagnostics: --cpu-selection --compile-selection --serial-load --serial-embedding-load.\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
              "Use --stdin instead of TEXT for a multiline UTF-8 document (up to 196607 bytes).\n"
@@ -284,6 +284,7 @@ static int translate_arguments(void) {
         if (equal(option, "--cpu-selection")) { cpu_selection = 1; continue; }
         if (equal(option, "--compile-selection")) { compile_selection = 1; continue; }
         if (equal(option, "--serial-load")) { serial_bundle_read = 1; continue; }
+        if (equal(option, "--serial-embedding-load")) { serial_embedding_read = 1; continue; }
         if (equal(option, "--batch")) { batch_mode = 1; continue; }
         if (equal(option, "--stdin")) { stdin_document = 1; continue; }
         if (equal(option, "--padded-decode")) { padded_decode = 1; continue; }

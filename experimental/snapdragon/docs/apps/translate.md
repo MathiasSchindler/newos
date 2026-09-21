@@ -105,8 +105,9 @@ wall-time comparisons. No utilization percentage, energy, bandwidth or sustained
 thermal measurement is claimed. A performance vote can increase active power;
 releasing it when idle avoids intentionally holding this application's vote.
 
-Remaining fixed costs include roughly 4.5 s for context restore, 0.9 s for
-embedding loading and 1.35 s for cleanup. Resident GUI/batch operation amortizes
+Before the embedding-loading change below, fixed costs included roughly 4.5 s
+for context restore, 0.9 s for embedding loading and 1.35 s for cleanup.
+Resident GUI/batch operation amortizes
 them. Host embedding/mask/KV work is small relative to NPU execution, so this
 change does not add speculative CPU rewrites or alter model quality.
 
@@ -124,6 +125,99 @@ main GUI screenshot, deployment receipt and relocated package checks. Native
 as did ARM64/no-CRT import audits. Main and relocated CLI/GUI tests passed with
 the installed binaries. Previous binaries and package manifest are retained in
 `data/w8-performance-before-20260921-141632/`; model assets were not changed.
+
+### Embedding Loading And Remaining Costs (2026-09-21)
+
+The main CLI/GUI and normal portable package now overlap embedding reads and
+SHA-256 using the existing 8 MiB threaded context reader. The complete payload
+is still verified before use; model/name identity, metadata and exact file size
+remain mandatory. No graph, weight or quantization changes are involved.
+`--serial-embedding-load` retains the previous read-then-hash reference;
+`--serial-load` continues to affect context bundles only.
+
+Five interleaved repetitions per mode, with the fast HTP policy enabled in both
+modes, measured the same Hase sentence with a 96-token limit:
+
+| Measurement | Serial embedding | Overlapped embedding |
+| --- | ---: | ---: |
+| Embedding read and verification, instrumented | 738 ms | 358 ms |
+| Total process time, release binary | 10.578 s | 10.109 s |
+| First output byte, release binary | 6.133 s | 5.701 s |
+
+The embedding phase is 51% shorter; release process time is 4.4% lower and first
+output arrives 0.43 s earlier. All twenty benchmark invocations (ten profile,
+ten release) generated identical tokens within each campaign. Medians come
+from separate profile/release campaigns with ordinary filesystem caching, not
+cold boot. This startup optimization does not speed up resident decode.
+
+Current instrumented per-process phase medians:
+
+| Phase | Time | Approximate share |
+| --- | ---: | ---: |
+| Three context bundles: read, verify, restore, bind | 4.542 s | 45% |
+| Decode graph execution, 14 steps | 2.959 s | 29% |
+| Cleanup | 1.354 s | 13% |
+| Prefill graph execution | 0.436 s | 4% |
+| Embedding read and verification | 0.358 s | 4% |
+| QNN initialization | 0.243 s | 2% |
+| Remaining setup, selection and host work | about 0.28 s | 3% |
+
+These medians need not add exactly. Context read/verification (1.967 s) and QNN
+context creation (2.264 s) are components of the 4.542 s restore row, not extra
+costs. Token selection takes about 56 ms across the sentence; host preparation
+and KV maintenance together take about 23 ms, and output about 1 ms. In the
+profile, `artifact_read` now includes overlapping embedding SHA-256;
+`artifact_hash` covers only the remaining serial artifacts.
+
+The existing detailed W8 trace attributes 935,663,253 decode cycles to 1,438
+non-overlapping QNN node events across all three partitions:
+
+| QNN label group | Share of traced decode cycles |
+| --- | ---: |
+| Feed-forward up-projection | 22.62% |
+| GELU-labeled work | 22.18% |
+| Feed-forward down projection (`mlp`) | 19.73% |
+| Vocabulary output head (`logits`) | 16.97% |
+| Everything else, predominantly attention | 18.50% |
+
+The first three groups account for 64.5%. QNN labels can include fused work:
+the GELU label must not be interpreted as isolated activation cost. These are
+intrusive trace cycle shares, not utilization percentages or unprofiled wall
+times. Host-side scheduling changes will not remove these matrix costs.
+
+The next opportunities, in priority order:
+
+1. Use the existing resident GUI or `--batch` for repeated work. This amortizes
+   context loading, embedding loading and teardown; the representative resident
+   request remains about 3.5 s instead of a roughly 10 s fresh process.
+2. Try bounded read/hash prefetch of the next partition during the current
+   partition's QNN context creation. Keep QNN calls serial and verify each
+   payload before restore. This targets the roughly 2 s read/hash component,
+   but increases peak RAM by a serialized partition on a 16 GiB machine and
+   must be benchmarked for memory pressure. It is not implemented yet.
+3. Benchmark feed-forward projection layout/fusion changes at block level,
+   then the output head. Preserve numerical parity before rebuilding contexts.
+   These dominate decode; prior full-model FullyConnected construction stalled,
+   so it is not an established faster route. No bandwidth/compute bottleneck
+   distinction is proven by these timings alone.
+4. Investigate the 1.35 s teardown only for one-shot CLI usage. Do not skip QNN
+   cleanup or integrity verification to improve a benchmark. CPU token/mask
+   micro-optimizations have a much smaller ceiling than the opportunities above.
+
+`test-translate.py --embedding-load` benchmarks the installed release binary;
+after `build-gemma.ps1 -ProfileTranslate`, add `--profile` for phase timings.
+Use `--report PATH` for separate campaigns. `--w8-summary REPORT` summarizes
+either embedding benchmarks or resident profiles, including grouped QNN events;
+with `--report PATH` it saves the embedding phase or operator summary as JSON.
+
+Evidence is in `data/w8-load-verification/`: profile/release measurements,
+`phase-summary.json`, `operators.json`, main GUI screenshot, deployment receipt
+and relocated distribution results. Added 52 W4/W8 artifact integrity checks
+cover metadata/name/digest/payload corruption, alongside multi-chunk SHA,
+invalid handle and short-read tests. Native tokenizer/numerical/document tests,
+1,200 prompt and 30 bundle corruptions, decode parity and no-CRT audits passed.
+Previous main/package binaries and manifest are retained in
+`data/w8-load-before-20260921-143145/`. Model assets were unchanged.
 
 ### Local Comparison
 

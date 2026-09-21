@@ -2154,6 +2154,13 @@
 			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --w8-performance",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma embedding load benchmark",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --embedding-load --report experimental/snapdragon/build/translate-embedding-release-results.json",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }
