@@ -49,6 +49,10 @@ static u32 selected_token;
 static u16 selected_finite;
 static int cpu_selection;
 static int compile_selection;
+#ifdef GEMMA_TRANSLATE_PROFILE
+static u64 profile_request_started, profile_request_first_output;
+static u32 profile_request_id, profile_piece_id;
+#endif
 
 static int translate_detect_partitions(void) {
     char path[1100]; join(path, binding_path, partition_suffixes[0]);
@@ -481,6 +485,9 @@ static int decode_compare(const u16 *actual, const u16 *expected, u32 heads, u32
 static int translation_write(const u8 *bytes, u32 size) {
     if (!size) return 1;
     if (!gemma_utf8_valid(bytes, size)) return 0;
+#ifdef GEMMA_TRANSLATE_PROFILE
+    if (profile_request_started && !profile_request_first_output) profile_request_first_output = profile_clock();
+#endif
 #ifdef GEMMA_GUI
     (void)console_output;
     return gui_write(bytes, size);
@@ -532,6 +539,7 @@ static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, con
     PROFILE_END(PROFILE_CACHE_RESET, reset_started);
 #ifdef GEMMA_TRANSLATE_PROFILE
     status("PROFILE prompt_tokens", request_count);
+    qnn_sampled = 0;
 #endif
     u32 generated[256], generated_count = 0, position = 0, emitted = 0;
     u64 started = now(); int stopped = 0;
@@ -617,6 +625,11 @@ static int translate_request(const QnnInterfaceV2 *api, const u8 *embedding, con
         }
     }
     timing("generation us", started);
+#ifdef GEMMA_TRANSLATE_PROFILE
+    text("PROFILE_PIECE request="); number(profile_request_id); text(" piece="); number(++profile_piece_id);
+    text(" prompt_tokens="); number(request_count); text(" generated_tokens="); number(generated_count);
+    text(" stopped="); number((u32)stopped); text("\n");
+#endif
     if (automatic_text) {
         if (!stopped) return 2;
         u32 size;
@@ -651,7 +664,13 @@ static int translate_piece(const QnnInterfaceV2 *api, const u8 *embedding, const
     while (content && document_space((u8)input[content - 1])) --content;
     if (content) {
         if (!request_range(input, content)) return 0;
+        PROFILE_START(piece_started);
         int result = translate_request(api, embedding, header);
+    #ifdef GEMMA_TRANSLATE_PROFILE
+        text("PROFILE_PIECE_TIME request="); number(profile_request_id); text(" piece="); number(profile_piece_id);
+        text(" source_bytes="); number(content); text(" depth="); number(depth);
+        text(" us="); number((profile_clock() - piece_started) * 1000000 / (u64)frequency); text("\n");
+    #endif
         if (!result) return 0;
         if (result == 2) {
             if (depth >= 20) return 2;
@@ -888,10 +907,33 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
 #endif
         u32 checkpoint = allocation_count;
         u64 started = now();
+    #ifdef GEMMA_TRANSLATE_PROFILE
+        u64 request_ticks[PROFILE_COUNT], request_calls[PROFILE_COUNT];
+        memcpy(request_ticks, profile_ticks, sizeof(request_ticks));
+        memcpy(request_calls, profile_calls, sizeof(request_calls));
+        profile_request_started = profile_clock(); profile_request_first_output = 0; profile_piece_id = 0;
+        text("PROFILE_REQUEST_BEGIN id="); number(++profile_request_id); text("\n");
+    #endif
         if (!translate_power_begin()) return 0;
         int result = translate_document(api, embedding, &header);
         if (!translate_power_end()) return 0;
         timing("request us", started);
+    #ifdef GEMMA_TRANSLATE_PROFILE
+        u64 request_elapsed = profile_clock() - profile_request_started;
+        for (u32 phase = PROFILE_PREFILL_PREPARE; phase < PROFILE_COUNT; ++phase) {
+            text("PROFILE_REQUEST_PHASE id="); number(profile_request_id); text(" phase="); number(phase);
+            text(" us="); number((profile_ticks[phase] - request_ticks[phase]) * 1000000 / (u64)frequency);
+            text(" calls="); number(profile_calls[phase] - request_calls[phase]); text("\n");
+        }
+        text("PROFILE_REQUEST_END id="); number(profile_request_id);
+        text(" us="); number(request_elapsed * 1000000 / (u64)frequency);
+        text(" start_tick="); number(profile_request_started);
+        text(" end_tick="); number(profile_request_started + request_elapsed);
+        text(" frequency="); number((u64)frequency);
+        text(" first_output_us="); number(profile_request_first_output ?
+            (profile_request_first_output - profile_request_started) * 1000000 / (u64)frequency : 0);
+        text("\n"); profile_request_started = 0;
+    #endif
         while (allocation_count > checkpoint) if (!VirtualFree(allocations[--allocation_count], 0, 0x8000U)) return 0;
     #ifdef GEMMA_GUI
         gui_done(result);

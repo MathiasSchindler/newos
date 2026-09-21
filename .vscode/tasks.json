@@ -2161,6 +2161,69 @@
 			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --embedding-load --report experimental/snapdragon/build/translate-embedding-release-results.json",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma document workload validation",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile describe",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma resident document release",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile release",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma resident document timing",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile timing",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma resident document NPU samples",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile basic",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma resident document summary",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile summary",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma resident document utilization",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --document-profile counters",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma targeted profiler",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --target-profile run --report ('./experimental/snapdragon/data/w8-targeted-profiling/capture-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma targeted profiler selftest",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe -W error ./experimental/snapdragon/tools/translate/test-translate.py --target-profile selftest",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma targeted profiler operators",
+			"type": "shell",
+			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --target-profile run --profile-repeats 1 --profile-operators --report ('./experimental/snapdragon/data/w8-targeted-profiling/operators-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')",
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }

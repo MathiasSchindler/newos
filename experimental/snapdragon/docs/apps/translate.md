@@ -219,6 +219,432 @@ invalid handle and short-read tests. Native tokenizer/numerical/document tests,
 Previous main/package binaries and manifest are retained in
 `data/w8-load-before-20260921-143145/`. Model assets were unchanged.
 
+### Resident Document Profile (2026-09-21)
+
+This profile measures actual translation after startup, not loading. The fixed
+German source has 191 whitespace-delimited words, 1,571 UTF-8 bytes and twelve
+sentences. It describes introducing a digital service at work. The full source
+and English output are in `data/w8-document-profile/`. Normal automatic document
+mode was used, without a strict `--max-tokens` override. A greeting warmed up
+each resident process before the document; QNN contexts and embeddings stayed
+loaded. The installed main release binary was not replaced in this pass.
+
+Two release translations took **56.890 s and 56.774 s**, excluding startup,
+greeting and teardown: about **202 source words/minute**. Both produced the same
+212-word English output. Two phase-profiled translations averaged 57.050 s,
+about 0.4% above the release mean. Independent basic-QNN and timestamp-aligned
+counter runs took 56.918 s and 56.967 s. All six document translations produced
+identical token IDs, not just identical visible text.
+
+There were twelve successful sentence pieces, twelve prefills and 237 decode
+steps, with no retry or truncation. The model generated 249 tokens including
+twelve stop tokens, or 237 content tokens: approximately 4.17 content tokens/s
+over the complete release translation. Prompt processing totaled 1,185 tokens,
+including the repeated translation instructions. Each prompt had 92-103 tokens
+and used one padded 128-row prefill. First visible output arrived after 4.976 s
+in the timing runs because automatic mode emits a completed translated piece,
+not each provisional generated token.
+
+Mean post-startup phase breakdown from the two timing runs:
+
+| Work | Time | Share |
+| --- | ---: | ---: |
+| Decode graph execution, 237 steps | 50.331 s | 88.22% |
+| Prefill graph execution, 12 calls | 5.157 s | 9.04% |
+| NPU token selection and checks, 249 calls | 0.974 s | 1.71% |
+| KV guard checks and row insertion | 0.258 s | 0.45% |
+| Embedding/mask preparation | 0.174 s | 0.31% |
+| Cache reset and transfer | 0.096 s | 0.17% |
+| Other: tokenization, document output, logging, control | 0.060 s | 0.11% |
+
+Automatic document output is included in the unassigned remainder, not in the
+older strict-mode `output` phase, whose zero here must not be interpreted as
+zero output cost. No startup or cleanup phase is included in this table.
+
+Partition timings, pooled across both document runs:
+
+| Partition | Layers | Mean prefill | Mean decode | Decode p95 |
+| --- | --- | ---: | ---: | ---: |
+| 0 | 0-11 | 141.0 ms | 64.45 ms | 67.30 ms |
+| 1 | 12-23 | 140.7 ms | 65.57 ms | 68.69 ms |
+| 2 | 24-33 and vocabulary head | 146.5 ms | 82.28 ms | 86.29 ms |
+
+Each partition has 24 measured prefills and 474 decode calls. Individual
+sentence times ranged from 3.50 to 5.68 s. Per-step graph time stayed near
+212 ms: first-to-last-quarter means were 211.18 -> 212.65 ms and
+211.82 -> 213.12 ms in the two runs. There is no substantial slowdown visible
+over these short runs; this is not a sustained thermal qualification.
+
+#### NPU Activity
+
+Windows exposes this NPU through `\GPU Engine(*)\Utilization Percentage`,
+despite the category name. The translator-owned compute-engine instance was
+resolved by adapter LUID through the Windows DXCore API. Its description is
+`Snapdragon(R) X Elite - X1E80100 - Qualcomm(R) Hexagon(TM) NPU`, and DXCore's
+NPU hardware attribute is true. This is not the Adreno GPU or software renderer.
+
+Counter collection targeted one-second intervals (observed around 1.05 s).
+Native request timestamps and collector timestamps share QueryPerformanceCounter;
+only intervals fully inside the document request were included. For 53 samples:
+
+- Time-weighted mean engine utilization: **95.78%**.
+- Median: **94.82%**; 10th-90th percentiles: **92.02%-99.73%**.
+- One raw sample was 105.72%, preceded by an 85.97% sample. Raw values are
+   preserved and flagged, not silently clamped. Treat the result as about 96%
+   driver-reported engine activity, not exact hardware compute-unit occupancy.
+
+QNN basic profiling independently sampled the first prefill and first decode
+of every sentence: 36 partition calls per phase. Accelerator execution excluding
+wait occupied 97.67% of sampled prefill graph wall time and 97.49% of sampled
+decode graph wall time. Main graph calls occupied 97.26% of document wall time.
+These are three distinct metrics: Windows engine busy time, QNN accelerator
+activity within a call, and application time blocked in graph execution.
+None measures HMX occupancy, achieved TOPS, memory bandwidth or power.
+
+The NPU is already kept busy. The dominant opportunity is reducing the cost of
+each decode step, not moving small CPU preparation loops onto the accelerator.
+Even eliminating every prefill would save only about 9% here. Combining pieces
+may reduce repeated prompts/padding, but requires quality checks: previous
+larger-piece experiments sometimes omitted source content. The earlier
+feed-forward/head operator findings remain leads for kernel work, not a new
+operator-level measurement of this document.
+
+Reproduce serially with `build-gemma.ps1 -ProfileTranslate`, then
+`test-translate.py --document-profile release`, `timing`, `basic`, and `counters`
+(one mode per invocation). `--document-profile summary` verifies cross-run token
+parity, checks partition/sample counts and reports phases, sentence times,
+partition percentiles, decode drift and NPU identity/utilization.
+`--document-profile describe` prints the exact workload. The summary's
+`--report PATH` archives raw reports and engine samples beside the summary.
+The capture uses only Python's standard library and Windows APIs/PowerShell;
+there are no production dependencies or permanent monitoring services.
+
+Evidence: `data/w8-document-profile/summary.json`, four raw run reports and four
+engine-counter JSONL files. Profile-only request/piece instrumentation passes
+the strict ARM64/no-CRT build. Release timing and cross-run token parity protect
+against mistaking profiling overhead or changed translation output for speed.
+
+### Decode Tuning Experiments (2026-09-21)
+
+Two controlled follow-ups produced no demonstrated performance improvement.
+Each variant ran in three fresh processes with three resident Hase requests
+per process, interleaved with the baseline and reversing order on the middle
+repeat. Timings below exclude startup and teardown. All 54 requests produced
+identical text and token IDs and acquired/released the request power vote.
+
+| Experiment | Baseline median | Candidate median | Apparent reduction |
+| --- | ---: | ---: | ---: |
+| MAX bus, TURBO core | 3.491959 s | 3.479456 s | 0.36% |
+| TURBO bus, MAX core | 3.491959 s | 3.494034 s | -0.06% |
+| MAX bus and core | 3.491959 s | 3.481672 s | 0.29% |
+| MLP-only FullyConnected | 3.514160 s | 3.491477 s | 0.65% |
+
+The differences are within the observed run-to-run spread, not evidence of a
+useful speedup. The power experiment used the SDK's platform-supported MAX
+corner (`0xA0`) instead of TURBO (`0x80`), independently for bus and core; vote
+acceptance does not establish that physical clocks changed. Power and energy
+were not measured. The normal request-scoped TURBO policy remains unchanged.
+
+The MLP experiment changed only `gate-projection`, `up-projection`, and `mlp`
+nodes to FullyConnected, retaining row-major W8 per-channel weights, FP16
+activations, and MatMul for attention and the vocabulary head. Both variants
+used the same release executable. All three shared prefill/decode partitions
+compiled and restored successfully, and all-layer decode KV/logit parity
+passed. The initial 180-second build limit was too short; logs showed two
+completed partitions, and a second run within the normal 600-second budget
+completed all three. This is not the earlier full-FullyConnected compiler
+stall, but it also did not demonstrate faster execution.
+
+A separate QNN linting-level (`7001`) probe caused DSP transport error 1003,
+subsystem reset, and a teardown hang. Its owned process was stopped after
+120 seconds. That mode was not retried; normal execution recovered and passed
+decode parity. The linting and power switches and MLP-only build switch were
+removed, and the profile executable was rebuilt without them.
+
+No candidate was promoted. Main CLI/GUI and portable-package executable
+hashes remain unchanged. Native tokenizer/numerical tests, strict no-CRT PE
+audits, and final main-runtime recovery checks passed. Raw reports, successful
+MLP build logs, parity results and checked summaries are archived under
+`data/w8-decode-tuning/`; `summary.json` records completion. Temporary candidate
+artifacts and tasks were removed after archiving.
+
+Further decode work should target actual MLP/head kernel implementation or
+weight-access changes, not simply higher power votes or an operator rename.
+These tests do not establish whether arithmetic, dequantization or memory
+traffic dominates. No new document speedup or energy benefit is claimed.
+
+### Projection Layout Experiments (2026-09-21)
+
+Three W8 graph-layout candidates were tested beyond the earlier
+MatMul/FullyConnected rename. Four-way output-channel tiling covered the gate,
+up, down and vocabulary-head projections, retaining all weights and scales and
+concatenating the outputs on the NPU. A second candidate combined the gate and
+up weights into one 20,480-output projection and extracted the two halves with
+Gather; its head and down projection retained the baseline layout. A third
+candidate replaced the Gather nodes with one native two-output Split.
+
+All passed the W8 layer-0 reference taps, cached-KV influence, guard checks,
+warm determinism and five injected cleanup failures. All three shared
+prefill/decode partition contexts built and restored for each candidate.
+Full comparisons used the unchanged installed release executable with only
+the binding path varied, reversing process order on the middle repeat. Every
+process ran a greeting warmup and two Hase translations; warmups were excluded.
+Each variant therefore has six measured resident requests across three
+processes. All generated tokens and text matched, and both baseline and
+candidate passed the full-model prefill/decode KV/logit checks.
+
+| Candidate | Baseline median | Candidate median | Result |
+| --- | ---: | ---: | --- |
+| Four-way MLP/head output tiling | 3.511796 s | 3.979401 s | 13.32% slower |
+| Paired gate/up with Gather | 3.512258 s | 3.818881 s | 8.73% slower |
+| Paired gate/up with native Split | 3.516568 s | 3.614834 s | 2.79% slower |
+
+No candidate was promoted. These measurements reject these specific
+lowerings, not every possible tiled or fused kernel. They do not establish
+whether extra dispatch, extraction, lost fusion or memory traffic caused the
+regressions. No hardware utilization or bandwidth improvement is claimed.
+Raw records and matching summaries are
+`data/w8-targeted-profiling/tiled-comparison.json` and
+`data/w8-targeted-profiling/paired-comparison.json`, plus
+`data/w8-targeted-profiling/paired-split-comparison.json`.
+The mean request-minus-prefill duration increased in every candidate; the
+total regressions do not hide a decode benefit behind a prefill penalty.
+The original graph builder and build switches were restored; production CLI,
+GUI and contexts were not replaced. Builder binaries, bindings, block/build
+logs and a candidate source diff are archived under
+`data/w8-targeted-profiling/projection-builds/`.
+
+A subsequent **head-only** four-way tiling experiment left every MLP projection
+unchanged. Its median was 3.499231 s versus 3.494750 s for the baseline, a
+0.13% regression within the observed spread: no demonstrated gain. All token,
+output and decode-parity checks passed. This separates the head from the prior
+combined MLP/head regression; it does not prove the compiler's internal lowering
+was different. Evidence: `data/w8-targeted-profiling/head-tiled-retry.json` and
+its summary. The first attempt, `head-tiled-comparison.json`, was rejected for
+timeout: baseline inference completed normally, but QNN context teardown took
+366 seconds. A fresh-process retry recovered without changing the timeout,
+driver or installed binaries. The head-tiling source switch was removed.
+
+Embedding the existing deterministic NPU token selector into the head graph
+with `-NpuSelection` also passed token/output and full decode parity, but its
+median increased from 3.474665 s to 3.974365 s (**14.38% slower**). The unchanged
+main executable supports these version-5 contexts and skips its separate
+selector call. Removing that call did not improve this compiled graph; the
+measurements do not identify the internal cause. The selector primitive also
+passed tie, boundary-ID and nonfinite-logit checks. Evidence:
+`data/w8-targeted-profiling/head-selection-comparison.json` and its summary.
+
+A separate runtime experiment set two HVX threads on all six restored
+prefill/decode partition graphs before their first execution. All configuration
+calls succeeded, with layout assertions checked against the pinned SDK headers.
+Using the same isolated timing-instrumented binary and unchanged W8 contexts,
+the same interleaved campaign measured 3.496232 s without an override versus
+4.975513 s with two threads (**42.31% slower**). Token/output and full decode
+parity passed. Mean decode execution increased from 2.963900 s to 4.372016 s;
+mean prefill increased from 0.426142 s to 0.487530 s, so prefill does not hide a
+decode gain. This rejects the two-thread override, not an occupancy or bandwidth
+measurement. Evidence: `data/w8-targeted-profiling/hvx-two-comparison.json` and
+its summary. The temporary runtime/harness switches were removed; the probe
+binary and source diff are archived under `projection-builds/gemma-hvx/`.
+
+None of these follow-ups was promoted. Production CLI, GUI and contexts remain
+unchanged. Head-candidate builders, bindings and logs are archived under
+`projection-builds/gemma-head-tiled/` and `projection-builds/gemma-head-selection/`;
+their rejected multi-gigabyte context payloads were removed after archiving.
+
+The reusable development harness now accepts `--compare-bindings PATH`, with
+optional `--bindings BASELINE` and a fresh `--report PATH`. It compares two
+three-partition W8 bindings through the same release executable, checks exact
+tokens/output and cleanup/power lifecycles, excludes warmup, and performs
+decode parity checks before writing a successful `.summary.json`. Raw captures
+are retained on failure. Example from the repository root:
+
+```powershell
+./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --compare-bindings PATH-TO-CANDIDATE.gmb --report ./experimental/snapdragon/data/comparison.json
+```
+
+### Targeted Profiling Tools (2026-09-21)
+
+The next investigation needs two complementary views: lowered-op scheduling
+and actual hardware counters. Further scalar cycle summaries alone cannot
+distinguish slow matrix execution, dequantization, DMA traffic and stalls.
+The existing short-input trace attributes about 64.5% of summed node cycles
+to MLP-associated labels and 17.0% to the vocabulary head. These are targeting
+hints, not percentages of elapsed time or measured resource utilization.
+In particular, the `gelu` label may include a fused gate projection.
+
+#### Built-In Targeted Profiler
+
+The standard-library-only development harness now provides a "poor man's profiler"
+without installing Qualcomm Profiler or changing the production CLI/GUI.
+Build the existing profile executable with `tools/translate/build-gemma.ps1 -ProfileTranslate`,
+then use the VS Code tasks **TranslateGemma targeted
+profiler**, **TranslateGemma targeted profiler operators**, or **TranslateGemma
+targeted profiler selftest**. Capture tasks choose timestamped report names.
+Python is development-only; the release/profile executables remain no-CRT.
+
+Equivalent commands from the repository root:
+
+```powershell
+$python = './experimental/snapdragon/build/calibration-venv/Scripts/python.exe'
+$profiler = './experimental/snapdragon/tools/translate/test-translate.py'
+& $python $profiler --target-profile selftest
+& $python $profiler --target-profile run --report ./experimental/snapdragon/data/my-profile.json
+& $python $profiler --target-profile summary --report ./experimental/snapdragon/data/my-profile.json
+```
+
+The default campaign interleaves three processes per mode: unchanged release,
+timing-only, and basic QNN. Every process translates a greeting warmup followed
+by two identical German-to-English requests; warmup is excluded. The default
+source is the short Hase example. `--profile-input FILE` accepts a single-line
+UTF-8 German document up to 4096 bytes; `--profile-repeats 1` through `5`
+controls repetitions. Keep unrelated accelerator work idle. Captures time out
+after 600 seconds per process, with owned-child cleanup and retained partial
+logs. Existing reports are never overwritten by capture.
+
+Raw JSON retains stdout/stderr, arguments, source, binary SHA-256, UTC capture
+time, requested repeat/operator settings and exit status. The adjacent `.summary.json` records resident latency
+min/median/p95/max, observed instrumentation deltas, phase shares/unassigned
+time, prefill/decode partition distributions, and sampled accelerator/wait
+times. Missing optional counters are null, not zero. Offline summary requires
+all repeats, exact token/output parity, successful power/cleanup lifecycles,
+partition ordering, phase-call accounting and correctly attributed QNN events.
+It does not run inference. Small-sample p95 and signed overhead estimates are
+descriptive; a negative delta can be timing noise, not an instrumentation gain.
+Reports predating explicit campaign settings are marked
+`campaign_contract_verified: false`: their completeness is checked against
+the observed repeats, not independently recorded capture intent.
+
+Add `--profile-operators` for node-cycle and layer rankings. This requires a
+source of at most 128 UTF-8 bytes and adds one fresh-process, single-request
+detailed capture per repeat, with an explicit 256-token generation limit.
+There is no warmup in this isolated mode: its timing is **not** compared with
+resident latency or used to estimate overhead. It samples the first prefill
+and first decode of each partition, not the whole decode trajectory. Layer 33
+includes the vocabulary head. Cycles remain sampled attribution, not wall-time
+shares; GELU can include a fused gate projection.
+
+This isolation is intentional: two attempts to reuse detailed profiling across
+resident requests failed with backend DMA error 6006 on the next request's
+first decode. Cleanup succeeded, normal controls passed, and failed captures
+were preserved without successful summaries. Do not retry that arrangement.
+The isolated detailed capture passed. No linting, op-trace, driver installation
+or PMU access is enabled by this tool.
+
+Verified on 2026-09-21: nine resident processes / 27 requests passed exact
+parity. Six measured requests per mode gave release median **3.495217 s**,
+timing **3.526675 s** (+0.90%), basic **3.512425 s** (+0.49%). The separate
+isolated operator campaign passed all ten requests; decode node-cycle shares
+were up-projection 22.63%, GELU/fused gate 22.18%, MLP down 19.72%, and head
+16.96%. Evidence is in `data/w8-targeted-profiling/`, raw and matching summary
+files `capture-20260921-175733` and `operators-20260921-180006`.
+Seventeen synthetic corruption checks and three offline CLI checks pass.
+Neither run measures HMX/HVX occupancy, actual clocks, DDR bandwidth, power,
+or stall PMUs. These results identify targets, not a proven hardware bottleneck.
+
+#### Tool Selection And Availability
+
+| Tool | Purpose | Verified status on this machine |
+| --- | --- | --- |
+| QAIRT `qnn-profile-viewer` with `QnnHtpOptraceProfilingReader` / QHAS | Lowered HTP operations, HMX/HVX work, DMA, synchronization, graph/source mapping and timeline analysis | ARM64 viewer and both HTP reader DLLs staged from the existing 2.50 SDK; PE architecture, byte identity, DLL loading and viewer help/version pass. No op-trace capture or decoding of a real capture tested yet. |
+| Qualcomm Profiler (`qprof`) | Device-discovered DSP/NSP counters, HMX/HVX activity, stalls, clocks, DDR bandwidth and roofline analysis | Not found on PATH, in registered profiler installations, or documented install directories. Vendor documentation lists WoS support and SC8380X/SC8480X; actual counters on this OEM runtime remain unverified. |
+| Windows Performance Recorder / Analyzer (`wpr`, `wpa`, `xperf`) | CPU scheduling, file I/O, faults, host overhead and correlation with vendor ETW data | Already installed. Generic ETW or GPU-engine busy counters alone do not expose HMX utilization or prove DDR saturation. |
+| Perfetto / QHAS HTML | Offline timeline and summary inspection | Analysis frontends, not counter collectors; no additional application dependency is needed. |
+
+The locally staged tools are under `build/qnn-profile-tools/`. The offline
+verification report is `data/w8-targeted-profiling/tool-audit.json`.
+These are development tools only, not new translation executables or package
+dependencies. No profiler installer, driver update, elevated capture, device
+reset or system configuration change was performed in this investigation.
+
+If actual hardware-counter collection is chosen later, prefer **Qualcomm
+Profiler**, whose current user guide explicitly documents
+WoS DSP/NSP and bandwidth capabilities, over assuming that the similarly named
+Snapdragon Profiler exposes the same counters. The latter product warns that
+DSP support is not available on every platform. Installation is through
+Qualcomm Software Center and may require the user's account/license acceptance.
+Use the native ARM64 product and its supplied WoS components, not Android
+ADB/server instructions. On WoS, `qprof --configure` is not supported.
+
+After installation, first run `qprof --help` and `qprof --capabilities`.
+Use the returned capability identifiers rather than hard-coding example names:
+the documentation itself uses several DSP/NSP names. Generate a configuration
+for those capabilities with `--generate-config --capabilities-list ...`.
+The following are documented metric IDs to request only when supported:
+
+| Question | Candidate metrics |
+| --- | --- |
+| Is matrix execution busy? | HMX utilization `4480`, active cycles `4481`, clock `4521` |
+| Is vector work or a load dependency dominating? | HVX utilization `4352`, L2-load stalls `4358`, L2-load-miss bandwidth `4372` |
+| Is transfer/synchronization dominating? | UDMA active `4496`, descriptor-fetch stalls `4497`, stalls `4498`, DLBC wait `4501` |
+| Is the NPU using substantial DDR bandwidth? | NSP bandwidth at DDR `5638`, NSP bandwidth utilization `5639` |
+| Did a power vote change the clock? | QDSP clock `4182`, HMX clock `4521`; distinguish measured clocks from vote/projected values |
+
+Metric availability, units and chipset-specific meanings must be checked
+against the installed version and device. Start with a small counter set,
+bounded capture and unprofiled control to measure observer overhead. Capture
+the normal resident 191-word workload after warmup; align with the existing
+QPC request markers and distinguish prefill from decode. Counters may be
+system-wide: unrelated accelerator workloads invalidate attribution. Preserve
+raw samples and reject unsupported/constant-zero counters as evidence of
+utilization. Qualcomm Profiler supports trace/CSV output and a documented
+WoS ETW-to-WPA path; its provider/profile is required in addition to WPR.
+
+#### QNN Op-Trace Capture Gap
+
+The pinned SDK's HTP guide requires op-trace at both preparation and execution:
+`--profiling_level detailed --profiling_option optrace` for the vendor tools.
+Preparation produces a matching schematic; execution produces the native
+profiling log. The viewer's op-trace reader consumes both and can generate a
+Chrome trace, lowered graph JSON and QHAS HTML/JSON. `--zoom_start` and
+`--zoom_end` restrict the analysis to a subnetwork; these are analysis filters,
+not proof that capture overhead is limited to that subnetwork. Memory graphs
+are conditional on availability, not a guarantee of measured hardware PMUs.
+
+Our builder currently passes no profile handle to `graph_finalize`, and our
+runtime emits scalar events only. The ABI table leaves `profile_set_config`
+and `profile_get_extended_event_data` untyped. The SDK defines op-trace as
+profile config option 2 on detailed level, and extended events can contain
+timestamped opaque objects. Merely selecting detailed level, or importing our
+`QNN_EVENT` text into the viewer, cannot supply the missing schematic and native
+trace payloads. Op-trace is distinct from linting level 7001, but that does not
+establish it is safe on this runtime; do not retry the failed linting mode.
+
+The smallest useful next capture is an isolated one-row W8/FP16 MLP graph with
+the production projection dimensions and quantization, followed by the head
+and then a real partition if warranted. Build its schematic with a typed,
+SDK-checked profiling configuration; collect native logs through the vendor
+runner or a verified extended-event collector, not an invented log format.
+Our checksummed project bundle is not a raw vendor context binary, and the
+vendor runner needs correctly named/shaped tensor inputs. A native export path
+must verify the envelope before extracting a diagnostic payload and supply
+representative tensors; it must not reinterpret or modify installed bundles.
+Keep captures bounded and isolated, check output parity and normal execution
+afterward, and stop immediately on another transport/reset failure.
+
+The discriminating questions are whether time accumulates in lowered
+dequantization/vector kernels, DRAM-to-VTCM transfers and waits, or matrix
+kernels with low useful one-row throughput. Compare op-trace attribution with
+hardware counters before choosing a fused/vector GEMV implementation, a
+different weight layout, or a transfer/scheduling change. No such cause has
+yet been measured here, and no new production optimization is claimed.
+
+Two tempting shortcuts are not justified by the SDK documentation:
+`weights_packing` packs 8-bit storage whose values fit in 4 bits and does not
+promise runtime improvement; it is not a general W8 prepacking switch.
+Hextimate is explicitly restricted to Auto SDK builds and supplies estimates,
+not measurements of this laptop. Detailed node cycles also cannot be converted
+directly into wall time because operations can execute in parallel.
+
+Sources checked: pinned SDK `QNN/general/htp/htp_backend.html`, `QnnProfile.h`
+and `HTP/QnnHtpProfile.h`; public Qualcomm Profiler User Guide revision AM:
+[supported chipsets](https://docs.qualcomm.com/doc/80-54323-2/topic/supported-chipsets.html),
+[metrics and capabilities](https://docs.qualcomm.com/doc/80-54323-2/topic/metrics-and-capabilities.html),
+[setup](https://docs.qualcomm.com/doc/80-54323-2/topic/getting-started.html), and
+[CLI / WPA workflow](https://docs.qualcomm.com/doc/80-54323-2/topic/command-line-interface.html).
+These describe tool capabilities; the local audit does not certify hardware
+counter support on the installed driver/firmware.
+
 ### Local Comparison
 
 The normal portable package is `distro/translate/` (25 files, 4.31 GiB).
