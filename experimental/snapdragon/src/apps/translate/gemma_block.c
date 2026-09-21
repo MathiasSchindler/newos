@@ -41,6 +41,7 @@ u32 gemma_block_tensor(GemmaBlock *block, const char *name, u32 type, u32 dtype,
     }
     if (block->internal && type == QNN_TENSOR_TYPE_APP_READ &&
         !(block->internal == 2 && same_name(name, "k-rmsnorm")) &&
+        !(block->internal == 3 && same_name(name, "output")) &&
         !same_name(name, "k-rope") && !same_name(name, "v-projection") && !same_name(name, "logits") &&
         !same_name(name, "selected-token") && !same_name(name, "finite-logits"))
         type = QNN_TENSOR_TYPE_NATIVE;

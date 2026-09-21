@@ -49,6 +49,19 @@ static u32 selected_token;
 static u16 selected_finite;
 static int cpu_selection;
 static int compile_selection;
+
+static int translate_detect_partitions(void) {
+    char path[1100]; join(path, binding_path, partition_suffixes[0]);
+    void *file = CreateFileA(path, 0x80000000U, 1, 0, 3, 0x80U, 0);
+    if (file == (void *)(u64)-1) {
+        u32 error = GetLastError();
+        return error == 2 || error == 3;
+    }
+    if (!CloseHandle(file)) return 0;
+    prompt_partitioned = 1; prompt_bundle = 1;
+    if (!padded_decode) force_decode = 1;
+    return 1;
+}
 static void *quiet_sink, *saved_stderr;
 static u8 translation_output[GEMMA_TOKENIZER_MAX_BYTES];
 static u16 console_output[GEMMA_TOKENIZER_MAX_BYTES];
@@ -234,14 +247,14 @@ static int translate_arguments(void) {
         text("Usage: translate.exe --from de --to en TEXT\n"
              "Optional: --bindings PATH --tokenizer PATH --decode --padded-decode --qnn-profile --verify-decode\n"
              "Output: --quiet suppresses all diagnostics; --no-stream buffers until complete.\n"
-             "Shared-weight bundle is automatic when installed; --bundle requires it.\n"
+             "Shared-weight bundles and partitions are automatic when installed; --bundle or --partitions requires them.\n"
              "Diagnostics: --cpu-selection --compile-selection --serial-load --performance (scoped HTP power vote).\n"
              "Use --qnn-profile-detailed for per-operation events.\n"
              "Use --batch instead of TEXT for UTF-8 lines on stdin; languages stay fixed.\n"
              "Use --stdin instead of TEXT for a multiline UTF-8 document (up to 196607 bytes).\n"
              "Long text is split automatically; completed pieces are streamed.\n"
              "--max-tokens 1..256 opts into a strict single-request output limit.\n"
-             "Experimental W4 NPU runtime; 512 tokens per piece, 4 MiB output cap. Exit 2 means incomplete.\n");
+             "W4/W8 NPU runtime; 512 tokens per piece, 4 MiB output cap. Exit 2 means incomplete.\n");
         ExitProcess(0);
     }
     u32 size = GetModuleFileNameW(0, executable, 1024);
@@ -253,6 +266,7 @@ static int translate_arguments(void) {
     join(tokenizer_path, directory, "../models/translategemma-4b-stage4/tokenizer.gta");
 #ifdef GEMMA_GUI
     translate_quiet = 1; prompt_bundle = 1; force_decode = 1;
+    if (!translate_detect_partitions()) return 0;
     u32 bytes; u8 *data = read_file(tokenizer_path, &bytes);
     tokenizer_work = allocate(0, sizeof(*tokenizer_work));
     if (!data || !tokenizer_work || !gemma_tokenizer_open(&tokenizer, data, bytes)) return 0;
@@ -272,6 +286,7 @@ static int translate_arguments(void) {
         if (equal(option, "--padded-decode")) { padded_decode = 1; continue; }
         if (equal(option, "--decode")) { force_decode = 1; continue; }
         if (equal(option, "--bundle")) { prompt_bundle = 1; force_decode = 1; continue; }
+        if (equal(option, "--partitions")) { prompt_partitioned = 1; prompt_bundle = 1; force_decode = 1; continue; }
         if (equal(option, "--verify-decode")) { force_decode = 1; verify_decode = 1; continue; }
         if (equal(option, "--qnn-profile")) { qnn_profile_requested = 1; continue; }
         if (equal(option, "--qnn-profile-detailed")) { qnn_profile_requested = 2; continue; }
@@ -305,7 +320,7 @@ static int translate_arguments(void) {
         if (quiet_sink == (void *)(u64)-1) { quiet_sink = 0; return 0; }
         if (!SetStdHandle((u32)-12, quiet_sink)) return 0;
     }
-    if (force_decode && padded_decode) return 0;
+    if (!translate_detect_partitions() || (force_decode && padded_decode)) return 0;
     if (!force_decode && !padded_decode && maximum_tokens > 1) {
         char path[1100]; join(path, binding_path, ".bundle.context");
         void *file = CreateFileA(path, 0x80000000U, 1, 0, 3, 0x80U, 0);
@@ -334,6 +349,40 @@ static int translate_arguments(void) {
 #endif
 }
 
+static u64 translate_execute(const QnnInterfaceV2 *api, QnnProfileHandle sample) {
+    if (!prompt_partitioned)
+        return api->graph_execute(prompt_blocks[0].graph, prompt_inputs, prompt_input_count,
+                                   prompt_outputs, prompt_output_count, sample, 0);
+    for (u32 partition = 0; partition < 3; ++partition) {
+        u32 begin = partition_bounds[partition], end = partition_bounds[partition + 1];
+        QnnTensor inputs[256], outputs[80]; u32 input_count = 0, output_count = 0;
+        for (u32 layer_index = begin; layer_index < end; ++layer_index) {
+            GemmaBlock *current = &prompt_blocks[layer_index];
+            for (u32 index = 0; index < current->count; ++index) {
+                QnnTensor tensor = current->tensors[index].tensor;
+                if (tensor.data.v1.type == QNN_TENSOR_TYPE_APP_WRITE) {
+                    if (input_count == 256) return 1;
+                    inputs[input_count++] = tensor;
+                } else {
+                    if (output_count == 80) return 1;
+                    outputs[output_count++] = tensor;
+                }
+            }
+        }
+        u64 code = api->graph_execute(prompt_blocks[begin].graph, inputs, input_count, outputs, output_count, sample, 0);
+        if (code) { status("failed partition", partition); return code; }
+        if (end != 34) {
+            GemmaBlockTensor *output = prompt_tensor(end - 1, "output"), *input = prompt_tensor(end, "input");
+            if (!output || !input || output->bytes != input->bytes) return 1;
+            const u16 *values = output->buffer;
+            for (u32 index = 0; index < output->bytes / 2; ++index)
+                if ((values[index] & 0x7c00) == 0x7c00) { text("Nonfinite partition boundary\n"); return 1; }
+            memcpy(input->buffer, output->buffer, output->bytes);
+        }
+    }
+    return 0;
+}
+
 static int translate_step(const QnnInterfaceV2 *api, const u8 *embedding_weights,
                            const GemmaArtifactHeader *header, u32 position, const u32 *tokens, u32 count) {
     PROFILE_START(prepare_started);
@@ -341,17 +390,20 @@ static int translate_step(const QnnInterfaceV2 *api, const u8 *embedding_weights
     float *positions = prompt_tensor(0, "positions")->buffer;
     memset(embedding, 0, prompt_rows * 2560U * 2U);
     for (u32 row = 0; row < prompt_rows; ++row) positions[row] = row < count ? (float)(position + row) : 0;
+    if (prompt_partitioned) for (u32 partition = 1; partition < 3; ++partition)
+        memcpy(prompt_tensor(partition_bounds[partition], "positions")->buffer, positions, prompt_rows * sizeof(*positions));
     for (u32 row = 0; row < count; ++row) {
         u32 token = tokens[row]; float values[2560];
         if (token >= 262145) return 0;
         const u8 *scale = embedding_weights + header->scale_offset + token * 2U;
-        if (!gemma_numeric_dequantize(embedding_weights + (u64)token * 1280, 4, 2560,
+        if (!gemma_numeric_dequantize(embedding_weights + (u64)token * (2560U * bits / 8U), bits, 2560,
                                       (u16)(scale[0] | (u16)scale[1] << 8), values)) return 0;
         for (u32 channel = 0; channel < 2560; ++channel)
             embedding[row * 2560 + channel] = half(gemma_numeric_f16(half(values[channel])) *
                                                    (gemma_numeric_f16(half(50.59644256269407f)) / 32.0f));
     }
-    for (u32 owner = 0; owner <= 5; owner += 5) {
+    for (u32 partition = 0; partition < (prompt_partitioned ? 3U : 1U); ++partition)
+    for (u32 owner = partition_bounds[partition]; owner <= partition_bounds[partition] + 5; owner += 5) {
         u16 *mask = prompt_tensor(owner, "mask")->buffer;
         for (u32 head = 0; head < 8; ++head) for (u32 row = 0; row < prompt_rows; ++row) for (u32 key = 0; key < 512 + prompt_rows; ++key) {
             u32 absolute = key < 512 ? key : position + key - 512;
@@ -365,7 +417,7 @@ static int translate_step(const QnnInterfaceV2 *api, const u8 *embedding_weights
     PROFILE_START(execute_started);
     u32 sample_bit = position < request_count ? 1U : 2U;
     QnnProfileHandle sample = execution_profile && !(qnn_sampled & sample_bit) ? execution_profile : 0;
-    u64 code = api->graph_execute(prompt_blocks[0].graph, prompt_inputs, prompt_input_count, prompt_outputs, prompt_output_count, sample, 0);
+    u64 code = translate_execute(api, sample);
     PROFILE_END(position < request_count ? PROFILE_PREFILL_EXECUTE : PROFILE_DECODE_EXECUTE, execute_started);
 #ifdef GEMMA_TRANSLATE_PROFILE
     if (position >= request_count) {
@@ -746,7 +798,7 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
     GemmaArtifactHeader header;
     const u8 *embedding = artifact("language_model.model.embed_tokens.weight", &header);
     PROFILE_END(PROFILE_EMBEDDING_LOAD, embedding_started);
-    if (!embedding || header.element_type != GEMMA_ARTIFACT_ELEMENT_S4 || header.rank != 2 ||
+    if (!embedding || header.element_type != (bits == 4 ? GEMMA_ARTIFACT_ELEMENT_S4 : GEMMA_ARTIFACT_ELEMENT_S8) || header.rank != 2 ||
         header.dimensions[0] != 262208 || header.dimensions[1] != 2560 || header.group_size != 2560) return 0;
     PROFILE_START(buffers_started);
     if (!prompt_buffers(api, context, fd, 512)) return 0;
@@ -776,7 +828,7 @@ static int translate_run(const QnnInterfaceV2 *api, QnnBackendHandle backend, Qn
         RpcFd rpc_fd = (RpcFd)GetProcAddress(rpc, "rpcmem_to_fd");
         if (!rpc_alloc || !rpc_fd) { FreeLibrary(rpc); return 0; }
         prompt_rows = 1; memset(prompt_blocks, 0, sizeof(prompt_blocks));
-        int ok = prompt_bundle ? prompt_bind(api, context, &prompt_bundle_header.graphs[1]) :
+        int ok = prompt_partitioned ? partitions_bind(api, 1) : prompt_bundle ? prompt_bind(api, context, &prompt_bundle_header.graphs[1]) :
             (!api->context_create(backend, device, 0, &decode_context) &&
              prompt_restore(api, backend, device, &decode_context, 512));
         prompt_shared_bytes = 34ULL * (2 * (4 * 512 * 512 + 4096) + 2 * (4096 + 4096));

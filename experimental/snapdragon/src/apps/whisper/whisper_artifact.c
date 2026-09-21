@@ -7,10 +7,33 @@ __declspec(dllimport) void *CreateFileA(
     const char *name, unsigned int access, unsigned int sharing, void *security,
     unsigned int creation, unsigned int attributes, void *template_file
 );
+#ifdef WHISPER_RUNTIME_ONLY
+__declspec(dllimport) unsigned int GetModuleFileNameW(void *, unsigned short *, unsigned int);
+__declspec(dllimport) void *CreateFileW(const unsigned short *, unsigned int, unsigned int, void *, unsigned int, unsigned int, void *);
+#endif
 
 void *whisper_artifact_open_read(const char *path) {
     static const char prefix[] = "experimental/snapdragon/";
     void *invalid = (void *)(unsigned long long)-1;
+#ifdef WHISPER_RUNTIME_ONLY
+    unsigned short local[32768];
+    unsigned int index, used = GetModuleFileNameW(0, local, 32768);
+    if (!used || used >= 32768) return invalid;
+    while (used && local[used - 1] != '\\' && local[used - 1] != '/') --used;
+    for (index = 0; prefix[index]; ++index) if (path[index] != prefix[index]) return invalid;
+    path += index;
+    if (path[0] == 'b' && path[1] == 'u' && path[2] == 'i' && path[3] == 'l' && path[4] == 'd' && path[5] == '/') path += 6;
+    else {
+        if (used + 3 >= 32768) return invalid;
+        local[used++] = '.'; local[used++] = '.'; local[used++] = '/';
+    }
+    while (*path) {
+        if (used + 1 >= 32768) return invalid;
+        local[used++] = (unsigned char)*path++;
+    }
+    local[used] = 0;
+    return CreateFileW(local, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+#else
     void *handle = CreateFileA(path, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
     unsigned int index;
     if (handle != invalid) return handle;
@@ -18,6 +41,7 @@ void *whisper_artifact_open_read(const char *path) {
         if (path[index] != prefix[index]) return handle;
     }
     return CreateFileA(path + index, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+#endif
 }
 
 static unsigned int read_u32(const unsigned char *bytes) {

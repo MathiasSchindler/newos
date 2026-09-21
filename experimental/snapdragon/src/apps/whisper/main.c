@@ -4005,11 +4005,13 @@ static u32 load_model_context_cache(
     u64 status;
 
     *loaded = 0;
+#ifndef WHISPER_RUNTIME_ONLY
     if (handle == invalid_handle) {
         handle = CreateFileA(
             model_context_cache_local, 0x80000000U, 1U, 0, 3U, 0x80U, 0
         );
     }
+#endif
     if (handle == invalid_handle) return 0U;
     if (!read_handle_exact(handle, artifact_bytes, sizeof(artifact_bytes)) ||
         !whisper_artifact_decode_header(artifact_bytes, &artifact) ||

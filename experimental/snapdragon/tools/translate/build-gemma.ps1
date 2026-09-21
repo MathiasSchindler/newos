@@ -15,6 +15,10 @@ param(
     [switch]$ProfileTranslate,
     [switch]$BuildDecode,
     [switch]$BuildBundle,
+    [switch]$BuildPartitions,
+    [switch]$PrepareBindings,
+    [ValidateSet(4, 8)][int]$WeightBits = 4,
+    [ValidateRange(1, 3600)][int]$BuildTimeoutSeconds = 600,
     [switch]$TestEnvelope,
     [switch]$ScalarHash,
     [switch]$RowMajorProjections,
@@ -125,7 +129,7 @@ try {
             if ($LASTEXITCODE -ne 0) { throw 'Native document tests failed' }
         }
     }
-    if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $TestEnvelope -or $TestSelection -or $BuildSelection) {
+    if ($TestBlocks -or $TestPrompt -or $BuildDecode -or $BuildBundle -or $BuildPartitions -or $PrepareBindings -or $TestEnvelope -or $TestSelection -or $BuildSelection) {
         $blockDir = Join-Path $BuildDir 'gemma-block'
         New-Item -ItemType Directory -Force -Path $blockDir | Out-Null
         $blockBinary = Join-Path $blockDir 'test-gemma-block.exe'
@@ -144,6 +148,15 @@ try {
         }
         Get-ChildItem -LiteralPath $BuildDir -File | Where-Object { $_.Extension -in '.dll', '.so', '.cat' } |
             Copy-Item -Destination $blockDir -Force
+        if ($PrepareBindings) {
+            if ($WeightBits -eq 8 -and [IO.Path]::GetFullPath($BuildDir).TrimEnd('\','/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
+                throw 'Prepare a W8 candidate in an isolated -BuildDir before deployment'
+            }
+            $bindingPath = Join-Path $blockDir 'prompt-512.gmb'
+            if (Test-Path -Path ($bindingPath + '.*bundle.context')) { throw 'Existing bundle: do not replace its binding during preparation' }
+            & "$PSScriptRoot/test-gemma-block.ps1" -Binary $blockBinary -PromptBucket 512 -Bits $WeightBits -PrepareOnly `
+                -FixtureDir experimental/snapdragon/models/translategemma-4b-stage7
+        }
         if ($TestSelection) {
             & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') selection-regression
             if ($LASTEXITCODE -ne 0) { throw 'NPU selection regression failed' }
@@ -156,9 +169,30 @@ try {
             & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-decode-512
             if ($LASTEXITCODE -ne 0) { throw 'Decode context build failed' }
         }
-        if ($BuildBundle) {
-            & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') build-bundle-512
-            if ($LASTEXITCODE -ne 0) { throw 'Shared-weight bundle build failed' }
+        if ($BuildBundle -or $BuildPartitions) {
+            if ($BuildBundle -and $BuildPartitions) { throw 'Choose monolithic or partitioned bundle construction' }
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName = (Resolve-Path $blockBinary).Path
+            $mode = if ($BuildPartitions) { 'build-partitions-512' } else { 'build-bundle-512' }
+            $start.Arguments = '"' + (Resolve-Path (Join-Path $blockDir 'prompt-512.gmb')).Path + '" ' + $mode
+            $start.WorkingDirectory = (Resolve-Path $blockDir).Path
+            $start.UseShellExecute = $false
+            $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+            $process = [Diagnostics.Process]::new(); $process.StartInfo = $start
+            $output = [IO.File]::Create((Join-Path $start.WorkingDirectory ($mode + '.stdout.txt')))
+            $errors = [IO.File]::Create((Join-Path $start.WorkingDirectory ($mode + '.stderr.txt')))
+            try {
+                Write-Output ('Building/restoring shared bundle, timeout {0}s; logs in {1}' -f $BuildTimeoutSeconds,$start.WorkingDirectory)
+                if (-not $process.Start()) { throw 'Cannot launch shared bundle builder' }
+                $stdout = $process.StandardOutput.BaseStream.CopyToAsync($output)
+                $stderr = $process.StandardError.BaseStream.CopyToAsync($errors)
+                $finished = $process.WaitForExit($BuildTimeoutSeconds * 1000)
+                if (-not $finished) { $process.Kill(); $process.WaitForExit() }
+                $null = $stdout.GetAwaiter().GetResult(); $null = $stderr.GetAwaiter().GetResult()
+                if (-not $finished) { throw 'Shared-weight bundle build timed out; candidate not deployed' }
+                if ($process.ExitCode -ne 0) { throw ('Shared-weight bundle build failed: ' + $process.ExitCode) }
+                Write-Output 'PASS shared-weight bundle build and restore'
+            } finally { $output.Dispose(); $errors.Dispose(); $process.Dispose() }
         }
         if ($TestEnvelope) {
             & $blockBinary (Join-Path $blockDir 'prompt-512.gmb') envelope-regression

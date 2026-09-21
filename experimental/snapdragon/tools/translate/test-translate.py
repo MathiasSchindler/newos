@@ -24,6 +24,11 @@ def main():
     parser.add_argument("--selection-cache", action="store_true", help="Selector cache corruption, parity and interleaved timing")
     parser.add_argument("--load-benchmark", action="store_true", help="Interleaved serial/overlapped bundle loading")
     parser.add_argument("--documents", action="store_true", help="Long-text, stdin and strict-limit regression")
+    parser.add_argument("--bindings", type=Path)
+    parser.add_argument("--tokenizer", type=Path)
+    parser.add_argument("--partitions", action="store_true")
+    parser.add_argument("--quality", choices=("smoke", "diagnostic"), help="Bounded NPU candidate evaluation; outputs require semantic review")
+    parser.add_argument("--case", action="append", default=[], help="Filter diagnostic case IDs")
     options = parser.parse_args()
     binary = options.binary.resolve()
     if options.profile:
@@ -31,6 +36,13 @@ def main():
     results = []
 
     def run(name, arguments, expected_code, expected_text=None, input_bytes=None, observe=False):
+        arguments = list(arguments)
+        if options.bindings:
+            arguments = ["--bindings", str(options.bindings.resolve()), *arguments]
+        if options.tokenizer:
+            arguments = ["--tokenizer", str(options.tokenizer.resolve()), *arguments]
+        if options.partitions:
+            arguments = ["--partitions", *arguments]
         started = time.perf_counter()
         arrivals = []
         if observe:
@@ -51,8 +63,15 @@ def main():
                     errors.seek(0)
                     result = subprocess.CompletedProcess(process.args, code, b"".join(chunks), errors.read())
         else:
-            result = subprocess.run([str(binary), *arguments], cwd=binary.parent.parent,
-                                    capture_output=True, input=input_bytes, timeout=240 if options.documents else 120, check=False)
+            try:
+                result = subprocess.run([str(binary), *arguments], cwd=binary.parent.parent,
+                                        capture_output=True, input=input_bytes, timeout=240 if options.documents else 120, check=False)
+            except subprocess.TimeoutExpired as error:
+                results.append(dict(name=name, arguments=arguments, exit_code=124,
+                                    stdout=(error.stdout or b"").decode("utf-8", errors="replace"),
+                                    stderr=(error.stderr or b"").decode("utf-8", errors="replace"),
+                                    wall_seconds=time.perf_counter() - started, timed_out=True))
+                raise
         output = result.stdout.decode("utf-8", errors="strict")
         diagnostics = result.stderr.decode("utf-8", errors="strict")
         record = dict(name=name, arguments=arguments, exit_code=result.returncode,
@@ -63,7 +82,7 @@ def main():
             record["last_byte_seconds"] = arrivals[-1]
             record["byte_arrivals_seconds"] = arrivals
         print(json.dumps({key: value for key, value in record.items() if key != "stderr"}, ensure_ascii=True), flush=True)
-        assert result.returncode == expected_code, name
+        assert result.returncode in (expected_code if isinstance(expected_code, tuple) else (expected_code,)), name
         if expected_text is not None:
             assert output == expected_text, (name, output)
         if "--quiet" in arguments:
@@ -76,6 +95,26 @@ def main():
         return record
 
     try:
+        if options.quality:
+            if not options.case:
+                smoke = run("greeting-decode-parity", ["--from", "de", "--to", "en", "--max-tokens", "16",
+                            "--verify-decode", "Guten Morgen."], 0, "Good morning.\n")
+                assert "PASS decode KV/logits parity position:" in smoke["stderr"]
+                if options.partitions:
+                    assert smoke["stderr"].count("bundle restore: 0") == 3
+                    assert "TranslateGemma 4B W8" in smoke["stderr"]
+            if options.quality == "diagnostic":
+                corpus = json.loads(Path(__file__).with_name("translategemma-quality.json").read_text(encoding="utf-8"))
+                for case in corpus["cases"]:
+                    if case["split"] != "diagnostic":
+                        continue
+                    if options.case and case["id"] not in options.case:
+                        continue
+                    record = run(case["id"], ["--from", case["source"], "--to", case["target"],
+                                 "--max-tokens", "128", case["text"]], (0, 2))
+                    record.update(source=case["text"], meaning=case["meaning"], references=case["references"])
+            print("PASS candidate execution checks; diagnostic translations require semantic review", flush=True)
+            return
         if options.documents:
             common = ["--from", "de", "--to", "en"]
             sentence = "Guten Tag, mein Name ist Hase. Ich wei\u00df von nichts."
@@ -351,7 +390,7 @@ def main():
             assert "QNN_SAMPLE decode" in sampled["stderr"] and "QNN_EVENT Accelerator" in sampled["stderr"], sampled
         print("PASS translator CLI" + (" and NPU integration" if options.hardware else ""), flush=True)
     finally:
-        report = binary.parent / ("translate-document-results.json" if options.documents else "translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
+        report = binary.parent / ("translate-quality-" + options.quality + ("-" + "-".join(options.case) if options.case else "") + "-results.json" if options.quality else "translate-document-results.json" if options.documents else "translate-load-results.json" if options.load_benchmark else "translate-selection-cache-results.json" if options.selection_cache else "translate-performance-results.json" if options.performance else "translate-bundle-results.json" if options.bundle else "translate-streaming-profile-results.json" if options.profile else
                       "translate-streaming-results.json" if options.streaming else "translate-streaming-test-results.json")
         report.write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

@@ -25,6 +25,7 @@ docs/
 data/                    Original downloads, sample inputs and archived run evidence
 models/                  Model weights, prepared artifacts and reference fixtures
 build/                   Native binaries, QNN runtime, compiled contexts and scratch builds
+distro/                  Independent minimal deployment folders; generated, Git-ignored
 ```
 
 `data/`, `models/` and `build/` are local, Git-ignored storage. The central
@@ -90,6 +91,82 @@ The equivalent PowerShell entry is [make.ps1](make.ps1), for example
 it does not change machine or user policy. VS Code tasks **Snapdragon build**,
 **Snapdragon clean** and **Snapdragon rebuild** invoke the same implementation.
 Commands work independently of the current working directory.
+
+### Portable distributions
+
+```powershell
+.\make.cmd distro                 # Build and package all three applications
+.\make.cmd distro -WhatIf         # List the allowlist without building/copying
+.\make.cmd test-distro            # Small synthetic packaging contract tests
+.\make.cmd distro -DistroDir C:\releases\snapdragon-x
+```
+
+Each of `distro/whisper/`, `distro/translate/` and `distro/ocr/` is independent:
+copy the entire application folder, without the checkout or `build/`. Each has
+its own `bin/`, `models/`, licenses, README and SHA-256 `manifest.json`. The
+manifest identifies the purpose and exact size/hash of every shipped file
+except itself. Documentation and licenses are explicitly distinguished from
+inference inputs. No launch script, Python, CRT, SDK installation or compiler
+is needed at runtime. Both existing GUIs are included; Whisper is a CLI.
+
+| Package | Runtime/model inputs | Packaged size |
+| --- | --- | --- |
+| Whisper | Medium CLI, default m1c self-fused NPU context, CPU decoder weights and token bytes | 2.32 GiB / 16 files |
+| TranslateGemma | W8 CLI/GUI, three shared 512-token partition bundles, selection context, tokenizer, embedding and four positional tables | 4.31 GiB / 25 files |
+| GLM-OCR | Engine/GUI, 27 vision, 18 text and 10 generation `.got` files | 2.17 GiB / 70 files |
+
+Counts include runtime support and legal/documentation metadata. Whisper and
+TranslateGemma need only `QnnHtp.dll`, `QnnHtpV73Stub.dll`, the V73 skeleton SO
+and CAT. OCR additionally needs `QnnHtpPrepare.dll`. OCR builds its disposable
+`bin/ocr-app/graph-cache/` on first use; its GUI creates `runs/` beside the
+engine. Neither cache nor run output is shipped. Keep the OCR folder writable.
+The CLI requires a pre-created empty output directory, as shown in its README.
+
+The main `build/translate.exe` and `build/translate-gui.exe`, as well as
+`distro/translate/`, now use 4B W8 automatically. A separate W8 executable is
+not needed. See [translation runtime notes](docs/apps/translate.md#installed-w8-runtime)
+for validation, remaining quality limitations and the W4 rollback location.
+
+Whisper's runtime model/context paths are executable-relative; audio paths
+remain relative to the caller. The developer builder retains its old lookup
+rules. TranslateGemma uses a generated five-entry binding with paths relative
+to that binding; the original binding and models are not modified. Whisper
+ships Medium/default offload only. Alternate models, graph building,
+TranslateGemma's legacy decode modes and diagnostics need development assets
+and are outside the minimal packages.
+
+`distro` uses the existing build/preservation lock and build commands. It copies
+an explicit allowlist, checks source/copy hashes and publishes only completed
+staging output. It refuses an existing destination: use a new `-DistroDir` for
+another release. `clean` does not delete distributions. A dry-run needs the
+inputs already restored in `build/`; a real distro build restores them normally.
+No original model download or conversion is started.
+
+These packages target **Windows 11 ARM64, Snapdragon X / Hexagon V73**, with a
+compatible OEM Qualcomm NPU/FastRPC driver installed. Windows system DLLs and
+driver files are not bundled. The Qualcomm DLLs import Windows UCRT APIs, and
+the V73 stub imports the driver's `libcdsprpc.dll`; the application executables
+themselves have no CRT imports. The three Qualcomm DLLs are not a substitute
+for that driver. Other NPU generations and arbitrary driver versions are not
+guaranteed; another physical machine has not been tested. Existing model quality
+limitations are unchanged. The model cards and Qualcomm license/notice files
+are retained; review their full redistribution terms before public release.
+
+The VS Code **Snapdragon distro inference tests** task, or
+`tools/shared/test-distro.ps1`, verifies manifest hashes and copies only listed
+files into a temporary directory outside the checkout (with spaces in its
+path). It runs all three applications from an empty working directory with a
+system-only `PATH`, without QNN SDK environment variables; sample inputs and
+test logs are kept separate from distribution contents. Missing Whisper
+contexts and translation embeddings must fail rather than use checkout assets.
+Reports are preserved under `data/distro-verification-*/`. This development
+test uses the existing development Python interpreter for native GUI automation;
+it does not add any application runtime dependency. The relocation check also
+opens both GUIs, translates a greeting in the translation GUI, and loads an
+image preview in the OCR GUI. OCR inference is checked through the engine CLI.
+The complete relocated run passed on 2026-09-21, including cold OCR graph-cache
+creation and intentional 32-token termination (exit 3). Its receipt is
+`data/distro-verification-b3888cb1078b46ba94def5abfd5e6885/results.json`.
 
 Build requires Clang/LLVM and the pinned QAIRT archive in
 `data/v2.50.0.260828.zip`. It extracts and verifies the QNN runtime locally,

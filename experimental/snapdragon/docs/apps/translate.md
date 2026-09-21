@@ -12,6 +12,109 @@ and reference generation.
 The first release supports text-to-text translation. The SigLIP vision tower and
 image translation are explicitly deferred.
 
+## Installed W8 Runtime
+
+The main `build/translate.exe` and `build/translate-gui.exe` now use 4B W8A16
+automatically, with the three partitions under `build/gemma-block/`. The normal
+`distro/translate/` package is updated too. No separate executable or precision
+flag is needed. `build/gemma-w8/` is retained only as the construction workspace.
+The runtime uses the existing
+Stage 3 per-output-channel W8 weights and FP16 activations. No production
+Python, CPU projection fallback, or new runtime library is introduced.
+
+Main CLI/GUI and distribution checks passed after installation. The receipt and
+GUI screenshot are in `data/main-w8-verification/`. Previous W4 executables,
+bindings, contexts and package are preserved in
+`data/main-w8-install-20260921-135133/` for rollback. Normal clean/rebuild now
+restores all three partition contexts, not just the monolithic context names.
+
+One full W8 graph exceeds the V73 QNN allocation limit (`graphFinalize` 1002,
+"memory usage too large"). The working layout uses three contexts covering
+layers 0-11, 12-23, and 24-33 plus the output head. Each context shares weights
+between 128-row prefill and one-row decode. Only FP16 hidden states cross
+partition boundaries; KV buffers remain registered with their owning context
+and are shared by prefill and decode. Boundary values are checked for NaN/Inf.
+All three contexts remain resident. The payloads total 3,920,330,752 bytes,
+excluding envelopes, the CPU embedding lookup, tokenizer and runtime.
+
+The CLI and GUI detect `.part-0.bundle.context` alongside the binding and
+require all three partitions. `--partitions` explicitly requires this layout.
+Envelopes validate precision against the binding, partition-specific graph
+names and complete I/O schemas, runtime/model identity, sizes and SHA-256.
+Mixed precision, missing partitions and corrupted payloads fail rather than
+falling back to another model.
+
+From the repository root, prepare an empty candidate directory with the five
+matching QNN build/runtime files, then use:
+
+```powershell
+$candidate = 'experimental/snapdragon/build/gemma-w8'
+./experimental/snapdragon/tools/translate/build-gemma.ps1 -BuildDir $candidate -PrepareBindings -WeightBits 8 -TestEnvelope
+./experimental/snapdragon/tools/translate/build-gemma.ps1 -BuildDir $candidate -TestBlocks -BlockBits 8 -RowMajorProjections
+./experimental/snapdragon/tools/translate/build-gemma.ps1 -BuildDir $candidate -BuildPartitions -BuildSelection -RowMajorProjections
+./experimental/snapdragon/make.ps1 distro -DistroApp translate -TranslateBuildDir $candidate -DistroDir experimental/snapdragon/distro-w8
+```
+
+The five files are `QnnHtp.dll`, `QnnHtpPrepare.dll`, `QnnHtpV73Stub.dll`,
+`libQnnHtpV73Skel.so` and `libqnnhtpv73.cat`. Copy them from the pinned central
+runtime; do not mix SDK versions. Bundle construction has a 600-second timeout
+and durable stdout/stderr logs. Preparation refuses to overwrite a binding
+that already has bundles. The distribution command rebuilds only the selected
+CLI/GUI and does not compile graphs. It excludes Prepare and preserves W8 in
+its generated five-entry relocatable binding.
+
+The `TranslateGemma W8 execution smoke` task checks actual NPU translation and
+prefill/decode KV/logits parity. The quality harness supports `--quality
+diagnostic`, explicit `--binary`, `--bindings`, `--tokenizer`, and optional
+`--case d09` filters. It records outputs and timing, not semantic approval.
+The 24-case pilot is AI-authored/reviewed, not an independent benchmark;
+held-out examples are not used for this candidate selection.
+
+### Local Comparison
+
+The normal portable package is `distro/translate/` (25 files, 4.31 GiB).
+Open `bin/translate-gui.exe` there. Relocated CLI/GUI inference, repeated
+resident requests with language changes, all-layer decode KV/logits parity,
+missing embedding/partition rejection, precision mismatch and corrupt-header
+rejection passed with the minimal runtime. Evidence and a DPI-correct screenshot
+are in `data/w8-distro-verification/`; `results.json` records completion.
+Native checks include 7,470 tokenizer references, 323 numerical scalar cases,
+416 document checks, both local/global W8 blocks and 1,200 envelope corruption
+cases. The applications retain the no-CRT PE import contract.
+
+GitHub Copilot's semantic review of all 24 diagnostic outputs:
+
+| Assessment | W4 | W8 |
+| --- | ---: | ---: |
+| Acceptable without a noted issue | 9 | 16 |
+| Minor wording, addition or grammar issue | 7 | 6 |
+| Major meaning/format error or truncation | 8 | 2 |
+| Reached a stop token | 22 | 24 |
+
+W4 major cases are d03, d04, d07-d10 and d13-d14. W8 fixes Japanese looping,
+substantially improves the optical-lens cases, and retains "disconnect" where
+W4 says "cut off" or "connect". W8 still changes protective cover to protective
+frame in d09, and replaces `>` in the literal tag in d22 with a guillemet.
+The latter is a regression: W4 preserves that tag. W8 minor cases are d04,
+d07-d08, d10, d18 and d23 (added qualifications, specificity or awkward grammar).
+W4 minor cases are d01-d02, d06, d17, d19-d20 and d23.
+
+These are AI judgments, not independent human review or a general benchmark.
+The existing zero-major-error pilot acceptance policy is **not met**; no
+held-out acceptance is claimed. W8 is installed as the main runtime at the
+user's request despite these remaining limitations. Median completed
+fresh-process request time was 16.92 s for W8 versus 11.55 s for W4, including
+startup/cleanup and differing output lengths, not a controlled kernel benchmark.
+W8 d09 initially timed out at 120 s, then completed in 25.46 s on its isolated
+retry. Its cause remains unknown; the successful retry is used in the table and
+latency median, not counted as proof that the timeout cannot recur.
+
+Raw W8 output records are the three `build/gemma-w8/translate-quality-diagnostic*`
+JSON reports (initial d01-d08, isolated d09, remaining d10-d24). The W4 report
+is `build/translate-quality-diagnostic-results.json` from the comparison run.
+Subsequent diagnostic runs overwrite reports; inspect each record's runtime
+precision. W4 runtime files are retained in the rollback directory above.
+
 ## Resident Windows GUI
 
 Build with `./experimental/snapdragon/tools/translate/build-gemma.ps1 -Gui`, or use the

@@ -41,6 +41,9 @@ experimental/latency/build/
 experimental/snapdragon/build/
 experimental/snapdragon/models/
 experimental/snapdragon/data/
+experimental/snapdragon/distro/
+experimental/snapdragon/distro-*/
+experimental/snapdragon/distro.staging-*/
 services/httpd/log/
 sequel/
 gui/

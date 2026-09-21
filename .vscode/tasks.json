@@ -89,22 +89,6 @@
 		{
 			"label": "GLM-OCR benchmark supplement",
 			"type": "process",
-			"command": "experimental/snapdragon/build/gemma-oracle-x64/python.exe",
-			"args": [
-				"-B",
-				"experimental/snapdragon/tools/ocr/export-glm-ocr.py",
-				"--benchmark-ocr",
-				"--benchmark-supplement",
-				"--vision-output",
-				"experimental/snapdragon/models/glm-ocr-vision-v2",
-				"--generation-build",
-				"experimental/snapdragon/build/ocr-benchmark"
-			],
-			"problemMatcher": []
-		},
-		{
-			"label": "GLM-OCR profiling build",
-			"type": "process",
 			"command": "powershell.exe",
 			"args": [
 				"-NoProfile",
@@ -1978,6 +1962,168 @@
 				"-BuildDir",
 				"${workspaceFolder}\\experimental\\snapdragon\\build"
 			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon distro contract tests",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/experimental/snapdragon/make.ps1",
+				"test-distro"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon distro preview",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/experimental/snapdragon/make.ps1",
+				"distro",
+				"-WhatIf"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon distro",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/experimental/snapdragon/make.ps1",
+				"distro"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon distro inference tests",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/experimental/snapdragon/tools/shared/test-distro.ps1"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 native gates",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"& { $ErrorActionPreference = 'Stop'; $candidate = 'experimental/snapdragon/build/gemma-w8'; & './experimental/snapdragon/tools/translate/build-gemma.ps1' -BuildDir $candidate -Test -TestNumerics -TestEnvelope }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 NPU bundle",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"& { $ErrorActionPreference = 'Stop'; $candidate = 'experimental/snapdragon/build/gemma-w8'; $runtime = 'experimental/snapdragon/build'; foreach ($name in 'QnnHtp.dll','QnnHtpPrepare.dll','QnnHtpV73Stub.dll','libQnnHtpV73Skel.so','libqnnhtpv73.cat') { Copy-Item (Join-Path $runtime $name) $candidate -Force }; Start-Transcript -Path ($candidate + '/hardware-build.log') -Force; try { $memory = Get-CimInstance Win32_OperatingSystem; Write-Output ('Available RAM GiB: {0:N2}' -f ($memory.FreePhysicalMemory / 1MB)); if ($memory.FreePhysicalMemory -lt 5MB) { throw 'Less than 5 GiB available for isolated W8 construction' }; & './experimental/snapdragon/tools/translate/build-gemma.ps1' -BuildDir $candidate -TestBlocks -BlockBits 8 -RowMajorProjections; & './experimental/snapdragon/tools/translate/build-gemma.ps1' -BuildDir $candidate -BuildBundle -BuildSelection -RowMajorProjections -BuildTimeoutSeconds 600; Write-Output 'PASS W8 BUNDLE HARDWARE BUILD' } finally { Stop-Transcript } }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 NPU partitions",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/experimental/snapdragon/tools/translate/build-gemma.ps1",
+				"-BuildDir",
+				"experimental/snapdragon/build/gemma-w8",
+				"-BuildPartitions",
+				"-RowMajorProjections",
+				"-BuildTimeoutSeconds",
+				"600"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 runtime build",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"& { $ErrorActionPreference = 'Stop'; $build = './experimental/snapdragon/tools/translate/build-gemma.ps1'; $main = 'experimental/snapdragon/build'; & $build -BuildDir $main -Translate -Test -TestNumerics; & $build -BuildDir $main -Gui; & $build -BuildDir $main -TestDocuments }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 execution smoke",
+			"type": "process",
+			"command": "${workspaceFolder}/experimental/snapdragon/build/calibration-venv/Scripts/python.exe",
+			"args": [
+				"${workspaceFolder}/experimental/snapdragon/tools/translate/test-translate.py",
+				"--quality",
+				"smoke"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 quality diagnostics",
+			"type": "process",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-Command",
+				"& { $ErrorActionPreference = 'Stop'; & './experimental/snapdragon/build/calibration-venv/Scripts/python.exe' './experimental/snapdragon/tools/translate/test-translate.py' --quality diagnostic; if ($LASTEXITCODE -ne 0) { throw 'Main W8 diagnostic execution failed' }; Write-Output 'PASS main W8 diagnostic execution; semantic review required' }"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 distro",
+			"type": "shell",
+			"command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./experimental/snapdragon/make.ps1 distro -DistroApp translate -DistroDir experimental/snapdragon/distro-next",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "TranslateGemma W8 distro validation",
+			"type": "shell",
+			"command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./experimental/snapdragon/tools/shared/test-distro.ps1 -DistroDir experimental/snapdragon/distro -ReportDir experimental/snapdragon/data/main-w8-verification/distro -TranslateOnly",
 			"isBackground": false,
 			"problemMatcher": []
 		}

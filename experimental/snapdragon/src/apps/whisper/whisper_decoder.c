@@ -153,9 +153,13 @@ static int read_exact(void *handle, void *buffer, u32 size) {
 }
 
 static void *open_bundle(const char *primary, const char *fallback) {
-    void *invalid = (void *)(usize)-1;
     void *handle = whisper_artifact_open_read(primary);
+#ifndef WHISPER_RUNTIME_ONLY
+    void *invalid = (void *)(usize)-1;
     if (handle == invalid) handle = CreateFileA(fallback, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+#else
+    (void)fallback;
+#endif
     return handle;
 }
 

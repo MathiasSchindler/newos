@@ -6,7 +6,8 @@ param(
 	[ValidateSet(0, 5)][int[]]$Layers = @(0, 5),
 	[switch]$TestCleanup,
 	[ValidateSet(0, 512, 1024, 2048)][int]$PromptBucket = 0,
-	[switch]$RestorePrompt
+	[switch]$RestorePrompt,
+	[switch]$PrepareOnly
 )
 $ErrorActionPreference = 'Stop'
 $weights = Get-Content -LiteralPath "$WeightsDir/manifest.json" -Raw | ConvertFrom-Json
@@ -29,7 +30,11 @@ if ($fixtures.schema_version -ne 2 -or $fixtures.purpose -ne $purpose -or
 $binaryPath = (Resolve-Path $Binary).Path
 $outputDir = Split-Path -Parent $binaryPath
 $selectedLayers = $Layers
-if ($PromptBucket) { $Bits = @(4); $selectedLayers = @(34) }
+if ($PromptBucket) {
+	if (-not $PrepareOnly) { $Bits = @(4) }
+	if ($Bits.Count -ne 1) { throw 'Prompt binding preparation requires one precision' }
+	$selectedLayers = @(34)
+}
 foreach ($bit in $Bits) {
 	$variant = 'w{0}a16' -f $bit
 	foreach ($layer in $selectedLayers) {
@@ -40,6 +45,7 @@ foreach ($bit in $Bits) {
 			}
 		}
 		foreach ($entry in $fixtures.artifacts) {
+			if ($PrepareOnly -and $PromptBucket -and $entry.name -notin @('fixture/prompt/local-cos','fixture/prompt/local-sin','fixture/prompt/global-cos','fixture/prompt/global-sin')) { continue }
 			if (($PromptBucket -and $entry.name.StartsWith('fixture/prompt/')) -or $entry.name.StartsWith(('fixture/{0}/layer-{1}/' -f $variant, $layer))) {
 				$entries += @{ Name = $entry.name; Path = (Resolve-Path (Join-Path $FixtureDir $entry.path)).Path }
 			}
@@ -59,6 +65,7 @@ foreach ($bit in $Bits) {
 				$writer.Write($nameBytes); $writer.Write($pathBytes)
 			}
 		} finally { $writer.Dispose(); $stream.Dispose() }
+		if ($PrepareOnly) { Write-Output ('Prepared {0} W{1} binding entries: {2}' -f $entries.Count,$bit,$bindingPath); continue }
 		$logPath = Join-Path $outputDir ('{0}-layer-{1}.log' -f $variant, $layer)
 		$runnerArguments = @($bindingPath)
 		if ($PromptBucket) {

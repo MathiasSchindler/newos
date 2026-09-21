@@ -324,9 +324,65 @@ def test_ocr(layout_only=False,build=None):
     print('PASS OCR GUI: Unicode paths, preview, repeated recognition, resize, invalid input, cancellation and shutdown',flush=True)
 
 
+def test_distro(directory, report, translate_only=False, translate_binary=None):
+    api(user, 'SetProcessDpiAwarenessContext', wt.BOOL, wt.HANDLE)(ct.c_void_p(-4))
+    directory, report = Path(directory), Path(report)
+    working = directory / 'empty working directory'
+    if translate_binary:
+        working = report / 'empty working directory'
+        working.mkdir(parents=True, exist_ok=True)
+    for app, executable, window_class in (
+        ('translate', 'translate/bin/translate-gui.exe', 'NewosTranslateGemma'),
+        ('ocr', 'ocr/bin/ocr-app/ocr-gui.exe', 'NewosGlmOcr'),
+    ):
+        if translate_only and app != 'translate':
+            continue
+        process = subprocess.Popen([str(translate_binary or directory / executable)], cwd=working)
+        window = None
+        try:
+            window = wait(process, lambda: find(process, window_class))
+            if app == 'translate':
+                wait(process, lambda: text(child(window, 106)) == 'Ready')
+                choose(child(window, 101), 'de')
+                choose(child(window, 102), 'en')
+                set_text(child(window, 103), 'Guten Morgen.')
+                send(child(window, 105), 0xf5, 0, 0)
+                wait(process, lambda: enabled(child(window, 105)))
+                assert text(child(window, 104)).strip() == 'Good morning.'
+                if translate_only:
+                    for source, target, sentence, expected in (
+                        ('en', 'ja', 'Good evening.', '\u3053\u3093\u3070\u3093\u306f\u3002'),
+                        ('de', 'en', 'Guten Morgen.', 'Good morning.'),
+                    ):
+                        choose(child(window, 101), source)
+                        choose(child(window, 102), target)
+                        set_text(child(window, 103), sentence)
+                        send(child(window, 105), 0xf5, 0, 0)
+                        wait(process, lambda: enabled(child(window, 105)))
+                        assert text(child(window, 104)).strip() == expected
+                    screenshot(window, report / 'translate-gui.png')
+            else:
+                set_text(child(window, 101), str(working / 'receipt.png'))
+                send(window, 0x111, 101 | (0x200 << 16), child(window, 101))
+                assert enabled(child(window, 105)), text(child(window, 106))
+            post(window, 0x10, 0, 0)
+            assert process.wait(timeout=30) == 0
+            print('PASS relocated GUI: ' + app, flush=True)
+        finally:
+            if process.poll() is None:
+                if window:
+                    post(window, 0x10, 0, 0)
+                else:
+                    process.kill()
+                process.wait(timeout=30)
+
+
 if __name__ == '__main__':
     import sys
-    if sys.argv[1:] == ['--ocr']: test_ocr()
+    if len(sys.argv) == 4 and sys.argv[1] == '--distro': test_distro(sys.argv[2], sys.argv[3])
+    elif len(sys.argv) == 4 and sys.argv[1] == '--distro-translate': test_distro(sys.argv[2], sys.argv[3], True)
+    elif len(sys.argv) == 3 and sys.argv[1] == '--translate-main': test_distro(ROOT / 'build', sys.argv[2], True, ROOT / 'build/translate-gui.exe')
+    elif sys.argv[1:] == ['--ocr']: test_ocr()
     elif sys.argv[1:] == ['--ocr-layout']: test_ocr(layout_only=True)
     elif len(sys.argv) == 3 and sys.argv[1] in ('--ocr','--ocr-layout'): test_ocr(sys.argv[1]=='--ocr-layout',Path(sys.argv[2]))
     elif not sys.argv[1:]: main()
