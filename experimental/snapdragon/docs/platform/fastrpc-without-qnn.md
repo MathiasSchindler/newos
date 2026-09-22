@@ -16,8 +16,10 @@ with the development-signed catalog and the user's configured test trust.
 
 A separate SDK-compiled HMX variant now executes 32x32 FP16 matrix products
 using V73 matrix instructions, not a scalar/HVX fallback. Three isolated signed
-sessions each passed six changing-input matrices: **18,432 output elements
-checked exactly**, with successful resource and power cleanup. The host remains
+sessions initially passed six changing-input integer matrices: **18,432 output
+elements checked exactly**, with successful resource and power cleanup. A later
+signed run added fractional FP16 fixtures and a checked Whisper Tiny Q-weight
+tile (see the updated receipt below). The host remains
 Kernel32-only; this DSP variant uses SDK firmware ABI headers at build time and
 11 weak firmware imports, but no QNN or linked C runtime/inference libraries.
 
@@ -53,7 +55,7 @@ code on the Hexagon DSP is not proof of using its HMX matrix accelerator.
 
 | Route | What it provides | Evidence and suitability here |
 | --- | --- | --- |
-| Own FastRPC module with HMX instructions | Direct matrix acceleration; we own packing, kernels and scheduling | **Verified:** 18 FP16 32x32 products, 18,432 exact output elements, cleanup and negative controls. Best fit for a freestanding custom engine. |
+| Own FastRPC module with HMX instructions | Direct matrix acceleration; we own packing, kernels and scheduling | **Verified:** integer and fractional FP16 32x32 products, one real Tiny weight tile, cleanup and negative controls. Not yet a resident model engine. |
 | Own FastRPC module with scalar DSP or HVX code | DSP control, vector operations and supporting kernels | Scalar execution verified. HVX capabilities reported, but a custom HVX kernel was not tested in this investigation. These are complementary to HMX, not substitutes for matrix-execution evidence. |
 | Third-party direct-Hexagon engine | An existing model runtime built over FastRPC and DSP kernels | Public implementations informed the ABI/ISA investigation; none was installed or validated as a model engine here. This introduces external implementation/runtime dependencies and is not the chosen project route. |
 | Windows ML or another execution-provider wrapper | Higher-level model execution and provider management | Not demonstrated to be QNN-free on this machine. Avoiding QNN calls in application code does not establish that the selected provider avoids QNN internally. Inspect the actual provider and loaded runtime. |
@@ -162,14 +164,15 @@ alternative meets their correctness and performance requirements.
 
 ### Independent Whisper CLI bring-up
 
-The new [whisper_cli.c](../../src/apps/whisper/whisper_cli.c) is separate from
-the deployed QNN application. Its first milestone is WAV inspection, not
-transcription: [whisper_wav.c](../../src/apps/whisper/whisper_wav.c) uses the
+The [whisper_cli.c](../../src/apps/whisper/whisper_cli.c) is separate from
+the deployed QNN application. [whisper_wav.c](../../src/apps/whisper/whisper_wav.c) uses the
 repository's `platform_open_read`, `platform_read`, `platform_seek` and
 `platform_close` interfaces. It accepts mono 16 kHz IEEE float32 RIFF WAV,
 counts all samples, and provides zero-padded 30-second windows at a 25-second
-stride. Short files get one padded window; longer files are not truncated.
-Overlap reconciliation and transcript stitching are not yet implemented.
+stride for inspection and log-mel probes. Transcription instead reads
+consecutive 30-second segments without overlap, prints one line per segment,
+and zero-pads the last one. This avoids duplicate overlap text but can split
+words at boundaries; no timestamp alignment or word-level stitching exists.
 The current CLI uses the Windows platform layer's ANSI file API; non-ANSI
 paths are not yet supported. Classic RIFF data chunks are limited to 4 GiB.
 
@@ -180,6 +183,11 @@ From the repository root, with the existing native Windows ARM64 Clang and
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -StandaloneWhisper
 ./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --inspect-wav experimental/snapdragon/data/bundestag-hearing-5min-16k-mono-f32.wav
 ./experimental/snapdragon/build/whisper-direct/whisper-convert.exe --model=tiny experimental/snapdragon/models/whisper-tiny/model.safetensors experimental/snapdragon/build/whisper-direct/tiny.wti
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --inspect-model experimental/snapdragon/build/whisper-direct/tiny.wti
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --probe-projection experimental/snapdragon/build/whisper-direct/tiny.wti
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --probe-mel experimental/snapdragon/data/long-form-35s.wav experimental/snapdragon/models/whisper-tiny/frontend-fp16
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --verify-mel experimental/snapdragon/models/calibration/fleurs/ar_eg-1606.wav experimental/snapdragon/models/whisper-tiny/frontend-fp16 experimental/snapdragon/models/whisper-tiny/frontend-fp16/fixture-log-mel-f32.bin
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --transcribe experimental/snapdragon/models/calibration/fleurs/de_de-1586.wav experimental/snapdragon/build/whisper-direct/tiny.wti experimental/snapdragon/models/whisper-tiny/frontend-fp16
 ```
 
 The isolated builder compiles the CLI, WAV reader, C checkpoint converter and real
@@ -207,15 +215,53 @@ The version-1 `.wti` file starts with a 64-byte little-endian header:
 record has a zero-terminated 96-byte ASCII name, type and rank (u32 each),
 eight u64 dimensions (unused entries zero), data-relative start and end (u64
 each), and tensor FNV-1a 64 (u64). The original tensor payload follows the
-table. This format leaves room for later versioned type/quantization changes;
-the current CLI does not read it yet. The pinned Tiny input produced 167
+table. This format leaves room for later versioned type/quantization changes.
+The pinned Tiny input produced 167
 tensors and 151,042,560 unmodified payload bytes; independent SHA-256 comparison
 of source and output payload passed. A Tiny input selected as Base and an
 existing output path are rejected.
 
-No CPU model execution, DSP model service or inference output is provided by
-this build. The next milestone is an independently checked CPU Tiny baseline
-that reads the indexed artifact before replacing operators with HMX.
+The [indexed reader](../../src/apps/whisper/whisper_indexed.c) checks the
+header, model ID, table and whole payload hash on open, then verifies each
+requested tensor's hash and size before returning its bytes. Its native tests
+reject a corrupted table/payload, wrong model and undersized tensor buffer.
+The `--probe-projection` command reads the real 384x384 FP32 weight and 384
+bias for Tiny encoder layer zero's self-attention Q projection, applies a
+deterministic 384-element input, and reports result bits and a fingerprint.
+An independent calculation from the original safetensors file matched its
+first four outputs within 0.00002; this synthetic input is an operation test,
+not a real audio activation or model-quality result. The current scalar
+matrix-vector routine is deliberately unoptimized and not an HMX kernel.
+The `--probe-mel` mode reads every zero-padded 30-second WAV window with a
+25-second stride, loads the Tiny double-precision Hann/DFT/mel constants from
+the supplied frontend directory, and prints each channel-major log-mel
+fingerprint. `--verify-mel` checks every value of a single-window float32
+reference with tolerance 0.0001. The pinned FLEURS clip's 240,000 values all
+passed; the largest difference was below one millionth. The isolated build
+runs that reference gate when its local audio and fixture files are present.
+These frontend binaries are local model data, not linked code dependencies.
+
+The CPU [encoder](../../src/apps/whisper/whisper_cpu_encoder.c) loads verified
+FP32 tensors from `.wti`, executes both convolutions, four self-attention/MLP
+layers and residuals, then passes its pre-final-norm FP16 activations to the
+existing [CPU decoder](../../src/apps/whisper/whisper_decoder.c). The decoder
+applies that final norm, prepares cross-attention caches, greedily generates
+German text and writes bytes via its local token table. Transcription also
+needs `models/whisper-tiny/decoder-fp16/weights-fp16.bin` and
+`token-bytes.bin`, existing generated model assets. They are **not** encoded
+in `.wti` yet; a fresh checkout without them cannot transcribe. No Python,
+QNN DLL, CRT, DSP service or HMX kernel runs in the CLI.
+
+The pinned German FLEURS clip now produces intelligible but imperfect speech
+text: it recognizes the slalom, first run, participants and same result but
+mishears some words and numbers. A 35-second German recording emitted two
+separate transcript lines; console output uses UTF-8. This demonstrates
+functional transcription, **not** parity with the deployed QNN application
+or acceptable accuracy on a broad corpus. The CLI forces the German
+transcription prompt and uses a scalar encoder; no language detection,
+timestamp stitching, optimized CPU inference or NPU model execution is
+claimed. Compare intermediate activations and more transcripts before
+replacing any operator with HMX.
 
 ## Verified HMX execution
 
@@ -243,6 +289,7 @@ linker and the previously trusted development certificate:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -FastRpcProbe -FastRpcHmx
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Prepare
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Test
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Test -TinyIndexed experimental/snapdragon/build/whisper-direct/tiny-checked.wti
 ```
 
 The corresponding VS Code tasks are `Snapdragon FastRPC HMX build`,
@@ -254,7 +301,9 @@ remain unchanged. HMX signing reuses the existing non-exportable key and public
 certificate; it neither creates a certificate nor changes trust or boot policy.
 
 `--hmx` is the explicit host option; the default remains host-only and
-`--invoke` remains scalar-only. Run hardware checks through the helper so each
+`--invoke` remains scalar-only. `--hmx-whisper <tiny.wti>` additionally exercises
+a verified model weight tile; the helper selects it with `-TinyIndexed`.
+Run hardware checks through the helper so each
 child has an isolated module search path, adjacent catalog and 30-second limit.
 
 ### Kernel and oracle
@@ -288,6 +337,15 @@ Small integer operands keep sums exactly representable in FP16. All outputs
 are poisoned before each call; inputs and the host/VTCM guard regions are
 checked. This is not general FP16 rounding, overflow or inference-quality
 coverage.
+The updated suite also checks one 32x32 fractional fixture with absolute
+error at most 0.0078125 against FP32 accumulation of its FP16 operands.
+The optional Whisper test reads and verifies the full indexed Tiny checkpoint
+and its layer-zero encoder self-attention Q weight before sending its top-left
+32x32 tile to HMX. A deterministic fractional input matrix supplies 32 test
+vectors. Its 1,024 outputs use the same host oracle and tolerance. This is
+real **weight** data, not an encoder activation or a complete 384-wide Q
+projection; quantization error against the original FP32 model output is not
+established.
 
 An important transport observation: malformed-input calls returned host
 transport status zero even when the skeleton returned error 14, leaving the
@@ -297,7 +355,7 @@ status 14, stage zero and executed zero. The hardware control requires that
 rejection and an untouched product/guard area. CPU tests additionally exercise
 short input, misalignment and undersized reply cases without executing HMX.
 
-### Hardware receipt
+### Initial hardware receipt
 
 All eight cases passed against the same MCDM driver described below:
 
@@ -329,6 +387,23 @@ with SDK `hexagon-llvm-objdump --mattr=+hmx`. The build requires all matrix
 mnemonics in that disassembly, no ELF `NEEDED` entries, and only the allowlisted
 weak `compute_resource_*` and `HAP_power_*` firmware imports. The final linked
 ELF, not merely an assembly/object file, passed the hardware tests above.
+
+### Fractional and Whisper-weight follow-up
+
+The opt-in `-TinyIndexed` hardware suite passed nine cases on 2026-09-22:
+host-only, scalar regression, three signed default HMX runs, three negative
+catalog/module controls and one signed Tiny tile run. Each default signed
+session checked seven tiles (7,168 values), including fractional FP16.
+The model run checked those seven again plus 1,024 Tiny Q-weight tile results:
+`hmx.whisper_tile.mismatches=0`, `hmx.whisper_tile.host_guards=0`,
+`hmx.elements_verified=8192`, valid power/resource cleanup and final close.
+All cases passed without timeouts. Evidence (logs, case results and hashes)
+is in `data/fastrpc-hmx-tested-20260922-225749-593bfae2/`.
+This is a hardware-backed bridge from a verified model artifact to the custom
+HMX module, but the CLI still runs transcription entirely on CPU. The DSP
+still acquires resources per 32x32 invocation; weight residency, tiling over
+384 dimensions, bias/residual integration, encoder activation checks and
+end-to-end NPU transcription remain to be built and measured.
 
 The successful test despite zero HMX capability fields demonstrates that those
 queries are not a reliable absence test on this installed driver. It does not

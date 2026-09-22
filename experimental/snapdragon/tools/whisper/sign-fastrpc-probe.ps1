@@ -2,10 +2,15 @@ param(
     [ValidateSet('Prepare', 'Verify', 'Trust', 'Test')]
     [string]$Action = 'Verify',
     [switch]$Hmx,
-    [string]$ExpectedThumbprint = ''
+    [string]$ExpectedThumbprint = '',
+    [string]$TinyIndexed = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ($TinyIndexed -and ($Action -ne 'Test' -or -not $Hmx)) {
+    throw 'TinyIndexed requires -Action Test -Hmx'
+}
+if ($TinyIndexed) { $TinyIndexed = (Resolve-Path -LiteralPath $TinyIndexed -ErrorAction Stop).Path }
 if ($Action -eq 'Trust' -and $ExpectedThumbprint -notmatch '^[0-9A-Fa-f]{40}$') {
     throw 'Trust requires the explicitly reviewed 40-digit ExpectedThumbprint'
 }
@@ -144,6 +149,9 @@ if ($Action -eq 'Test') {
     )
     if ($Hmx) {
         $cases = @($cases[0], @{ Name = 'scalar-regression'; Invoke = $true; Scalar = $true; Exit = 0 }) + $cases[1..6]
+        if ($TinyIndexed) {
+            $cases += @{ Name = 'signed-whisper-tile'; Invoke = $true; Whisper = $true; Exit = 0 }
+        }
     }
     foreach ($case in $cases) {
         $caseDirectory = Join-Path $evidence $case.Name
@@ -165,7 +173,10 @@ if ($Action -eq 'Test') {
         $info.WorkingDirectory = $caseDirectory
         $info.Arguments = '"' + $drivers[0].FullName + '"'
         $matrixCase = $Hmx -and $case.Invoke -and -not $case.Scalar
-        if ($case.Invoke) { $info.Arguments += $(if ($matrixCase) { ' --hmx' } else { ' --invoke' }) }
+        if ($case.Invoke) {
+            $info.Arguments += $(if ($case.Whisper) { ' --hmx-whisper "' + $TinyIndexed + '"' }
+                elseif ($matrixCase) { ' --hmx' } else { ' --invoke' })
+        }
         $info.UseShellExecute = $false
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
@@ -184,13 +195,19 @@ if ($Action -eq 'Test') {
             $valid = -not $timedOut -and $process.ExitCode -eq $case.Exit
             if ($case.Invoke -and $case.Exit -eq 0) {
                 $resultPattern = if ($matrixCase) { '(?m)^hmx.mismatches=0\r?$' } else { '(?m)^remote_invoke.mismatches=0\r?$' }
-                $expectedTrials = if ($matrixCase) { 6 } else { 3 }
+                $expectedTrials = if ($matrixCase) { 7 } else { 3 }
                 $valid = $valid -and [regex]::Matches($output, $resultPattern).Count -eq $expectedTrials -and
                     $output -match 'remote_open.status=0' -and $output -match 'remote_close.status=0' -and
                     $output -match 'session_close=handled_by_last_handle' -and $output -match 'custom_dsp_execution=verified'
                 if ($matrixCase) {
-                    $valid = $valid -and $output -match 'hmx_execution=verified' -and $output -match 'hmx.elements_verified=6144' -and
-                        $output -match 'hmx.bad_size.status=14' -and [regex]::Matches($output, '(?m)^hmx.host_guards=0\r?$').Count -eq 6
+                    $totalElements = if ($case.Whisper) { 8192 } else { 7168 }
+                    $valid = $valid -and $output -match 'hmx_execution=verified' -and $output -match "hmx.elements_verified=$totalElements" -and
+                        $output -match 'hmx.bad_size.status=14' -and [regex]::Matches($output, '(?m)^hmx.host_guards=0\r?$').Count -eq 7
+                    if ($case.Whisper) {
+                        $valid = $valid -and $output -match 'hmx.whisper_tile.elements_verified=1024' -and
+                            $output -match '(?m)^hmx.whisper_tile.mismatches=0\r?$' -and
+                            $output -match '(?m)^hmx.whisper_tile.host_guards=0\r?$'
+                    }
                 }
             } elseif ($case.Invoke) {
                 $valid = $valid -and $output -match 'custom_dsp_execution=failed' -and $output -match 'session_close.status=0'

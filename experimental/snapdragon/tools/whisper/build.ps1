@@ -79,13 +79,24 @@ try {
         $sources = @(
             @('experimental/snapdragon/src/apps/whisper/whisper_cli.c', 'whisper_cli.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_wav.c', 'whisper_wav.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_indexed.c', 'whisper_indexed.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_cpu.c', 'whisper_cpu.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_cpu_encoder.c', 'whisper_cpu_encoder.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_decoder.c', 'whisper_decoder.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_frontend.c', 'whisper_frontend.obj'),
+            @('src/shared/math.c', 'shared_math.obj'),
+            @('src/shared/runtime/memory.c', 'runtime_memory.obj'),
+            @('src/shared/runtime/concurrency.c', 'runtime_concurrency.obj'),
+            @('src/platform/windows/thread.c', 'platform_thread.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_convert.c', 'whisper_convert.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_tensor_index.c', 'whisper_tensor_index.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_artifact.c', 'whisper_artifact.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_model.c', 'whisper_model.obj'),
             @('src/platform/windows/core.c', 'platform_core.obj'),
             @('experimental/snapdragon/src/apps/whisper/tests/whisper_wav_test.c', 'whisper_wav_test.obj'),
-            @('experimental/snapdragon/src/apps/whisper/tests/whisper_tensor_index_test.c', 'whisper_tensor_index_test.obj')
+            @('experimental/snapdragon/src/apps/whisper/tests/whisper_tensor_index_test.c', 'whisper_tensor_index_test.obj'),
+            @('experimental/snapdragon/src/apps/whisper/tests/whisper_cpu_test.c', 'whisper_cpu_test.obj'),
+            @('experimental/snapdragon/src/apps/whisper/tests/whisper_indexed_test.c', 'whisper_indexed_test.obj')
         )
         New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
         $compileFlags = @('--target=aarch64-w64-windows-gnu', '-std=c11', '-Wall', '-Wextra',
@@ -102,7 +113,13 @@ try {
         $imports = @('src/platform/windows/imports/kernel32.def',
             'src/platform/windows/imports/ws2_32.def', 'src/platform/windows/imports/bcrypt.def')
         & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-cli.exe" `
-            "$BuildDir/whisper_cli.obj" "$BuildDir/whisper_wav.obj" "$BuildDir/platform_core.obj" @imports
+            "$BuildDir/whisper_cli.obj" "$BuildDir/whisper_wav.obj" `
+            "$BuildDir/whisper_indexed.obj" "$BuildDir/whisper_tensor_index.obj" `
+            "$BuildDir/whisper_cpu.obj" "$BuildDir/whisper_artifact.obj" "$BuildDir/whisper_model.obj" `
+            "$BuildDir/whisper_cpu_encoder.obj" "$BuildDir/whisper_decoder.obj" `
+            "$BuildDir/whisper_frontend.obj" "$BuildDir/shared_math.obj" `
+            "$BuildDir/runtime_memory.obj" "$BuildDir/runtime_concurrency.obj" `
+            "$BuildDir/platform_core.obj" "$BuildDir/platform_thread.obj" "$BuildDir/chkstk.obj" @imports
         if ($LASTEXITCODE -ne 0) { throw 'Standalone WAV project link failed' }
         & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-convert.exe" `
             "$BuildDir/whisper_convert.obj" "$BuildDir/whisper_tensor_index.obj" `
@@ -119,7 +136,30 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Standalone tensor-index test link failed' }
         & ([IO.Path]::GetFullPath("$BuildDir/whisper-tensor-index-test.exe"))
         if ($LASTEXITCODE -ne 0) { throw "Standalone tensor-index tests failed: $LASTEXITCODE" }
-        Write-Output "Built $BuildDir/whisper-cli.exe and whisper-convert.exe (inference not implemented)"
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-cpu-test.exe" `
+            "$BuildDir/whisper_cpu.obj" "$BuildDir/whisper_frontend.obj" `
+            "$BuildDir/shared_math.obj" "$BuildDir/whisper_cpu_test.obj" `
+            "$BuildDir/chkstk.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone CPU projection test link failed' }
+        & ([IO.Path]::GetFullPath("$BuildDir/whisper-cpu-test.exe"))
+        if ($LASTEXITCODE -ne 0) { throw "Standalone CPU projection tests failed: $LASTEXITCODE" }
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-indexed-test.exe" `
+            "$BuildDir/whisper_indexed.obj" "$BuildDir/whisper_indexed_test.obj" `
+            "$BuildDir/whisper_tensor_index.obj" "$BuildDir/whisper_artifact.obj" `
+            "$BuildDir/whisper_model.obj" "$BuildDir/chkstk.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone indexed model test link failed' }
+        & ([IO.Path]::GetFullPath("$BuildDir/whisper-indexed-test.exe"))
+        if ($LASTEXITCODE -ne 0) { throw "Standalone indexed model tests failed: $LASTEXITCODE" }
+        $frontendDir = 'experimental/snapdragon/models/whisper-tiny/frontend-fp16'
+        $fixtureWav = 'experimental/snapdragon/models/calibration/fleurs/ar_eg-1606.wav'
+        $fixtureMel = "$frontendDir/fixture-log-mel-f32.bin"
+        if ((Test-Path -LiteralPath $fixtureWav -PathType Leaf) -and
+            (Test-Path -LiteralPath $fixtureMel -PathType Leaf)) {
+            & ([IO.Path]::GetFullPath("$BuildDir/whisper-cli.exe")) --verify-mel `
+                $fixtureWav $frontendDir $fixtureMel
+            if ($LASTEXITCODE -ne 0) { throw 'Standalone log-mel fixture comparison failed' }
+        }
+        Write-Output "Built $BuildDir/whisper-cli.exe and whisper-convert.exe (Tiny CPU transcription available)"
         return
     }
     $compilerDirectory = Split-Path -Parent $compilerPath
@@ -140,7 +180,14 @@ try {
             '-fno-asynchronous-unwind-tables', '-nostdlib', '-fuse-ld=lld',
             '-Wl,-e,mainCRTStartup', '-Wl,--no-insert-timestamp', '-Wl,-s', "-L$BuildDir", '-lkernel32'
         )
-        & $compilerPath @probeFlags experimental/snapdragon/src/tools/probe/fastrpc_probe.c -o "$BuildDir/fastrpc_probe.exe"
+        & $compilerPath @probeFlags '-ffunction-sections' '-fdata-sections' '-Wl,--gc-sections' `
+            '-Isrc/shared' '-Iexperimental/snapdragon/src/apps/whisper' `
+            experimental/snapdragon/src/tools/probe/fastrpc_probe.c `
+            experimental/snapdragon/src/apps/whisper/whisper_indexed.c `
+            experimental/snapdragon/src/apps/whisper/whisper_tensor_index.c `
+            experimental/snapdragon/src/apps/whisper/whisper_artifact.c `
+            experimental/snapdragon/src/apps/whisper/whisper_model.c `
+            -o "$BuildDir/fastrpc_probe.exe"
         if ($LASTEXITCODE -ne 0) { throw 'Failed to build fastrpc_probe.exe' }
         & $compilerPath @probeFlags -DFASTRPC_SKEL_TEST experimental/snapdragon/src/tools/probe/fastrpc_probe_skel.c -o "$BuildDir/fastrpc_skel_test.exe"
         if ($LASTEXITCODE -ne 0) { throw 'Failed to build the scalar contract test' }

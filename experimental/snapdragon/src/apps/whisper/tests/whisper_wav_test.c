@@ -93,6 +93,9 @@ static int check_window(unsigned int samples, unsigned long long windows) {
             window[read_count - 1] != (float)((start + read_count - 1) % 256) ||
             (read_count < WHISPER_WAV_WINDOW_SAMPLES && window[read_count] != 0.0f)) return 0;
     }
+    if (!whisper_wav_read_at(&wav, samples - 1U, window) ||
+        window[0] != (float)((samples - 1U) % 256) || window[1] != 0.0f ||
+        whisper_wav_read_at(&wav, samples, window)) return 0;
     if (whisper_wav_read_window(&wav, windows, window)) return 0;
     whisper_wav_close(&wav);
     return !active;

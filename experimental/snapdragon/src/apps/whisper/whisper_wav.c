@@ -87,11 +87,14 @@ unsigned long long whisper_wav_window_count(const WhisperWav *wav) {
 }
 
 int whisper_wav_read_window(const WhisperWav *wav, unsigned long long index, float *samples) {
-    unsigned long long start;
+    if (index >= whisper_wav_window_count(wav)) return 0;
+    return whisper_wav_read_at(wav, index * WHISPER_WAV_HOP_SAMPLES, samples);
+}
+
+int whisper_wav_read_at(const WhisperWav *wav, unsigned long long start, float *samples) {
     unsigned long long available;
     unsigned int count;
-    if (samples == 0 || index >= whisper_wav_window_count(wav)) return 0;
-    start = index * WHISPER_WAV_HOP_SAMPLES;
+    if (samples == 0 || wav->fd < 0 || start >= wav->sample_count) return 0;
     available = wav->sample_count - start;
     count = (unsigned int)(available < WHISPER_WAV_WINDOW_SAMPLES ?
         available : WHISPER_WAV_WINDOW_SAMPLES);

@@ -19,5 +19,8 @@ unsigned long long whisper_wav_window_count(const WhisperWav *wav);
 int whisper_wav_read_window(
     const WhisperWav *wav, unsigned long long index, float *samples
 );
+int whisper_wav_read_at(
+    const WhisperWav *wav, unsigned long long start_sample, float *samples
+);
 
 #endif

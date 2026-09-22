@@ -2,6 +2,8 @@ typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long long u64;
+
+#include "whisper_indexed.h"
 typedef union RemoteArg {
     struct { void *data; u64 size; } buffer;
     u32 handle;
@@ -26,6 +28,10 @@ __declspec(dllimport) u32 GetModuleFileNameW(void *, u16 *, u32);
 __declspec(dllimport) int WideCharToMultiByte(u32, u32, const u16 *, int, char *, int, const char *, int *);
 __declspec(dllimport) u32 GetLastError(void);
 __declspec(dllimport) int FreeLibrary(void *);
+__declspec(dllimport) void *CreateFileA(const char *, u32, u32, void *, u32, u32, void *);
+__declspec(dllimport) int CloseHandle(void *);
+__declspec(dllimport) int ReadFile(void *, void *, u32, u32 *, void *);
+__declspec(dllimport) int SetFilePointerEx(void *, long long, long long *, u32);
 
 typedef struct DspCapability {
     u32 domain;
@@ -41,6 +47,37 @@ static void *output;
 static u16 dll_path[2048];
 static u16 module_path[2048];
 static char utf8_path[8192];
+static u16 checkpoint_path[2048];
+static void *indexed_file;
+
+int platform_open_read(const char *path) {
+    if (indexed_file) return -1;
+    indexed_file = CreateFileA(path, 0x80000000U, 1U, 0, 3U, 0x80U, 0);
+    if (indexed_file == (void *)~0ULL) { indexed_file = 0; return -1; }
+    return 1;
+}
+
+long platform_read(int fd, void *buffer, u64 length) {
+    u32 count = 0;
+    if (fd != 1 || !indexed_file || length > 0xffffffffU ||
+        !ReadFile(indexed_file, buffer, (u32)length, &count, 0)) return -1;
+    return (long)count;
+}
+
+long long platform_seek(int fd, long long offset, int whence) {
+    long long position = -1;
+    if (fd != 1 || !indexed_file || whence < 0 || whence > 2 ||
+        !SetFilePointerEx(indexed_file, offset, &position, (u32)whence)) return -1;
+    return position;
+}
+
+int platform_close(int fd) {
+    int closed;
+    if (fd != 1 || !indexed_file) return -1;
+    closed = CloseHandle(indexed_file);
+    indexed_file = 0;
+    return closed ? 0 : -1;
+}
 
 static void text(const char *value) {
     u32 length = 0;
@@ -104,9 +141,93 @@ static u16 integer_half(int value) {
                  (((magnitude << 10) >> exponent) & 1023));
 }
 
-static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
-    static int left[1024], right[1024];
-    static const char *names[] = {"left-identity", "right-identity", "dense-1", "dense-2", "zero", "signed-permutation"};
+static u16 float_half(float value) {
+    union { _Float16 value; u16 bits; } converted;
+    converted.value = (_Float16)value;
+    return converted.bits;
+}
+
+static float half_float(u16 bits) {
+    union { _Float16 value; u16 bits; } converted;
+    converted.bits = bits;
+    return (float)converted.value;
+}
+
+static int whisper_matrix_trial(RemoteInvoke invoke, u64 handle, u32 *buffer,
+                                const char *checkpoint) {
+    static WhisperIndexed indexed;
+    static float weights[384 * 384];
+    const WhisperTensorIndex *tensor;
+    u16 *input = (u16 *)buffer;
+    u32 *metadata = buffer + 1024;
+    u16 *product = (u16 *)(metadata + 12);
+    RemoteArg arguments[2];
+    u32 mismatches = 0, guards = 0;
+    int status;
+    if (!whisper_indexed_open(&indexed, checkpoint, whisper_model_tiny())) {
+        text("hmx.whisper_tile.model=invalid\n");
+        return 15;
+    }
+    tensor = whisper_indexed_find(&indexed, "model.encoder.layers.0.self_attn.q_proj.weight");
+    if (!tensor || tensor->type != WHISPER_TENSOR_F32 || tensor->rank != 2 ||
+        tensor->shape[0] != 384 || tensor->shape[1] != 384 ||
+        !whisper_indexed_read(&indexed, tensor, weights, sizeof(weights))) {
+        whisper_indexed_close(&indexed);
+        text("hmx.whisper_tile.weight=invalid\n");
+        return 15;
+    }
+    whisper_indexed_close(&indexed);
+    for (u32 row = 0; row < 32; ++row) {
+        for (u32 column = 0; column < 32; ++column) {
+            u32 index = row * 32 + column;
+            float weight = weights[row * 384 + column];
+            union { float value; u32 bits; } finite = { .value = weight };
+            if ((finite.bits & 0x7f800000U) == 0x7f800000U || weight < -1.0f || weight > 1.0f)
+                return 15;
+            input[index] = float_half(weight);
+            input[1024 + index] = float_half((float)((int)((row + column * 3) % 17) - 8) / 16.0f);
+        }
+    }
+    for (u32 index = 4096; index < 8192; ++index) ((u8 *)buffer)[index] = 0xa5;
+    arguments[0].buffer.data = input;
+    arguments[0].buffer.size = 4096;
+    arguments[1].buffer.data = metadata;
+    arguments[1].buffer.size = 2096;
+    status = invoke(handle, 0x03010100U, arguments);
+    field("hmx.whisper_tile.invoke_status", (u32)status);
+    if (status || metadata[0] != 0x484d5831U || metadata[1] != 9 || metadata[2] ||
+        metadata[3] != 1 || metadata[4] != 1 || metadata[9] != 1 || metadata[10] ||
+        metadata[5] || metadata[6] || metadata[7] || metadata[8] || metadata[11]) return 13;
+    for (u32 row = 0; row < 32; ++row) {
+        for (u32 column = 0; column < 32; ++column) {
+            u32 index = row * 32 + column;
+            float expected = 0.0f;
+            for (u32 inner = 0; inner < 32; ++inner) {
+                expected += half_float(input[row * 32 + inner]) *
+                    half_float(input[1024 + inner * 32 + column]);
+            }
+            float error = half_float(product[index]) - expected;
+            if (error < 0.0f) error = -error;
+            if (!(error <= 0.0078125f)) {
+                if (!mismatches) field("hmx.whisper_tile.first_mismatch", index);
+                ++mismatches;
+            }
+            guards += input[index] != float_half(weights[row * 384 + column]);
+            guards += input[1024 + index] !=
+                float_half((float)((int)((row + column * 3) % 17) - 8) / 16.0f);
+        }
+    }
+    for (u32 index = 6192; index < 8192; ++index) guards += ((u8 *)buffer)[index] != 0xa5;
+    field("hmx.whisper_tile.mismatches", mismatches);
+    field("hmx.whisper_tile.host_guards", guards);
+    if (mismatches || guards) return 11;
+    text("hmx.whisper_tile.elements_verified=1024\n");
+    return 0;
+}
+
+static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer, const char *checkpoint) {
+    static float left[1024], right[1024];
+    static const char *names[] = {"left-identity", "right-identity", "dense-1", "dense-2", "zero", "signed-permutation", "fractional"};
     static const char *details[] = {"marker", "stage", "status", "resource", "vtcm_aligned", "unlock", "release", "power_down", "power_destroy", "executed", "vtcm_guard", "reserved"};
     u16 *input = (u16 *)buffer;
     u32 *metadata = buffer + 1024;
@@ -117,7 +238,7 @@ static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
     arguments[0].buffer.size = 4096;
     arguments[1].buffer.data = metadata;
     arguments[1].buffer.size = 2096;
-    for (u32 trial = 0; trial < 6; ++trial) {
+    for (u32 trial = 0; trial < 7; ++trial) {
         u32 mismatches = 0, guards = 0;
         for (u32 row = 0; row < 32; ++row) {
             for (u32 column = 0; column < 32; ++column) {
@@ -131,8 +252,12 @@ static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
                 if (trial == 1) right[index] = row == column;
                 if (trial == 4) left[index] = 0;
                 if (trial == 5) left[index] = column == (row * 7 + 3) % 32 ? (row % 2 ? -1 : 1) : 0;
-                input[index] = integer_half(left[index]);
-                input[1024 + index] = integer_half(right[index]);
+                if (trial == 6) {
+                    left[index] = (float)((int)((row * 17 + column * 11 + row * column * 3) % 9) - 4) / 16.0f;
+                    right[index] = (float)((int)((row * 13 + column * 7 + row * column) % 9) - 4) / 16.0f;
+                }
+                input[index] = float_half(left[index]);
+                input[1024 + index] = float_half(right[index]);
             }
         }
         for (u32 index = 4096; index < 8192; ++index) ((u8 *)buffer)[index] = 0xa5;
@@ -146,26 +271,33 @@ static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
         if (metadata[5] || metadata[6] || metadata[7] || metadata[8]) return 12;
         for (u32 row = 0; row < 32; ++row) {
             for (u32 column = 0; column < 32; ++column) {
-                int expected = 0;
+                float expected = 0.0f;
                 u32 index = row * 32 + column;
                 for (u32 inner = 0; inner < 32; ++inner) expected += left[row * 32 + inner] * right[inner * 32 + column];
                 u16 actual = product[index] == 0x8000 ? 0 : product[index];
-                if (actual != integer_half(expected)) {
+                float error = half_float(actual) - expected;
+                if (error < 0.0f) error = -error;
+                if ((trial != 6 && actual != integer_half((int)expected)) ||
+                    (trial == 6 && !(error <= 0.0078125f))) {
                     if (!mismatches) {
                         field("hmx.first_mismatch.index", index);
-                        field("hmx.first_mismatch.expected_bits", integer_half(expected));
+                        field("hmx.first_mismatch.expected_bits", float_half(expected));
                         field("hmx.first_mismatch.actual_bits", actual);
                     }
                     ++mismatches;
                 }
-                guards += input[index] != integer_half(left[index]);
-                guards += input[1024 + index] != integer_half(right[index]);
+                guards += input[index] != float_half(left[index]);
+                guards += input[1024 + index] != float_half(right[index]);
             }
         }
         for (u32 index = 6192; index < 8192; ++index) guards += ((u8 *)buffer)[index] != 0xa5;
         field("hmx.mismatches", mismatches);
         field("hmx.host_guards", guards);
         if (mismatches || guards || metadata[10]) return 11;
+    }
+    if (checkpoint) {
+        int result = whisper_matrix_trial(invoke, handle, buffer, checkpoint);
+        if (result) return result;
     }
     for (u32 index = 4096; index < 8192; ++index) ((u8 *)buffer)[index] = 0xa5;
     arguments[0].buffer.size = 2048;
@@ -175,11 +307,12 @@ static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
     if (status || metadata[0] != 0x484d5831U || metadata[1] || metadata[2] != 14) return 10;
     for (u32 index = 3; index < 12; ++index) if (metadata[index]) return 10;
     for (u32 index = 4144; index < 8192; ++index) if (((u8 *)buffer)[index] != 0xa5) return 11;
-    text("hmx.elements_verified=6144\n");
+    text(checkpoint ? "hmx.elements_verified=8192\n" : "hmx.elements_verified=7168\n");
     return 0;
 }
 
-static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx) {
+static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx,
+                      const char *checkpoint) {
     RemoteControl session = (RemoteControl)GetProcAddress(module, "remote_session_control");
     RemoteOpen open = (RemoteOpen)GetProcAddress(module, "remote_handle64_open");
     RemoteInvoke invoke = (RemoteInvoke)GetProcAddress(module, "remote_handle64_invoke");
@@ -202,7 +335,7 @@ static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx)
     opened = 1;
     buffer = (u32 *)allocate(25, 1, hmx ? 8192 : 4096);
     if (!buffer) { result = 6; goto cleanup; }
-    if (hmx) { result = matrix_trials(invoke, handle, buffer); goto cleanup; }
+    if (hmx) { result = matrix_trials(invoke, handle, buffer, checkpoint); goto cleanup; }
     arguments[0].buffer.data = buffer;
     arguments[0].buffer.size = 64;
     arguments[1].buffer.data = buffer + 32;
@@ -271,8 +404,12 @@ static int run(void) {
     mode_argument = argument(&cursor, module_path, 2048);
     if (mode_argument) {
         if (mode_argument != 1) goto usage;
-        invoke_mode = is_option(module_path, "--invoke") ? 1 : is_option(module_path, "--hmx") ? 2 : 0;
-        if (!invoke_mode || argument(&cursor, module_path, 2048)) goto usage;
+        invoke_mode = is_option(module_path, "--invoke") ? 1 :
+            is_option(module_path, "--hmx") ? 2 :
+            is_option(module_path, "--hmx-whisper") ? 3 : 0;
+        if (!invoke_mode ||
+            (invoke_mode == 3 && argument(&cursor, checkpoint_path, 2048) != 1) ||
+            argument(&cursor, module_path, 2048)) goto usage;
     }
     text("probe=fastrpc-host-v2\nqnn_api_used=0\n");
     module = LoadLibraryExW(dll_path, 0, 0x00000100U | 0x00000800U);
@@ -287,6 +424,11 @@ static int run(void) {
         goto cleanup;
     }
     text("module="); text(utf8_path); text("\n");
+    if (invoke_mode == 3 && !WideCharToMultiByte(0, 0, checkpoint_path, -1,
+                                                  utf8_path, sizeof(utf8_path), 0, 0)) {
+        result = 2;
+        goto cleanup;
+    }
     for (u32 index = 0; index < sizeof(exports) / sizeof(exports[0]); ++index) {
         text("export.");
         field(exports[index], GetProcAddress(module, exports[index]) != 0);
@@ -322,10 +464,11 @@ static int run(void) {
         } else result = 6;
     } else result = 5;
     if (invoke_mode && !result) {
-        result = invoke_dsp(module, allocate, release, invoke_mode == 2);
+        result = invoke_dsp(module, allocate, release, invoke_mode >= 2,
+                    invoke_mode == 3 ? utf8_path : 0);
         text(result ? "custom_dsp_execution=failed\n" : "custom_dsp_execution=verified\n");
     } else text("custom_dsp_execution=not_tested\n");
-    text(invoke_mode == 2 ? (result ? "hmx_execution=failed\n" : "hmx_execution=verified\n") : "hmx_execution=not_tested\n");
+    text(invoke_mode >= 2 ? (result ? "hmx_execution=failed\n" : "hmx_execution=verified\n") : "hmx_execution=not_tested\n");
 cleanup:
     if (!FreeLibrary(module)) {
         field("unload.win32_error", GetLastError());
@@ -333,7 +476,7 @@ cleanup:
     }
     return result;
 usage:
-    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke|--hmx]\n");
+    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke|--hmx|--hmx-whisper <tiny.wti>]\n");
     return 2;
 }
 

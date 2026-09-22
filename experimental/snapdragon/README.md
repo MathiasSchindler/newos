@@ -7,8 +7,9 @@ development tools, not application runtime dependencies.
 Whisper, GLM-OCR and TranslateGemma currently run through QNN on this Surface.
 A separate QNN-free FastRPC probe loads our own Hexagon V73 module through the
 installed OEM driver. Development-signed scalar DSP execution and 18 FP16
-32x32 HMX matrix products (18,432 exactly checked outputs) were verified on
-this machine. This is a kernel correctness result, not a working model backend
+32x32 HMX matrix products were verified on this machine, including a tile
+loaded from the checked Whisper Tiny encoder Q-projection weights. This is a
+kernel correctness result, not a working model backend
 or a performance result. The probe host has only Kernel32 static imports and
 the DSP module has no linked C runtime; the OEM FastRPC DLL still imports UCRT,
 and the driver, firmware and a trusted module catalog remain necessary. The
@@ -19,7 +20,14 @@ production applications and their distributions still require QNN.
 An independent [Whisper-tiny bring-up](docs/platform/fastrpc-without-qnn.md#independent-whisper-cli-bring-up)
 has begun. Its isolated, in-tree-linked tools check variable-duration WAV input
 and convert pinned safetensors weights to a versioned, indexed artifact in C.
-They do not yet perform transcription or execute a model.
+The standalone CLI validates that artifact and runs a checked Tiny encoder
+Q projection on the CPU. It also computes windowed log-mel features using the
+existing freestanding frontend, checked against the pinned FLEURS fixture.
+It now transcribes 16 kHz mono float32 WAV with an FP32 Tiny CPU encoder and
+the existing independent FP16 CPU decoder. It requires the local Tiny
+`decoder-fp16/` weight/token bundle as well as the indexed checkpoint and
+frontend constants; it imports no QNN or CRT DLL. See the linked guide for
+the command and quality limitations.
 
 ## Directory layout
 

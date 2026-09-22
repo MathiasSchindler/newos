@@ -157,14 +157,14 @@ static int load_wav(
     return 1;
 }
 
-static double padded_sample(u32 index) {
+static double padded_sample(const float *samples, u32 index) {
     if (index < WHISPER_FFT_SIZE / 2U) {
-        return waveform[WHISPER_FFT_SIZE / 2U - index];
+        return samples[WHISPER_FFT_SIZE / 2U - index];
     }
     if (index < WHISPER_SAMPLE_COUNT + WHISPER_FFT_SIZE / 2U) {
-        return waveform[index - WHISPER_FFT_SIZE / 2U];
+        return samples[index - WHISPER_FFT_SIZE / 2U];
     }
-    return waveform[2U * WHISPER_SAMPLE_COUNT + WHISPER_FFT_SIZE / 2U - 2U - index];
+    return samples[2U * WHISPER_SAMPLE_COUNT + WHISPER_FFT_SIZE / 2U - 2U - index];
 }
 
 float whisper_frontend_half_to_float(u16 value) {
@@ -239,10 +239,26 @@ int whisper_frontend_log_mel_window(
     const double *mel_filters,
     float *output
 ) {
-    double maximum = -1.0e30;
-    u32 frame;
     int loaded = load_wav(primary_wav, fallback_wav, start_sample, total_samples);
     if (loaded != 1) return loaded;
+    return whisper_frontend_log_mel_samples(waveform, window, roots, mel_filters, output);
+}
+
+int whisper_frontend_log_mel_samples(
+    const float *samples,
+    const double *window,
+    const double *roots,
+    const double *mel_filters,
+    float *output
+) {
+    double maximum = -1.0e30;
+    u32 frame;
+    if (samples == 0 || window == 0 || roots == 0 || mel_filters == 0 || output == 0) return 0;
+    for (u32 index = 0; index < WHISPER_SAMPLE_COUNT; ++index) {
+        union { float value; u32 bits; } sample;
+        sample.value = samples[index];
+        if ((sample.bits & 0x7f800000U) == 0x7f800000U) return 0;
+    }
 
     for (frame = 0U; frame < WHISPER_FRAME_COUNT; ++frame) {
         u32 n1;
@@ -250,7 +266,7 @@ int whisper_frontend_log_mel_window(
         u32 bin;
         u32 mel;
         for (n1 = 0U; n1 < WHISPER_FFT_SIZE; ++n1) {
-            frame_samples[n1] = padded_sample(frame * 160U + n1) * window[n1];
+            frame_samples[n1] = padded_sample(samples, frame * 160U + n1) * window[n1];
         }
         for (n1 = 0U; n1 < 20U; ++n1) {
             for (k2 = 0U; k2 < 20U; ++k2) {

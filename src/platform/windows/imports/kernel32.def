@@ -16,6 +16,7 @@ EXPORTS
     GetActiveProcessorCount
     GetComputerNameA
     GetConsoleMode
+    GetConsoleOutputCP
     GetConsoleScreenBufferInfo
     GetCurrentDirectoryA
     GetCurrentProcessId
@@ -34,9 +35,12 @@ EXPORTS
     GlobalMemoryStatusEx
     LoadLibraryA
     MoveFileExA
+    QueryPerformanceCounter
+    QueryPerformanceFrequency
     ReadFile
     RemoveDirectoryA
     SetConsoleMode
+    SetConsoleOutputCP
     SetCurrentDirectoryA
     SetEndOfFile
     SetEnvironmentVariableA

@@ -10,9 +10,9 @@ enum {
     WHISPER_MODEL_MAX_ENCODER_FRAMES = 1500
 };
 
-static const WhisperModelConfig tiny_config = {
+static WhisperModelConfig tiny_config = {
     WHISPER_MODEL_ID_TINY,
-    "tiny",
+    0,
     WHISPER_TINY_WIDTH,
     WHISPER_TINY_FFN_WIDTH,
     WHISPER_TINY_ATTENTION_HEADS,
@@ -24,9 +24,9 @@ static const WhisperModelConfig tiny_config = {
     WHISPER_TINY_ENCODER_FRAMES
 };
 
-static const WhisperModelConfig base_config = {
+static WhisperModelConfig base_config = {
     WHISPER_MODEL_ID_BASE,
-    "base",
+    0,
     WHISPER_BASE_WIDTH,
     WHISPER_BASE_FFN_WIDTH,
     WHISPER_BASE_ATTENTION_HEADS,
@@ -38,15 +38,15 @@ static const WhisperModelConfig base_config = {
     WHISPER_BASE_ENCODER_FRAMES
 };
 
-static const WhisperModelConfig medium_config = {
+static WhisperModelConfig medium_config = {
     WHISPER_MODEL_ID_MEDIUM,
-    "medium",
+    0,
     1024, 4096, 16, 24, 24, 51865, 448, 80, 1500
 };
 
-static const WhisperModelConfig small_config = {
+static WhisperModelConfig small_config = {
     WHISPER_MODEL_ID_SMALL,
-    "small",
+    0,
     WHISPER_SMALL_WIDTH,
     WHISPER_SMALL_FFN_WIDTH,
     WHISPER_SMALL_ATTENTION_HEADS,
@@ -64,18 +64,22 @@ _Static_assert(WHISPER_TINY_CROSS_KV_WEIGHT_VALUES == 1181952,
     "Whisper Tiny cross-K/V weight count changed");
 
 const WhisperModelConfig *whisper_model_tiny(void) {
+    tiny_config.name = "tiny";
     return &tiny_config;
 }
 
 const WhisperModelConfig *whisper_model_base(void) {
+    base_config.name = "base";
     return &base_config;
 }
 
 const WhisperModelConfig *whisper_model_small(void) {
+    small_config.name = "small";
     return &small_config;
 }
 
 const WhisperModelConfig *whisper_model_medium(void) {
+    medium_config.name = "medium";
     return &medium_config;
 }
 

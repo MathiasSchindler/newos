@@ -31,6 +31,14 @@ int whisper_frontend_log_mel_window(
     float *output
 );
 
+int whisper_frontend_log_mel_samples(
+    const float *samples,
+    const double *window,
+    const double *roots,
+    const double *mel_filters,
+    float *output
+);
+
 void whisper_frontend_pack_conv1(const float *log_mel, unsigned short *output);
 void whisper_frontend_pack_conv2_width(
     const unsigned short *conv1,
