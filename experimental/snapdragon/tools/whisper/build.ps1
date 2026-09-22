@@ -3,6 +3,8 @@ param(
     [string]$BuildDir = "experimental/snapdragon/build",
     [switch]$FastRpcProbe,
     [switch]$FastRpcHmx,
+    [switch]$StandaloneWhisper,
+    [string]$ProjectLinker = 'build/normal/linker.exe',
     [string]$HexagonSdk = '',
     [string]$HexagonCompiler = '',
     [switch]$DebugSymbols,
@@ -18,6 +20,19 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 Push-Location $repoRoot
 try {
+    if ($StandaloneWhisper) {
+        if ($FastRpcProbe -or $FastRpcHmx -or $HexagonSdk -or $HexagonCompiler -or
+            $SelfFusionProbe -or $SelfFusionCandidate -or $GemmaGroup32Diagnostic -or
+            $DebugSymbols -or $Clean -or $PSBoundParameters.ContainsKey('GemmaGroup32Encoding')) {
+            throw 'StandaloneWhisper cannot be combined with other build modes or Clean'
+        }
+        if (-not $PSBoundParameters.ContainsKey('BuildDir')) {
+            $BuildDir = 'experimental/snapdragon/build/whisper-direct'
+        }
+        if ([IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
+            throw 'StandaloneWhisper requires an isolated build directory'
+        }
+    }
     if ($HexagonCompiler -and -not $FastRpcProbe) { throw 'HexagonCompiler requires FastRpcProbe' }
     if ($FastRpcHmx -and -not $FastRpcProbe) { throw 'FastRpcHmx requires FastRpcProbe' }
     if ($HexagonSdk -and -not $FastRpcHmx) { throw 'HexagonSdk requires FastRpcHmx' }
@@ -59,6 +74,54 @@ try {
     $compilerCommand = Get-Command $Compiler -ErrorAction SilentlyContinue
     if (-not $compilerCommand) { throw "Could not find Clang: $Compiler" }
     $compilerPath = $compilerCommand.Source
+    if ($StandaloneWhisper) {
+        $linker = (Resolve-Path -LiteralPath $ProjectLinker -ErrorAction Stop).Path
+        $sources = @(
+            @('experimental/snapdragon/src/apps/whisper/whisper_cli.c', 'whisper_cli.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_wav.c', 'whisper_wav.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_convert.c', 'whisper_convert.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_tensor_index.c', 'whisper_tensor_index.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_artifact.c', 'whisper_artifact.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_model.c', 'whisper_model.obj'),
+            @('src/platform/windows/core.c', 'platform_core.obj'),
+            @('experimental/snapdragon/src/apps/whisper/tests/whisper_wav_test.c', 'whisper_wav_test.obj'),
+            @('experimental/snapdragon/src/apps/whisper/tests/whisper_tensor_index_test.c', 'whisper_tensor_index_test.obj')
+        )
+        New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
+        $compileFlags = @('--target=aarch64-w64-windows-gnu', '-std=c11', '-Wall', '-Wextra',
+            '-Wpedantic', '-Werror', '-O2', '-ffreestanding', '-fno-builtin',
+            '-fno-stack-protector', '-ffunction-sections', '-fdata-sections',
+            '-Isrc/shared', '-Iexperimental/snapdragon/src/apps/whisper')
+        foreach ($source in $sources) {
+            & $compilerPath @compileFlags -c $source[0] -o (Join-Path $BuildDir $source[1])
+            if ($LASTEXITCODE -ne 0) { throw "Standalone WAV compilation failed: $($source[0])" }
+        }
+        & $compilerPath --target=aarch64-w64-windows-gnu -c src/arch/aarch64/windows/chkstk.S `
+            -o "$BuildDir/chkstk.obj"
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone ARM64 stack-probe compilation failed' }
+        $imports = @('src/platform/windows/imports/kernel32.def',
+            'src/platform/windows/imports/ws2_32.def', 'src/platform/windows/imports/bcrypt.def')
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-cli.exe" `
+            "$BuildDir/whisper_cli.obj" "$BuildDir/whisper_wav.obj" "$BuildDir/platform_core.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone WAV project link failed' }
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-convert.exe" `
+            "$BuildDir/whisper_convert.obj" "$BuildDir/whisper_tensor_index.obj" `
+            "$BuildDir/whisper_artifact.obj" "$BuildDir/whisper_model.obj" `
+            "$BuildDir/platform_core.obj" "$BuildDir/chkstk.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone converter project link failed' }
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-wav-test.exe" `
+            "$BuildDir/whisper_wav.obj" "$BuildDir/whisper_wav_test.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone WAV test link failed' }
+        & ([IO.Path]::GetFullPath("$BuildDir/whisper-wav-test.exe"))
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone WAV window tests failed' }
+        & $linker --target=pe-arm64 --gc-sections -o "$BuildDir/whisper-tensor-index-test.exe" `
+            "$BuildDir/whisper_tensor_index.obj" "$BuildDir/whisper_tensor_index_test.obj" @imports
+        if ($LASTEXITCODE -ne 0) { throw 'Standalone tensor-index test link failed' }
+        & ([IO.Path]::GetFullPath("$BuildDir/whisper-tensor-index-test.exe"))
+        if ($LASTEXITCODE -ne 0) { throw "Standalone tensor-index tests failed: $LASTEXITCODE" }
+        Write-Output "Built $BuildDir/whisper-cli.exe and whisper-convert.exe (inference not implemented)"
+        return
+    }
     $compilerDirectory = Split-Path -Parent $compilerPath
     $dllTool = Join-Path $compilerDirectory "llvm-dlltool.exe"
     if (-not (Test-Path -LiteralPath $dllTool)) { throw "Could not find llvm-dlltool beside Clang" }

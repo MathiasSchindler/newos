@@ -4,6 +4,23 @@ Freestanding Windows ARM64 applications and experiments for Snapdragon X Elite.
 Native builds use Clang/LLD without CRT or libc. Python and PowerShell are
 development tools, not application runtime dependencies.
 
+Whisper, GLM-OCR and TranslateGemma currently run through QNN on this Surface.
+A separate QNN-free FastRPC probe loads our own Hexagon V73 module through the
+installed OEM driver. Development-signed scalar DSP execution and 18 FP16
+32x32 HMX matrix products (18,432 exactly checked outputs) were verified on
+this machine. This is a kernel correctness result, not a working model backend
+or a performance result. The probe host has only Kernel32 static imports and
+the DSP module has no linked C runtime; the OEM FastRPC DLL still imports UCRT,
+and the driver, firmware and a trusted module catalog remain necessary. The
+[QNN-free NPU guide](docs/platform/fastrpc-without-qnn.md) covers the trust
+configuration, evidence, build/test commands and remaining work. The three
+production applications and their distributions still require QNN.
+
+An independent [Whisper-tiny bring-up](docs/platform/fastrpc-without-qnn.md#independent-whisper-cli-bring-up)
+has begun. Its isolated, in-tree-linked tools check variable-duration WAV input
+and convert pinned safetensors weights to a versioned, indexed artifact in C.
+They do not yet perform transcription or execute a model.
+
 ## Directory layout
 
 ```text

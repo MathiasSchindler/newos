@@ -160,6 +160,63 @@ matrix and is not a throughput benchmark. Keep Whisper, GLM-OCR and
 TranslateGemma on their existing QNN paths until an independently validated
 alternative meets their correctness and performance requirements.
 
+### Independent Whisper CLI bring-up
+
+The new [whisper_cli.c](../../src/apps/whisper/whisper_cli.c) is separate from
+the deployed QNN application. Its first milestone is WAV inspection, not
+transcription: [whisper_wav.c](../../src/apps/whisper/whisper_wav.c) uses the
+repository's `platform_open_read`, `platform_read`, `platform_seek` and
+`platform_close` interfaces. It accepts mono 16 kHz IEEE float32 RIFF WAV,
+counts all samples, and provides zero-padded 30-second windows at a 25-second
+stride. Short files get one padded window; longer files are not truncated.
+Overlap reconciliation and transcript stitching are not yet implemented.
+The current CLI uses the Windows platform layer's ANSI file API; non-ANSI
+paths are not yet supported. Classic RIFF data chunks are limited to 4 GiB.
+
+From the repository root, with the existing native Windows ARM64 Clang and
+`build/normal/linker.exe` available:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -StandaloneWhisper
+./experimental/snapdragon/build/whisper-direct/whisper-cli.exe --inspect-wav experimental/snapdragon/data/bundestag-hearing-5min-16k-mono-f32.wav
+./experimental/snapdragon/build/whisper-direct/whisper-convert.exe --model=tiny experimental/snapdragon/models/whisper-tiny/model.safetensors experimental/snapdragon/build/whisper-direct/tiny.wti
+```
+
+The isolated builder compiles the CLI, WAV reader, C checkpoint converter and real
+`src/platform/windows/core.c`, links with the in-tree PE ARM64 linker and
+project-owned Windows import definitions, then runs synthetic no-CRT WAV and
+tensor-index tests. Its compiler also uses `src/arch/aarch64/windows/chkstk.S`
+for stack probes. The five-minute reference file reports 4,800,000 samples
+and 12 windows. The PE imports Kernel32 and WS2_32 system DLLs because the
+shared platform core also implements socket-capable I/O; it imports no CRT or
+QNN. The input-path API is ANSI for now.
+
+The converter reads the safetensors JSON table with bounded C parsing, checks
+tensor names, F32/F16 types, shapes, offsets, non-overlap and complete data
+coverage, and streams the original bytes without rounding or quantization.
+It checks the chosen model's token/position embeddings and every encoder and
+decoder layer's Q projection against the existing model descriptors. This is
+not yet exhaustive validation of every Whisper operator tensor. The output is
+published only after the complete write; the tool refuses an existing target.
+Build artifacts live under `build/whisper-direct/`, not in `models/`.
+
+The version-1 `.wti` file starts with a 64-byte little-endian header:
+`WTINDEX1`, version (u32), model ID (u32), tensor count (u32), record size
+(u32, currently 192), data offset (u64), data size (u64), table FNV-1a 64
+(u64), data FNV-1a 64 (u64), and eight reserved zero bytes. Each 192-byte
+record has a zero-terminated 96-byte ASCII name, type and rank (u32 each),
+eight u64 dimensions (unused entries zero), data-relative start and end (u64
+each), and tensor FNV-1a 64 (u64). The original tensor payload follows the
+table. This format leaves room for later versioned type/quantization changes;
+the current CLI does not read it yet. The pinned Tiny input produced 167
+tensors and 151,042,560 unmodified payload bytes; independent SHA-256 comparison
+of source and output payload passed. A Tiny input selected as Base and an
+existing output path are rejected.
+
+No CPU model execution, DSP model service or inference output is provided by
+this build. The next milestone is an independently checked CPU Tiny baseline
+that reads the indexed artifact before replacing operators with HMX.
+
 ## Verified HMX execution
 
 ### Reproduce
@@ -642,7 +699,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/
 
 No extra reboot was needed for this certificate import. The candidate was then
 staged beside an isolated host probe and successfully tested through remote
-open/invoke/close. HMX execution remains outside this completed scalar gate.
+open/invoke/close. That scalar test did not establish HMX execution; the later
+HMX hardware gate and its evidence are recorded above.
 
 ### Measured prerequisites
 
@@ -848,7 +906,8 @@ not being applied here.
 7. Rerun the bounded open/invoke/close test with the unchanged security policy.
    Only successful remote loading and all three numerical checks establish
    custom DSP execution. The scalar ELF/QuRT compatibility gate is now verified
-   by the development route above; HMX remains a separate gate.
+   by the development route above; the HMX gate has also passed with development
+   signing, but neither result proves retail-trust deployment.
 
 Until account/signing access and package eligibility are established, a locally
 generated unsigned catalog or a new self-signed root would not complete this
