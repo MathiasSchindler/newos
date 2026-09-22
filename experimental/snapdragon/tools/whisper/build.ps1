@@ -1,6 +1,8 @@
 param(
     [string]$Compiler = "clang",
     [string]$BuildDir = "experimental/snapdragon/build",
+    [switch]$FastRpcProbe,
+    [string]$HexagonCompiler = '',
     [switch]$DebugSymbols,
     [switch]$SelfFusionProbe,
     [switch]$SelfFusionCandidate,
@@ -14,6 +16,19 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 Push-Location $repoRoot
 try {
+    if ($HexagonCompiler -and -not $FastRpcProbe) { throw 'HexagonCompiler requires FastRpcProbe' }
+    if ($FastRpcProbe) {
+        if ($Clean -or $DebugSymbols -or $SelfFusionProbe -or $SelfFusionCandidate -or
+            $GemmaGroup32Diagnostic -or $PSBoundParameters.ContainsKey('GemmaGroup32Encoding')) {
+            throw 'FastRpcProbe cannot be combined with other build modes or Clean'
+        }
+        if (-not $PSBoundParameters.ContainsKey('BuildDir')) {
+            $BuildDir = 'experimental/snapdragon/build/fastrpc-probe'
+        }
+        if ([IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
+            throw 'FastRpcProbe requires a separate build directory'
+        }
+    }
     if ($PSBoundParameters.ContainsKey('GemmaGroup32Encoding') -and -not $GemmaGroup32Diagnostic) {
         throw 'GemmaGroup32Encoding requires GemmaGroup32Diagnostic'
     }
@@ -47,6 +62,39 @@ try {
 
     & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/kernel32.def -l "$BuildDir/libkernel32.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the Kernel32 import library" }
+    if ($FastRpcProbe) {
+        $probeFlags = @(
+            '--target=aarch64-w64-windows-gnu', '-std=c11', '-Wall', '-Wextra', '-Wpedantic', '-Werror', '-Oz',
+            '-ffreestanding', '-fno-builtin', '-fno-stack-protector', '-fno-unwind-tables',
+            '-fno-asynchronous-unwind-tables', '-nostdlib', '-fuse-ld=lld',
+            '-Wl,-e,mainCRTStartup', '-Wl,--no-insert-timestamp', '-Wl,-s', "-L$BuildDir", '-lkernel32'
+        )
+        & $compilerPath @probeFlags experimental/snapdragon/src/tools/probe/fastrpc_probe.c -o "$BuildDir/fastrpc_probe.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to build fastrpc_probe.exe' }
+        & $compilerPath @probeFlags -DFASTRPC_SKEL_TEST experimental/snapdragon/src/tools/probe/fastrpc_probe_skel.c -o "$BuildDir/fastrpc_skel_test.exe"
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to build the scalar contract test' }
+        & ([IO.Path]::GetFullPath("$BuildDir/fastrpc_skel_test.exe"))
+        if ($LASTEXITCODE -ne 0) { throw 'Scalar contract test failed' }
+        if ($HexagonCompiler) {
+            $hexagonPath = (Get-Command $HexagonCompiler -ErrorAction Stop).Source
+            $hexagonLinker = Join-Path (Split-Path -Parent $hexagonPath) 'lld.exe'
+            if (-not (Test-Path $hexagonLinker)) { throw 'Expected lld.exe beside the Hexagon compiler' }
+            $dspFlags = @(
+                '--target=hexagon-unknown-elf', '-mcpu=hexagonv73', '-G0', '-std=c11', '-Wall', '-Wextra',
+                '-Wpedantic', '-Werror', '-O2', '-fPIC', '-ffreestanding', '-fno-builtin',
+                '-fno-stack-protector', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-nostdlib'
+            )
+            & $hexagonPath @dspFlags -c experimental/snapdragon/src/tools/probe/fastrpc_probe_skel.c -o "$BuildDir/fastrpc_probe_skel.o"
+            if ($LASTEXITCODE -ne 0) { throw 'Hexagon scalar compilation failed' }
+            & $hexagonLinker -flavor gnu -shared --no-undefined --hash-style=sysv --no-rosegment `
+                -z max-page-size=4096 -z separate-loadable-segments -z norelro `
+                -soname fastrpc_probe_skel.so "$BuildDir/fastrpc_probe_skel.o" -o "$BuildDir/fastrpc_probe_skel.so"
+            if ($LASTEXITCODE -ne 0) { throw 'Hexagon scalar linking failed' }
+            Write-Output "Built $BuildDir/fastrpc_probe_skel.so (custom scalar Hexagon module)"
+        }
+        Write-Output "Built $BuildDir/fastrpc_probe.exe (no QNN; hardware probing is explicit)"
+        return
+    }
     & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/dxcore.def -l "$BuildDir/libdxcore.a"
     if ($LASTEXITCODE -ne 0) { throw "Failed to create the DXCore import library" }
     & $dllTool -m arm64 -d experimental/snapdragon/src/shared/imports/d3d12.def -l "$BuildDir/libd3d12.a"

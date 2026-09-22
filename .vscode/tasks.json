@@ -2224,6 +2224,40 @@
 			"command": "./experimental/snapdragon/build/calibration-venv/Scripts/python.exe ./experimental/snapdragon/tools/translate/test-translate.py --target-profile run --profile-repeats 1 --profile-operators --report ('./experimental/snapdragon/data/w8-targeted-profiling/operators-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.json')",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Snapdragon FastRPC probe build",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/tools/whisper/build.ps1",
+				"-FastRpcProbe"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Snapdragon FastRPC DSP build",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"experimental/snapdragon/tools/whisper/build.ps1",
+				"-FastRpcProbe",
+				"-HexagonCompiler",
+				"experimental/snapdragon/build/hexagon-llvm/bin/clang.exe"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
 		}
 	]
 }
