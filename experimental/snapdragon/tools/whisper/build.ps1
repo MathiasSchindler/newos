@@ -2,6 +2,8 @@ param(
     [string]$Compiler = "clang",
     [string]$BuildDir = "experimental/snapdragon/build",
     [switch]$FastRpcProbe,
+    [switch]$FastRpcHmx,
+    [string]$HexagonSdk = '',
     [string]$HexagonCompiler = '',
     [switch]$DebugSymbols,
     [switch]$SelfFusionProbe,
@@ -17,16 +19,22 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 Push-Location $repoRoot
 try {
     if ($HexagonCompiler -and -not $FastRpcProbe) { throw 'HexagonCompiler requires FastRpcProbe' }
+    if ($FastRpcHmx -and -not $FastRpcProbe) { throw 'FastRpcHmx requires FastRpcProbe' }
+    if ($HexagonSdk -and -not $FastRpcHmx) { throw 'HexagonSdk requires FastRpcHmx' }
+    if ($FastRpcHmx -and $HexagonCompiler) { throw 'Use HexagonSdk, not HexagonCompiler, for HMX' }
     if ($FastRpcProbe) {
         if ($Clean -or $DebugSymbols -or $SelfFusionProbe -or $SelfFusionCandidate -or
             $GemmaGroup32Diagnostic -or $PSBoundParameters.ContainsKey('GemmaGroup32Encoding')) {
             throw 'FastRpcProbe cannot be combined with other build modes or Clean'
         }
         if (-not $PSBoundParameters.ContainsKey('BuildDir')) {
-            $BuildDir = 'experimental/snapdragon/build/fastrpc-probe'
+            $BuildDir = if ($FastRpcHmx) { 'experimental/snapdragon/build/fastrpc-hmx' } else { 'experimental/snapdragon/build/fastrpc-probe' }
         }
         if ([IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build')) {
             throw 'FastRpcProbe requires a separate build directory'
+        }
+        if ($FastRpcHmx -and [IO.Path]::GetFullPath($BuildDir).TrimEnd('\', '/') -eq [IO.Path]::GetFullPath('experimental/snapdragon/build/fastrpc-probe')) {
+            throw 'HMX must not overwrite the scalar probe directory'
         }
     }
     if ($PSBoundParameters.ContainsKey('GemmaGroup32Encoding') -and -not $GemmaGroup32Diagnostic) {
@@ -75,22 +83,56 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Failed to build the scalar contract test' }
         & ([IO.Path]::GetFullPath("$BuildDir/fastrpc_skel_test.exe"))
         if ($LASTEXITCODE -ne 0) { throw 'Scalar contract test failed' }
-        if ($HexagonCompiler) {
-            $hexagonPath = (Get-Command $HexagonCompiler -ErrorAction Stop).Source
-            $hexagonLinker = Join-Path (Split-Path -Parent $hexagonPath) 'lld.exe'
-            if (-not (Test-Path $hexagonLinker)) { throw 'Expected lld.exe beside the Hexagon compiler' }
+        if ($HexagonCompiler -or $FastRpcHmx) {
+            if ($FastRpcHmx) {
+                if (-not $HexagonSdk) { $HexagonSdk = 'experimental/snapdragon/data/hexagon-toolchain/6.6.0.0' }
+                $HexagonSdk = (Resolve-Path -LiteralPath $HexagonSdk).Path
+                $sdkBin = Join-Path $HexagonSdk 'tools/HEXAGON_Tools/19.0.07/Tools/bin'
+                $hexagonPath = Join-Path $sdkBin 'hexagon-clang.exe'
+                $hexagonLinker = Join-Path $repoRoot 'experimental/snapdragon/build/hexagon-llvm/bin/lld.exe'
+            } else {
+                $hexagonPath = (Get-Command $HexagonCompiler -ErrorAction Stop).Source
+                $hexagonLinker = Join-Path (Split-Path -Parent $hexagonPath) 'lld.exe'
+            }
+            if (-not (Test-Path $hexagonLinker)) { throw 'Build the local Hexagon-enabled lld.exe first' }
             $dspFlags = @(
                 '--target=hexagon-unknown-elf', '-mcpu=hexagonv73', '-G0', '-std=c11', '-Wall', '-Wextra',
                 '-Wpedantic', '-Werror', '-O2', '-fPIC', '-ffreestanding', '-fno-builtin',
                 '-fno-stack-protector', '-fno-unwind-tables', '-fno-asynchronous-unwind-tables', '-nostdlib'
             )
+            if ($FastRpcHmx) {
+                $dspFlags = @($dspFlags | Where-Object { $_ -notin @('--target=hexagon-unknown-elf', '-mcpu=hexagonv73') })
+                $dspFlags += @('-mv73', '-mhmx', '-DFASTRPC_HMX', '-isystem', "$HexagonSdk/incs", '-isystem', "$HexagonSdk/incs/stddef")
+            }
             & $hexagonPath @dspFlags -c experimental/snapdragon/src/tools/probe/fastrpc_probe_skel.c -o "$BuildDir/fastrpc_probe_skel.o"
-            if ($LASTEXITCODE -ne 0) { throw 'Hexagon scalar compilation failed' }
+            if ($LASTEXITCODE -ne 0) { throw 'Hexagon probe compilation failed' }
             & $hexagonLinker -flavor gnu -shared --no-undefined --hash-style=sysv --no-rosegment `
                 -z max-page-size=4096 -z separate-loadable-segments -z norelro `
                 -soname fastrpc_probe_skel.so "$BuildDir/fastrpc_probe_skel.o" -o "$BuildDir/fastrpc_probe_skel.so"
-            if ($LASTEXITCODE -ne 0) { throw 'Hexagon scalar linking failed' }
-            Write-Output "Built $BuildDir/fastrpc_probe_skel.so (custom scalar Hexagon module)"
+            if ($LASTEXITCODE -ne 0) { throw 'Hexagon probe linking failed' }
+            if ($FastRpcHmx) {
+                $elf = & (Join-Path $sdkBin 'hexagon-readelf.exe') --wide --dyn-syms --dynamic "$BuildDir/fastrpc_probe_skel.so"
+                if ($LASTEXITCODE) { throw 'HMX ELF inspection failed' }
+                $elf | Set-Content -Encoding ASCII "$BuildDir/hmx-elf.txt"
+                if ($elf -match '\(NEEDED\)') { throw 'HMX probe must not link external libraries' }
+                $allowedImports = @('HAP_power_set', 'HAP_power_destroy_client', 'compute_resource_attr_init',
+                    'compute_resource_attr_init_v2', 'compute_resource_attr_set_vtcm_param',
+                    'compute_resource_attr_set_hmx_param', 'compute_resource_attr_get_vtcm_ptr',
+                    'compute_resource_acquire', 'compute_resource_release', 'compute_resource_hmx_lock', 'compute_resource_hmx_unlock')
+                foreach ($line in $elf) {
+                    if ($line -match '^\s*\d+:\s+[0-9a-fA-F]+\s+\d+\s+\S+\s+(\S+)\s+\S+\s+UND\s+(\S+)') {
+                        if ($Matches[1] -ne 'WEAK' -or $Matches[2] -notin $allowedImports) { throw ('Unexpected HMX import: ' + $line) }
+                    }
+                }
+                $disassembly = & (Join-Path $sdkBin 'hexagon-llvm-objdump.exe') --mattr=+hmx -d "$BuildDir/fastrpc_probe_skel.so"
+                if ($LASTEXITCODE) { throw 'HMX disassembly failed' }
+                $disassembly | Set-Content -Encoding ASCII "$BuildDir/hmx-disassembly.txt"
+                foreach ($instruction in @('mxclracc.hf', 'activation.hf', 'weight.hf', ':after.hf')) {
+                    if (-not ($disassembly -match [regex]::Escape($instruction))) { throw ('Missing HMX instruction: ' + $instruction) }
+                }
+                Write-Output 'HMX_BUILD_AND_FIRMWARE_IMPORT_CHECK_PASS'
+            }
+            Write-Output "Built $BuildDir/fastrpc_probe_skel.so (custom Hexagon module)"
         }
         Write-Output "Built $BuildDir/fastrpc_probe.exe (no QNN; hardware probing is explicit)"
         return

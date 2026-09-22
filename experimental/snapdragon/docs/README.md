@@ -6,6 +6,18 @@ shared code, developer tools, datasets and installed binaries. Application
 records live in `apps/`; hardware/NPU/QNN records live in `platform/`.
 The native applications use no C runtime or SDK headers; QNN is loaded separately.
 
+## NPU access without QNN
+
+The separate [QNN-free NPU guide](platform/fastrpc-without-qnn.md) records the
+verified FastRPC scalar and HMX paths, alternative approaches and their limits,
+host/DSP programming responsibilities, signing requirements and reproducible
+build/test commands. On this Surface, the custom HMX probe passed 18 FP16 32x32
+matrix products with 18,432 exactly checked elements, resource cleanup and
+catalog/module negative controls. It uses the OEM transport and firmware but
+no QNN runtime. The HMX development build uses SDK ABI headers; production
+applications remain unchanged on QNN. No model-performance claim follows from
+the small-matrix correctness result.
+
 For the current model-preserving `clean` and complete native rebuild, use the
 [central build entry](../README.md#binaries-and-builds). `build/` can now be
 removed completely; preserved inputs and evidence live under `data/build-state/`.

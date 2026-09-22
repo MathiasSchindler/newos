@@ -59,7 +59,7 @@ and TranslateGemma. No separate Whisper GUI is currently present.
 | Material | Location or entry point |
 | --- | --- |
 | Hardware, drivers, NPU and QNN | [Snapdragon X / QNN](docs/platform/snapdragon-x-qnn.md), [NPU investigation](docs/platform/npu-plan.md) |
-| QNN-free FastRPC investigation | [Standalone probe, measured capabilities and remaining gates](docs/platform/fastrpc-without-qnn.md) |
+| NPU access without QNN | [Verified FastRPC/HMX results, programming guide, alternatives and build/test commands](docs/platform/fastrpc-without-qnn.md) |
 | OCR architecture and measured limits | [OCR](docs/apps/ocr.md) |
 | Translation architecture and measured limits | [TranslateGemma](docs/apps/translate.md) |
 | Whisper timing and diagnostics | [Benchmarks](docs/apps/whisper-benchmark.md), [Diagnostics](docs/apps/whisper-diagnostics.md) |

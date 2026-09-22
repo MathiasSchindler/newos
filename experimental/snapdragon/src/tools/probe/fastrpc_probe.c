@@ -90,13 +90,96 @@ static int argument(const u16 **cursor, u16 *destination, u32 capacity) {
     return count ? 1 : -1;
 }
 
-static int is_invoke(const u16 *value) {
-    const char *expected = "--invoke";
+static int is_option(const u16 *value, const char *expected) {
     while (*expected && *value == (u16)*expected) { ++value; ++expected; }
     return !*expected && !*value;
 }
 
-static int invoke_scalar(void *module, RpcAlloc allocate, RpcFree release) {
+static u16 integer_half(int value) {
+    u32 magnitude = (u32)(value < 0 ? -value : value);
+    u32 exponent = 0, shifted = magnitude;
+    if (!magnitude) return 0;
+    while (shifted > 1) { shifted >>= 1; ++exponent; }
+    return (u16)((value < 0 ? 0x8000U : 0) | ((exponent + 15) << 10) |
+                 (((magnitude << 10) >> exponent) & 1023));
+}
+
+static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer) {
+    static int left[1024], right[1024];
+    static const char *names[] = {"left-identity", "right-identity", "dense-1", "dense-2", "zero", "signed-permutation"};
+    static const char *details[] = {"marker", "stage", "status", "resource", "vtcm_aligned", "unlock", "release", "power_down", "power_destroy", "executed", "vtcm_guard", "reserved"};
+    u16 *input = (u16 *)buffer;
+    u32 *metadata = buffer + 1024;
+    u16 *product = (u16 *)(metadata + 12);
+    RemoteArg arguments[2];
+    int status;
+    arguments[0].buffer.data = input;
+    arguments[0].buffer.size = 4096;
+    arguments[1].buffer.data = metadata;
+    arguments[1].buffer.size = 2096;
+    for (u32 trial = 0; trial < 6; ++trial) {
+        u32 mismatches = 0, guards = 0;
+        for (u32 row = 0; row < 32; ++row) {
+            for (u32 column = 0; column < 32; ++column) {
+                u32 index = row * 32 + column;
+                left[index] = (int)((row * 17 + column * 11 + row * column * 3 + trial * 7) % 5) - 2;
+                right[index] = (int)((row * 13 + column * 7 + row * column + trial * 11) % 5) - 2;
+                if (trial == 0) {
+                    left[index] = row == column;
+                    right[index] = (int)((row * 17 + column * 7) % 31) - 15;
+                }
+                if (trial == 1) right[index] = row == column;
+                if (trial == 4) left[index] = 0;
+                if (trial == 5) left[index] = column == (row * 7 + 3) % 32 ? (row % 2 ? -1 : 1) : 0;
+                input[index] = integer_half(left[index]);
+                input[1024 + index] = integer_half(right[index]);
+            }
+        }
+        for (u32 index = 4096; index < 8192; ++index) ((u8 *)buffer)[index] = 0xa5;
+        text("hmx.case="); text(names[trial]); text("\n");
+        status = invoke(handle, 0x03010100U, arguments);
+        field("hmx.invoke.status", (u32)status);
+        if (status) return 10;
+        for (u32 index = 0; index < 12; ++index) { text("hmx."); field(details[index], metadata[index]); }
+        if (metadata[0] != 0x484d5831U || metadata[1] != 9 || metadata[2] || metadata[3] != 1 ||
+            metadata[4] != 1 || metadata[9] != 1 || metadata[11]) return 13;
+        if (metadata[5] || metadata[6] || metadata[7] || metadata[8]) return 12;
+        for (u32 row = 0; row < 32; ++row) {
+            for (u32 column = 0; column < 32; ++column) {
+                int expected = 0;
+                u32 index = row * 32 + column;
+                for (u32 inner = 0; inner < 32; ++inner) expected += left[row * 32 + inner] * right[inner * 32 + column];
+                u16 actual = product[index] == 0x8000 ? 0 : product[index];
+                if (actual != integer_half(expected)) {
+                    if (!mismatches) {
+                        field("hmx.first_mismatch.index", index);
+                        field("hmx.first_mismatch.expected_bits", integer_half(expected));
+                        field("hmx.first_mismatch.actual_bits", actual);
+                    }
+                    ++mismatches;
+                }
+                guards += input[index] != integer_half(left[index]);
+                guards += input[1024 + index] != integer_half(right[index]);
+            }
+        }
+        for (u32 index = 6192; index < 8192; ++index) guards += ((u8 *)buffer)[index] != 0xa5;
+        field("hmx.mismatches", mismatches);
+        field("hmx.host_guards", guards);
+        if (mismatches || guards || metadata[10]) return 11;
+    }
+    for (u32 index = 4096; index < 8192; ++index) ((u8 *)buffer)[index] = 0xa5;
+    arguments[0].buffer.size = 2048;
+    status = invoke(handle, 0x03010100U, arguments);
+    field("hmx.bad_size.transport_status", (u32)status);
+    field("hmx.bad_size.status", metadata[2]);
+    if (status || metadata[0] != 0x484d5831U || metadata[1] || metadata[2] != 14) return 10;
+    for (u32 index = 3; index < 12; ++index) if (metadata[index]) return 10;
+    for (u32 index = 4144; index < 8192; ++index) if (((u8 *)buffer)[index] != 0xa5) return 11;
+    text("hmx.elements_verified=6144\n");
+    return 0;
+}
+
+static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx) {
     RemoteControl session = (RemoteControl)GetProcAddress(module, "remote_session_control");
     RemoteOpen open = (RemoteOpen)GetProcAddress(module, "remote_handle64_open");
     RemoteInvoke invoke = (RemoteInvoke)GetProcAddress(module, "remote_handle64_invoke");
@@ -117,8 +200,9 @@ static int invoke_scalar(void *module, RpcAlloc allocate, RpcFree release) {
     field("remote_open.status", (u32)status);
     if (status) { result = 9; goto cleanup; }
     opened = 1;
-    buffer = (u32 *)allocate(25, 1, 4096);
+    buffer = (u32 *)allocate(25, 1, hmx ? 8192 : 4096);
     if (!buffer) { result = 6; goto cleanup; }
+    if (hmx) { result = matrix_trials(invoke, handle, buffer); goto cleanup; }
     arguments[0].buffer.data = buffer;
     arguments[0].buffer.size = 64;
     arguments[1].buffer.data = buffer + 32;
@@ -186,8 +270,9 @@ static int run(void) {
         dll_path[1] != ':' || dll_path[2] != '\\') goto usage;
     mode_argument = argument(&cursor, module_path, 2048);
     if (mode_argument) {
-        if (mode_argument != 1 || !is_invoke(module_path) || argument(&cursor, module_path, 2048)) goto usage;
-        invoke_mode = 1;
+        if (mode_argument != 1) goto usage;
+        invoke_mode = is_option(module_path, "--invoke") ? 1 : is_option(module_path, "--hmx") ? 2 : 0;
+        if (!invoke_mode || argument(&cursor, module_path, 2048)) goto usage;
     }
     text("probe=fastrpc-host-v2\nqnn_api_used=0\n");
     module = LoadLibraryExW(dll_path, 0, 0x00000100U | 0x00000800U);
@@ -237,10 +322,10 @@ static int run(void) {
         } else result = 6;
     } else result = 5;
     if (invoke_mode && !result) {
-        result = invoke_scalar(module, allocate, release);
+        result = invoke_dsp(module, allocate, release, invoke_mode == 2);
         text(result ? "custom_dsp_execution=failed\n" : "custom_dsp_execution=verified\n");
     } else text("custom_dsp_execution=not_tested\n");
-    text("hmx_execution=not_tested\n");
+    text(invoke_mode == 2 ? (result ? "hmx_execution=failed\n" : "hmx_execution=verified\n") : "hmx_execution=not_tested\n");
 cleanup:
     if (!FreeLibrary(module)) {
         field("unload.win32_error", GetLastError());
@@ -248,7 +333,7 @@ cleanup:
     }
     return result;
 usage:
-    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke]\n");
+    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke|--hmx]\n");
     return 2;
 }
 

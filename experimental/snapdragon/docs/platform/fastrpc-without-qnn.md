@@ -1,8 +1,8 @@
 # FastRPC without QNN on this Surface
 
-Investigation date: 2026-09-22. Status: **QNN-free custom scalar DSP execution
-verified on this Surface**, including repeated numerical checks, cleanup and
-negative catalog/module controls. HMX matrix execution is not yet tested.
+Investigation date: 2026-09-22. Status: **QNN-free scalar DSP and FP16 HMX matrix
+execution verified on this Surface**, including repeated numerical checks,
+cleanup and negative catalog/module controls. Production inference is unchanged.
 
 ## Conclusion
 
@@ -13,6 +13,13 @@ memory without calling QNN. We now have an independently built LLVM 23.1.2
 Hexagon compiler and a freestanding V73 scalar module. Unsigned-session
 configuration, module open, scalar invocation and handle close all succeed
 with the development-signed catalog and the user's configured test trust.
+
+A separate SDK-compiled HMX variant now executes 32x32 FP16 matrix products
+using V73 matrix instructions, not a scalar/HVX fallback. Three isolated signed
+sessions each passed six changing-input matrices: **18,432 output elements
+checked exactly**, with successful resource and power cleanup. The host remains
+Kernel32-only; this DSP variant uses SDK firmware ABI headers at build time and
+11 weak firmware imports, but no QNN or linked C runtime/inference libraries.
 
 The Windows Hexagon backend documentation linked below requires a trusted
 signed catalog for custom DSP libraries. Unsigned DSP protection domains do
@@ -32,7 +39,246 @@ and certificate trust imports were performed explicitly by the user; Memory
 Integrity/HVCI remains enabled. The OEM driver, firmware and FastRPC library
 are still required; this is QNN-free, not vendor-independent.
 
-## Verified execution
+## Ways to use the NPU without QNN
+
+**Recommended experimental route: keep the OEM transport and firmware, but
+replace the QNN graph/runtime layer with our own FastRPC DSP module and HMX
+kernels.** This is the route verified here. It does not require replacing the
+Windows driver or modifying the working inference applications.
+
+Distinguish three different goals: not calling the QNN API, not loading a QNN
+runtime anywhere in the execution path, and removing all Qualcomm software.
+The probe achieves the first two, not the third. Likewise, executing scalar
+code on the Hexagon DSP is not proof of using its HMX matrix accelerator.
+
+| Route | What it provides | Evidence and suitability here |
+| --- | --- | --- |
+| Own FastRPC module with HMX instructions | Direct matrix acceleration; we own packing, kernels and scheduling | **Verified:** 18 FP16 32x32 products, 18,432 exact output elements, cleanup and negative controls. Best fit for a freestanding custom engine. |
+| Own FastRPC module with scalar DSP or HVX code | DSP control, vector operations and supporting kernels | Scalar execution verified. HVX capabilities reported, but a custom HVX kernel was not tested in this investigation. These are complementary to HMX, not substitutes for matrix-execution evidence. |
+| Third-party direct-Hexagon engine | An existing model runtime built over FastRPC and DSP kernels | Public implementations informed the ABI/ISA investigation; none was installed or validated as a model engine here. This introduces external implementation/runtime dependencies and is not the chosen project route. |
+| Windows ML or another execution-provider wrapper | Higher-level model execution and provider management | Not demonstrated to be QNN-free on this machine. Avoiding QNN calls in application code does not establish that the selected provider avoids QNN internally. Inspect the actual provider and loaded runtime. |
+| DirectML / D3D12 compute | A different Windows compute API | Not a verified path to this device's HMX NPU. Successful GPU compute or adapter enumeration must not be reported as NPU execution. |
+| Direct OEM driver submissions without `libcdsprpc.dll` | Potential replacement for the vendor host transport | Not implemented. This requires a separate investigation of the Windows driver ABI, memory mapping, synchronization and trust checks. Calling `D3DKMT*` alone is not a usable NPU programming interface. |
+| Linux FastRPC | Similar DSP offload concepts through Linux kernel interfaces | Useful architectural reference, not a drop-in Windows implementation or a tested alternative configuration for this Surface. |
+
+There is no demonstrated generic Windows API that accepts arbitrary C matrix
+code and automatically runs it on this NPU. The verified route builds a
+separate Hexagon ELF, loads it through FastRPC and explicitly issues HMX
+instructions inside it. Existing QNN context binaries cannot simply be passed
+to the custom module: their graph execution and artifact formats belong to QNN.
+
+## Programming the verified path
+
+The two sides have different machine-code and calling conventions:
+
+```text
+our Windows ARM64 host (PE, Kernel32-only static imports)
+  -> OEM MCDM libcdsprpc.dll, loaded explicitly
+  -> installed Windows NPU driver and Hexagon firmware
+  -> our development-catalog-signed V73 module (ELF32)
+       -> firmware resource/power services
+       -> scalar packing + HMX matrix instructions + result readback
+```
+
+### Host and DSP responsibilities
+
+1. **Build the two targets independently.** The host uses Windows Clang with
+   `-ffreestanding -fno-builtin -nostdlib`. The scalar DSP build uses the local
+   Hexagon-enabled LLVM; the HMX variant requires the SDK compiler and
+   `-mv73 -mhmx`. Compilation for Hexagon alone does not imply HMX support.
+2. **Load the correct OEM transport.** Use the explicit absolute path to the
+   MCDM `libcdsprpc.dll` in DriverStore. The similarly named ADSP copy did not
+   provide usable cDSP capability access in this experiment. Query capabilities
+   for diagnostics, but do not interpret zero HMX fields as proof of absence.
+3. **Open an isolated custom-module session.** The host resolves
+   `remote_session_control` and `remote_handle64_open/invoke/close`, requests
+   unsigned cDSP domain 3, then opens the fixed module URI. Keep the matching
+   signed catalog next to the module and set a per-child module search path.
+   An unsigned protection domain does not waive Windows catalog trust.
+4. **Exchange a deliberately small protocol.** Allocate shared host memory
+   with `rpcmem_alloc`, pass buffers through `remote_handle64_invoke`, and
+   validate their sizes/alignment on the DSP. Host `remote_arg` is 16 bytes;
+   DSP `remote_arg` is 8 bytes. The current method 2 is scalar; method 3 is the
+   fixed-size FP16 matrix probe. These are probe contracts, not a general
+   inference API. Check both transport status and the in-band result status.
+5. **Acquire accelerator resources before instructions.** The DSP requests
+   VTCM/HMX access with the firmware compute-resource APIs, applies its own HMX
+   power vote, and locks HMX. Pack operands into aligned VTCM, initialize the
+   scale/bias pairs, execute the matrix instructions and read back the result.
+   Ordinary host shared memory is not a replacement for the required VTCM
+   tile buffers in this implementation.
+6. **Verify and clean up every run.** Compare all results with an independent
+   host oracle, check guards, unlock/release resources and remove the power
+   client. Free the host buffer and close the remote handle. On this driver,
+   successful last-handle close already tears down the session; repeating an
+   explicit close produced error 44. Bound hardware tests with a child-process
+   timeout and retain logs even on failure.
+
+The executable implementation is in
+[fastrpc_probe.c](../../src/tools/probe/fastrpc_probe.c) and
+[fastrpc_probe_skel.c](../../src/tools/probe/fastrpc_probe_skel.c).
+The isolated build and signed test harness are
+[build.ps1](../../tools/whisper/build.ps1) and
+[sign-fastrpc-probe.ps1](../../tools/whisper/sign-fastrpc-probe.ps1).
+Use the reproduction commands below; the test harness handles staging,
+catalog verification, search paths and timeouts. A successful build or catalog
+verification alone is not a hardware execution test.
+
+### Dependencies and deployment
+
+At development time, HMX needs the extracted Hexagon SDK compiler/ABI headers
+and the local Hexagon-enabled linker. At execution time, the project host and
+DSP module need no QNN DLL, QNN stub, QNN skeleton, Python, compiler or SDK
+library installation. They still require compatible Windows/OEM FastRPC,
+driver and DSP firmware, plus an accepted module catalog. The vendor FastRPC
+DLL itself imports UCRT; therefore the complete process is not libc-free even
+though our host has no CRT imports. The HMX ELF has no `NEEDED` libraries, but
+does resolve 11 weak firmware resource/power functions: it is not independent
+of the firmware ABI.
+
+The proven deployment is **development-signed on this configured machine**.
+The user enabled TESTSIGNING and imported the dedicated public certificate;
+HVCI remained enabled. This does not prove deployment on a stock retail
+machine without those trust changes. The retail signing discussion later in
+this document remains a separate, unresolved deployment question. Do not
+disable signature enforcement or change boot/trust settings automatically.
+
+### From a probe to a model engine
+
+The next useful experiment is a separate resident DSP service that amortizes
+RPC and resource-acquisition costs across many checked operations. It would
+need tiled kernels for actual model shapes, tails and longer reductions;
+explicit weight preparation/loading; supporting vector/scalar operators;
+scratch/KV-cache ownership; cancellation and failure recovery; and a scheduler.
+General FP16 numerics and any future quantized formats need their own tests.
+
+Measure module load, RPC dispatch, packing/transfers and kernel execution
+separately before comparing end-to-end model latency with QNN. Validate
+intermediate tensors and final model outputs, then sustained and concurrent
+operation. The current correctness probe acquires and releases resources per
+matrix and is not a throughput benchmark. Keep Whisper, GLM-OCR and
+TranslateGemma on their existing QNN paths until an independently validated
+alternative meets their correctness and performance requirements.
+
+## Verified HMX execution
+
+### Reproduce
+
+The HMX compiler is QuIC LLVM Hexagon Clang 19.0.07 from the native Windows ARM64
+[Hexagon SDK 6.6.0.0 release archive](https://github.com/snapdragon-toolchain/hexagon-sdk/releases/download/v6.6.0.0/hexagon-sdk-v6.6.0.0-arm64-wos.tar.xz).
+Its 857,553,272-byte archive matched the release's published SHA-256:
+
+```text
+CACEEBDB7C213C4840993176B9CDCE6946D8FF159D096B2EDD3685F0274BE477
+```
+
+The archive and extracted `6.6.0.0/` tree are in the ignored
+`data/hexagon-toolchain/` directory. No installer or global environment change
+was used. The HMX build reads `incs/` and `incs/stddef/` directly, without
+vendoring headers into project source or linking SDK libraries. It requires
+`-mv73 -mhmx`: the independent upstream LLVM 23.1.2 compiler rejects
+`mxclracc.hf`, even with its Hexagon target enabled.
+
+From the repository root, with the already-built local Hexagon-enabled LLVM
+linker and the previously trusted development certificate:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -FastRpcProbe -FastRpcHmx
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Prepare
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Test
+```
+
+The corresponding VS Code tasks are `Snapdragon FastRPC HMX build`,
+`Snapdragon FastRPC HMX sign` and `Snapdragon FastRPC HMX test`.
+`-HexagonSdk` can select another extracted SDK root with the same tool layout.
+Outputs are isolated in `build/fastrpc-hmx/`; the new catalog, payload and
+receipt are in `data/fastrpc-signing-hmx/`. The original scalar signing artifacts
+remain unchanged. HMX signing reuses the existing non-exportable key and public
+certificate; it neither creates a certificate nor changes trust or boot policy.
+
+`--hmx` is the explicit host option; the default remains host-only and
+`--invoke` remains scalar-only. Run hardware checks through the helper so each
+child has an isolated module search path, adjacent catalog and 30-second limit.
+
+### Kernel and oracle
+
+Method 3 accepts two row-major 32x32 FP16 matrices in 4,096 input bytes and
+returns a 2,096-byte reply: twelve diagnostic words plus 1,024 raw FP16 outputs.
+The DSP checks the request, acquires 8 KiB of single-page VTCM with HMX access,
+creates its own HMX power vote, and locks HMX on the calling thread. There are
+no clock/DCVS changes, worker pools or HVX operations.
+
+Each activation/weight/output tile occupies 2,048 bytes, aligned to 2,048 bytes.
+Packing uses half-element index `(row / 2) * 64 + column * 2 + row % 2`;
+the weight's logical row is the reduction dimension. The scale area is 256 bytes:
+its first 128 bytes contain 32 FP16 **(scale=1, bias=0)** pairs, and the next
+128 bytes are zero. Filling both halves of each pair with one incorrectly adds
+one to every result; the initial identity test detected that error.
+
+Between scalar memory barriers, the kernel loads `bias = mxmem2(...)`, executes
+`mxclracc.hf`, issues paired `activation.hf = mxmem(...)` and
+`weight.hf = mxmem(...)` loads with range 2047, and stores with
+`mxmem(..., 0):after.hf = acc`. It unpacks the hardware result, checks the VTCM
+tail guard, unlocks HMX, releases the resource, removes its power vote and
+destroys its power client. Every cleanup status is returned and checked.
+There is no DSP-side software matrix multiplication fallback.
+
+The host independently computes ordinary row-major integer matrix products
+and compares their exact FP16 representations with the returned values
+(positive/negative zero are numerically equivalent). Fixtures cover left and
+right identity, two dense signed matrices, zero, and a signed permutation.
+Small integer operands keep sums exactly representable in FP16. All outputs
+are poisoned before each call; inputs and the host/VTCM guard regions are
+checked. This is not general FP16 rounding, overflow or inference-quality
+coverage.
+
+An important transport observation: malformed-input calls returned host
+transport status zero even when the skeleton returned error 14, leaving the
+poisoned reply untouched. Therefore transport success alone is insufficient.
+For a valid reply buffer, malformed input now returns an explicit in-band
+status 14, stage zero and executed zero. The hardware control requires that
+rejection and an untouched product/guard area. CPU tests additionally exercise
+short input, misalignment and undersized reply cases without executing HMX.
+
+### Hardware receipt
+
+All eight cases passed against the same MCDM driver described below:
+
+| Case | Exit | Result |
+| --- | --- | --- |
+| Host-only | 0 | No DSP invocation |
+| Scalar regression in the SDK-built module | 0 | Three correct transforms |
+| Signed first / repeat / after controls | 0 each | Six exact matrices and bad-size rejection per session |
+| Missing catalog / missing module / modified module | 9 each | Remote open rejected, session cleaned up |
+
+Each matrix reports stage 9, executed 1, zero status, zero mismatches, zero
+host/VTCM guard damage, and zero unlock/release/power-down/destroy status.
+Each positive process reports `hmx.elements_verified=6144`,
+`hmx_execution=verified` and a successful last-handle close. No child timed out.
+
+Evidence is retained in
+`data/fastrpc-hmx-tested-20260922-195746-7bd8189f/`: all per-case logs and binary
+hashes, `signing-receipt.json`, `results.json` with `complete=true`, plus the
+ELF import report and final linked-code disassembly. Exact signed identities:
+
+```text
+ELF: C2EC783C151870A6B8C24C170B796FBEEAAF3E8693C48BF8111F8D0944E082AE
+CAT: A8F9E91BD73D6F3EC3426C93F10703BA97AF70BE1D47C42FE2F256D737EF9FB7
+```
+
+The linker is the existing upstream Hexagon-enabled `lld`. It warns about an
+SDK-specific `.hexagon.attributes` tag; the final ELF's matrix code is decoded
+with SDK `hexagon-llvm-objdump --mattr=+hmx`. The build requires all matrix
+mnemonics in that disassembly, no ELF `NEEDED` entries, and only the allowlisted
+weak `compute_resource_*` and `HAP_power_*` firmware imports. The final linked
+ELF, not merely an assembly/object file, passed the hardware tests above.
+
+The successful test despite zero HMX capability fields demonstrates that those
+queries are not a reliable absence test on this installed driver. It does not
+establish sustained throughput, concurrent-use behavior, arbitrary matrix
+shapes, other devices, or a model backend. No performance claim is made.
+
+## Verified scalar execution
 
 Run the repeatable hardware suite from the repository root after building the
 host probe and preparing/trusting the catalog as described below:
@@ -111,13 +357,14 @@ It checks every result and a marker, closes any successfully opened handle,
 and lets the last-handle close terminate its cDSP session. Failed-open and
 failed-close paths retain an explicit session-close request. Only a fully
 checked successful sequence can
-report `custom_dsp_execution=verified`. It does not reset the DSP, change power
-votes or disable signature enforcement; HMX is always `not_tested`.
+report `custom_dsp_execution=verified`. The scalar mode does not reset the DSP,
+change power votes or disable signature enforcement; its HMX status remains
+`not_tested`. The explicit `--hmx` mode is described above.
 
 [fastrpc_probe_skel.c](../../src/tools/probe/fastrpc_probe_skel.c) implements
 the stateless integer transform. Method 2 takes exactly 64 input and 68 output
 bytes, validating pointers, sizes and alignment. Host `remote_arg` is 16 bytes;
-the DSP version is 8 bytes, checked at compile time. The module imports no
+the DSP version is 8 bytes, checked at compile time. The scalar build imports no
 functions and has no ELF `NEEDED` libraries. Its embedded host-only contract
 test exercises three inputs plus malformed calls; this is not DSP evidence.
 
@@ -165,7 +412,8 @@ and cleanup to succeed. Capability query errors are reported
 individually and do not make the whole diagnostic fail. Only a query with
 `.status=0` has a meaningful `.value`. In particular, exit 0 does not mean
 unsigned module loading has been verified unless `--invoke` was requested.
-Neither mode establishes HMX access.
+Neither host-only nor scalar mode establishes HMX access; use the separate
+`--hmx` variant and verification suite above.
 
 ### Build and attempt the DSP module
 
@@ -736,15 +984,13 @@ OS; it would not meet a no-external-inference-runtime objective.
 
 ## Remaining gates
 
-Compiler, development catalog trust, module discovery, scalar execution and
-cleanup gates are complete on this machine. Remaining work is:
+Compiler, development catalog trust, module discovery, scalar execution, small
+FP16 HMX matrix execution and cleanup gates are complete on this machine.
+Remaining work is:
 
-1. **Prove HMX separately.** Establish the V73 matrix instruction/intrinsic and
-   resource-acquisition contract, including VTCM, alignment, layouts and
-   synchronization. Run a small independently checked matrix multiply and
-   retain disassembly plus suitable execution evidence. A fast HVX kernel or
-   generic NPU-busy counter is not proof of HMX execution.
-2. **Only then assess a model backend.** Measure dispatch cost, resident-buffer
+1. **Broaden kernel validation.** Cover general shapes, reduction lengths,
+   FP16 numerical limits, persistent resources and concurrent-use behavior.
+2. **Assess a model backend separately.** Measure dispatch cost, resident-buffer
    behavior, numerical correctness and sustained performance before considering
    replacing any of the three production inference paths.
 
@@ -752,6 +998,8 @@ cleanup gates are complete on this machine. Remaining work is:
 
 Consulted on 2026-09-22; external development branches can change. Only narrow
 ABI declarations were represented locally, not a vendored implementation.
+The HMX build additionally consumes headers from the extracted development SDK;
+it does not link an SDK runtime or copy a third-party inference implementation.
 
 - [Qualcomm FastRPC architecture and workflow](https://github.com/qualcomm/fastrpc)
 - [Public remote API, query IDs and capability structure](https://github.com/qualcomm/fastrpc/blob/development/inc/remote.h)
@@ -762,6 +1010,8 @@ ABI declarations were represented locally, not a vendored implementation.
 - [Windows Hexagon backend guide and catalog-signing prerequisite](https://github.com/ggml-org/llama.cpp/blob/master/docs/backend/snapdragon/windows.md)
 - [Independent Windows FastRPC loading implementation](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-hexagon/htp-drv.cpp)
 - [Independent catalog-generation build rules](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-hexagon/CMakeLists.txt)
+- [Public HMX tile layout and instruction references](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-hexagon/htp/hmx-utils.h)
+- [Public HMX scale/bias initialization call sites](https://github.com/ggml-org/llama.cpp/blob/master/ggml/src/ggml-hexagon/htp/matmul-ops.c)
 - [Microsoft driver code-signing requirements](https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/code-signing-reqs)
 - [Microsoft attestation signing process and limitations](https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/code-signing-attestation)
 - [Hardware Developer Program enrollment and authority requirements](https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/hardware-program-register)

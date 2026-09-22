@@ -1,6 +1,7 @@
 param(
     [ValidateSet('Prepare', 'Verify', 'Trust', 'Test')]
     [string]$Action = 'Verify',
+    [switch]$Hmx,
     [string]$ExpectedThumbprint = ''
 )
 
@@ -9,17 +10,21 @@ if ($Action -eq 'Trust' -and $ExpectedThumbprint -notmatch '^[0-9A-Fa-f]{40}$') 
     throw 'Trust requires the explicitly reviewed 40-digit ExpectedThumbprint'
 }
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
-$directory = Join-Path $root 'data/fastrpc-signing'
+$variant = if ($Hmx) { 'fastrpc-hmx' } else { 'fastrpc-probe' }
+$directory = Join-Path $root $(if ($Hmx) { 'data/fastrpc-signing-hmx' } else { 'data/fastrpc-signing' })
 $payload = Join-Path $directory 'payload'
 $module = Join-Path $payload 'fastrpc_probe_skel.so'
 $catalog = Join-Path $directory 'fastrpc_probe_skel.cat'
-$publicKey = Join-Path $directory 'development.cer'
+$publicKey = Join-Path $root 'data/fastrpc-signing/development.cer'
 $receipt = Join-Path $directory 'receipt.json'
 $subject = 'CN=newos FastRPC Probe Development'
+if ($Hmx -and ($Action -eq 'Trust' -or -not (Test-Path -LiteralPath $publicKey))) {
+    throw 'HMX requires the existing scalar development identity; it does not create or trust certificates'
+}
 
 Add-Type -AssemblyName System.Security
 if ($Action -eq 'Prepare') {
-    $source = Join-Path $root 'build/fastrpc-probe/fastrpc_probe_skel.so'
+    $source = Join-Path $root "build/$variant/fastrpc_probe_skel.so"
     if (-not (Test-Path -LiteralPath $source)) { throw 'Build the FastRPC DSP module first' }
     New-Item -ItemType Directory -Force -Path $payload | Out-Null
     $extraFiles = @(Get-ChildItem -LiteralPath $payload -Force | Where-Object { $_.Name -ne 'fastrpc_probe_skel.so' })
@@ -114,12 +119,19 @@ Write-Output 'CATALOG_SIGNATURE_AND_MEMBERSHIP_PASS (not proof of driver accepta
 
 if ($Action -eq 'Test') {
     if ($signature.Status -ne 'Valid') { throw 'Hardware tests require a trusted catalog first' }
-    $hostProbe = Join-Path $root 'build/fastrpc-probe/fastrpc_probe.exe'
+    $hostProbe = Join-Path $root "build/$variant/fastrpc_probe.exe"
     $drivers = @(Get-ChildItem "$env:SystemRoot/System32/DriverStore/FileRepository/qcnspmcdm8380.inf_arm64_*/libcdsprpc.dll")
     if ($drivers.Count -ne 1) { throw 'Expected exactly one MCDM FastRPC driver; select the intended driver explicitly' }
-    $evidence = Join-Path $root ('data/fastrpc-tested-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
+    $prefix = if ($Hmx) { 'data/fastrpc-hmx-tested-' } else { 'data/fastrpc-tested-' }
+    $evidence = Join-Path $root ($prefix + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $evidence | Out-Null
     Copy-Item -LiteralPath $receipt -Destination (Join-Path $evidence 'signing-receipt.json')
+    if ($Hmx) {
+        if ((Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $root "build/$variant/fastrpc_probe_skel.so")).Hash -ne $record.moduleSha256) {
+            throw 'Re-sign the current HMX build before testing'
+        }
+        Copy-Item -LiteralPath (Join-Path $root "build/$variant/hmx-elf.txt"), (Join-Path $root "build/$variant/hmx-disassembly.txt") -Destination $evidence
+    }
     $results = @()
     $cases = @(
         @{ Name = 'host'; Invoke = $false; Exit = 0 },
@@ -130,6 +142,9 @@ if ($Action -eq 'Test') {
         @{ Name = 'modified-module'; Invoke = $true; Exit = 9 },
         @{ Name = 'signed-after-controls'; Invoke = $true; Exit = 0 }
     )
+    if ($Hmx) {
+        $cases = @($cases[0], @{ Name = 'scalar-regression'; Invoke = $true; Scalar = $true; Exit = 0 }) + $cases[1..6]
+    }
     foreach ($case in $cases) {
         $caseDirectory = Join-Path $evidence $case.Name
         New-Item -ItemType Directory -Path $caseDirectory | Out-Null
@@ -149,7 +164,8 @@ if ($Action -eq 'Test') {
         $info.FileName = Join-Path $caseDirectory 'fastrpc_probe.exe'
         $info.WorkingDirectory = $caseDirectory
         $info.Arguments = '"' + $drivers[0].FullName + '"'
-        if ($case.Invoke) { $info.Arguments += ' --invoke' }
+        $matrixCase = $Hmx -and $case.Invoke -and -not $case.Scalar
+        if ($case.Invoke) { $info.Arguments += $(if ($matrixCase) { ' --hmx' } else { ' --invoke' }) }
         $info.UseShellExecute = $false
         $info.RedirectStandardOutput = $true
         $info.RedirectStandardError = $true
@@ -167,9 +183,15 @@ if ($Action -eq 'Test') {
             $output | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $caseDirectory 'probe.log')
             $valid = -not $timedOut -and $process.ExitCode -eq $case.Exit
             if ($case.Invoke -and $case.Exit -eq 0) {
-                $valid = $valid -and [regex]::Matches($output, 'remote_invoke.mismatches=0').Count -eq 3 -and
+                $resultPattern = if ($matrixCase) { '(?m)^hmx.mismatches=0\r?$' } else { '(?m)^remote_invoke.mismatches=0\r?$' }
+                $expectedTrials = if ($matrixCase) { 6 } else { 3 }
+                $valid = $valid -and [regex]::Matches($output, $resultPattern).Count -eq $expectedTrials -and
                     $output -match 'remote_open.status=0' -and $output -match 'remote_close.status=0' -and
                     $output -match 'session_close=handled_by_last_handle' -and $output -match 'custom_dsp_execution=verified'
+                if ($matrixCase) {
+                    $valid = $valid -and $output -match 'hmx_execution=verified' -and $output -match 'hmx.elements_verified=6144' -and
+                        $output -match 'hmx.bad_size.status=14' -and [regex]::Matches($output, '(?m)^hmx.host_guards=0\r?$').Count -eq 6
+                }
             } elseif ($case.Invoke) {
                 $valid = $valid -and $output -match 'custom_dsp_execution=failed' -and $output -match 'session_close.status=0'
             } else {
@@ -189,5 +211,5 @@ if ($Action -eq 'Test') {
         }
     }
     Write-Output ('EVIDENCE=' + $evidence)
-    Write-Output 'CUSTOM_DSP_EXECUTION_AND_NEGATIVE_CONTROLS_PASS'
+    Write-Output $(if ($Hmx) { 'HMX_MATRIX_EXECUTION_AND_NEGATIVE_CONTROLS_PASS' } else { 'CUSTOM_DSP_EXECUTION_AND_NEGATIVE_CONTROLS_PASS' })
 }
