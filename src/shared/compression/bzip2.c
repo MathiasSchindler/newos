@@ -1,6 +1,7 @@
 #include "compression/bzip2.h"
 
 #include "concurrency.h"
+#include "platform.h"
 #include "runtime.h"
 
 #define BZIP2_IO_BUFFER_SIZE 32768U
@@ -566,13 +567,6 @@ static int bzip2_read_bits_at(const unsigned char *src, size_t src_size, size_t 
     return 0;
 }
 
-static unsigned int bzip2_read_bit_at_unchecked(const unsigned char *src, size_t bit_offset) {
-    unsigned char byte = src[bit_offset >> 3];
-    unsigned int shift = 7U - (unsigned int)(bit_offset & 7U);
-
-    return (unsigned int)((byte >> shift) & 1U);
-}
-
 static int bzip2_parallel_append_block(size_t **blocks_io, size_t *count_io, size_t *capacity_io, size_t bit_offset) {
     size_t *next_blocks;
     size_t next_capacity;
@@ -597,8 +591,9 @@ static int bzip2_parallel_scan_blocks(const unsigned char *src, size_t src_size,
     size_t block_capacity = 0U;
     size_t bit_size;
     size_t bit_offset;
+    size_t byte_offset;
     size_t last_magic_bit;
-    unsigned long long window;
+    unsigned long long bits;
     const unsigned long long magic_mask = 0xffffffffffffULL;
     int found_end = 0;
 
@@ -610,26 +605,38 @@ static int bzip2_parallel_scan_blocks(const unsigned char *src, size_t src_size,
     bit_size = src_size * 8U;
     if (bit_size < 32U + 48U + 32U) return 1;
     last_magic_bit = bit_size - 48U - 32U;
-    if (bzip2_read_bits_at(src, src_size, 32U, 48U, &window) != 0) return 1;
-    for (bit_offset = 32U; bit_offset <= last_magic_bit; ++bit_offset) {
-        if (window == BZIP2_STREAM_MAGIC) {
-            if (bzip2_parallel_append_block(&blocks, &block_count, &block_capacity, bit_offset + 48U) != 0) {
-                rt_free(blocks);
-                return -1;
-            }
-        } else if (window == BZIP2_END_MAGIC) {
-            unsigned long long combined_crc;
+    bits = 0ULL;
+    for (byte_offset = 4U; byte_offset < 11U; ++byte_offset) {
+        bits = (bits << 8U) | (unsigned long long)src[byte_offset];
+    }
+    for (byte_offset = 4U; byte_offset + 7U < src_size; ++byte_offset) {
+        unsigned int shift;
 
-            if (bzip2_read_bits_at(src, src_size, bit_offset + 48U, 32U, &combined_crc) != 0) {
-                rt_free(blocks);
-                return 1;
+        for (shift = 0U; shift < 8U; ++shift) {
+            unsigned long long window;
+
+            bit_offset = byte_offset * 8U + (size_t)shift;
+            if (bit_offset > last_magic_bit) break;
+            window = (bits >> (8U - shift)) & magic_mask;
+            if (window == BZIP2_STREAM_MAGIC) {
+                if (bzip2_parallel_append_block(&blocks, &block_count, &block_capacity, bit_offset + 48U) != 0) {
+                    rt_free(blocks);
+                    return -1;
+                }
+            } else if (window == BZIP2_END_MAGIC) {
+                unsigned long long combined_crc;
+
+                if (bzip2_read_bits_at(src, src_size, bit_offset + 48U, 32U, &combined_crc) != 0) {
+                    rt_free(blocks);
+                    return 1;
+                }
+                *combined_crc_out = (unsigned int)combined_crc;
+                found_end = 1;
+                break;
             }
-            *combined_crc_out = (unsigned int)combined_crc;
-            found_end = 1;
-            break;
         }
-        if (bit_offset == last_magic_bit) break;
-        window = ((window << 1U) & magic_mask) | (unsigned long long)bzip2_read_bit_at_unchecked(src, bit_offset + 48U);
+        if (found_end || bit_offset >= last_magic_bit) break;
+        bits = ((bits << 8U) | (unsigned long long)src[byte_offset + 7U]) & 0xffffffffffffffULL;
     }
     if (!found_end || block_count < 2U) {
         rt_free(blocks);
@@ -690,10 +697,17 @@ int compression_bzip2_decompress_buffer_parallel(const void *src, size_t src_siz
     RtTaskGroup group;
     size_t index;
     int result;
+    int report_timings;
+    unsigned long long scan_start;
+    unsigned long long scan_end;
+    unsigned long long decode_end;
 
     if (src == 0 || write_fn == 0 || worker_count < 2U) return 1;
+    report_timings = platform_getenv("NEWOS_BUNZIP2_TIMINGS") != 0;
+    scan_start = report_timings ? platform_get_monotonic_time_ns() : 0ULL;
     result = bzip2_parallel_scan_blocks(bytes, src_size, &block_offsets, &block_count, &stored_combined_crc);
     if (result != 0) return result;
+    scan_end = report_timings ? platform_get_monotonic_time_ns() : 0ULL;
     block_size = (unsigned int)(bytes[3] - '0') * 100000U;
     jobs = (Bzip2ParallelBlockJob *)rt_malloc_array(block_count, sizeof(jobs[0]));
     if (jobs == 0) {
@@ -727,6 +741,7 @@ int compression_bzip2_decompress_buffer_parallel(const void *src, size_t src_siz
         if (rt_task_group_wait(&group) != 0) result = -1;
     }
     rt_task_pool_destroy(&pool);
+    decode_end = report_timings ? platform_get_monotonic_time_ns() : 0ULL;
     for (index = 0U; result == 0 && index < block_count; ++index) {
         if (jobs[index].result != 0) result = -1;
     }
@@ -740,6 +755,19 @@ int compression_bzip2_decompress_buffer_parallel(const void *src, size_t src_siz
     for (index = 0U; index < block_count; ++index) rt_free(jobs[index].output);
     rt_free(block_offsets);
     rt_free(jobs);
+    if (report_timings) {
+        unsigned long long write_end = platform_get_monotonic_time_ns();
+
+        rt_write_cstr(2, "bunzip2: scan_ns=");
+        rt_write_uint(2, scan_end - scan_start);
+        rt_write_cstr(2, " decode_ns=");
+        rt_write_uint(2, decode_end - scan_end);
+        rt_write_cstr(2, " write_ns=");
+        rt_write_uint(2, write_end - decode_end);
+        rt_write_cstr(2, " blocks=");
+        rt_write_uint(2, (unsigned long long)block_count);
+        rt_write_cstr(2, "\n");
+    }
     return result;
 }
 

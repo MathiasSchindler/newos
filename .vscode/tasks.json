@@ -5,30 +5,21 @@
 			"label": "Snapdragon FastRPC HMX sign",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": [
-				"-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-				"experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1", "-Hmx", "-Action", "Prepare"
-			],
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1", "-Hmx", "-Action", "Prepare"],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon FastRPC HMX test",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": [
-				"-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-				"experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1", "-Hmx", "-Action", "Test"
-			],
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1", "-Hmx", "-Action", "Test"],
 			"problemMatcher": []
 		},
 		{
 			"label": "Snapdragon FastRPC HMX build",
 			"type": "process",
 			"command": "powershell.exe",
-			"args": [
-				"-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-				"experimental/snapdragon/tools/whisper/build.ps1", "-FastRpcProbe", "-FastRpcHmx"
-			],
+			"args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "experimental/snapdragon/tools/whisper/build.ps1", "-FastRpcProbe", "-FastRpcHmx"],
 			"problemMatcher": []
 		},
 		{

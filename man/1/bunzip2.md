@@ -23,6 +23,11 @@ bunzip2 file.bz2
 - validate stream structure and CRC
 - write the restored output file beside the archive
 
+For standard multi-block streams, `NEWOS_BUNZIP2_WORKERS` selects the parallel
+decoder width. Set `NEWOS_BUNZIP2_TIMINGS=1` to print block count and scan,
+decode, and ordered-output phase times in nanoseconds to stderr. Small or
+unsupported streams that use the serial fallback do not report these phases.
+
 ## OPTIONS
 
 The current interface is a single-file form without additional flags.

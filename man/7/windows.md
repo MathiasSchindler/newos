@@ -85,6 +85,8 @@ For scaling measurements, run unprofiled binaries from the ordinary build:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool zip
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool zip -ZipStoreOnly
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool sort
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-bzip2.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-bzip2.ps1 -Pattern Mixed
 ```
 
 The benchmark generates private inputs under `tests/tmp/`, verifies output
@@ -98,6 +100,15 @@ twelve workers exposed a missing thread-safe allocator flag in the Windows
 builder. With the atomic lock enabled, the isolated normal and packed builds
 passed 51 repeated ZIP runs across those widths; other workloads still need
 their own checks. Failed runs retain their input directory for diagnosis.
+The bzip2 benchmark needs Python's standard `bz2` module only to generate a
+repeatable multi-block fixture; the decoder has no Python dependency. It
+verifies the complete decoded output and reports median scan, decode, and
+output times. `-Pattern Mixed` alternates 128 zero bytes with 128 seeded
+random bytes for a more compressible fixture. Windows phase times use a coarse
+system clock; use wall time
+for small differences. On a 12 MiB incompressible fixture, the rolling-byte
+scanner reduced the serial scan from about 250 ms to 78-94 ms, and the
+twelve-worker median wall time from about 501 ms to 326 ms.
 
 ## NATIVE STARTUP AND ABI
 
