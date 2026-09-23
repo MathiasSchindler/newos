@@ -28,6 +28,9 @@
 #define WIN_MOVEFILE_REPLACE_EXISTING 0x00000001UL
 #define WIN_FILE_TYPE_CHAR 0x0002UL
 #define WIN_ERROR_BROKEN_PIPE 109UL
+#define WIN_HANDLE_FLAG_INHERIT 1UL
+#define WIN_WAIT_INFINITE 0xffffffffUL
+#define WIN_TRACE_ENV "NEWOS_STRACE_HANDLE"
 #define WIN_ENABLE_ECHO_INPUT 0x0004UL
 #define WIN_ENABLE_LINE_INPUT 0x0002UL
 #define WIN_ENABLE_PROCESSED_INPUT 0x0001UL
@@ -129,6 +132,30 @@ typedef struct {
     unsigned long long available_extended_virtual;
 } WinMemoryStatusEx;
 
+typedef struct {
+    unsigned long length;
+    void *security_descriptor;
+    int inherit_handle;
+} WinSecurityAttributes;
+
+typedef struct {
+    unsigned long size;
+    char *reserved;
+    char *desktop;
+    char *title;
+    unsigned long x, y, x_size, y_size, x_chars, y_chars, fill, flags;
+    unsigned short show_window, reserved_size;
+    unsigned char *reserved_data;
+    void *stdin_handle, *stdout_handle, *stderr_handle;
+} WinStartupInfo;
+
+typedef struct {
+    void *process;
+    void *thread;
+    unsigned long process_id;
+    unsigned long thread_id;
+} WinProcessInfo;
+
 __declspec(dllimport) void __stdcall ExitProcess(unsigned int status);
 __declspec(dllimport) char *__stdcall GetCommandLineA(void);
 __declspec(dllimport) void *__stdcall GetStdHandle(unsigned long handle_id);
@@ -139,6 +166,8 @@ __declspec(dllimport) unsigned long __stdcall GetLastError(void);
 __declspec(dllimport) unsigned long __stdcall GetEnvironmentVariableA(const char *name, char *buffer, unsigned long size);
 __declspec(dllimport) int __stdcall SetEnvironmentVariableA(const char *name, const char *value);
 __declspec(dllimport) unsigned long long __stdcall GetTickCount64(void);
+__declspec(dllimport) int __stdcall QueryPerformanceCounter(long long *counter);
+__declspec(dllimport) int __stdcall QueryPerformanceFrequency(long long *frequency);
 __declspec(dllimport) unsigned long __stdcall GetFileAttributesA(const char *file_name);
 __declspec(dllimport) int __stdcall GetFileSizeEx(void *handle, long long *size_out);
 __declspec(dllimport) unsigned long __stdcall GetFileType(void *handle);
@@ -168,6 +197,13 @@ __declspec(dllimport) unsigned int __stdcall GetTempFileNameA(const char *path_n
 __declspec(dllimport) int __stdcall FlushFileBuffers(void *handle);
 __declspec(dllimport) int __stdcall RemoveDirectoryA(const char *path_name);
 __declspec(dllimport) int __stdcall CreatePipe(void **read_pipe, void **write_pipe, void *pipe_attributes, unsigned long size);
+__declspec(dllimport) int __stdcall SetHandleInformation(void *handle, unsigned long mask, unsigned long flags);
+__declspec(dllimport) int __stdcall CreateProcessA(const char *application, char *command_line, void *process_attributes,
+                                                   void *thread_attributes, int inherit_handles, unsigned long flags,
+                                                   void *environment, const char *directory, WinStartupInfo *startup,
+                                                   WinProcessInfo *process);
+__declspec(dllimport) unsigned long __stdcall WaitForSingleObject(void *handle, unsigned long milliseconds);
+__declspec(dllimport) int __stdcall GetExitCodeProcess(void *handle, unsigned long *exit_code);
 __declspec(dllimport) int __stdcall CloseHandle(void *handle);
 __declspec(dllimport) int __stdcall ReadFile(void *handle, void *buffer, unsigned long count, unsigned long *read_out, void *overlapped);
 __declspec(dllimport) int __stdcall WriteFile(void *handle, const void *buffer, unsigned long count, unsigned long *written_out, void *overlapped);
@@ -195,6 +231,76 @@ static void *windows_fd_table[WIN_FD_TABLE_CAPACITY];
 static unsigned char windows_fd_kind[WIN_FD_TABLE_CAPACITY];
 static int windows_winsock_started;
 static char windows_env_buffer[4096];
+static void *windows_trace_handle;
+static int windows_trace_initialized;
+static volatile int windows_trace_lock;
+
+static int windows_trace_active(void) {
+    if (!__atomic_load_n(&windows_trace_initialized, __ATOMIC_ACQUIRE)) {
+        char handle_text[32];
+        unsigned long long handle_value;
+
+        while (__atomic_exchange_n(&windows_trace_lock, 1, __ATOMIC_ACQUIRE)) {
+        }
+        if (!windows_trace_initialized) {
+            unsigned long size = GetEnvironmentVariableA(WIN_TRACE_ENV, handle_text, sizeof(handle_text));
+            if (size > 0UL && size < sizeof(handle_text) && rt_parse_uint(handle_text, &handle_value) == 0) {
+                __atomic_store_n(&windows_trace_handle, (void *)(size_t)handle_value, __ATOMIC_RELEASE);
+            }
+            __atomic_store_n(&windows_trace_initialized, 1, __ATOMIC_RELEASE);
+        }
+        __atomic_store_n(&windows_trace_lock, 0, __ATOMIC_RELEASE);
+    }
+    return __atomic_load_n(&windows_trace_handle, __ATOMIC_ACQUIRE) != 0;
+}
+
+static unsigned long long windows_trace_time_ns(void) {
+    long long counter;
+    long long frequency;
+
+    if (!QueryPerformanceCounter(&counter) || !QueryPerformanceFrequency(&frequency) || frequency <= 0) {
+        return platform_get_monotonic_time_ns();
+    }
+    return ((unsigned long long)counter / (unsigned long long)frequency) * 1000000000ULL +
+           ((unsigned long long)counter % (unsigned long long)frequency) * 1000000000ULL / (unsigned long long)frequency;
+}
+
+static void windows_trace_emit(long number, long arg0, long arg1, long arg2, long result,
+                               unsigned long long start_ns, const char *path) {
+    PlatformSyscallEvent event;
+    unsigned long written;
+    size_t length;
+
+    if (!windows_trace_active()) return;
+    while (__atomic_exchange_n(&windows_trace_lock, 1, __ATOMIC_ACQUIRE)) {
+    }
+    if (windows_trace_handle != 0) {
+        rt_memset(&event, 0, sizeof(event));
+        event.pid = (int)GetCurrentProcessId();
+        event.timestamp_ns = windows_trace_time_ns();
+        event.duration_ns = event.timestamp_ns >= start_ns ? event.timestamp_ns - start_ns : 0ULL;
+        event.number = number;
+        event.args[0] = arg0;
+        event.args[1] = arg1;
+        event.args[2] = arg2;
+        event.result = result;
+        if (path != 0) {
+            length = rt_strlen(path);
+            if (length >= sizeof(event.decoded)) {
+                length = sizeof(event.decoded) - 1U;
+                event.decoded_truncated = 1U;
+            }
+            memcpy(event.decoded, path, length);
+            event.decoded[length] = '\0';
+            event.decoded_kind = 1U;
+            event.decoded_length = (unsigned int)length;
+        }
+        if (!WriteFile(windows_trace_handle, &event, (unsigned long)sizeof(event), &written, 0) || written != sizeof(event)) {
+            __atomic_store_n(&windows_trace_handle, (void *)0, __ATOMIC_RELEASE);
+        }
+    }
+    __atomic_store_n(&windows_trace_lock, 0, __ATOMIC_RELEASE);
+}
 
 static int windows_copy_string(char *buffer, size_t buffer_size, const char *text) {
     if (buffer == 0 || buffer_size == 0U || text == 0 || rt_strlen(text) + 1U > buffer_size) return -1;
@@ -381,6 +487,8 @@ long platform_write(int fd, const void *buffer, size_t count) {
     void *handle = windows_handle_for_fd(fd);
     unsigned long chunk;
     unsigned long written = 0;
+    unsigned long long start_ns;
+    long result;
 
     if (windows_fd_is_socket(fd)) {
         int socket_chunk;
@@ -393,14 +501,18 @@ long platform_write(int fd, const void *buffer, size_t count) {
 
     if (handle == 0) return -1;
     chunk = count > 0xffffffffUL ? 0xffffffffUL : (unsigned long)count;
-    if (!WriteFile(handle, buffer, chunk, &written, 0)) return -1;
-    return (long)written;
+    start_ns = windows_trace_active() ? windows_trace_time_ns() : 0ULL;
+    result = WriteFile(handle, buffer, chunk, &written, 0) ? (long)written : -(long)GetLastError();
+    windows_trace_emit(1, fd, 0, (long)chunk, result, start_ns, 0);
+    return result < 0 ? -1 : result;
 }
 
 long platform_read(int fd, void *buffer, size_t count) {
     void *handle = windows_handle_for_fd(fd);
     unsigned long chunk;
     unsigned long bytes_read = 0;
+    unsigned long long start_ns;
+    long result;
 
     if (windows_fd_is_socket(fd)) {
         int socket_chunk;
@@ -413,23 +525,33 @@ long platform_read(int fd, void *buffer, size_t count) {
 
     if (handle == 0) return -1;
     chunk = count > 0xffffffffUL ? 0xffffffffUL : (unsigned long)count;
-    if (!ReadFile(handle, buffer, chunk, &bytes_read, 0)) {
-        return GetLastError() == WIN_ERROR_BROKEN_PIPE ? 0 : -1;
+    start_ns = windows_trace_active() ? windows_trace_time_ns() : 0ULL;
+    if (ReadFile(handle, buffer, chunk, &bytes_read, 0)) result = (long)bytes_read;
+    else {
+        unsigned long error = GetLastError();
+        result = error == WIN_ERROR_BROKEN_PIPE ? 0 : -(long)error;
     }
-    return (long)bytes_read;
+    windows_trace_emit(0, fd, 0, (long)chunk, result, start_ns, 0);
+    return result < 0 ? -1 : result;
 }
 
 int platform_open_read(const char *path) {
     void *handle;
     int fd;
+    unsigned long long start_ns;
 
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) return 0;
 
+    start_ns = windows_trace_active() ? windows_trace_time_ns() : 0ULL;
     handle = CreateFileA(path, WIN_GENERIC_READ, WIN_FILE_SHARE_READ, 0,
                          WIN_OPEN_EXISTING, WIN_FILE_ATTRIBUTE_NORMAL, 0);
-    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) return -1;
+    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) {
+        windows_trace_emit(2, 0, 0, 0, -(long)GetLastError(), start_ns, path);
+        return -1;
+    }
 
     fd = windows_allocate_fd(handle, WIN_FD_KIND_FILE);
+    windows_trace_emit(2, 0, 0, 0, fd, start_ns, path);
     if (fd >= 0) return fd;
 
     (void)CloseHandle(handle);
@@ -440,16 +562,22 @@ int platform_open_write_mode(const char *path, unsigned int mode, int truncate_e
     void *handle;
     unsigned long creation_disposition;
     int fd;
+    unsigned long long start_ns;
 
     (void)mode;
     if (path == 0 || (path[0] == '-' && path[1] == '\0')) return 1;
 
     creation_disposition = truncate_existing ? WIN_CREATE_ALWAYS : WIN_OPEN_ALWAYS;
+    start_ns = windows_trace_active() ? windows_trace_time_ns() : 0ULL;
     handle = CreateFileA(path, WIN_GENERIC_WRITE, WIN_FILE_SHARE_READ | WIN_FILE_SHARE_WRITE, 0,
                          creation_disposition, WIN_FILE_ATTRIBUTE_NORMAL, 0);
-    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) return -1;
+    if (handle == 0 || handle == WIN_INVALID_HANDLE_VALUE) {
+        windows_trace_emit(2, 0, 1, (long)creation_disposition, -(long)GetLastError(), start_ns, path);
+        return -1;
+    }
 
     fd = windows_allocate_fd(handle, WIN_FD_KIND_FILE);
+    windows_trace_emit(2, 0, 1, (long)creation_disposition, fd, start_ns, path);
     if (fd >= 0) return fd;
 
     (void)CloseHandle(handle);
@@ -554,6 +682,8 @@ int platform_open_append_existing(const char *path) {
 
 int platform_close(int fd) {
     void *handle;
+    unsigned long long start_ns;
+    int result;
 
     if (fd >= 0 && fd <= 2) return 0;
     if (fd < 0 || fd >= WIN_FD_TABLE_CAPACITY || windows_fd_kind[fd] == WIN_FD_KIND_NONE) return -1;
@@ -565,7 +695,10 @@ int platform_close(int fd) {
         return closesocket((WinSocket)(size_t)handle) == 0 ? 0 : -1;
     }
     windows_fd_kind[fd] = WIN_FD_KIND_NONE;
-    return CloseHandle(handle) != 0 ? 0 : -1;
+    start_ns = windows_trace_active() ? windows_trace_time_ns() : 0ULL;
+    result = CloseHandle(handle) != 0 ? 0 : -(int)GetLastError();
+    windows_trace_emit(3, fd, 0, 0, result, start_ns, 0);
+    return result < 0 ? -1 : 0;
 }
 
 long long platform_seek(int fd, long long offset, int whence) {
@@ -1494,11 +1627,88 @@ int platform_spawn_process_ex(
 }
 
 int platform_trace_syscalls(char *const argv[], PlatformSyscallTraceCallback callback, void *user_data, int *exit_status_out) {
-    (void)argv;
-    (void)callback;
-    (void)user_data;
-    if (exit_status_out != 0) *exit_status_out = 1;
-    return -1;
+    WinSecurityAttributes attributes;
+    WinStartupInfo startup;
+    WinProcessInfo process;
+    void *read_pipe = 0;
+    void *write_pipe = 0;
+    char command_line[4096] = {0};
+    char handle_text[32];
+    char previous_env[32];
+    unsigned long previous_length;
+    unsigned long exit_code = 1UL;
+    size_t used = 0U;
+    int result = -1;
+    int launched = 0;
+    int index;
+
+    if (argv == 0 || argv[0] == 0 || callback == 0) return -1;
+    rt_memset(&attributes, 0, sizeof(attributes));
+    attributes.length = sizeof(attributes);
+    attributes.inherit_handle = 1;
+    if (!CreatePipe(&read_pipe, &write_pipe, &attributes, 0) ||
+        !SetHandleInformation(read_pipe, WIN_HANDLE_FLAG_INHERIT, 0)) goto done;
+    for (index = 0; argv[index] != 0; ++index) {
+        const char *arg = argv[index];
+        size_t char_index;
+        int quote = arg[0] == '\0';
+
+        if (index != 0 && windows_append_char(command_line, sizeof(command_line), &used, ' ') != 0) goto done;
+        for (char_index = 0U; arg[char_index] != '\0'; ++char_index) {
+            if (windows_is_space(arg[char_index])) quote = 1;
+        }
+        if (quote && windows_append_char(command_line, sizeof(command_line), &used, '"') != 0) goto done;
+        for (char_index = 0U; arg[char_index] != '\0'; ++char_index) {
+            if (arg[char_index] == '"' ||
+                windows_append_char(command_line, sizeof(command_line), &used, arg[char_index]) != 0) goto done;
+        }
+        if (quote && windows_append_char(command_line, sizeof(command_line), &used, '"') != 0) goto done;
+    }
+    rt_unsigned_to_string((unsigned long long)(size_t)write_pipe, handle_text, sizeof(handle_text));
+    previous_length = GetEnvironmentVariableA(WIN_TRACE_ENV, previous_env, sizeof(previous_env));
+    if (previous_length >= sizeof(previous_env) || !SetEnvironmentVariableA(WIN_TRACE_ENV, handle_text)) goto done;
+    rt_memset(&startup, 0, sizeof(startup));
+    rt_memset(&process, 0, sizeof(process));
+    startup.size = sizeof(startup);
+    launched = CreateProcessA(0, command_line, 0, 0, 1, 0, 0, 0, &startup, &process);
+    (void)SetEnvironmentVariableA(WIN_TRACE_ENV, previous_length != 0UL ? previous_env : 0);
+    if (!launched) goto done;
+    (void)CloseHandle(process.thread);
+    (void)CloseHandle(write_pipe);
+    write_pipe = 0;
+    result = 0;
+    for (;;) {
+        PlatformSyscallEvent event;
+        unsigned char *bytes = (unsigned char *)&event;
+        size_t remaining = sizeof(event);
+        unsigned long amount;
+
+        while (remaining != 0U) {
+            if (!ReadFile(read_pipe, bytes, (unsigned long)remaining, &amount, 0) || amount == 0UL) {
+                if (remaining != sizeof(event)) result = -1;
+                goto finished;
+            }
+            bytes += amount;
+            remaining -= amount;
+        }
+        if (event.decoded_length > sizeof(event.decoded) || callback(&event, user_data) != 0) {
+            result = -1;
+            break;
+        }
+    }
+finished:
+    if (result != 0 && read_pipe != 0) {
+        (void)CloseHandle(read_pipe);
+        read_pipe = 0;
+    }
+    (void)WaitForSingleObject(process.process, WIN_WAIT_INFINITE);
+    if (!GetExitCodeProcess(process.process, &exit_code)) result = -1;
+    (void)CloseHandle(process.process);
+    if (exit_status_out != 0) *exit_status_out = (int)exit_code;
+done:
+    if (read_pipe != 0) (void)CloseHandle(read_pipe);
+    if (write_pipe != 0) (void)CloseHandle(write_pipe);
+    return result;
 }
 
 int platform_wait_process(int pid, int *exit_status_out) {
@@ -1779,8 +1989,11 @@ void __newos_stack_guard_init(long argc, char **argv) {
 #endif
 
 int main(int argc, char **argv);
+#if defined(NEWOS_WINDOWS_PROFILE)
+void windows_profile_finish(void);
+#endif
 
-__attribute__((noreturn, no_stack_protector))
+__attribute__((noreturn, no_stack_protector, no_instrument_function))
 void mainCRTStartup(void) {
     char **argv;
     int argc = windows_startup_args(&argv);
@@ -1790,6 +2003,9 @@ void mainCRTStartup(void) {
     __newos_stack_guard_init(argc, argv);
 #endif
     status = main(argc, argv);
+#if defined(NEWOS_WINDOWS_PROFILE)
+    windows_profile_finish();
+#endif
     ExitProcess((unsigned int)status);
     for (;;) {
     }

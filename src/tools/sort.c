@@ -92,6 +92,15 @@ typedef struct {
 } SortChunkJob;
 
 typedef struct {
+    SortLine **order;
+    SortLine **scratch;
+    size_t begin;
+    size_t middle;
+    size_t end;
+    const SortOptions *options;
+} SortMergeJob;
+
+typedef struct {
     RtTaskPool pool;
     unsigned int requested_workers;
     int have_requested_workers;
@@ -1205,6 +1214,14 @@ static int sort_chunk_task(unsigned int worker_index, void *arg) {
     return 0;
 }
 
+static int sort_merge_task(unsigned int worker_index, void *arg) {
+    SortMergeJob *job = (SortMergeJob *)arg;
+
+    (void)worker_index;
+    merge_line_order(job->order, job->scratch, job->begin, job->middle, job->end, job->options);
+    return 0;
+}
+
 static size_t sort_parallel_chunk_count(size_t line_count, unsigned int worker_count) {
     size_t chunk_count;
     size_t max_chunks;
@@ -1244,6 +1261,7 @@ static unsigned int sort_parallel_requested_workers(SortParallelContext *context
 static void sort_lines_parallel(SortCollection *collection, const SortOptions *options, SortParallelContext *parallel) {
     RtTaskGroup group;
     SortChunkJob jobs[RT_TASK_POOL_MAX_WORKERS];
+    SortMergeJob merge_jobs[RT_TASK_POOL_MAX_WORKERS / 2U];
     size_t begins[RT_TASK_POOL_MAX_WORKERS];
     size_t ends[RT_TASK_POOL_MAX_WORKERS];
     size_t chunk_count;
@@ -1317,15 +1335,18 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
     active_count = chunk_count;
     while (active_count > 1U) {
         size_t output_count = 0U;
+        size_t merge_count = 0U;
 
         for (chunk_index = 0U; chunk_index < active_count; chunk_index += 2U) {
             if (chunk_index + 1U < active_count) {
-                merge_line_order(collection->order,
-                                 collection->scratch,
-                                 begins[chunk_index],
-                                 begins[chunk_index + 1U],
-                                 ends[chunk_index + 1U],
-                                 options);
+                SortMergeJob *job = merge_jobs + merge_count++;
+
+                job->order = collection->order;
+                job->scratch = collection->scratch;
+                job->begin = begins[chunk_index];
+                job->middle = begins[chunk_index + 1U];
+                job->end = ends[chunk_index + 1U];
+                job->options = options;
                 begins[output_count] = begins[chunk_index];
                 ends[output_count] = ends[chunk_index + 1U];
             } else {
@@ -1333,6 +1354,20 @@ static void sort_lines_parallel(SortCollection *collection, const SortOptions *o
                 ends[output_count] = ends[chunk_index];
             }
             output_count += 1U;
+        }
+        if (rt_task_group_begin(&parallel->pool, &group) != 0 || rt_task_group_reserve(&group, merge_count) != 0) {
+            merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+            return;
+        }
+        for (chunk_index = 0U; chunk_index < merge_count; ++chunk_index) {
+            if (rt_task_group_submit(&group, sort_merge_task, merge_jobs + chunk_index) != 0) {
+                result = -1;
+                break;
+            }
+        }
+        if (rt_task_group_wait(&group) != 0 || result != 0) {
+            merge_sort_lines(collection->order, collection->scratch, 0U, collection->count, options);
+            return;
         }
         active_count = output_count;
     }

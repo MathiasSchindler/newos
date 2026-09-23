@@ -20,6 +20,10 @@ syscalls, follows forked/cloned children, and decodes selected socket addresses
 and `pollfd` arrays. The macOS project-linked backend traces newos freestanding tools by
 passing an internal trace pipe to the child and collecting completed events
 emitted by selected platform/runtime wrappers.
+The native Windows backend similarly runs a child with an inherited trace
+pipe. It records `open`, `read`, `write`, and `close` calls made through the
+project's Windows file platform layer, including decoded open paths, byte
+counts, a process id, and measured durations. The child exit status is retained.
 
 The output focuses on syscall number/name, the first three arguments, and the
 return value. Raw integer or pointer values are printed by default. When the
@@ -58,8 +62,8 @@ strace -e 257,0,1 command
 ```
 
 Unknown filter names are rejected. Numeric filters use the active platform's
-syscall number: Linux x86-64 on the Linux backend and Darwin arm64 on the macOS
-project-linked backend.
+event number: Linux x86-64 on Linux, Darwin arm64 on macOS, and project wrapper
+ids 0=`read`, 1=`write`, 2=`open`, 3=`close` on native Windows.
 
 ## UNKNOWN SYSCALLS
 
@@ -142,6 +146,15 @@ platform/runtime wrappers; it does not trace arbitrary system binaries or direct
 `svc` instructions outside those wrappers. The macOS backend emits completed
 records only, so it is designed for attribution and debugging of project tools
 rather than exact kernel-entry emulation.
+
+Native Windows likewise cannot observe arbitrary binaries, direct Win32/NT
+calls, or socket operations: it only sees file I/O through instrumented project
+wrappers. Its numeric event ids are not Windows syscall numbers, and numeric
+negative results denote Win32 error codes rather than POSIX errno. Buffer
+pointer arguments are shown as zero placeholders on Win64; path arguments are
+decoded. Tracing an uninstrumented program can produce no events even when it
+runs successfully. The Windows launcher currently rejects arguments containing
+literal double quotes, consistent with its limited command-line parser.
 
 macOS decoding is intentionally bounded. Path-like string arguments and open
 flags are decoded where the wrapper has stable arguments. `read` and `write`

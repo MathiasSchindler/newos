@@ -1,6 +1,7 @@
 LIBRARY KERNEL32.dll
 EXPORTS
     CloseHandle
+    CreateProcessA
     CreateThread
     CreateDirectoryA
     CreateFileA
@@ -21,6 +22,8 @@ EXPORTS
     GetConsoleScreenBufferInfo
     GetCurrentDirectoryA
     GetCurrentProcessId
+    GetCurrentThreadId
+    GetExitCodeProcess
     GetDiskFreeSpaceExA
     GetEnvironmentVariableA
     GetFileAttributesA
@@ -46,8 +49,10 @@ EXPORTS
     SetEndOfFile
     SetEnvironmentVariableA
     SetFilePointerEx
+    SetHandleInformation
     Sleep
     VirtualAlloc
     VirtualFree
     VirtualProtect
     WriteFile
+    WaitForSingleObject

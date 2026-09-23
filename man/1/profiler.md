@@ -20,8 +20,8 @@ self time, total time, average time, and the hottest functions. Trace lines may
 include a thread id; when they do, `profiler` keeps a separate stack per thread
 so interleaved worker traces can be summarized without corrupting attribution.
 
-The intended compiler path is GCC first and Clang second. Build profiled
-programs with compiler instrumentation:
+The profiler accepts GCC and Clang function instrumentation. The native Windows
+builder uses Clang; Linux and macOS builds can use either compiler:
 
 ```
 gcc   -finstrument-functions -fno-omit-frame-pointer -g -O2 ...
@@ -40,6 +40,29 @@ build/freestanding-linux-x86_64/profiler \
   -m build/freestanding-linux-x86_64/.maps/cat.map \
   --write-call-graph-profile cat.cgprofile cat.nprof
 ```
+
+On native Windows, the no-CRT PowerShell builder offers an isolated profiled
+tree. Set `NEWOS_PROFILE` before running the profiled executable; the
+`profile-windows/normal/profiler.exe` build can summarize its thread-aware trace:
+
+```
+.\tests\windows\build-windows-freestanding.ps1 -Profile -Tools profiler,sort,linker
+$env:NEWOS_SORT_WORKERS = '8'
+$env:NEWOS_PROFILE = 'tests/tmp/sort.nprof'
+$env:NEWOS_PROFILE_MAX_EVENTS = '250000'
+.\build\profile-windows\normal\sort.exe input.txt > output.txt
+Remove-Item Env:NEWOS_PROFILE
+.\build\profile-windows\normal\profiler.exe --thread-summary tests/tmp/sort.nprof
+```
+
+For function names, export symbols from the unstripped normal PE using
+`llvm-nm -n build/profile-windows/normal/sort.exe | Set-Content -Encoding ascii sort.nm`
+in PowerShell, then pass `-m sort.nm`. The reader infers the Windows image relocation from matching
+function addresses. Profiling uses buffered Win32 I/O and the performance
+counter; it has no C runtime dependency. Instrumentation and shared trace
+buffer locking distort short-run timing, so measure worker-count speedup with
+an ordinary unprofiled executable separately. A trace capped by
+`NEWOS_PROFILE_MAX_EVENTS` may end with open frames.
 
 `LINKER_REPORTS=1` asks the Linux newlinker path to write maps under
 `build/freestanding-linux-x86_64/.maps/`. Those maps are the preferred symbol
@@ -76,8 +99,8 @@ in nanoseconds. `THREAD_ID`, when present, is an unsigned numeric thread id.
 such as those emitted by `nm`. The two-field event form remains accepted for old
 single-thread traces and is treated as thread 0.
 
-The bundled Linux and macOS/aarch64 runtimes write the thread-id form. They also
-understand these environment variables:
+The bundled Linux, macOS/aarch64, and native Windows runtimes write the
+thread-id form. They also understand these environment variables:
 
 - `NEWOS_PROFILE=PATH` - write a trace to PATH. Values `0`, `off`, `false`, and
   `no` disable tracing even for a profiled binary.

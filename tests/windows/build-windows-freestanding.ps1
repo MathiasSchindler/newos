@@ -8,6 +8,7 @@ param(
     [int]$Jobs = 0,
     [int]$LinkJobs = 0,
     [switch]$Clean,
+    [switch]$Profile,
     [switch]$VerboseCommands
 )
 
@@ -266,10 +267,10 @@ if ([string]::IsNullOrWhiteSpace($TargetTriple)) {
 }
 $targetArchitecture = Get-WindowsTargetArchitecture $TargetTriple
 if ([string]::IsNullOrWhiteSpace($BuildDir)) {
-    $BuildDir = "build/normal"
+    $BuildDir = if ($Profile) { "build/profile-windows/normal" } else { "build/normal" }
 }
 if ([string]::IsNullOrWhiteSpace($PackedDir)) {
-    $PackedDir = "build/packed"
+    $PackedDir = if ($Profile) { "build/profile-windows/packed" } else { "build/packed" }
 }
 if ($targetArchitecture -ne "aarch64") { throw "Packed Windows output currently requires the aarch64 target" }
 if ($Jobs -le 0) { $Jobs = [Environment]::ProcessorCount }
@@ -423,13 +424,17 @@ New-WindowsImportLibraries $compilerDir $targetArchitecture $importLibraryDir
 
 $script:WindowsCFlags = @(
     "-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Oz",
-    "-ffreestanding", "-fno-builtin", "-fno-stack-protector",
+    "-ffreestanding", "-fno-builtin", "-DNEWOS_RUNTIME_THREAD_SAFE_ALLOC=1", "-fno-stack-protector",
     "-fno-unwind-tables", "-fno-asynchronous-unwind-tables",
     "-ffunction-sections", "-fdata-sections", "-flto",
     "-Isrc/shared", "-Isrc/platform/windows"
 )
+if ($Profile) {
+    $script:WindowsCFlags += @('-finstrument-functions', '-fno-omit-frame-pointer', '-fno-inline', '-DNEWOS_WINDOWS_PROFILE=1')
+}
 $packedCFlags = @($script:WindowsCFlags | Where-Object { $_ -ne "-flto" })
 $windowsLdFlags = @("-nostdlib", "-fuse-ld=lld", "-Wl,-e,mainCRTStartup", "-Wl,-s", "-Wl,--gc-sections", "-Wl,--icf=safe", "-Wl,--no-insert-timestamp", "-Wl,/merge:.rdata=.text", "-Wl,--stack,8388608", "-L$importLibraryDir", "-lkernel32", "-lws2_32")
+if ($Profile) { $windowsLdFlags = @($windowsLdFlags | Where-Object { $_ -ne '-Wl,-s' }) }
 $windowsTlsLdFlags = $windowsLdFlags + @("-lbcrypt")
 
 $objectRoot = Join-Path $BuildDir ".objects"
@@ -505,11 +510,14 @@ foreach ($tool in $selectedTools) {
 
     if ($kind -ne "minimal") {
         $sources += $stackProbeSource
+        if ($Profile) { $sources += 'src/platform/windows/profiler_runtime.c' }
     }
     $sources = Add-Unique $sources
     Assert-SourceFilesExist $sources
-    $compileFlags = @("--target=$TargetTriple") + $script:WindowsCFlags + $extraCFlags
-    $packedCompileFlags = @("--target=$TargetTriple") + $packedCFlags + $extraCFlags
+    $toolCFlags = if ($kind -eq 'minimal') { @($script:WindowsCFlags | Where-Object { $_ -ne '-finstrument-functions' }) } else { $script:WindowsCFlags }
+    $toolPackedCFlags = if ($kind -eq 'minimal') { @($packedCFlags | Where-Object { $_ -ne '-finstrument-functions' }) } else { $packedCFlags }
+    $compileFlags = @("--target=$TargetTriple") + $toolCFlags + $extraCFlags
+    $packedCompileFlags = @("--target=$TargetTriple") + $toolPackedCFlags + $extraCFlags
     $profileHash = (Get-TextHash ($compilerIdentity + "`n" + ($compileFlags -join "`n"))).Substring(0, 16)
     $profileDirectory = Join-Path $objectRoot $profileHash
     New-Item -ItemType Directory -Force $profileDirectory | Out-Null

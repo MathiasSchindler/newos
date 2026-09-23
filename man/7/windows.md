@@ -72,6 +72,33 @@ it selects the Linux ABI build, and on supported local macOS hosts it selects
 the project-linked Mach-O build. Use the PowerShell script explicitly for
 native PE output.
 
+Use `-Profile` with the same PowerShell builder to compile function-instrumented
+tools into separate `build/profile-windows/normal/` and `build/profile-windows/packed/` trees. Set
+`NEWOS_PROFILE` to an output path when running one; the standard native
+`profiler` reads that trace, including worker thread ids. Minimal `true` and
+`false` builds remain uninstrumented. See `profiler(1)` for the workflow and
+its timing limitations.
+
+For scaling measurements, run unprofiled binaries from the ordinary build:
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool zip
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool zip -ZipStoreOnly
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool sort
+```
+
+The benchmark generates private inputs under `tests/tmp/`, verifies output
+hashes across worker counts, and reports median elapsed and process CPU time,
+speedup, and efficiency. By default ZIP has twelve independent 2 MiB files;
+change `-ZipFiles` and `-Workers 1,2,4,8,12` to test other widths. Short sort
+runs make Windows process CPU accounting coarse, so use repeated elapsed-time
+trials for conclusions. The ZIP inputs are deterministic high-entropy data,
+not representative of every archive. Earlier compressed ZIP runs at eight and
+twelve workers exposed a missing thread-safe allocator flag in the Windows
+builder. With the atomic lock enabled, the isolated normal and packed builds
+passed 51 repeated ZIP runs across those widths; other workloads still need
+their own checks. Failed runs retain their input directory for diagnosis.
+
 ## NATIVE STARTUP AND ABI
 
 Normal tools enter through `mainCRTStartup` in `src/platform/windows/core.c`.
@@ -207,9 +234,8 @@ deliberately conservative:
 - process spawn, wait, timeout, process listing, syscall tracing, privilege
   changes, and signal delivery are not implemented; shell pipelines and tools
   that execute child processes are therefore incomplete
-- native worker threads are not implemented; worker counts report one, while
-  mutex and semaphore compatibility code is only a single-process spin-based
-  fallback
+- native worker threads support task-pool workloads; mutex and semaphore
+  compatibility code remains a spin-based fallback
 - TCP listen/accept and the generic netcat adapter are not implemented, so
   `httpd` and `sshd` are build targets rather than complete native servers;
   service supervision is separately blocked by the missing process-spawn path

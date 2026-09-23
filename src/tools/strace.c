@@ -114,6 +114,14 @@ static const char *syscall_name(long number) {
         case 500: return "getentropy";
         default: return "syscall";
     }
+#elif defined(_WIN32)
+    switch (number) {
+        case 0: return "read";
+        case 1: return "write";
+        case 2: return "open";
+        case 3: return "close";
+        default: return "call";
+    }
 #else
     switch (number) {
         case 0: return "read";
@@ -270,6 +278,10 @@ static long syscall_number_by_name(const char *name) {
 }
 
 static const char *errno_name(long result) {
+#if defined(_WIN32)
+    (void)result;
+    return 0;
+#else
     long error = result < 0 ? -result : result;
     switch (error) {
         case 1: return "EPERM";
@@ -309,6 +321,7 @@ static const char *errno_name(long result) {
         case 61: return "ECONNREFUSED";
         default: return 0;
     }
+#endif
 }
 
 static void update_summary(const PlatformSyscallEvent *event, unsigned long long duration_ns) {
@@ -487,6 +500,7 @@ static int write_duration_ms(int fd, unsigned long long ns) {
     return rt_write_uint(fd, frac);
 }
 
+#if !defined(_WIN32)
 static int is_write_syscall_number(long number) {
 #if defined(__APPLE__)
     return number == 4;
@@ -494,6 +508,7 @@ static int is_write_syscall_number(long number) {
     return number == 1;
 #endif
 }
+#endif
 
 static int is_byte_count_syscall_number(long number) {
 #if defined(__APPLE__)
@@ -676,14 +691,18 @@ static int trace_callback(const PlatformSyscallEvent *event, void *user_data) {
     entry_timestamp_ns = completed.timestamp_ns;
     completed.result = event->result;
     completed.timestamp_ns = event->timestamp_ns;
-    if (event->timestamp_ns >= entry_timestamp_ns) {
+    if (event->duration_ns != 0ULL && entry_timestamp_ns == event->timestamp_ns) {
+        duration_ns = event->duration_ns;
+    } else if (event->timestamp_ns >= entry_timestamp_ns) {
         duration_ns = event->timestamp_ns - entry_timestamp_ns;
     } else if (event->duration_ns != 0ULL) {
         duration_ns = event->duration_ns;
     }
+#if !defined(_WIN32)
     if (trace_output_fd >= 0 && is_write_syscall_number(completed.number) && completed.args[0] == trace_output_fd) {
         return 0;
     }
+#endif
     if (!filter_includes(completed.number)) {
         return 0;
     }
