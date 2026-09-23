@@ -32,6 +32,8 @@ __declspec(dllimport) void *CreateFileA(const char *, u32, u32, void *, u32, u32
 __declspec(dllimport) int CloseHandle(void *);
 __declspec(dllimport) int ReadFile(void *, void *, u32, u32 *, void *);
 __declspec(dllimport) int SetFilePointerEx(void *, long long, long long *, u32);
+__declspec(dllimport) int QueryPerformanceCounter(long long *);
+__declspec(dllimport) int QueryPerformanceFrequency(long long *);
 
 typedef struct DspCapability {
     u32 domain;
@@ -311,8 +313,67 @@ static int matrix_trials(RemoteInvoke invoke, u64 handle, u32 *buffer, const cha
     return 0;
 }
 
+static int benchmark_matrix_calls(RemoteInvoke invoke, u64 handle, u32 *buffer) {
+    u32 samples[3][64];
+    u32 totals[3] = {0, 0, 0};
+    long long frequency;
+    if (!QueryPerformanceFrequency(&frequency) || frequency <= 0) return 13;
+    for (u32 trial = 0; trial < 68; ++trial) {
+        for (u32 mode = 0; mode < 3; ++mode) {
+            u32 groups = 1U << mode;
+            u32 input_bytes = (32U + 32U * groups) * 512U * 2U;
+            u32 reply_bytes = 48U + groups * 16U * 2048U;
+            u16 *input = (u16 *)buffer;
+            u32 *detail = (u32 *)((u8 *)buffer + input_bytes);
+            RemoteArg arguments[2];
+            long long start, end;
+            for (u32 index = 0; index < input_bytes / 2U; ++index) input[index] = 0x3c00U;
+            arguments[0].buffer.data = input;
+            arguments[0].buffer.size = input_bytes;
+            arguments[1].buffer.data = detail;
+            arguments[1].buffer.size = reply_bytes;
+            if (!QueryPerformanceCounter(&start)) return 13;
+            int status = invoke(handle, mode == 0 ? 0x04010100U :
+                                mode == 1 ? 0x05010100U : 0x06010100U, arguments);
+            if (!QueryPerformanceCounter(&end) || end < start) return 13;
+            if (status || detail[0] != 0x484d5831U || detail[1] != 9 || detail[2] ||
+                detail[3] != 1 || detail[4] != 1 || detail[5] || detail[6] || detail[7] ||
+                detail[8] || detail[9] != 1 || detail[10] || detail[11] ||
+                ((u16 *)(detail + 12))[0] != 0x5000U) return 13;
+            if (trial >= 4) {
+                u32 milliseconds = (u32)((u64)(end - start) * 1000U / (u64)frequency);
+                samples[mode][trial - 4U] = milliseconds;
+                totals[mode] += milliseconds;
+            }
+        }
+    }
+    for (u32 mode = 0; mode < 3; ++mode) {
+        u32 over_50 = 0, over_500 = 0;
+        for (u32 index = 0; index < 64; ++index) {
+            over_50 += samples[mode][index] >= 50U;
+            over_500 += samples[mode][index] >= 500U;
+            for (u32 next = index + 1; next < 64; ++next) {
+                if (samples[mode][next] < samples[mode][index]) {
+                    u32 value = samples[mode][index];
+                    samples[mode][index] = samples[mode][next];
+                    samples[mode][next] = value;
+                }
+            }
+        }
+        field("hmx.benchmark.groups", 1U << mode);
+        field("hmx.benchmark.calls", 64);
+        field("hmx.benchmark.total_ms", totals[mode]);
+        field("hmx.benchmark.p50_ms", samples[mode][32]);
+        field("hmx.benchmark.p95_ms", samples[mode][60]);
+        field("hmx.benchmark.max_ms", samples[mode][63]);
+        field("hmx.benchmark.over_50_ms", over_50);
+        field("hmx.benchmark.over_500_ms", over_500);
+    }
+    return 0;
+}
+
 static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx,
-                      const char *checkpoint) {
+                      const char *checkpoint, int benchmark) {
     RemoteControl session = (RemoteControl)GetProcAddress(module, "remote_session_control");
     RemoteOpen open = (RemoteOpen)GetProcAddress(module, "remote_handle64_open");
     RemoteInvoke invoke = (RemoteInvoke)GetProcAddress(module, "remote_handle64_invoke");
@@ -333,8 +394,9 @@ static int invoke_dsp(void *module, RpcAlloc allocate, RpcFree release, int hmx,
     field("remote_open.status", (u32)status);
     if (status) { result = 9; goto cleanup; }
     opened = 1;
-    buffer = (u32 *)allocate(25, 1, hmx ? 8192 : 4096);
+    buffer = (u32 *)allocate(25, 1, benchmark ? 1048576 : hmx ? 8192 : 4096);
     if (!buffer) { result = 6; goto cleanup; }
+    if (benchmark) { result = benchmark_matrix_calls(invoke, handle, buffer); goto cleanup; }
     if (hmx) { result = matrix_trials(invoke, handle, buffer, checkpoint); goto cleanup; }
     arguments[0].buffer.data = buffer;
     arguments[0].buffer.size = 64;
@@ -406,7 +468,8 @@ static int run(void) {
         if (mode_argument != 1) goto usage;
         invoke_mode = is_option(module_path, "--invoke") ? 1 :
             is_option(module_path, "--hmx") ? 2 :
-            is_option(module_path, "--hmx-whisper") ? 3 : 0;
+            is_option(module_path, "--hmx-whisper") ? 3 :
+            is_option(module_path, "--hmx-bench") ? 4 : 0;
         if (!invoke_mode ||
             (invoke_mode == 3 && argument(&cursor, checkpoint_path, 2048) != 1) ||
             argument(&cursor, module_path, 2048)) goto usage;
@@ -465,7 +528,7 @@ static int run(void) {
     } else result = 5;
     if (invoke_mode && !result) {
         result = invoke_dsp(module, allocate, release, invoke_mode >= 2,
-                    invoke_mode == 3 ? utf8_path : 0);
+                    invoke_mode == 3 ? utf8_path : 0, invoke_mode == 4);
         text(result ? "custom_dsp_execution=failed\n" : "custom_dsp_execution=verified\n");
     } else text("custom_dsp_execution=not_tested\n");
     text(invoke_mode >= 2 ? (result ? "hmx_execution=failed\n" : "hmx_execution=verified\n") : "hmx_execution=not_tested\n");
@@ -476,7 +539,7 @@ cleanup:
     }
     return result;
 usage:
-    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke|--hmx|--hmx-whisper <tiny.wti>]\n");
+    text("usage: fastrpc_probe.exe \"C:\\absolute\\path\\libcdsprpc.dll\" [--invoke|--hmx|--hmx-whisper <tiny.wti>|--hmx-bench]\n");
     return 2;
 }
 

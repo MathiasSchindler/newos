@@ -39,6 +39,7 @@ experimental/threading/build/
 experimental/latency/build/
 !experimental/snapdragon/
 experimental/snapdragon/build/
+experimental/snapdragon/tests/tmp/
 experimental/snapdragon/models/
 experimental/snapdragon/data/
 experimental/snapdragon/distro/

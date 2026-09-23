@@ -82,6 +82,7 @@ try {
             @('experimental/snapdragon/src/apps/whisper/whisper_indexed.c', 'whisper_indexed.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_cpu.c', 'whisper_cpu.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_cpu_encoder.c', 'whisper_cpu_encoder.obj'),
+            @('experimental/snapdragon/src/apps/whisper/whisper_hmx.c', 'whisper_hmx.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_decoder.c', 'whisper_decoder.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_frontend.c', 'whisper_frontend.obj'),
             @('src/shared/math.c', 'shared_math.obj'),
@@ -117,7 +118,7 @@ try {
             "$BuildDir/whisper_indexed.obj" "$BuildDir/whisper_tensor_index.obj" `
             "$BuildDir/whisper_cpu.obj" "$BuildDir/whisper_artifact.obj" "$BuildDir/whisper_model.obj" `
             "$BuildDir/whisper_cpu_encoder.obj" "$BuildDir/whisper_decoder.obj" `
-            "$BuildDir/whisper_frontend.obj" "$BuildDir/shared_math.obj" `
+            "$BuildDir/whisper_frontend.obj" "$BuildDir/whisper_hmx.obj" "$BuildDir/shared_math.obj" `
             "$BuildDir/runtime_memory.obj" "$BuildDir/runtime_concurrency.obj" `
             "$BuildDir/platform_core.obj" "$BuildDir/platform_thread.obj" "$BuildDir/chkstk.obj" @imports
         if ($LASTEXITCODE -ne 0) { throw 'Standalone WAV project link failed' }
@@ -159,7 +160,7 @@ try {
                 $fixtureWav $frontendDir $fixtureMel
             if ($LASTEXITCODE -ne 0) { throw 'Standalone log-mel fixture comparison failed' }
         }
-        Write-Output "Built $BuildDir/whisper-cli.exe and whisper-convert.exe (Tiny CPU transcription available)"
+        Write-Output "Built $BuildDir/whisper-cli.exe and whisper-convert.exe (Tiny and Base transcription available)"
         return
     }
     $compilerDirectory = Split-Path -Parent $compilerPath

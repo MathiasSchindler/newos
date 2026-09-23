@@ -4,6 +4,7 @@
 #include "whisper_artifact.h"
 #include "whisper_frontend.h"
 #include "whisper_cpu_encoder.h"
+#include "whisper_hmx.h"
 #include "whisper_decoder.h"
 #include "math.h"
 #include "platform.h"
@@ -174,33 +175,47 @@ static int probe_mel(const char *path, const char *directory, const char *refere
     return 1;
 }
 
-static int transcribe(const char *path, const char *model_path, const char *directory) {
+static int transcribe(const char *path, const char *model_path, const char *directory,
+                      const char *driver_path, int full_encoder,
+                      const WhisperModelConfig *config) {
     static WhisperIndexed model;
     static float samples[WHISPER_WAV_WINDOW_SAMPLES];
     static float mel[WHISPER_MEL_BINS * WHISPER_FRAME_COUNT];
-    static unsigned short encoded[WHISPER_TINY_ENCODER_FRAMES * WHISPER_TINY_WIDTH];
+    static unsigned short encoded[WHISPER_BASE_ENCODER_FRAMES * WHISPER_BASE_WIDTH];
     static double window[WHISPER_FFT_SIZE];
     static double roots[WHISPER_FFT_SIZE * 2U];
     static double filters[(WHISPER_FFT_SIZE / 2U + 1U) * WHISPER_MEL_BINS];
     WhisperCpuEncoder *encoder;
     WhisperDecoder *decoder;
+    WhisperHmx *hmx = 0;
     WhisperWav wav;
     if (!read_frontend_constant(directory, "hann-window-f64.bin", window, sizeof(window)) ||
         !read_frontend_constant(directory, "dft-roots-f64.bin", roots, sizeof(roots)) ||
         !read_frontend_constant(directory, "mel-filters-f64.bin", filters, sizeof(filters)) ||
         !whisper_wav_open(&wav, path)) return 0;
-    if (!whisper_indexed_open(&model, model_path, whisper_model_tiny())) {
+    if (!whisper_indexed_open(&model, model_path, config)) {
         whisper_wav_close(&wav);
         return 0;
     }
-    encoder = whisper_cpu_encoder_create();
-    decoder = whisper_decoder_load(whisper_model_tiny());
-    if (!encoder || !decoder) {
+    encoder = whisper_cpu_encoder_create(config);
+    decoder = whisper_decoder_load(config);
+    if (encoder && decoder && driver_path) hmx = whisper_hmx_open(driver_path);
+    if (!encoder || !decoder || (driver_path && !hmx)) {
+        if (driver_path && !hmx) {
+            write_text("hmx.error=");
+            write_number(whisper_hmx_last_error());
+            write_text("\n");
+        }
+        whisper_hmx_close(hmx);
         whisper_cpu_encoder_destroy(encoder);
         whisper_decoder_shutdown(decoder);
         whisper_indexed_close(&model);
         whisper_wav_close(&wav);
         return 0;
+    }
+    if (hmx) {
+        if (full_encoder) whisper_hmx_require_batch(hmx);
+        whisper_cpu_encoder_set_projection(encoder, whisper_hmx_projection, hmx, full_encoder);
     }
     for (unsigned long long index = 0;
          index < 1 + (wav.sample_count - 1) / WHISPER_WAV_WINDOW_SAMPLES; ++index) {
@@ -208,6 +223,12 @@ static int transcribe(const char *path, const char *model_path, const char *dire
             !whisper_frontend_log_mel_samples(samples, window, roots, filters, mel) ||
             !whisper_cpu_encode(encoder, &model, mel, encoded) ||
             whisper_decoder_transcribe(decoder, encoded, 224, write_token_bytes) < 0) {
+            if (hmx) {
+                write_text("hmx.error=");
+                write_number(whisper_hmx_last_error());
+                write_text("\n");
+            }
+            whisper_hmx_close(hmx);
             whisper_decoder_shutdown(decoder);
             whisper_cpu_encoder_destroy(encoder);
             whisper_indexed_close(&model);
@@ -215,6 +236,43 @@ static int transcribe(const char *path, const char *model_path, const char *dire
             return 0;
         }
         write_text("\n");
+    }
+    if (hmx) {
+        unsigned int submissions = whisper_hmx_submissions(hmx);
+        write_text("hmx.projection.submissions=");
+        write_number(submissions);
+        write_text("\n");
+        write_text("hmx.projection.batched=");
+        write_number((unsigned int)whisper_hmx_batched(hmx));
+        write_text("\n");
+        write_text("hmx.projection.grouped=");
+        write_number((unsigned int)whisper_hmx_grouped(hmx));
+        write_text("\n");
+        write_text("hmx.invoke.milliseconds=");
+        write_number(whisper_hmx_invoke_milliseconds(hmx));
+        write_text("\n");
+        {
+            static const unsigned int widths[] = {384, 512, 1536, 2048};
+            for (unsigned int index = 0; index < 4; ++index) {
+                write_text("hmx.invoke.width");
+                write_number(widths[index]);
+                write_text(".calls=");
+                write_number(whisper_hmx_width_invoke_calls(hmx, widths[index]));
+                write_text("\n");
+                write_text("hmx.invoke.width");
+                write_number(widths[index]);
+                write_text(".milliseconds=");
+                write_number(whisper_hmx_width_invoke_milliseconds(hmx, widths[index]));
+                write_text("\n");
+            }
+        }
+        if (!submissions || !whisper_hmx_close(hmx)) {
+            whisper_decoder_shutdown(decoder);
+            whisper_cpu_encoder_destroy(encoder);
+            whisper_indexed_close(&model);
+            whisper_wav_close(&wav);
+            return 0;
+        }
     }
     whisper_decoder_shutdown(decoder);
     whisper_cpu_encoder_destroy(encoder);
@@ -268,9 +326,11 @@ static int run(void) {
     char path[1024];
     char extra[1024];
     char reference[1024];
+    char driver[1024];
     const char *cursor = GetCommandLineA();
     const char *remaining;
     const char *after_reference;
+    const char *after_driver;
     WhisperWav wav;
     static WhisperIndexed indexed;
     if (cursor == 0 || (cursor = next_argument(cursor, executable, sizeof(executable))) == 0 ||
@@ -278,20 +338,42 @@ static int run(void) {
         (cursor = next_argument(cursor, path, sizeof(path))) == 0 ||
         ((remaining = next_argument(cursor, extra, sizeof(extra))) != 0) !=
             (same(option, "--probe-mel") || same(option, "--verify-mel") ||
-             same(option, "--transcribe")) ||
+             same(option, "--transcribe") || same(option, "--transcribe-base") ||
+             same(option, "--transcribe-hmx") || same(option, "--transcribe-hmx-encoder") ||
+             same(option, "--transcribe-base-hmx-encoder")) ||
         ((after_reference = remaining != 0 ?
             next_argument(remaining, reference, sizeof(reference)) : 0) != 0) !=
-            (same(option, "--verify-mel") || same(option, "--transcribe")) ||
-        (after_reference != 0 && next_argument(after_reference, executable, sizeof(executable)) != 0) ||
+            (same(option, "--verify-mel") || same(option, "--transcribe") ||
+             same(option, "--transcribe-base") || same(option, "--transcribe-hmx") ||
+             same(option, "--transcribe-hmx-encoder") ||
+             same(option, "--transcribe-base-hmx-encoder")) ||
+        ((after_driver = after_reference != 0 ?
+            next_argument(after_reference, driver, sizeof(driver)) : 0) != 0) !=
+            (same(option, "--transcribe-hmx") || same(option, "--transcribe-hmx-encoder") ||
+             same(option, "--transcribe-base-hmx-encoder")) ||
+        (after_driver != 0 && next_argument(after_driver, executable, sizeof(executable)) != 0) ||
         (!same(option, "--inspect-wav") && !same(option, "--inspect-model") &&
          !same(option, "--probe-projection") && !same(option, "--probe-mel") &&
-         !same(option, "--verify-mel") && !same(option, "--transcribe"))) {
-        write_text("Usage: whisper-cli.exe --transcribe <wav> <tiny.wti> <frontend-dir> | --inspect-wav <wav> | --inspect-model <tiny.wti> | --probe-projection <tiny.wti> | --probe-mel <wav> <frontend-dir> | --verify-mel <wav> <frontend-dir> <reference-f32>\n");
+         !same(option, "--verify-mel") && !same(option, "--transcribe") &&
+         !same(option, "--transcribe-base") && !same(option, "--transcribe-hmx") &&
+         !same(option, "--transcribe-hmx-encoder") &&
+         !same(option, "--transcribe-base-hmx-encoder"))) {
+        write_text("Usage: whisper-cli.exe --transcribe <wav> <tiny.wti> <frontend-dir> | --transcribe-hmx <wav> <tiny.wti> <frontend-dir> <driver-dll> | --transcribe-hmx-encoder <wav> <tiny.wti> <frontend-dir> <driver-dll> | --inspect-wav <wav> | --inspect-model <tiny.wti> | --probe-projection <tiny.wti> | --probe-mel <wav> <frontend-dir> | --verify-mel <wav> <frontend-dir> <reference-f32>\n");
+        write_text("Base: --transcribe-base <wav> <base.wti> <frontend-dir> | --transcribe-base-hmx-encoder <wav> <base.wti> <frontend-dir> <driver-dll>\n");
         return 2;
     }
-    if (same(option, "--transcribe")) {
-        if (!transcribe(path, extra, reference)) {
-            write_text("Cannot transcribe Tiny audio.\n");
+    if (same(option, "--transcribe") || same(option, "--transcribe-base") ||
+        same(option, "--transcribe-hmx") || same(option, "--transcribe-hmx-encoder") ||
+        same(option, "--transcribe-base-hmx-encoder")) {
+        if (!transcribe(path, extra, reference,
+                        (same(option, "--transcribe") || same(option, "--transcribe-base")) ?
+                            0 : driver,
+                        same(option, "--transcribe-hmx-encoder") ||
+                            same(option, "--transcribe-base-hmx-encoder"),
+                        (same(option, "--transcribe-base") ||
+                         same(option, "--transcribe-base-hmx-encoder")) ?
+                            whisper_model_base() : whisper_model_tiny())) {
+            write_text("Cannot transcribe audio.\n");
             return 1;
         }
         return 0;

@@ -12,6 +12,7 @@ EXPORTS
     FileTimeToSystemTime
     FlushFileBuffers
     FlushInstructionCache
+    FreeLibrary
     GetCommandLineA
     GetActiveProcessorCount
     GetComputerNameA

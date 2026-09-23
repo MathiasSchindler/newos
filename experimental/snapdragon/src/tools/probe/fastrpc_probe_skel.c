@@ -27,14 +27,26 @@ typedef struct HmxReply {
 } HmxReply;
 _Static_assert(sizeof(HmxReply) == 2096, "HMX reply ABI");
 
-static int invoke_hmx(RemoteArg *arguments) {
+static int invoke_hmx(RemoteArg *arguments, int batched, u32 columns) {
     HmxReply *reply;
-    if (!arguments || !arguments[1].buffer.data || arguments[1].buffer.size != sizeof(HmxReply) ||
+    u32 depth;
+    u32 input_stride = (32U + 32U * columns) * 2U;
+    if (!arguments || !arguments[1].buffer.data ||
         ((usize)arguments[1].buffer.data & 3U)) return 14;
     reply = (HmxReply *)arguments[1].buffer.data;
+    if (!batched && arguments[1].buffer.size != sizeof(HmxReply)) return 14;
     for (u32 index = 0; index < 12; ++index) reply->detail[index] = 0;
     reply->detail[0] = 0x484d5831U;
-    if (!arguments[0].buffer.data || arguments[0].buffer.size != 4096 ||
+    depth = batched && arguments[0].buffer.size <= (usize)2048U * input_stride ?
+        (u32)(columns == 4U ? arguments[0].buffer.size / 320U :
+              columns == 2U ? arguments[0].buffer.size / 192U :
+                              arguments[0].buffer.size / 128U) : 32U;
+    if (!arguments[0].buffer.data ||
+        (batched ? (depth < 32 || depth > 2048 || (depth & 31U) ||
+                    arguments[0].buffer.size != (usize)depth * input_stride ||
+                    arguments[1].buffer.size != 48U +
+                        (usize)columns * (depth / 32U) * 2048U) :
+                   arguments[0].buffer.size != 4096) ||
         ((usize)arguments[0].buffer.data & 1U)) {
         reply->detail[2] = 14;
         return 0;
@@ -43,6 +55,8 @@ static int invoke_hmx(RemoteArg *arguments) {
     return 20;
 #else
     const unsigned short *input = (const unsigned short *)arguments[0].buffer.data;
+    unsigned short *products = (unsigned short *)((unsigned char *)arguments[1].buffer.data +
+                                                   sizeof(reply->detail));
     compute_res_attr_t attributes;
     HAP_power_request_t power;
     u32 context = 0;
@@ -85,32 +99,39 @@ static int invoke_hmx(RemoteArg *arguments) {
     locked = 1;
     reply->detail[1] = 8;
     for (u32 index = 0; index < 4096; ++index) vtcm[index] = 0x7e00;
-    for (u32 row = 0; row < 32; ++row) {
-        for (u32 column = 0; column < 32; ++column) {
-            u32 packed = (row / 2) * 64 + column * 2 + row % 2;
-            vtcm[packed] = input[row * 32 + column];
-            vtcm[1024 + packed] = input[1024 + row * 32 + column];
-        }
-    }
     for (u32 index = 0; index < 128; ++index) vtcm[3072 + index] = index < 64 && !(index & 1) ? 0x3c00 : 0;
-    __asm__ volatile(
-        "barrier\n"
-        "bias = mxmem2(%3)\n"
-        "mxclracc.hf\n"
-        "{\n"
-        "activation.hf = mxmem(%1, %4)\n"
-        "weight.hf = mxmem(%2, %4)\n"
-        "}\n"
-        "mxmem(%0, %5):after.hf = acc\n"
-        "barrier\n"
-        : : "r"(vtcm + 2048), "r"(vtcm), "r"(vtcm + 1024),
-            "r"(vtcm + 3072), "r"(2047), "r"(0) : "memory");
-    reply->detail[9] = 1;
-    for (u32 row = 0; row < 32; ++row) {
-        for (u32 column = 0; column < 32; ++column) {
-            reply->product[row * 32 + column] = vtcm[2048 + (row / 2) * 64 + column * 2 + row % 2];
+    for (u32 group = 0; group < columns; ++group) {
+    for (u32 tile = 0; tile < depth / 32U; ++tile) {
+        for (u32 row = 0; row < 32; ++row) {
+            for (u32 column = 0; column < 32; ++column) {
+                u32 packed = (row / 2) * 64 + column * 2 + row % 2;
+                vtcm[packed] = input[batched ? row * depth + tile * 32U + column :
+                                     row * 32U + column];
+                vtcm[1024 + packed] = input[batched ? (32U + group * 32U) * depth +
+                    (tile * 32U + row) * 32U + column : 1024U + row * 32U + column];
+            }
+        }
+        __asm__ volatile(
+            "barrier\n"
+            "bias = mxmem2(%3)\n"
+            "mxclracc.hf\n"
+            "{\n"
+            "activation.hf = mxmem(%1, %4)\n"
+            "weight.hf = mxmem(%2, %4)\n"
+            "}\n"
+            "mxmem(%0, %5):after.hf = acc\n"
+            "barrier\n"
+            : : "r"(vtcm + 2048), "r"(vtcm), "r"(vtcm + 1024),
+                "r"(vtcm + 3072), "r"(2047), "r"(0) : "memory");
+        for (u32 row = 0; row < 32; ++row) {
+            for (u32 column = 0; column < 32; ++column) {
+                products[(group * (depth / 32U) + tile) * 1024U + row * 32U + column] =
+                    vtcm[2048 + (row / 2) * 64 + column * 2 + row % 2];
+            }
         }
     }
+    }
+    reply->detail[9] = 1;
     for (u32 index = 3200; index < 4096; ++index) reply->detail[10] += vtcm[index] != 0x7e00;
     reply->detail[1] = 9;
 cleanup:
@@ -133,7 +154,11 @@ int fastrpc_probe_skel_invoke(u64 handle, u32 scalars, RemoteArg *arguments) {
     (void)handle;
     if (method == 0 || method == 1) return 0;
 #if defined(FASTRPC_HMX) || defined(FASTRPC_SKEL_TEST)
-    if (scalars == 0x03010100U) return invoke_hmx(arguments);
+    if (scalars == 0x03010100U || scalars == 0x04010100U ||
+        scalars == 0x05010100U || scalars == 0x06010100U)
+        return invoke_hmx(arguments, scalars != 0x03010100U,
+                  scalars == 0x06010100U ? 4U :
+                          scalars == 0x05010100U ? 2U : 1U);
 #endif
     if (scalars != 0x02010100U || !arguments ||
         !arguments[0].buffer.data || !arguments[1].buffer.data ||
@@ -197,6 +222,70 @@ void mainCRTStartup(void) {
         if (fastrpc_probe_skel_invoke(0, 0x03010100U, arguments) || reply.detail[2] != 14) ExitProcess(12);
         arguments[1].buffer.size = sizeof(reply) - 4;
         if (fastrpc_probe_skel_invoke(0, 0x03010100U, arguments) != 14) ExitProcess(13);
+        arguments[0].buffer.data = matrices;
+        arguments[0].buffer.size = sizeof(matrices) - 2;
+        arguments[1].buffer.size = sizeof(reply);
+        if (fastrpc_probe_skel_invoke(0, 0x04010100U, arguments) ||
+            reply.detail[2] != 14) ExitProcess(14);
+        {
+            static unsigned short batch_input[32 * 384 * 2];
+            static u32 batch_reply[(48 + 12 * 2048) / 4];
+            arguments[0].buffer.data = batch_input;
+            arguments[0].buffer.size = sizeof(batch_input);
+            arguments[1].buffer.data = batch_reply;
+            arguments[1].buffer.size = sizeof(batch_reply);
+            if (fastrpc_probe_skel_invoke(0, 0x04010100U, arguments) != 20 ||
+                batch_reply[0] != 0x484d5831U || batch_reply[2]) ExitProcess(15);
+            {
+                static unsigned short deep_input[32 * 1536 * 2];
+                static u32 deep_reply[(48 + 48 * 2048) / 4];
+                arguments[0].buffer.data = deep_input;
+                arguments[0].buffer.size = sizeof(deep_input);
+                arguments[1].buffer.data = deep_reply;
+                arguments[1].buffer.size = sizeof(deep_reply);
+                if (fastrpc_probe_skel_invoke(0, 0x04010100U, arguments) != 20 ||
+                    deep_reply[0] != 0x484d5831U || deep_reply[2]) ExitProcess(16);
+            }
+            {
+                static unsigned short base_input[32 * 2048 * 2];
+                static u32 base_reply[(48 + 64 * 2048) / 4];
+                arguments[0].buffer.data = base_input;
+                arguments[0].buffer.size = sizeof(base_input);
+                arguments[1].buffer.data = base_reply;
+                arguments[1].buffer.size = sizeof(base_reply);
+                if (fastrpc_probe_skel_invoke(0, 0x04010100U, arguments) != 20 ||
+                    base_reply[0] != 0x484d5831U || base_reply[2]) ExitProcess(17);
+                arguments[0].buffer.size += 128;
+                if (fastrpc_probe_skel_invoke(0, 0x04010100U, arguments) ||
+                    base_reply[2] != 14) ExitProcess(18);
+            }
+            {
+                static unsigned short paired_input[32 * 2048 * 3];
+                static u32 paired_reply[(48 + 2 * 64 * 2048) / 4];
+                arguments[0].buffer.data = paired_input;
+                arguments[0].buffer.size = sizeof(paired_input);
+                arguments[1].buffer.data = paired_reply;
+                arguments[1].buffer.size = sizeof(paired_reply);
+                if (fastrpc_probe_skel_invoke(0, 0x05010100U, arguments) != 20 ||
+                    paired_reply[0] != 0x484d5831U || paired_reply[2]) ExitProcess(19);
+                arguments[1].buffer.size -= 2048;
+                if (fastrpc_probe_skel_invoke(0, 0x05010100U, arguments) ||
+                    paired_reply[2] != 14) ExitProcess(20);
+            }
+            {
+                static unsigned short four_input[32 * 2048 * 5];
+                static u32 four_reply[(48 + 4 * 64 * 2048) / 4];
+                arguments[0].buffer.data = four_input;
+                arguments[0].buffer.size = sizeof(four_input);
+                arguments[1].buffer.data = four_reply;
+                arguments[1].buffer.size = sizeof(four_reply);
+                if (fastrpc_probe_skel_invoke(0, 0x06010100U, arguments) != 20 ||
+                    four_reply[0] != 0x484d5831U || four_reply[2]) ExitProcess(21);
+                arguments[1].buffer.size -= 2048;
+                if (fastrpc_probe_skel_invoke(0, 0x06010100U, arguments) ||
+                    four_reply[2] != 14) ExitProcess(22);
+            }
+        }
     }
     ExitProcess(0);
 }

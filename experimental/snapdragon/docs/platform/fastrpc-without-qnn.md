@@ -1,8 +1,8 @@
 # FastRPC without QNN on this Surface
 
-Investigation date: 2026-09-22. Status: **QNN-free scalar DSP and FP16 HMX matrix
-execution verified on this Surface**, including repeated numerical checks,
-cleanup and negative catalog/module controls. Production inference is unchanged.
+Investigation date: 2026-09-22. Status: **QNN-free Tiny and Base transcription
+with HMX-assisted encoder projections verified on this Surface**, including signed
+module negative controls. Production QNN inference is unchanged.
 
 ## Conclusion
 
@@ -34,12 +34,216 @@ adjacent catalog or changing the module bytes makes loading fail. No driver
 package, Inf2Cat/SignTool installation or Microsoft signing submission was needed
 for this tested development route.
 
-Whisper, GLM-OCR and TranslateGemma remain on their working QNN paths. No
-application source, installed executable, model, context, distribution, driver
-or firmware was changed for this investigation. The boot-policy change above
+Whisper, GLM-OCR and TranslateGemma retain their working QNN deployments. The
+independent Tiny/Base CLI now also transcribes through our signed HMX module; no
+deployed application, model, context, distribution, driver or firmware was
+changed for this experiment. The boot-policy change above
 and certificate trust imports were performed explicitly by the user; Memory
 Integrity/HVCI remains enabled. The OEM driver, firmware and FastRPC library
 are still required; this is QNN-free, not vendor-independent.
+
+## Working QNN-backed NPU transcription
+
+For audio-to-text on this machine, use the existing [Whisper Medium package](../../distro/whisper/README.md).
+It runs the frontend and encoder plus fused cross/MLP, self-attention and final
+projection graphs on the NPU via QNN. CPU work remains for log-mel, token
+selection, cache management and output. From the repository root:
+
+```powershell
+.\experimental\snapdragon\distro\whisper\bin\whisper.exe --quiet .\experimental\snapdragon\data\long-form-35s.wav
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/profile-whisper.ps1 -WavPath experimental/snapdragon/data/long-form-35s.wav -OutputDirectory experimental/snapdragon/data/npu-audio-confirmation
+```
+
+The second command writes a measured report and transcript. A 35.008-second
+sample passed on 2026-09-22: two windows, exit 0, transcript SHA-256
+`da225669453120dcd8c5fff81b2824510ea4755ea0af34b33f0d033ad6fe5a43`,
+6,384 self-attention and 6,384 fused cross/MLP NPU graph submissions, and
+462 final-projection submissions. Its report is in
+`data/npu-audio-confirmation/`. The 51.45-second wall time, 17.28 CPU-seconds
+and 32.63 seconds inside NPU host calls describe this run only; host-call time
+is not hardware occupancy. This is the separate, higher-capacity QNN-backed
+transcription path, not a measurement of the QNN-free Tiny CLI.
+
+## QNN-free Tiny and Base transcription with HMX
+
+The independent `whisper-cli.exe --transcribe-hmx-encoder` routes all four
+Tiny encoder layers' Q/K/V, attention output, FC1 (384 to 1536), and FC2
+(1536 to 384) projections through our signed V73 HMX FastRPC module. The
+host packs FP16 inputs and weights, accumulates 32-wide reduction tiles in
+FP32, and adds FP32 bias. Method 6 computes four output tiles per HMX resource
+acquisition for depths up to 1536; depth 2048 uses method 5 with two output
+tiles to keep each request below 1 MiB of combined input/reply bytes. The host
+falls back to method 5 or method 4 if an older signed module does not support
+the wider method. It caches packed FP16 weights across frame batches.
+Convolutions, layer norm, attention scores/softmax/context, GELU, log-mel,
+and the decoder still run on the CPU. This is NPU-assisted transcription,
+not a full NPU model engine.
+`--transcribe-hmx` offloads just the first encoder Q projection and can use
+the older method-3 module; `--transcribe` remains entirely CPU.
+
+From the repository root on the configured Windows ARM64 test machine, after
+the existing development certificate has been trusted by the user:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -StandaloneWhisper
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/build.ps1 -FastRpcProbe -FastRpcHmx
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Prepare
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/sign-fastrpc-probe.ps1 -Hmx -Action Test -TinyIndexed experimental/snapdragon/build/whisper-direct/tiny-checked.wti
+Copy-Item experimental/snapdragon/data/fastrpc-signing-hmx/payload/fastrpc_probe_skel.so experimental/snapdragon/build/fastrpc_probe_skel.so
+Copy-Item experimental/snapdragon/data/fastrpc-signing-hmx/fastrpc_probe_skel.cat experimental/snapdragon/build/fastrpc_probe_skel.cat
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/test-whisper-hmx.ps1 -Mode Encoder -RequireBatch -RequireGrouped -OutputDirectory experimental/snapdragon/tests/tmp/whisper-hmx-audio
+```
+
+Stage the SO/CAT together only after the signed hardware test passes. The
+capture harness selects the installed MCDM `libcdsprpc.dll`, runs from the
+Snapdragon build directory so the decoder finds its local assets, and saves
+stdout, stderr, exit code, timing, transcript and HMX submissions. The Tiny
+indexed checkpoint, frontend constants and decoder weights/token bundle must
+already be present. This procedure does not change signing trust or install
+any driver; a stock machine without the configured development trust is not
+validated.
+
+On the German FLEURS WAV, the full encoder mode exited 0 with an empty stderr,
+20,304 batched submissions and exactly the CPU reference transcript. It took
+146.14 seconds wall / 33.67 CPU-seconds, versus 46.11 seconds wall / 37.72
+CPU-seconds for CPU-only Tiny. This is hardware-backed functional evidence,
+not faster inference or measured NPU occupancy. The transcript contains
+obvious German recognition errors in both modes; use the separate QNN-backed
+Medium deployment when transcription quality or throughput matters.
+The 35.008-second recording also completed two encoder windows in one CLI
+session: exit 0, empty stderr, 40,608 batched HMX submissions and two
+transcript lines in 286.18 seconds wall / 68.41 CPU-seconds. CPU-only Tiny
+produced the same two lines in 100.03 seconds wall / 81.28 CPU-seconds.
+The captured reports are under `tests/tmp/whisper-hmx-long/` and
+`tests/tmp/whisper-cpu-long/`.
+
+With the grouped method and cached host weights, the same Tiny clip exited 0
+with empty stderr, the exact CPU transcript, 10,152 grouped submissions,
+95.60 seconds wall, 15.98 CPU-seconds and 79,306 milliseconds in FastRPC
+invocations. This is faster than the earlier ungrouped HMX run, but still
+slower than the 46.11-second CPU-only run. FastRPC invoke time includes
+transport and waiting; neither it nor the number of tiles per acquisition
+measures NPU occupancy.
+
+On 2026-09-23, the signed four-output module and rebuilt host completed the
+same Tiny clip with the exact CPU transcript and empty stderr in 77.96 s wall /
+14.69 CPU-s / 61,283 ms in FastRPC, with 5,076 submissions. Compared with
+the preceding two-output capture, this halves submissions and saves 17.64 s
+wall; the 46.11-second CPU-only result remains faster.
+
+### Base milestone
+
+Base uses width 512, FFN width 2048, eight attention heads and six encoder
+layers. The same standalone CLI and QNN-free signed module now support method-4
+reductions through depth 2048 (64 HMX tiles per batch). Base's Q/K/V, attention
+output, FC1 and FC2 projections run on HMX in
+`--transcribe-base-hmx-encoder`; its convolutions, attention core, log-mel,
+normalization, GELU and decoder remain on CPU. `--transcribe-base` provides
+the independent CPU reference. Both use the local Base decoder FP16 weight and
+token files; the shared 80-bin frontend constants are supplied from the Tiny
+frontend directory.
+
+From the repository root, after building the CLI/DSP and signing, testing and
+staging the matching SO/CAT with the commands above:
+
+```powershell
+./experimental/snapdragon/build/whisper-direct/whisper-convert.exe --model=base experimental/snapdragon/models/whisper-base/model.safetensors experimental/snapdragon/build/whisper-direct/base-checked.wti
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/test-whisper-hmx.ps1 -Model Base -Mode Cpu -OutputDirectory experimental/snapdragon/tests/tmp/whisper-base-cpu
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File experimental/snapdragon/tools/whisper/test-whisper-hmx.ps1 -Model Base -Mode Encoder -RequireBatch -RequireGrouped -OutputDirectory experimental/snapdragon/tests/tmp/whisper-base-hmx
+```
+
+The converter checked 245 tensors and 290,375,680 payload bytes. On the German
+FLEURS WAV, Base HMX exited 0 with empty stderr, 40,608 batched submissions
+and the exact CPU Base transcript in 309.25 seconds wall / 60.58 CPU-seconds;
+CPU Base took 116.25 seconds wall / 106 CPU-seconds. This validates one-window
+Base transcription through the signed transport, not an acceleration
+over CPU or broad speech-recognition quality. Some words remain misheard.
+The new signed module also passed all nine scalar, Tiny-weight and negative
+catalog/module hardware cases; no trust or installed QNN deployment changed.
+
+Grouping reduced Base submissions from 40,608 to 20,304 on that clip. Before
+weight caching, an otherwise identical profiled ungrouped run took 294.48 s
+wall / 42.48 CPU-s / 248,181 ms in FastRPC; the grouped run took 226.51 s
+wall / 41.16 CPU-s / 179,051 ms in FastRPC. Both exited 0 with empty stderr
+and the exact CPU Base transcript. With cached packed weights, two grouped
+runs also matched the transcript and submission count, but varied widely:
+284.08 s wall / 31.88 CPU-s / 250,610 ms in FastRPC and 266.23 s wall /
+78.98 CPU-s / 180,367 ms in FastRPC. Caching removes repeated conversions;
+these samples do not establish a repeatable CPU or wall-time improvement.
+Grouping improves throughput relative to this earlier HMX path, not the
+116.25-second CPU-only Base reference. Host-call durations are not NPU
+occupancy measurements.
+
+Four-output Base initially matched the CPU transcript with 10,152 submissions
+but took 1,411.64 s wall / 31.61 CPU-s / 1,377,543 ms in FastRPC. Its
+depth-2048 requests total 1,179,696 input/reply bytes; Tiny's largest
+four-output request totals 884,784 bytes. This run did not exclude system
+standby, so the larger request cannot be assigned as the cause of its delay.
+Restricting four-output calls to depths at most 1536
+and using two-output calls at depth 2048 produced 11,280 submissions in each
+of two Base runs: 196.83 s wall / 31.50 CPU-s / 162,354 ms in FastRPC, then
+195.26 s wall / 33.44 CPU-s / 159,397 ms in FastRPC. Both exited 0 with empty
+stderr and the exact CPU Base transcript. These are about 30-31 s faster than
+the earlier 226.51-second two-output Base run, but the earlier cached-weight
+Base timings varied widely, so this limited sample does not establish a
+general latency guarantee. CPU-seconds were lower in these captures, not a
+controlled attribution to wider grouping. More tiles per acquisition do not
+measure hardware NPU occupancy, and CPU-only Base still finishes sooner.
+
+### FastRPC latency under sustained load (2026-09-23)
+
+The standalone CLI now records FastRPC host-call counts and milliseconds by
+input width; `test-whisper-hmx.ps1` writes them under `hmx_invoke_widths` in
+the captured JSON, separately from the transcript. A final Tiny run on the
+four-output module exited 0 with the exact CPU transcript and empty stderr:
+5,076 submissions, 74.75 s wall / 17.38 CPU-s / 56,540 ms in FastRPC. Width
+384 accounted for 4,512 calls / 40,205 ms; width 1536 accounted for 564
+calls / 16,335 ms. These times include host transport and waiting, not just
+DSP execution.
+
+A Base run on the same four/two-output policy also matched the CPU transcript
+but took 5,211.69 s wall / 45.20 CPU-s / 5,162,074 ms in FastRPC. Of 11,280
+calls, width 512 accounted for 9,024 / 5,114,900 ms, while width 2048 took
+2,256 / 47,174 ms. This extreme width-512 delay is absent from the two
+earlier guarded Base runs (196.83 s and 195.26 s wall). The current counters
+cannot distinguish a few long waits from consistently slower calls or system
+suspension. Windows Kernel-Power events 506/507 show Modern Standby from
+01:44:10 to 03:07:36 during this run, including 4,991.46 s of sleep. The
+reported 5,211.69 s wall and 5,162.07 s in host calls therefore are not
+evidence of a multi-hour DSP or driver stall; subtracting the recorded sleep
+from wall time leaves about 220 s, though this is not a controlled awake
+benchmark. Do not infer NPU occupancy or a stable speedup from this capture.
+
+The independent signed `fastrpc_probe.exe --hmx-bench` mode interleaves 64
+width-512 calls each with one, two and four output tiles after four warmups.
+It validates the result and reports median, 95th percentile, maximum and
+counts of calls over 50/500 ms. Its initial medians were 4/6/10 ms with no
+call over 50 ms; three signed baseline/candidate pairs did not establish a
+benefit from repacking activation tiles once per multi-output call, so that
+DSP change was discarded. A bounded eight-output request measured 19 ms
+median versus 10 ms for four outputs in the short probe, but the full Base
+run again matched the CPU transcript while taking 18,726.14 s wall, including
+18,678,496 ms in FastRPC. Width 512 alone took 18,632,094 ms across 4,512
+calls. Eight-output routing and its DSP method were rejected; the final
+module and CLI use the verified four/two-output policy. A harness wait
+timeout did not cap elapsed time during that run and was removed. The eight-
+output run also overlapped Modern Standby (03:07:36 to 08:25:06): event 507
+reports 18,537.01 s asleep, leaving about 189 s of its 18,726.14 s wall time.
+It does not demonstrate sustained FastRPC degradation or establish an
+eight-output speedup. The capture harness now requests system wakefulness,
+records sleep-excluding `awake_seconds`, and rejects runs whose wall and
+awake clocks differ by over five seconds. This also catches explicit sleep,
+which a wake request cannot prevent. For interactive work, use the faster
+CPU-only Tiny/Base or the existing QNN-backed deployment rather than treating
+experimental FastRPC offload as a latency guarantee.
+
+An awake-time-guarded Base run on the retained four/two-output module exited
+0 with 11,280 grouped submissions and 222.52 s wall / 222.52 s awake /
+52.19 CPU-s / 165,247 ms in FastRPC. Width 512 accounted for 9,024 calls /
+117,260 ms, and width 2048 for 2,256 calls / 47,986 ms. This confirms that
+the earlier multi-hour host-call totals were dominated by suspension, not a
+repeatable driver stall. The 116.25-second CPU-only Base reference remains
+faster; further offload work should target awake-run throughput and CPU cost.
 
 ## Ways to use the NPU without QNN
 
@@ -55,7 +259,7 @@ code on the Hexagon DSP is not proof of using its HMX matrix accelerator.
 
 | Route | What it provides | Evidence and suitability here |
 | --- | --- | --- |
-| Own FastRPC module with HMX instructions | Direct matrix acceleration; we own packing, kernels and scheduling | **Verified:** integer and fractional FP16 32x32 products, one real Tiny weight tile, cleanup and negative controls. Not yet a resident model engine. |
+| Own FastRPC module with HMX instructions | Direct matrix acceleration; we own packing, kernels and scheduling | **Verified:** signed matrix checks and QNN-free Tiny and Base CLI encoder dense-projection transcription. Not yet a resident model engine. |
 | Own FastRPC module with scalar DSP or HVX code | DSP control, vector operations and supporting kernels | Scalar execution verified. HVX capabilities reported, but a custom HVX kernel was not tested in this investigation. These are complementary to HMX, not substitutes for matrix-execution evidence. |
 | Third-party direct-Hexagon engine | An existing model runtime built over FastRPC and DSP kernels | Public implementations informed the ABI/ISA investigation; none was installed or validated as a model engine here. This introduces external implementation/runtime dependencies and is not the chosen project route. |
 | Windows ML or another execution-provider wrapper | Higher-level model execution and provider management | Not demonstrated to be QNN-free on this machine. Avoiding QNN calls in application code does not establish that the selected provider avoids QNN internally. Inspect the actual provider and loaded runtime. |
@@ -100,9 +304,11 @@ our Windows ARM64 host (PE, Kernel32-only static imports)
 4. **Exchange a deliberately small protocol.** Allocate shared host memory
    with `rpcmem_alloc`, pass buffers through `remote_handle64_invoke`, and
    validate their sizes/alignment on the DSP. Host `remote_arg` is 16 bytes;
-   DSP `remote_arg` is 8 bytes. The current method 2 is scalar; method 3 is the
-   fixed-size FP16 matrix probe. These are probe contracts, not a general
-   inference API. Check both transport status and the in-band result status.
+   DSP `remote_arg` is 8 bytes. Method 2 is scalar, method 3 is a fixed-size
+   FP16 matrix probe, method 4 batches up to 64 depth tiles, and methods 5/6
+   process two/four output tiles per acquisition. These are bounded contracts,
+   not a general inference API. Check both transport status and the in-band
+   result status.
 5. **Acquire accelerator resources before instructions.** The DSP requests
    VTCM/HMX access with the firmware compute-resource APIs, applies its own HMX
    power vote, and locks HMX. Pack operands into aligned VTCM, initialize the
@@ -241,7 +447,7 @@ passed; the largest difference was below one millionth. The isolated build
 runs that reference gate when its local audio and fixture files are present.
 These frontend binaries are local model data, not linked code dependencies.
 
-The CPU [encoder](../../src/apps/whisper/whisper_cpu_encoder.c) loads verified
+The [encoder](../../src/apps/whisper/whisper_cpu_encoder.c) loads verified
 FP32 tensors from `.wti`, executes both convolutions, four self-attention/MLP
 layers and residuals, then passes its pre-final-norm FP16 activations to the
 existing [CPU decoder](../../src/apps/whisper/whisper_decoder.c). The decoder
@@ -249,8 +455,9 @@ applies that final norm, prepares cross-attention caches, greedily generates
 German text and writes bytes via its local token table. Transcription also
 needs `models/whisper-tiny/decoder-fp16/weights-fp16.bin` and
 `token-bytes.bin`, existing generated model assets. They are **not** encoded
-in `.wti` yet; a fresh checkout without them cannot transcribe. No Python,
-QNN DLL, CRT, DSP service or HMX kernel runs in the CLI.
+in `.wti` yet; a fresh checkout without them cannot transcribe. The default
+`--transcribe` mode runs without Python, QNN, CRT, DSP service or HMX. The
+HMX modes dynamically load the OEM FastRPC DLL without importing QNN.
 
 The pinned German FLEURS clip now produces intelligible but imperfect speech
 text: it recognizes the slalom, first run, participants and same result but
@@ -258,10 +465,9 @@ mishears some words and numbers. A 35-second German recording emitted two
 separate transcript lines; console output uses UTF-8. This demonstrates
 functional transcription, **not** parity with the deployed QNN application
 or acceptable accuracy on a broad corpus. The CLI forces the German
-transcription prompt and uses a scalar encoder; no language detection,
-timestamp stitching, optimized CPU inference or NPU model execution is
-claimed. Compare intermediate activations and more transcripts before
-replacing any operator with HMX.
+transcription prompt; no language detection, timestamp stitching or optimized
+CPU inference is claimed. HMX encoder projection offload is described above;
+it does not replace the remaining CPU operators or establish broad accuracy.
 
 ## Verified HMX execution
 
@@ -399,11 +605,11 @@ The model run checked those seven again plus 1,024 Tiny Q-weight tile results:
 `hmx.elements_verified=8192`, valid power/resource cleanup and final close.
 All cases passed without timeouts. Evidence (logs, case results and hashes)
 is in `data/fastrpc-hmx-tested-20260922-225749-593bfae2/`.
-This is a hardware-backed bridge from a verified model artifact to the custom
-HMX module, but the CLI still runs transcription entirely on CPU. The DSP
-still acquires resources per 32x32 invocation; weight residency, tiling over
-384 dimensions, bias/residual integration, encoder activation checks and
-end-to-end NPU transcription remain to be built and measured.
+This was the initial hardware-backed bridge from a verified model artifact to
+the custom HMX module. Subsequent method-4 batching and Tiny encoder
+projection offload are documented above; the older method-3 path still
+acquires resources per 32x32 invocation. Model residency, CPU operator
+offload and a faster end-to-end engine remain open work.
 
 The successful test despite zero HMX capability fields demonstrates that those
 queries are not a reliable absence test on this installed driver. It does not
@@ -1118,15 +1324,17 @@ OS; it would not meet a no-external-inference-runtime objective.
 
 ## Remaining gates
 
-Compiler, development catalog trust, module discovery, scalar execution, small
-FP16 HMX matrix execution and cleanup gates are complete on this machine.
+Compiler, development catalog trust, module discovery, scalar execution,
+FP16 HMX matrix execution, Tiny/Base encoder projection transcription and cleanup
+gates are complete on this machine.
 Remaining work is:
 
-1. **Broaden kernel validation.** Cover general shapes, reduction lengths,
+1. **Broaden kernel validation.** Cover general shapes beyond the Tiny encoder,
    FP16 numerical limits, persistent resources and concurrent-use behavior.
-2. **Assess a model backend separately.** Measure dispatch cost, resident-buffer
-   behavior, numerical correctness and sustained performance before considering
-   replacing any of the three production inference paths.
+2. **Improve the experimental backend.** Measure dispatch cost, resident-buffer
+   behavior, intermediate numerical correctness and sustained performance;
+   offload remaining CPU operators only when their hardware path is validated.
+   Do not replace any of the three production inference paths on this evidence.
 
 ## References
 
