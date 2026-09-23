@@ -1,4 +1,5 @@
 #include "archive_zip.h"
+#include "concurrency.h"
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
@@ -7,6 +8,7 @@
 #define UNZIP_MAX_ENTRY_SIZE 268435456ULL
 #define UNZIP_MODE_TYPE_MASK 0170000U
 #define UNZIP_MODE_SYMLINK 0120000U
+#define UNZIP_TEST_BATCH_CAPACITY 4U
 
 typedef struct {
     int list;
@@ -25,6 +27,18 @@ typedef struct {
     int matched;
     int failed;
 } UnzipContext;
+
+typedef struct {
+    ArchiveZipEntry entry;
+    int failed;
+} UnzipTestJob;
+
+typedef struct {
+    RtTaskPool *pool;
+    UnzipContext *context;
+    UnzipTestJob jobs[UNZIP_TEST_BATCH_CAPACITY];
+    size_t count;
+} UnzipTestBatch;
 
 static void print_usage(void) {
     tool_write_usage("unzip", "[-l|-t|-p] [-d DIR] ARCHIVE [ENTRY ...]");
@@ -136,6 +150,63 @@ static int test_entry(const ArchiveZipEntry *entry, void *user_data) {
     return 0;
 }
 
+static int test_entry_range(size_t start, size_t end, unsigned int worker_index, void *user_data) {
+    UnzipTestBatch *batch = (UnzipTestBatch *)user_data;
+    int fd = platform_open_read(batch->context->options->archive_path);
+    size_t index;
+
+    (void)worker_index;
+    for (index = start; index < end; ++index) {
+        unsigned char *data = 0;
+        size_t data_size = 0U;
+
+        if (fd < 0 || archive_zip_read_entry_data(fd, batch->context->info, &batch->jobs[index].entry,
+                                                   UNZIP_MAX_ENTRY_SIZE, &data, &data_size) != 0) {
+            batch->jobs[index].failed = 1;
+        }
+        rt_free(data);
+    }
+    if (fd >= 0) platform_close(fd);
+    return 0;
+}
+
+static void flush_test_batch(UnzipTestBatch *batch) {
+    size_t index;
+
+    if (batch->count == 0U) return;
+    if (rt_parallel_for(batch->pool, batch->count, 1U, test_entry_range, batch) != 0) {
+        batch->context->failed = 1;
+    }
+    for (index = 0U; index < batch->count; ++index) {
+        if (batch->jobs[index].failed) {
+            tool_write_error("unzip", "cannot test entry: ", batch->jobs[index].entry.name);
+            batch->context->failed = 1;
+        }
+        rt_free(batch->jobs[index].entry.name);
+    }
+    batch->count = 0U;
+}
+
+static int queue_test_entry(const ArchiveZipEntry *entry, void *user_data) {
+    UnzipTestBatch *batch = (UnzipTestBatch *)user_data;
+    UnzipTestJob *job;
+    size_t name_size;
+
+    if (!entry_matches(batch->context->options, entry->name)) return 0;
+    batch->context->matched = 1;
+    if (entry_is_directory_name(entry->name)) return 0;
+    job = &batch->jobs[batch->count];
+    name_size = rt_strlen(entry->name) + 1U;
+    job->entry = *entry;
+    job->entry.name = (char *)rt_malloc(name_size);
+    if (job->entry.name == 0) return -1;
+    rt_copy_string(job->entry.name, name_size, entry->name);
+    job->failed = 0;
+    batch->count += 1U;
+    if (batch->count == UNZIP_TEST_BATCH_CAPACITY) flush_test_batch(batch);
+    return 0;
+}
+
 static int extract_entry(const ArchiveZipEntry *entry, void *user_data) {
     UnzipContext *context = (UnzipContext *)user_data;
     const UnzipOptions *options = context->options;
@@ -181,6 +252,8 @@ int main(int argc, char **argv) {
     UnzipOptions options;
     ArchiveZipInfo info;
     UnzipContext context;
+    RtTaskPool pool;
+    UnzipTestBatch batch;
     int argi = 1;
     int fd;
     int status;
@@ -235,7 +308,18 @@ int main(int argc, char **argv) {
     if (options.list) {
         status = archive_zip_iterate_entries(fd, &info, list_entry, &context);
     } else if (options.test) {
-        status = archive_zip_iterate_entries(fd, &info, test_entry, &context);
+        rt_memset(&pool, 0, sizeof(pool));
+        if (info.entry_count > 1ULL &&
+            rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_UNZIP_WORKERS", UNZIP_TEST_BATCH_CAPACITY)) == 0) {
+            rt_memset(&batch, 0, sizeof(batch));
+            batch.pool = &pool;
+            batch.context = &context;
+            status = archive_zip_iterate_entries(fd, &info, queue_test_entry, &batch);
+            flush_test_batch(&batch);
+            rt_task_pool_destroy(&pool);
+        } else {
+            status = archive_zip_iterate_entries(fd, &info, test_entry, &context);
+        }
         if (status == 0 && !context.failed && rt_write_line(1, "No errors detected") != 0) status = -1;
     } else {
         status = archive_zip_iterate_entries(fd, &info, extract_entry, &context);

@@ -26,6 +26,10 @@ Extraction refuses absolute paths, backslash paths, drive-letter paths, and
 - `-d DIR` - extract into DIR instead of the current directory.
 - `-h`, `--help` - show usage.
 
+For multi-entry `-t` tests, independent entries are checked in parallel in
+batches of four. Set `NEWOS_UNZIP_WORKERS` to override the worker count (default
+maximum 4). Listing, piping, and extraction remain serial.
+
 ## JSON Output
 
 This command does not provide a JSON output mode.

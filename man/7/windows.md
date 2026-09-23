@@ -87,6 +87,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-sc
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-scaling.ps1 -Tool sort
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-bzip2.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-bzip2.ps1 -Pattern Mixed
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\bench-grep-unzip.ps1
 ```
 
 The benchmark generates private inputs under `tests/tmp/`, verifies output
@@ -109,6 +110,12 @@ system clock; use wall time
 for small differences. On a 12 MiB incompressible fixture, the rolling-byte
 scanner reduced the serial scan from about 250 ms to 78-94 ms, and the
 twelve-worker median wall time from about 501 ms to 326 ms.
+The grep/unzip benchmark uses sixteen deterministic 1 MiB text files in a
+deflated ZIP. It verifies ordered `grep -c` counts and ZIP CRC checks at each
+worker width, including rejection of a corrupted entry. On Windows ARM64,
+four workers reduced grep from about 54 ms to 28 ms and `unzip -t` from about
+191 ms to 64 ms; these figures are workload-specific. The optional
+`-ProfileDir` setting collects function traces from an instrumented build.
 
 ## NATIVE STARTUP AND ABI
 

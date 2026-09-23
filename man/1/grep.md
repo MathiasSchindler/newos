@@ -28,6 +28,9 @@ expression by default; use `-E` for extended syntax.
 - Before/after context lines with `-B`, `-A`, `-C`
 - Line number output with `-n`
 - Count-only output with `-c`
+- Parallel per-file counting for explicit multi-file `-c` searches; set
+	`NEWOS_GREP_WORKERS` to override the worker count (default maximum 4).
+	Results remain in argument order. Other search modes remain serial.
 - Quiet mode (exit code only) with `-q`
 - List matching file names with `-l`
 - Multiple patterns with `-e PATTERN`

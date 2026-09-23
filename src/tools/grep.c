@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "concurrency.h"
 #include "runtime.h"
 #include "tool_util.h"
 
@@ -6,6 +7,7 @@
 #define GREP_LINE_CAPACITY 8192
 #define GREP_PATH_CAPACITY 1024
 #define GREP_CONTEXT_CAPACITY 64
+#define GREP_DEFAULT_MAX_WORKERS 4U
 
 typedef struct {
     int show_line_no;
@@ -23,6 +25,19 @@ typedef struct {
     unsigned long long after_context;
     int color_mode;
 } GrepOptions;
+
+typedef struct {
+    const char *path;
+    unsigned long long count;
+    int matched;
+    int error;
+} GrepCountResult;
+
+typedef struct {
+    const char *pattern;
+    const GrepOptions *options;
+    GrepCountResult *results;
+} GrepCountBatch;
 
 static int find_next_match(const GrepOptions *options,
                            const char *pattern,
@@ -402,11 +417,12 @@ static int grep_stream(int fd,
                        const GrepOptions *options,
                        const char *label,
                        int show_label,
-                       int *matched_out) {
+                       int *matched_out,
+                       unsigned long long *count_out) {
     char chunk[16384];
     char line[GREP_LINE_CAPACITY];
     ToolOutputBuffer simple_output;
-    char before_lines[GREP_CONTEXT_CAPACITY][GREP_LINE_CAPACITY];
+    char (*before_lines)[GREP_LINE_CAPACITY] = 0;
     unsigned long long before_line_numbers[GREP_CONTEXT_CAPACITY];
     size_t line_len = 0;
     size_t before_count = 0;
@@ -470,6 +486,10 @@ static int grep_stream(int fd,
     } else {
         before_capacity = (size_t)options->before_context;
     }
+    if (before_capacity != 0U) {
+        before_lines = (char (*)[GREP_LINE_CAPACITY])rt_malloc(before_capacity * GREP_LINE_CAPACITY);
+        if (before_lines == 0) return -1;
+    }
 
     while ((bytes_read = platform_read(fd, chunk, sizeof(chunk))) > 0) {
         long i;
@@ -498,6 +518,7 @@ static int grep_stream(int fd,
                                                        &printed_any_output,
                                                        matched_out);
                     if (line_result != 0) {
+                        rt_free(before_lines);
                         return line_result > 0 ? 0 : -1;
                     }
                 }
@@ -511,6 +532,7 @@ static int grep_stream(int fd,
     }
 
     if (bytes_read < 0) {
+        rt_free(before_lines);
         return -1;
     }
 
@@ -535,13 +557,15 @@ static int grep_stream(int fd,
                                                &printed_any_output,
                                                matched_out);
             if (line_result != 0) {
+                rt_free(before_lines);
                 return line_result > 0 ? 0 : -1;
             }
         }
     }
 
-    if (options->count_only && !options->quiet && !options->list_files) {
+    if (options->count_only && !options->quiet && !options->list_files && count_out == 0) {
         if (print_count(label, show_label, match_count) != 0) {
+            rt_free(before_lines);
             return -1;
         }
     }
@@ -549,7 +573,9 @@ static int grep_stream(int fd,
     if (matched_out != 0) {
         *matched_out = matched;
     }
+    if (count_out != 0) *count_out = match_count;
 
+    rt_free(before_lines);
     return 0;
 }
 
@@ -619,7 +645,7 @@ static int grep_path(const char *path,
             return -1;
         }
 
-        if (grep_stream(fd, pattern, options, path, show_label || options->recursive, &matched) != 0) {
+        if (grep_stream(fd, pattern, options, path, show_label || options->recursive, &matched, 0) != 0) {
             tool_close_input(fd, should_close);
             return -1;
         }
@@ -632,6 +658,73 @@ static int grep_path(const char *path,
     }
 
     return 0;
+}
+
+static int grep_count_file_range(size_t start, size_t end, unsigned int worker_index, void *user_data) {
+    GrepCountBatch *batch = (GrepCountBatch *)user_data;
+    size_t index;
+
+    (void)worker_index;
+    for (index = start; index < end; ++index) {
+        GrepCountResult *result = batch->results + index;
+        int fd;
+        int should_close;
+
+        if (tool_open_input(result->path, &fd, &should_close) != 0) {
+            result->error = 1;
+            continue;
+        }
+        if (grep_stream(fd, batch->pattern, batch->options, result->path, 1, &result->matched, &result->count) != 0) {
+            result->error = 2;
+        }
+        tool_close_input(fd, should_close);
+    }
+    return 0;
+}
+
+static int grep_count_files_parallel(const char *pattern, const GrepOptions *options, int file_count, char **paths) {
+    GrepCountResult *results = (GrepCountResult *)rt_malloc_array((size_t)file_count, sizeof(*results));
+    GrepCountBatch batch;
+    RtTaskPool pool;
+    int index;
+    int any_match = 0;
+    int exit_code = 0;
+    int dispatch_result;
+
+    if (results == 0) return -1;
+    rt_memset(results, 0, (size_t)file_count * sizeof(*results));
+    for (index = 0; index < file_count; ++index) results[index].path = paths[index];
+    batch.pattern = pattern;
+    batch.options = options;
+    batch.results = results;
+    rt_memset(&pool, 0, sizeof(pool));
+    if (rt_task_pool_init(&pool, tool_worker_count_from_env("NEWOS_GREP_WORKERS", GREP_DEFAULT_MAX_WORKERS)) != 0) {
+        rt_free(results);
+        return -1;
+    }
+    dispatch_result = rt_parallel_for(&pool, (size_t)file_count, 1U, grep_count_file_range, &batch);
+    rt_task_pool_destroy(&pool);
+    if (dispatch_result != 0) {
+        rt_free(results);
+        return -1;
+    }
+    for (index = 0; index < file_count; ++index) {
+        if (results[index].error == 1) {
+            rt_write_cstr(2, "grep: cannot open ");
+            rt_write_line(2, results[index].path);
+        } else if (results[index].error == 0 && print_count(results[index].path, 1, results[index].count) != 0) {
+            results[index].error = 2;
+        }
+        if (results[index].error != 0) {
+            rt_write_cstr(2, "grep: read error on ");
+            rt_write_line(2, results[index].path);
+            exit_code = 1;
+        } else if (results[index].matched) {
+            any_match = 1;
+        }
+    }
+    rt_free(results);
+    return exit_code != 0 ? 1 : any_match ? 0 : 1;
 }
 
 int main(int argc, char **argv) {
@@ -745,7 +838,24 @@ int main(int argc, char **argv) {
     file_count = argc - s.argi - 1;
     if (file_count <= 0) {
         int matched = 0;
-        return grep_stream(0, argv[s.argi], &options, "", 0, &matched) == 0 ? (matched ? 0 : 1) : 1;
+        return grep_stream(0, argv[s.argi], &options, "", 0, &matched, 0) == 0 ? (matched ? 0 : 1) : 1;
+    }
+
+    if (file_count > 1 && options.count_only && !options.quiet && !options.list_files && !options.recursive) {
+        int eligible = 1;
+
+        for (i = s.argi + 1; i < argc; ++i) {
+            int is_directory = 0;
+            if (rt_strcmp(argv[i], "-") == 0 ||
+                (platform_path_is_directory(argv[i], &is_directory) == 0 && is_directory)) {
+                eligible = 0;
+                break;
+            }
+        }
+        if (eligible) {
+            int result = grep_count_files_parallel(argv[s.argi], &options, file_count, argv + s.argi + 1);
+            if (result >= 0) return result;
+        }
     }
 
     for (i = s.argi + 1; i < argc; ++i) {
