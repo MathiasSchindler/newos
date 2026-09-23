@@ -15,5 +15,10 @@ int compression_zlib_deflate_level(const unsigned char *input, size_t input_size
 int compression_zlib_inflate(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out);
 int compression_zlib_inflate_consumed(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out, size_t *input_consumed_out);
 int compression_deflate_inflate_raw(const unsigned char *input, size_t input_size, unsigned char *output, size_t output_capacity, size_t *output_size_out);
+typedef int (*CompressionStreamRead)(void *context, unsigned char *buffer, size_t capacity);
+typedef int (*CompressionStreamWrite)(void *context, const unsigned char *buffer, size_t size);
+int compression_deflate_inflate_raw_stream(CompressionStreamRead read_input, void *input_context,
+                                           CompressionStreamWrite write_output, void *output_context,
+                                           size_t input_size, size_t output_limit, size_t *output_size_out);
 
 #endif

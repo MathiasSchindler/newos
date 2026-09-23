@@ -20,6 +20,10 @@ typedef struct {
 
 typedef struct {
     const char *output_path;
+    const char *if_none_match;
+    char *response_etag;
+    size_t response_etag_size;
+    int *response_status;
     unsigned long long timeout_ms;
     int quiet;
     int show_headers;
@@ -42,8 +46,13 @@ typedef struct {
     size_t header_length;
     size_t content_length;
     size_t body_written;
+    size_t chunk_remaining;
+    size_t chunk_line_length;
+    char chunk_line[WGET_HEADER_CAPACITY];
     int header_complete;
     int has_content_length;
+    int chunked;
+    int chunk_phase;
     int result;
     int done;
     unsigned long long last_activity_ns;
@@ -52,9 +61,20 @@ typedef struct {
 static int open_output_for_url(const WgetOptions *options, const WgetUrl *url, char *path_out, size_t path_out_size, int *fd_out);
 
 static void print_usage(const char *program_name) {
-    tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
+    tool_write_usage(program_name, "[-q] [-S] [-T TIMEOUT] [-O FILE] [--if-none-match ETAG] URL...");
 }
 
+static int wget_valid_etag(const char *etag) {
+    size_t i, size;
+    if (etag == 0) return 0;
+    size = rt_strlen(etag);
+    if (!((size >= 2U && etag[0] == '"' && etag[size - 1U] == '"') ||
+          (size >= 4U && etag[0] == 'W' && etag[1] == '/' &&
+           etag[2] == '"' && etag[size - 1U] == '"'))) return 0;
+    for (i = 0U; i < size; ++i)
+        if ((unsigned char)etag[i] < 32U || (unsigned char)etag[i] == 127U) return 0;
+    return 1;
+}
 
 
 static size_t find_line_end(const char *text, size_t start) {
@@ -422,18 +442,20 @@ static int parse_http_headers(
     char *location_out,
     size_t location_size,
     size_t *content_length_out,
-    int *has_content_length_out
+    int *has_content_length_out,
+    int *chunked_out
 ) {
     size_t line_start = 0;
     int line_index = 0;
 
-    if (status_code_out == 0 || location_out == 0 || content_length_out == 0 || has_content_length_out == 0) {
+    if (status_code_out == 0 || location_out == 0 || content_length_out == 0 || has_content_length_out == 0 || chunked_out == 0) {
         return -1;
     }
 
     location_out[0] = '\0';
     *content_length_out = 0U;
     *has_content_length_out = 0;
+    *chunked_out = 0;
     *status_code_out = parse_http_status(headers);
     if (*status_code_out < 0) {
         return -1;
@@ -476,6 +498,12 @@ static int parse_http_headers(
                     }
                     *content_length_out = parsed_length;
                     *has_content_length_out = 1;
+                } else if (header_name_equals(headers + line_start, name_end, "Transfer-Encoding")) {
+                    size_t start = 0U;
+                    while (start < value_length && (value[start] == ' ' || value[start] == '\t')) ++start;
+                    while (value_length > start && (value[value_length - 1U] == ' ' || value[value_length - 1U] == '\t')) --value_length;
+                    if (*chunked_out || !tool_name_equals_ignore_case_ascii_n(value + start, value_length - start, "chunked")) return -1;
+                    *chunked_out = 1;
                 }
             }
         }
@@ -487,7 +515,98 @@ static int parse_http_headers(
         line_index += 1;
     }
 
+    return *chunked_out && *has_content_length_out ? -1 : 0;
+}
+
+static int wget_etag_header(const char *headers, char *etag, size_t capacity) {
+    const char *line = headers;
+    etag[0] = '\0';
+    while (*line) {
+        const char *end = line;
+        const char *value;
+        size_t size, i;
+        while (*end && *end != '\n') ++end;
+        if ((size_t)(end - line) >= 5U &&
+            tool_name_equals_ignore_case_ascii_n(line, 4U, "ETag") && line[4] == ':') {
+            value = line + 5;
+            while (*value == ' ' || *value == '\t') ++value;
+            size = (size_t)(end - value);
+            while (size && (value[size - 1U] == '\r' || value[size - 1U] == ' ')) --size;
+            if (size < 2U || size >= capacity ||
+                !((value[0] == '"' && value[size - 1U] == '"') ||
+                  (size >= 4U && value[0] == 'W' && value[1] == '/' &&
+                   value[2] == '"' && value[size - 1U] == '"'))) return -1;
+            for (i = 0U; i < size; ++i)
+                if ((unsigned char)value[i] < 32U || (unsigned char)value[i] == 127U) return -1;
+            if (etag[0] && (rt_strlen(etag) != size || memcmp(etag, value, size) != 0)) return -1;
+            memcpy(etag, value, size);
+            etag[size] = '\0';
+        }
+        line = *end ? end + 1 : end;
+    }
     return 0;
+}
+
+int wget_probe_etag(const char *source, const char *conditional, char *etag, size_t etag_size) {
+    char current[WGET_URL_CAPACITY], headers[WGET_HEADER_CAPACITY], redirect[WGET_URL_CAPACITY];
+    int redirects;
+    if (source == 0 || etag == 0 || etag_size == 0U || rt_strlen(source) >= sizeof(current)) return -1;
+    etag[0] = '\0';
+    if (conditional != 0 && conditional[0] != '\0' && !wget_valid_etag(conditional)) return -1;
+    rt_copy_string(current, sizeof(current), source);
+    for (redirects = 0; redirects < 5; ++redirects) {
+        WgetUrl url;
+        WgetConnection connection;
+        char request[4096];
+        size_t request_length = 0U, length = 0U, end = 0U, ignored_length = 0U;
+        int ignored_has_length = 0, ignored_chunked = 0, status, result = -1;
+        etag[0] = '\0';
+        if (parse_url(current, &url) != 0 || url.scheme != WGET_SCHEME_HTTPS ||
+            tool_http_connection_connect(&connection, url.host, url.port, 1) != 0) return -1;
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "HEAD ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.path);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, " HTTP/1.1\r\nHost: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, url.host);
+        if (url.port != 443U) {
+            char port[16];
+            rt_unsigned_to_string(url.port, port, sizeof(port));
+            request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
+            request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, port);
+        }
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length,
+            "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n");
+        if (conditional && conditional[0]) {
+            request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "If-None-Match: ");
+            request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, conditional);
+            request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+        }
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+        if (request_length >= sizeof(request) - 1U ||
+            tool_http_connection_write_all(&connection, request, request_length) != 0) {
+            tool_http_connection_close(&connection);
+            return -1;
+        }
+        while (length + 1U < sizeof(headers)) {
+            long received = tool_http_connection_read(&connection, headers + length, sizeof(headers) - length - 1U);
+            if (received <= 0) break;
+            length += (size_t)received;
+            headers[length] = '\0';
+            if (tool_find_http_header_end(headers, length, &end) == 0) {
+                headers[end] = '\0';
+                if (parse_http_headers(headers, &status, redirect, sizeof(redirect),
+                                       &ignored_length, &ignored_has_length, &ignored_chunked) == 0 &&
+                    wget_etag_header(headers, etag, etag_size) == 0) result = status;
+                break;
+            }
+        }
+        tool_http_connection_close(&connection);
+        if (result >= 300 && result < 400 && result != 304 && redirect[0]) {
+            if (compose_redirect_url(&url, redirect, current, sizeof(current)) != 0) return -1;
+            continue;
+        }
+        return result;
+    }
+    return -1;
 }
 
 static int write_body_bytes(int output_fd, const char *data, size_t size, int has_content_length, size_t content_length, size_t *body_written) {
@@ -503,11 +622,75 @@ static int write_body_bytes(int output_fd, const char *data, size_t size, int ha
             write_size = remaining;
         }
     }
+    if (write_size > (size_t)-1 - *body_written) return -1;
     if (write_size > 0U && rt_write_all(output_fd, data, write_size) != 0) {
         return -1;
     }
     *body_written += write_size;
     return 0;
+}
+
+static int wget_chunk_line(WgetHttpState *state) {
+    size_t i, value = 0U;
+    if (state->chunk_line_length < 2U ||
+        state->chunk_line[state->chunk_line_length - 2U] != '\r') return -1;
+    if (state->chunk_phase == 4) {
+        if (state->chunk_line_length == 2U) state->chunk_phase = 5;
+        else {
+            for (i = 0U; i + 2U < state->chunk_line_length; ++i) {
+                if (state->chunk_line[i] < ' ' || state->chunk_line[i] == 0x7f) return -1;
+            }
+        }
+        return 0;
+    }
+    for (i = 0U; i + 2U < state->chunk_line_length; ++i) {
+        unsigned char ch = (unsigned char)state->chunk_line[i];
+        unsigned int digit;
+        if (ch == ';') break;
+        if (ch >= '0' && ch <= '9') digit = ch - '0';
+        else if (ch >= 'a' && ch <= 'f') digit = ch - 'a' + 10U;
+        else if (ch >= 'A' && ch <= 'F') digit = ch - 'A' + 10U;
+        else return -1;
+        if (value > ((size_t)-1 - digit) / 16U) return -1;
+        value = value * 16U + digit;
+    }
+    if (i == 0U) return -1;
+    for (; i + 2U < state->chunk_line_length; ++i) {
+        if (state->chunk_line[i] < ' ' || state->chunk_line[i] == 0x7f) return -1;
+    }
+    state->chunk_remaining = value;
+    state->chunk_phase = value == 0U ? 4 : 1;
+    return 0;
+}
+
+static int wget_chunk_consume(WgetHttpState *state, const char *buffer, size_t size) {
+    size_t offset = 0U;
+    while (offset < size) {
+        if (state->chunk_phase == 5) return -1;
+        if (state->chunk_phase == 1) {
+            size_t count = size - offset;
+            if (count > state->chunk_remaining) count = state->chunk_remaining;
+            if (write_body_bytes(state->output_fd, buffer + offset, count, 0, 0, &state->body_written) != 0) return -1;
+            state->chunk_remaining -= count;
+            offset += count;
+            if (state->chunk_remaining == 0U) state->chunk_phase = 2;
+        } else if (state->chunk_phase == 2) {
+            if (buffer[offset++] != '\r') return -1;
+            state->chunk_phase = 3;
+        } else if (state->chunk_phase == 3) {
+            if (buffer[offset++] != '\n') return -1;
+            state->chunk_phase = 0;
+        } else {
+            char ch = buffer[offset++];
+            if (state->chunk_line_length >= sizeof(state->chunk_line)) return -1;
+            state->chunk_line[state->chunk_line_length++] = ch;
+            if (ch == '\n') {
+                if (wget_chunk_line(state) != 0) return -1;
+                state->chunk_line_length = 0U;
+            }
+        }
+    }
+    return state->chunk_phase == 5 ? 2 : 0;
 }
 
 static void wget_http_finish(WgetHttpState *state, int result) {
@@ -535,20 +718,26 @@ static int wget_http_consume(WgetHttpState *state, const char *buffer, size_t si
             state->header_buffer[body_offset] = '\0';
             if (state->options->show_headers && rt_write_all(2, state->header_buffer, body_offset) != 0) return -1;
             if (parse_http_headers(state->header_buffer, &status_code, state->redirect_url, state->redirect_size,
-                                   &state->content_length, &state->has_content_length) != 0) return -1;
+                                   &state->content_length, &state->has_content_length, &state->chunked) != 0) return -1;
+            if (state->options->response_etag != 0 &&
+                wget_etag_header(state->header_buffer, state->options->response_etag,
+                                 state->options->response_etag_size) != 0) return -1;
             state->header_buffer[body_offset] = saved_char;
         }
 
         if (status_code >= 300 && status_code < 400 && state->redirect_url[0] != '\0') return 1;
+        if (state->options->response_status != 0) *state->options->response_status = status_code;
+        if (status_code == 304 && state->options->if_none_match != 0) return 2;
         if (status_code < 200 || status_code >= 300) return -1;
         if (open_output_for_url(state->options, state->url, state->output_path, sizeof(state->output_path), &state->output_fd) != 0) return -1;
         state->should_close_output = state->output_fd > 1;
         if (!state->options->quiet && !state->options->output_to_stdout) write_info_line("saving to ", state->output_path);
-        if (state->header_length > body_offset &&
-            write_body_bytes(state->output_fd, state->header_buffer + body_offset, state->header_length - body_offset,
-                             state->has_content_length, state->content_length, &state->body_written) != 0) return -1;
-    } else if (write_body_bytes(state->output_fd, buffer, size, state->has_content_length,
-                                state->content_length, &state->body_written) != 0) {
+        buffer = state->header_buffer + body_offset;
+        size = state->header_length - body_offset;
+    }
+    if (state->chunked) return wget_chunk_consume(state, buffer, size);
+    if (write_body_bytes(state->output_fd, buffer, size, state->has_content_length,
+                         state->content_length, &state->body_written) != 0) {
         return -1;
     }
 
@@ -557,6 +746,7 @@ static int wget_http_consume(WgetHttpState *state, const char *buffer, size_t si
 
 static int wget_http_eof_result(const WgetHttpState *state) {
     if (!state->header_complete) return -1;
+    if (state->chunked && state->chunk_phase != 5) return -1;
     if (state->has_content_length && state->body_written < state->content_length) return -1;
     return 0;
 }
@@ -627,9 +817,20 @@ static int fetch_http_body(
         request_length = tool_buffer_append_char(request, sizeof(request), request_length, ':');
         request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, port_text);
     }
-    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\nUser-Agent: newos-wget/0.1\r\nAccept: */*\r\nConnection: close\r\n");
+    if (options->if_none_match != 0) {
+        if (!wget_valid_etag(options->if_none_match)) {
+            tool_http_connection_close(&connection);
+            return -1;
+        }
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "If-None-Match: ");
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, options->if_none_match);
+        request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
+    }
+    request_length = tool_buffer_append_cstr(request, sizeof(request), request_length, "\r\n");
 
-    if (tool_http_connection_write_all(&connection, request, request_length) != 0) {
+    if (request_length >= sizeof(request) - 1U ||
+        tool_http_connection_write_all(&connection, request, request_length) != 0) {
         tool_http_connection_close(&connection);
         return -1;
     }
@@ -718,6 +919,8 @@ static int fetch_one_url(const char *source_url, const WgetOptions *options) {
     char redirect_url[WGET_URL_CAPACITY];
     int redirects = 0;
 
+    if (rt_strlen(source_url) >= sizeof(current_url) ||
+        (options->response_etag != 0 && options->response_etag_size == 0U)) return 1;
     rt_copy_string(current_url, sizeof(current_url), source_url);
 
     while (redirects < 5) {
@@ -725,9 +928,15 @@ static int fetch_one_url(const char *source_url, const WgetOptions *options) {
         char output_path[512];
         int output_fd = -1;
         int result;
+        if (options->response_etag != 0) options->response_etag[0] = '\0';
+        if (options->response_status != 0) *options->response_status = 0;
 
         if (parse_url(current_url, &url) != 0) {
             tool_write_error("wget", "unsupported URL ", current_url);
+            return 1;
+        }
+        if (options->if_none_match != 0 && url.scheme == WGET_SCHEME_FILE) {
+            tool_write_error("wget", "conditional request requires HTTP: ", current_url);
             return 1;
         }
 
@@ -801,7 +1010,7 @@ int main(int argc, char **argv) {
 
     rt_memset(&options, 0, sizeof(options));
     options.timeout_ms = WGET_DEFAULT_TIMEOUT_MS;
-    tool_opt_init(&options_state, argc, argv, argv[0], "[-q] [-S] [-T TIMEOUT] [-O FILE] URL...");
+    tool_opt_init(&options_state, argc, argv, argv[0], "[-q] [-S] [-T TIMEOUT] [-O FILE] [--if-none-match ETAG] URL...");
 
     while ((parse_result = tool_opt_next(&options_state)) == TOOL_OPT_FLAG) {
         if (rt_strcmp(options_state.flag, "-q") == 0 || rt_strcmp(options_state.flag, "--quiet") == 0) {
@@ -825,6 +1034,12 @@ int main(int argc, char **argv) {
                 print_usage(argv[0]);
                 return 1;
             }
+        } else if (rt_strcmp(options_state.flag, "--if-none-match") == 0) {
+            if (tool_opt_require_value(&options_state) != 0 || !wget_valid_etag(options_state.value)) return 1;
+            options.if_none_match = options_state.value;
+        } else if (tool_starts_with(options_state.flag, "--if-none-match=")) {
+            options.if_none_match = options_state.flag + 16;
+            if (!wget_valid_etag(options.if_none_match)) return 1;
         } else {
             tool_write_error("wget", "unknown option: ", options_state.flag);
             print_usage(argv[0]);

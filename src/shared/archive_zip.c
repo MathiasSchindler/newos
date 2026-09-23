@@ -449,6 +449,60 @@ done:
 }
 
 typedef struct {
+    int fd;
+    unsigned int crc;
+    ArchiveZipDataCallback callback;
+    void *user_data;
+} ZipStreamContext;
+
+static int zip_stream_read(void *opaque, unsigned char *buffer, size_t capacity) {
+    ZipStreamContext *context = (ZipStreamContext *)opaque;
+    return archive_read_exact(context->fd, buffer, capacity) == 0 ? (int)capacity : -1;
+}
+
+static int zip_stream_write(void *opaque, const unsigned char *data, size_t size) {
+    ZipStreamContext *context = (ZipStreamContext *)opaque;
+    context->crc = compression_crc32_update(context->crc, data, size);
+    return context->callback(data, size, context->user_data);
+}
+
+int archive_zip_stream_entry_data(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry,
+                                  unsigned long long max_size, ArchiveZipDataCallback callback, void *user_data) {
+    ArchiveZipLocalInfo local;
+    ZipStreamContext context;
+    unsigned char buffer[4096];
+    unsigned long long remaining;
+    size_t output_size = 0U;
+    if (callback == 0 || entry->uncompressed_size > max_size ||
+        entry->uncompressed_size > (unsigned long long)((size_t)-1) ||
+        entry->compressed_size > (unsigned long long)((size_t)-1) ||
+        (entry->flags & ARCHIVE_ZIP_FLAG_ENCRYPTED) != 0U ||
+        archive_zip_read_local_info(fd, info, entry, &local) != 0 ||
+        platform_seek(fd, (long long)local.data_offset, PLATFORM_SEEK_SET) < 0) return -1;
+    context.fd = fd;
+    context.crc = 0xffffffffU;
+    context.callback = callback;
+    context.user_data = user_data;
+    if (entry->method == ARCHIVE_ZIP_METHOD_STORE) {
+        if (entry->compressed_size != entry->uncompressed_size) return -1;
+        remaining = entry->compressed_size;
+        while (remaining > 0ULL) {
+            size_t count = remaining < sizeof(buffer) ? (size_t)remaining : sizeof(buffer);
+            if (zip_stream_read(&context, buffer, count) < 0 ||
+                zip_stream_write(&context, buffer, count) != 0) return -1;
+            remaining -= count;
+        }
+        output_size = (size_t)entry->uncompressed_size;
+    } else if (entry->method == ARCHIVE_ZIP_METHOD_DEFLATE) {
+        if (compression_deflate_inflate_raw_stream(zip_stream_read, &context,
+            zip_stream_write, &context, (size_t)entry->compressed_size,
+            (size_t)entry->uncompressed_size, &output_size) != 0 ||
+            output_size != (size_t)entry->uncompressed_size) return -1;
+    } else return -1;
+    return compression_crc32_finish(context.crc) == entry->crc32 ? 0 : -1;
+}
+
+typedef struct {
     const ArchiveZipInfo *info;
     int fd;
     ArchiveZipValidation *validation;
@@ -531,7 +585,8 @@ static int zip_validate_entry(const ArchiveZipEntry *entry, void *user_data) {
     if (!zip_range_valid(context->info, local.data_offset, entry->compressed_size)) context->validation->range_errors += 1ULL;
     if ((entry->flags & ARCHIVE_ZIP_FLAG_DATA_DESCRIPTOR) == 0U && local.crc32 != entry->crc32) context->validation->crc_errors += 1ULL;
     if ((entry->method == ARCHIVE_ZIP_METHOD_STORE || entry->method == ARCHIVE_ZIP_METHOD_DEFLATE) &&
-        entry->uncompressed_size <= 33554432ULL && archive_zip_read_entry_data(context->fd, context->info, entry, 33554432ULL, &data, &data_size) != 0) {
+        entry->uncompressed_size <= 33554432ULL && entry->compressed_size <= 33554432ULL &&
+        archive_zip_read_entry_data(context->fd, context->info, entry, 33554432ULL, &data, &data_size) != 0) {
         context->validation->crc_errors += 1ULL;
     }
     rt_free(data);

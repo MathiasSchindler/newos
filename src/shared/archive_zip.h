@@ -81,11 +81,14 @@ typedef struct {
 } ArchiveZipValidation;
 
 typedef int (*ArchiveZipEntryCallback)(const ArchiveZipEntry *entry, void *user_data);
+typedef int (*ArchiveZipDataCallback)(const unsigned char *data, size_t size, void *user_data);
 
 int archive_zip_read_info(int fd, ArchiveZipInfo *info_out);
 int archive_zip_iterate_entries(int fd, const ArchiveZipInfo *info, ArchiveZipEntryCallback callback, void *user_data);
 int archive_zip_read_local_info(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry, ArchiveZipLocalInfo *local_out);
 int archive_zip_read_entry_data(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry, unsigned long long max_size, unsigned char **data_out, size_t *size_out);
+int archive_zip_stream_entry_data(int fd, const ArchiveZipInfo *info, const ArchiveZipEntry *entry,
+                                  unsigned long long max_size, ArchiveZipDataCallback callback, void *user_data);
 int archive_zip_validate(int fd, const ArchiveZipInfo *info, ArchiveZipValidation *validation_out);
 int archive_zip_read_signing_block(int fd, const ArchiveZipInfo *info, ArchiveZipSigningBlock *block_out);
 const char *archive_zip_method_name(unsigned int method);

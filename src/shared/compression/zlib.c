@@ -59,7 +59,21 @@ typedef struct {
     size_t byte_offset;
     unsigned long long bit_buffer;
     unsigned int bit_count;
+    CompressionStreamRead read_input;
+    void *input_context;
+    unsigned char stream_buffer[4096];
+    size_t input_remaining;
+    size_t bytes_read;
 } ZlibBitReader;
+
+typedef struct {
+    unsigned char window[32768];
+    unsigned char buffer[4096];
+    size_t buffered;
+    size_t limit;
+    CompressionStreamWrite write_output;
+    void *output_context;
+} ZlibStreamOutput;
 
 typedef struct {
     unsigned int table_bits;
@@ -77,6 +91,7 @@ typedef struct {
 } ZlibBitWriter;
 
 static void zlib_bit_reader_init(ZlibBitReader *reader, const unsigned char *data, size_t size) {
+    rt_memset(reader, 0, sizeof(*reader));
     reader->data = data;
     reader->size = size;
     reader->byte_offset = 0U;
@@ -84,20 +99,40 @@ static void zlib_bit_reader_init(ZlibBitReader *reader, const unsigned char *dat
     reader->bit_count = 0U;
 }
 
+static int zlib_next_byte(ZlibBitReader *reader, unsigned char *byte_out) {
+    if (reader->byte_offset == reader->size && reader->read_input != 0) {
+        size_t count = reader->input_remaining;
+        int received;
+        if (count == 0U) return -1;
+        if (count > sizeof(reader->stream_buffer)) count = sizeof(reader->stream_buffer);
+        received = reader->read_input(reader->input_context, reader->stream_buffer, count);
+        if (received <= 0 || (size_t)received > count) return -1;
+        reader->data = reader->stream_buffer;
+        reader->size = (size_t)received;
+        reader->byte_offset = 0U;
+        reader->input_remaining -= (size_t)received;
+    }
+    if (reader->byte_offset == reader->size) return -1;
+    *byte_out = reader->data[reader->byte_offset++];
+    reader->bytes_read++;
+    return 0;
+}
+
 static int zlib_ensure_bits(ZlibBitReader *reader, unsigned int count) {
     while (reader->bit_count < count) {
-        if (reader->byte_offset >= reader->size) {
-            return -1;
-        }
-        reader->bit_buffer |= ((unsigned long long)reader->data[reader->byte_offset++]) << reader->bit_count;
+        unsigned char byte;
+        if (zlib_next_byte(reader, &byte) != 0) return -1;
+        reader->bit_buffer |= ((unsigned long long)byte) << reader->bit_count;
         reader->bit_count += 8U;
     }
     return 0;
 }
 
 static void zlib_prefill_decode_bits(ZlibBitReader *reader) {
-    while (reader->bit_count < 32U && reader->byte_offset < reader->size) {
-        reader->bit_buffer |= ((unsigned long long)reader->data[reader->byte_offset++]) << reader->bit_count;
+    while (reader->bit_count < 32U) {
+        unsigned char byte;
+        if (zlib_next_byte(reader, &byte) != 0) break;
+        reader->bit_buffer |= ((unsigned long long)byte) << reader->bit_count;
         reader->bit_count += 8U;
     }
 }
@@ -125,6 +160,7 @@ static void zlib_align_byte(ZlibBitReader *reader) {
 
     reader->bit_buffer >>= drop;
     reader->bit_count -= drop;
+    if (reader->read_input != 0) return;
     unread_bytes = reader->bit_count / 8U;
     if (unread_bytes > 0U && unread_bytes <= reader->byte_offset) {
         reader->byte_offset -= unread_bytes;
@@ -483,7 +519,30 @@ static int zlib_copy_output(unsigned char *output, size_t output_capacity, size_
     return 0;
 }
 
-static int zlib_inflate_codes(ZlibBitReader *reader, const ZlibHuffman *litlen, const ZlibHuffman *dist, unsigned char *output, size_t output_capacity, size_t *output_offset_io) {
+static int zlib_stream_byte(ZlibStreamOutput *stream, size_t *output_offset_io, unsigned char value) {
+    size_t offset = *output_offset_io;
+    if (offset >= stream->limit) return -1;
+    stream->window[offset & 32767U] = value;
+    stream->buffer[stream->buffered++] = value;
+    *output_offset_io = offset + 1U;
+    if (stream->buffered == sizeof(stream->buffer)) {
+        if (stream->write_output(stream->output_context, stream->buffer, stream->buffered) != 0) return -1;
+        stream->buffered = 0U;
+    }
+    return 0;
+}
+
+static int zlib_stream_copy(ZlibStreamOutput *stream, size_t *output_offset_io, unsigned int distance, unsigned int length) {
+    unsigned int i;
+    if (distance == 0U || distance > 32768U || distance > *output_offset_io) return -1;
+    for (i = 0U; i < length; ++i) {
+        unsigned char value = stream->window[(*output_offset_io - distance) & 32767U];
+        if (zlib_stream_byte(stream, output_offset_io, value) != 0) return -1;
+    }
+    return 0;
+}
+
+static int zlib_inflate_codes(ZlibBitReader *reader, const ZlibHuffman *litlen, const ZlibHuffman *dist, unsigned char *output, size_t output_capacity, size_t *output_offset_io, ZlibStreamOutput *stream) {
     static const unsigned short length_base[29] = {
         3U, 4U, 5U, 6U, 7U, 8U, 9U, 10U, 11U, 13U, 15U, 17U, 19U, 23U, 27U, 31U,
         35U, 43U, 51U, 59U, 67U, 83U, 99U, 115U, 131U, 163U, 195U, 227U, 258U
@@ -506,8 +565,12 @@ static int zlib_inflate_codes(ZlibBitReader *reader, const ZlibHuffman *litlen, 
 
         if (zlib_huffman_decode(reader, litlen, &symbol) != 0) return -1;
         if (symbol < 256U) {
-            if (*output_offset_io >= output_capacity) return -1;
-            output[(*output_offset_io)++] = (unsigned char)symbol;
+            if (stream != 0) {
+                if (zlib_stream_byte(stream, output_offset_io, (unsigned char)symbol) != 0) return -1;
+            } else {
+                if (*output_offset_io >= output_capacity) return -1;
+                output[(*output_offset_io)++] = (unsigned char)symbol;
+            }
         } else if (symbol == 256U) {
             return 0;
         } else if (symbol <= 285U) {
@@ -528,18 +591,37 @@ static int zlib_inflate_codes(ZlibBitReader *reader, const ZlibHuffman *litlen, 
                 if (zlib_read_bits(reader, dist_extra[distance_symbol], &extra) != 0) return -1;
                 distance += extra;
             }
-            if (zlib_copy_output(output, output_capacity, output_offset_io, distance, length) != 0) return -1;
+            if (stream != 0) {
+                if (zlib_stream_copy(stream, output_offset_io, distance, length) != 0) return -1;
+            } else if (zlib_copy_output(output, output_capacity, output_offset_io, distance, length) != 0) return -1;
         } else {
             return -1;
         }
     }
 }
 
-static int zlib_inflate_stored(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io) {
+static int zlib_inflate_stored(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io, ZlibStreamOutput *stream) {
     unsigned int len;
     unsigned int nlen;
 
     zlib_align_byte(reader);
+    if (stream != 0) {
+        unsigned int byte, i;
+        if (zlib_read_bits(reader, 8U, &byte) != 0) return -1;
+        len = byte;
+        if (zlib_read_bits(reader, 8U, &byte) != 0) return -1;
+        len |= byte << 8U;
+        if (zlib_read_bits(reader, 8U, &byte) != 0) return -1;
+        nlen = byte;
+        if (zlib_read_bits(reader, 8U, &byte) != 0) return -1;
+        nlen |= byte << 8U;
+        if (((len ^ 0xffffU) & 0xffffU) != nlen) return -1;
+        for (i = 0U; i < len; ++i) {
+            if (zlib_read_bits(reader, 8U, &byte) != 0 ||
+                zlib_stream_byte(stream, output_offset_io, (unsigned char)byte) != 0) return -1;
+        }
+        return 0;
+    }
     if (reader->byte_offset + 4U > reader->size) return -1;
     len = (unsigned int)reader->data[reader->byte_offset] | ((unsigned int)reader->data[reader->byte_offset + 1U] << 8U);
     nlen = (unsigned int)reader->data[reader->byte_offset + 2U] | ((unsigned int)reader->data[reader->byte_offset + 3U] << 8U);
@@ -551,7 +633,7 @@ static int zlib_inflate_stored(ZlibBitReader *reader, unsigned char *output, siz
     return 0;
 }
 
-static int zlib_inflate_fixed(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io) {
+static int zlib_inflate_fixed(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io, ZlibStreamOutput *stream) {
     unsigned char lit_lengths[ZLIB_MAX_LITERAL_SYMBOLS];
     unsigned char dist_lengths[ZLIB_MAX_DISTANCE_SYMBOLS];
     unsigned short lit_symbols[512U];
@@ -573,13 +655,13 @@ static int zlib_inflate_fixed(ZlibBitReader *reader, unsigned char *output, size
         zlib_huffman_free(&litlen);
         return -1;
     }
-    result = zlib_inflate_codes(reader, &litlen, &dist, output, output_capacity, output_offset_io);
+    result = zlib_inflate_codes(reader, &litlen, &dist, output, output_capacity, output_offset_io, stream);
     zlib_huffman_free(&litlen);
     zlib_huffman_free(&dist);
     return result;
 }
 
-static int zlib_inflate_dynamic(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io) {
+static int zlib_inflate_dynamic(ZlibBitReader *reader, unsigned char *output, size_t output_capacity, size_t *output_offset_io, ZlibStreamOutput *stream) {
     static const unsigned char code_order[ZLIB_MAX_CODE_LENGTH_SYMBOLS] = { 16U, 17U, 18U, 0U, 8U, 7U, 9U, 6U, 10U, 5U, 11U, 4U, 12U, 3U, 13U, 2U, 14U, 1U, 15U };
     unsigned char code_lengths[ZLIB_MAX_CODE_LENGTH_SYMBOLS];
     unsigned char lit_lengths[ZLIB_MAX_LITERAL_SYMBOLS];
@@ -670,7 +752,7 @@ static int zlib_inflate_dynamic(ZlibBitReader *reader, unsigned char *output, si
         zlib_huffman_free(&litlen);
         return -1;
     }
-    result = zlib_inflate_codes(reader, &litlen, &dist, output, output_capacity, output_offset_io);
+    result = zlib_inflate_codes(reader, &litlen, &dist, output, output_capacity, output_offset_io, stream);
     zlib_huffman_free(&litlen);
     zlib_huffman_free(&dist);
     return result;
@@ -698,11 +780,11 @@ int compression_zlib_inflate_consumed(const unsigned char *input, size_t input_s
         final_block = value != 0U;
         if (zlib_read_bits(&reader, 2U, &block_type) != 0) return -1;
         if (block_type == 0U) {
-            if (zlib_inflate_stored(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_stored(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else if (block_type == 1U) {
-            if (zlib_inflate_fixed(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_fixed(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else if (block_type == 2U) {
-            if (zlib_inflate_dynamic(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_dynamic(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else {
             return -1;
         }
@@ -749,15 +831,52 @@ int compression_deflate_inflate_raw(const unsigned char *input, size_t input_siz
         final_block = value != 0U;
         if (zlib_read_bits(&reader, 2U, &block_type) != 0) return -1;
         if (block_type == 0U) {
-            if (zlib_inflate_stored(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_stored(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else if (block_type == 1U) {
-            if (zlib_inflate_fixed(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_fixed(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else if (block_type == 2U) {
-            if (zlib_inflate_dynamic(&reader, output, output_capacity, &output_offset) != 0) return -1;
+            if (zlib_inflate_dynamic(&reader, output, output_capacity, &output_offset, 0) != 0) return -1;
         } else {
             return -1;
         }
     }
+    *output_size_out = output_offset;
+    return 0;
+}
+
+int compression_deflate_inflate_raw_stream(CompressionStreamRead read_input, void *input_context,
+                                           CompressionStreamWrite write_output, void *output_context,
+                                           size_t input_size, size_t output_limit, size_t *output_size_out) {
+    ZlibBitReader reader;
+    ZlibStreamOutput stream;
+    size_t output_offset = 0U;
+    int final_block = 0;
+    if (read_input == 0 || write_output == 0 || output_size_out == 0) return -1;
+    zlib_bit_reader_init(&reader, 0, 0U);
+    reader.read_input = read_input;
+    reader.input_context = input_context;
+    reader.input_remaining = input_size;
+    rt_memset(&stream, 0, sizeof(stream));
+    stream.limit = output_limit;
+    stream.write_output = write_output;
+    stream.output_context = output_context;
+    while (!final_block) {
+        unsigned int value, block_type;
+        if (zlib_read_bits(&reader, 1U, &value) != 0) return -1;
+        final_block = value != 0U;
+        if (zlib_read_bits(&reader, 2U, &block_type) != 0) return -1;
+        if (block_type == 0U) {
+            if (zlib_inflate_stored(&reader, 0, 0U, &output_offset, &stream) != 0) return -1;
+        } else if (block_type == 1U) {
+            if (zlib_inflate_fixed(&reader, 0, 0U, &output_offset, &stream) != 0) return -1;
+        } else if (block_type == 2U) {
+            if (zlib_inflate_dynamic(&reader, 0, 0U, &output_offset, &stream) != 0) return -1;
+        } else return -1;
+    }
+    if (reader.bytes_read * 8U < reader.bit_count ||
+        ((reader.bytes_read * 8U - reader.bit_count + 7U) / 8U) != input_size) return -1;
+    if (stream.buffered != 0U &&
+        stream.write_output(stream.output_context, stream.buffer, stream.buffered) != 0) return -1;
     *output_size_out = output_offset;
     return 0;
 }
