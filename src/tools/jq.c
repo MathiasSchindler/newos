@@ -111,19 +111,13 @@ static const char *skip_value(const char *p) {
     return p;
 }
 
-static int hex_value(char ch) {
-    if (ch >= '0' && ch <= '9') return ch - '0';
-    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
-    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
-    return -1;
-}
 
 static int parse_hex4(const char *p, unsigned int *codepoint_out) {
     unsigned int codepoint = 0U;
     size_t i;
 
     for (i = 0U; i < 4U; ++i) {
-        int value = hex_value(p[i]);
+        int value = tool_hex_value(p[i]);
         if (value < 0) return -1;
         codepoint = (codepoint << 4U) | (unsigned int)value;
     }
@@ -584,13 +578,6 @@ static int copy_filter_text(const char *filter, size_t length, char *out, size_t
     return 0;
 }
 
-static int is_ident_start(char ch) {
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_';
-}
-
-static int is_ident_char(char ch) {
-    return is_ident_start(ch) || (ch >= '0' && ch <= '9');
-}
 
 static int parse_json_int(const char *start, const char *end, long long *value_out) {
     const char *p = skip_ws(start);
@@ -662,7 +649,7 @@ static int find_top_level_word_operator(const char *text, const char *word) {
         else if (text[pos] == '{') brace_depth++;
         else if (text[pos] == '}') brace_depth--;
         if (bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 && rt_strncmp(text + pos, word, word_length) == 0 &&
-            (pos == 0U || !is_ident_char(text[pos - 1U])) && !is_ident_char(text[pos + word_length])) {
+            (pos == 0U || !tool_ascii_is_identifier_char(text[pos - 1U])) && !tool_ascii_is_identifier_char(text[pos + word_length])) {
             return (int)pos;
         }
         if (bracket_depth < 0 || paren_depth < 0 || brace_depth < 0) return -1;
@@ -991,8 +978,8 @@ static int parse_call_expression(const char *expression, char *name, size_t name
     int depth = 1;
     const char *arg_start;
 
-    if (!is_ident_start(expression[0])) return 0;
-    while (is_ident_char(expression[pos])) {
+    if (!tool_ascii_is_identifier_start(expression[0])) return 0;
+    while (tool_ascii_is_identifier_char(expression[pos])) {
         if (pos + 1U >= name_capacity) return -1;
         name[pos] = expression[pos];
         pos++;
@@ -1896,8 +1883,8 @@ static int append_object_constructor(const char *inner, size_t inner_length, con
             key_length = key_text_length;
             pos = scan;
         } else {
-            if (!is_ident_start(inner[pos])) return -1;
-            while (pos < inner_length && is_ident_char(inner[pos])) pos++;
+            if (!tool_ascii_is_identifier_start(inner[pos])) return -1;
+            while (pos < inner_length && tool_ascii_is_identifier_char(inner[pos])) pos++;
             key_length = (size_t)(inner + pos - key_start);
         }
         while (pos < inner_length && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == '\n' || inner[pos] == '\r')) pos++;
@@ -1984,8 +1971,8 @@ static int parse_path_tokens(const char *path, size_t path_length, JqPathToken *
                 if (parse_filter_string_key(path, &pos, tokens[count].key, sizeof(tokens[count].key)) != 0) return -1;
             } else {
                 size_t length = 0U;
-                if (!is_ident_start(path[pos])) return -1;
-                while (pos < path_length && is_ident_char(path[pos])) {
+                if (!tool_ascii_is_identifier_start(path[pos])) return -1;
+                while (pos < path_length && tool_ascii_is_identifier_char(path[pos])) {
                     if (length + 1U >= sizeof(tokens[count].key)) return -1;
                     tokens[count].key[length++] = path[pos++];
                 }
@@ -2266,8 +2253,8 @@ static int bind_pattern_variables(const char *pattern, size_t pattern_length, co
     if (text[0] == '$') {
         size_t pos = 1U;
         char name[JQ_NAME_CAPACITY];
-        if (!is_ident_start(text[pos])) return -1;
-        while (is_ident_char(text[pos])) {
+        if (!tool_ascii_is_identifier_start(text[pos])) return -1;
+        while (tool_ascii_is_identifier_char(text[pos])) {
             if (pos >= sizeof(name)) return -1;
             name[pos - 1U] = text[pos];
             pos++;
@@ -2299,9 +2286,9 @@ static int bind_pattern_variables(const char *pattern, size_t pattern_length, co
             if (text[pos] == '"') {
                 if (parse_filter_string_key(text, &pos, key, sizeof(key)) != 0) return -1;
             } else {
-                if (!is_ident_start(text[pos])) return -1;
+                if (!tool_ascii_is_identifier_start(text[pos])) return -1;
                 key_start = text + pos;
-                while (pos < inner_end && is_ident_char(text[pos])) {
+                while (pos < inner_end && tool_ascii_is_identifier_char(text[pos])) {
                     if (key_length + 1U >= sizeof(key)) return -1;
                     key[key_length++] = text[pos++];
                 }
@@ -2388,7 +2375,7 @@ static int find_top_level_word_after(const char *text, const char *word, size_t 
         else if (text[pos] == '{') brace_depth++;
         else if (text[pos] == '}') brace_depth--;
         if (bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 && rt_strncmp(text + pos, word, word_length) == 0 &&
-            (pos == 0U || !is_ident_char(text[pos - 1U])) && !is_ident_char(text[pos + word_length])) return (int)pos;
+            (pos == 0U || !tool_ascii_is_identifier_char(text[pos - 1U])) && !tool_ascii_is_identifier_char(text[pos + word_length])) return (int)pos;
         if (bracket_depth < 0 || paren_depth < 0 || brace_depth < 0) return -1;
         pos++;
     }
@@ -2401,7 +2388,7 @@ static int eval_if_expression(const char *expression, const char *start, const c
     int end_pos;
     JqSlice condition;
 
-    if (rt_strncmp(expression, "if", 2U) != 0 || is_ident_char(expression[2])) return -1;
+    if (rt_strncmp(expression, "if", 2U) != 0 || tool_ascii_is_identifier_char(expression[2])) return -1;
     then_pos = find_top_level_word_after(expression, "then", 2U);
     if (then_pos < 0) return -1;
     else_pos = find_top_level_word_after(expression, "else", (size_t)then_pos + 4U);
@@ -3160,7 +3147,7 @@ static int eval_reduce_expression(const char *expression, int emit_each, const c
     size_t i;
     size_t saved_count;
 
-    if (rt_strncmp(expression, prefix, prefix_length) != 0 || is_ident_char(expression[prefix_length])) return -1;
+    if (rt_strncmp(expression, prefix, prefix_length) != 0 || tool_ascii_is_identifier_char(expression[prefix_length])) return -1;
     as_pos = find_top_level_word_after(expression, "as", prefix_length);
     if (as_pos < 0) return -1;
     paren = expression + as_pos + 2;
@@ -3200,7 +3187,7 @@ static int eval_try_expression(const char *expression, const char *start, const 
     int catch_pos;
     size_t before = *count_io;
 
-    if (rt_strncmp(expression, "try", 3U) != 0 || is_ident_char(expression[3])) return -1;
+    if (rt_strncmp(expression, "try", 3U) != 0 || tool_ascii_is_identifier_char(expression[3])) return -1;
     catch_pos = find_top_level_word_after(expression, "catch", 3U);
     if (catch_pos < 0) return eval_filter_text(expression + 3, rt_strlen(expression + 3), start, end, out, count_io) == 0 ? 0 : 0;
     if (eval_filter_text(expression + 3, (size_t)catch_pos - 3U, start, end, out, count_io) == 0) return 0;
@@ -3255,9 +3242,9 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
         }
         return 0;
     }
-    if (rt_strncmp(expression, "if", 2U) == 0 && !is_ident_char(expression[2])) return eval_if_expression(expression, current_start, current_end, out, count_io);
-    if (rt_strncmp(expression, "try", 3U) == 0 && !is_ident_char(expression[3])) return eval_try_expression(expression, current_start, current_end, out, count_io);
-    if ((rt_strncmp(expression, "reduce", 6U) == 0 && !is_ident_char(expression[6])) || (rt_strncmp(expression, "foreach", 7U) == 0 && !is_ident_char(expression[7]))) {
+    if (rt_strncmp(expression, "if", 2U) == 0 && !tool_ascii_is_identifier_char(expression[2])) return eval_if_expression(expression, current_start, current_end, out, count_io);
+    if (rt_strncmp(expression, "try", 3U) == 0 && !tool_ascii_is_identifier_char(expression[3])) return eval_try_expression(expression, current_start, current_end, out, count_io);
+    if ((rt_strncmp(expression, "reduce", 6U) == 0 && !tool_ascii_is_identifier_char(expression[6])) || (rt_strncmp(expression, "foreach", 7U) == 0 && !tool_ascii_is_identifier_char(expression[7]))) {
         pos = find_top_level_operator(expression, '|');
         if (pos > 0) {
             JqSlice intermediate[JQ_MAX_RESULTS];
@@ -3331,8 +3318,8 @@ static int eval_filter_text(const char *filter, size_t filter_length, const char
         char name[JQ_NAME_CAPACITY];
         size_t pos = 1U;
         size_t name_length = 0U;
-        if (!is_ident_start(expression[1])) return -1;
-        while (is_ident_char(expression[pos])) {
+        if (!tool_ascii_is_identifier_start(expression[1])) return -1;
+        while (tool_ascii_is_identifier_char(expression[pos])) {
             if (name_length + 1U >= sizeof(name)) return -1;
             name[name_length++] = expression[pos++];
         }
@@ -3477,16 +3464,16 @@ static int parse_function_definitions(const char *filter, const char **body_out)
         size_t i;
 
         p = skip_ws(p);
-        if (rt_strncmp(p, "def", 3U) != 0 || is_ident_char(p[3])) {
+        if (rt_strncmp(p, "def", 3U) != 0 || tool_ascii_is_identifier_char(p[3])) {
             *body_out = p;
             return 0;
         }
         p += 3;
         while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-        if (!is_ident_start(*p) || jq_function_count >= JQ_MAX_FUNCTIONS) return -1;
+        if (!tool_ascii_is_identifier_start(*p) || jq_function_count >= JQ_MAX_FUNCTIONS) return -1;
         function = &jq_functions[jq_function_count];
         rt_memset(function, 0, sizeof(*function));
-        while (is_ident_char(*p)) {
+        while (tool_ascii_is_identifier_char(*p)) {
             if (name_length + 1U >= sizeof(function->name)) return -1;
             function->name[name_length++] = *p++;
         }
@@ -3508,7 +3495,7 @@ static int parse_function_definitions(const char *filter, const char **body_out)
         for (i = 0U; i < param_count; ++i) {
             const char *param = param_starts[i];
             size_t length = param_lengths[i];
-            if (length < 2U || param[0] != '$' || !is_ident_start(param[1]) || length >= sizeof(function->args[i])) return -1;
+            if (length < 2U || param[0] != '$' || !tool_ascii_is_identifier_start(param[1]) || length >= sizeof(function->args[i])) return -1;
             memcpy(function->args[i], param + 1, length - 1U);
             function->args[i][length - 1U] = '\0';
         }
@@ -3527,7 +3514,7 @@ static const char *skip_module_header(const char *filter) {
     const char *p = skip_ws(filter);
     int semicolon;
 
-    if (rt_strncmp(p, "module", 6U) != 0 || is_ident_char(p[6])) return filter;
+    if (rt_strncmp(p, "module", 6U) != 0 || tool_ascii_is_identifier_char(p[6])) return filter;
     semicolon = find_top_level_operator(p, ';');
     if (semicolon < 0) return filter;
     return p + semicolon + 1;
@@ -3571,10 +3558,10 @@ static int parse_module_directives(const char *filter, const char **body_out) {
         char path[JQ_MAX_FILTER];
         size_t path_length;
 
-        if (rt_strncmp(p, "include", 7U) == 0 && !is_ident_char(p[7])) {
+        if (rt_strncmp(p, "include", 7U) == 0 && !tool_ascii_is_identifier_char(p[7])) {
             is_include = 1;
             p += 7;
-        } else if (rt_strncmp(p, "import", 6U) == 0 && !is_ident_char(p[6])) {
+        } else if (rt_strncmp(p, "import", 6U) == 0 && !tool_ascii_is_identifier_char(p[6])) {
             is_import = 1;
             p += 6;
         } else {
@@ -3589,10 +3576,10 @@ static int parse_module_directives(const char *filter, const char **body_out) {
         path[path_length] = '\0';
         p = skip_ws(path_end);
         if (is_import) {
-            if (rt_strncmp(p, "as", 2U) != 0 || is_ident_char(p[2])) return -1;
+            if (rt_strncmp(p, "as", 2U) != 0 || tool_ascii_is_identifier_char(p[2])) return -1;
             p = skip_ws(p + 2);
-            if (!is_ident_start(*p)) return -1;
-            while (is_ident_char(*p)) p++;
+            if (!tool_ascii_is_identifier_start(*p)) return -1;
+            while (tool_ascii_is_identifier_char(*p)) p++;
             p = skip_ws(p);
         }
         if (*p != ';') return -1;
