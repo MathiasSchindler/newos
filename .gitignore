@@ -4,6 +4,7 @@ plans/
 tests/tmp/
 temporary-please-ignore-for-now/
 experimental/*
+experimental/lang/
 !experimental/git/
 experimental/git/*
 !experimental/git/server/
