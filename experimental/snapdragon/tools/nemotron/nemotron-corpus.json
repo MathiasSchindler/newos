@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "dataset": "google/fleurs",
+  "revision": "70bb2e84b976b7e960aa89f1c648e09c59f894dd",
+  "license": "CC-BY-4.0",
+  "selection": "de_de validation rows 0 through 9",
+  "dataset_card": {
+    "file": "FLEURS-README.md",
+    "url": "https://huggingface.co/datasets/google/fleurs/resolve/70bb2e84b976b7e960aa89f1c648e09c59f894dd/README.md",
+    "size": 385614,
+    "sha256": "688f79f2a5c731af3796e9f683eb02f9b3f09d040decd8c5625d0f37098e71c6"
+  },
+  "clips": [
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 0,
+      "id": 1586,
+      "file": "de_de-1586.wav",
+      "samples": 207360,
+      "size": 829498,
+      "sha256": "1942763aa0b6903ba0305fe95d665497efdd75aacbb605f79d6484ac6470b33d",
+      "transcript": "ihr erstes war der slalom bei dem sie in ihrem ersten lauf ein did not finish erhielt 36 der 116 teilnehmer erzielten in diesem rennen das gleiche ergebnis",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/0/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 1,
+      "id": 1588,
+      "file": "de_de-1588.wav",
+      "samples": 181440,
+      "size": 725818,
+      "sha256": "530b2731ea11b737116853d9c2a2fc4d081c8d618dcef195c608e068c41997d3",
+      "transcript": "laut polizei wird der fahrer des fahrzeugs das den fotografen angefahren hat wahrscheinlich nicht angeklagt werden",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/1/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 2,
+      "id": 1581,
+      "file": "de_de-1581.wav",
+      "samples": 144000,
+      "size": 576058,
+      "sha256": "0da25646c505454f762cf556d15a8396ca5f0f380568f51ef36783cdacc5cd72",
+      "transcript": "der amazonas ist auch der breiteste fluss der erde teilweise bis zu sechs meilen breit",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/2/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 3,
+      "id": 1616,
+      "file": "de_de-1616.wav",
+      "samples": 197760,
+      "size": 791098,
+      "sha256": "731b1f2980e0361ffbfe4d1ab8c697c2414ea545bdd458c66f79def7d67f035c",
+      "transcript": "die wissenschaft weist nun darauf hin dass diese massive kohlenstoffwirtschaft die biosph\u00e4re aus einem ihrer stabilen zust\u00e4nde der die menschliche evolution in den letzten zwei millionen jahren getragen hat herausgebracht hat",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/3/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 4,
+      "id": 1576,
+      "file": "de_de-1576.wav",
+      "samples": 247680,
+      "size": 990778,
+      "sha256": "d65ea62051897384787e2dc5371c6ce1cdbd911bcdc2598a99b68ffa3b0acd6a",
+      "transcript": "ein kurs deckt alle hier diskutierten probleme in der regel viel detaillierter ab normalerweise in kombination mit praktischer erfahrung",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/4/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 5,
+      "id": 1628,
+      "file": "de_de-1628.wav",
+      "samples": 106560,
+      "size": 426298,
+      "sha256": "79e0cef36ceef22b42fc05d168bf3b8a3223b24d7ba18768cbc30fadece48d83",
+      "transcript": "handgefertigte produkte k\u00f6nnten als antik bezeichnet werden obwohl sie j\u00fcnger als \u00e4hnliche erzeugnisse aus massenproduktion sind",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/5/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 6,
+      "id": 1577,
+      "file": "de_de-1577.wav",
+      "samples": 86400,
+      "size": 345658,
+      "sha256": "fb01020002fe1a1636181410783f577b57c160de7dc50cff3d03e1d88130960d",
+      "transcript": "das erschien mir nicht sinnvoll es war ganz gewiss nicht fair",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/6/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 7,
+      "id": 1536,
+      "file": "de_de-1536.wav",
+      "samples": 150720,
+      "size": 602938,
+      "sha256": "f1b08af976c6092f10e47fe58cc7320774d6642f1effd6d77d78c8f8b2339aa2",
+      "transcript": "die lokalen beh\u00f6rden ermahnen die einwohner in der n\u00e4he der anlage dazu sich innerhalb von geb\u00e4uden aufzuhaltem klimaanlagen auszuschalten und kein leitungswasser zu trinken",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/7/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 8,
+      "id": 1640,
+      "file": "de_de-1640.wav",
+      "samples": 224640,
+      "size": 898618,
+      "sha256": "0c11dfb021514906361edfa6c43c1b7e2d6d82cf9dec6d09a11670b2df881699",
+      "transcript": "auf vereisten und verschneiten stra\u00dfen ist die haftung gering und man kann nicht fahren als befinde man sich auf nacktem asphalt",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/8/audio/audio.wav"
+    },
+    {
+      "config": "de_de",
+      "split": "validation",
+      "row": 9,
+      "id": 1572,
+      "file": "de_de-1572.wav",
+      "samples": 86400,
+      "size": 345658,
+      "sha256": "7b2565fd3fa648a2b30018c7c4ff8ec8e3e849f8a572bb8af7da5e42aa542577",
+      "transcript": "drei weitere bomben detonierten binnen zwei stunden unweit von regierungsgeb\u00e4uden",
+      "source_asset": "https://datasets-server.huggingface.co/cached-assets/google/fleurs/--/70bb2e84b976b7e960aa89f1c648e09c59f894dd/--/de_de/validation/9/audio/audio.wav"
+    }
+  ]
+}

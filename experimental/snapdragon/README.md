@@ -48,6 +48,7 @@ src/
   shared/                Shared QNN ABI, Windows import definitions and QNN mock
 tools/
   whisper/               Build, fetch, export, profile and test scripts for Whisper
+  nemotron/              Pinned M0 streaming reference, fixtures and target inventory
   ocr/                   Build, export, reference and test tooling for GLM-OCR
   translate/             Build, export, reference and test tooling for TranslateGemma
   shared/                Hardware inventory, QNN runtime fetch, shared GUI tests
@@ -87,6 +88,57 @@ The [native GUI test driver](tools/shared/test-translate-gui.py) covers both OCR
 and TranslateGemma. No separate Whisper GUI is currently present.
 
 ## Data, models and platform documentation
+
+The [Nemotron ASR implementation plan](nemotron-asr-plan.md) describes a
+freestanding Windows ARM64 streaming recognizer with explicit accelerator
+placement, feasibility gates and measurable milestones. It is not yet a
+complete recognizer or a verified Nemotron QNN deployment.
+[M0 development tooling](docs/apps/nemotron-asr.md) now pins the checkpoint and
+German corpus and captures a local Transformers streaming reference with
+tensor/cache fixtures, reproducibility checks and target inventory. Large
+inputs and reference evidence default to `D:\newos-data\nemotron-asr`, outside
+the central build/clean tree. NeMo parity remains unverified.
+[M1 native feasibility tooling](docs/apps/nemotron-m1.md) passes full
+encoder/cache and decoder numerical checks using the approved Windows-only
+signed FastRPC FP32 Hexagon/HVX executor. M1 is provisionally accepted with
+the user's explicit latency waiver for v17: three clean warm model-inclusive
+p95s are 323.756 / 328.518 / 326.650 ms. The original 320-ms target remains
+unmet, automated strict reports remain performance pending, and optimization
+is paused. The approval record is
+`D:\newos-data\nemotron-asr\m1\provisional-acceptance-v17.json`.
+This is not a complete recognizer or a claim of HMX/GPU/host inference.
+[M2 native frontend and runtime reader](docs/apps/nemotron-m2.md) are accepted:
+16 frozen fixtures across three supply patterns pass the original feature
+tolerances with byte-identical partition results. The bounded PCM16 frontend
+and Unicode runtime reader build as a Kernel32-only no-CRT ARM64 PE.
+Full resource, malformed-input, Unicode deployment and clean/rebuild/restore
+checks pass. M2 frontend computation is CPU-only.
+[M3 native WAV ASR](docs/apps/nemotron-m3.md) now passes exact token and UTF8
+text parity on all16 M0 fixtures, with unchanged German WER8.377%.
+The Kernel32-only no-CRT ARM64 CLI runs encoder, prediction and joiner on the
+approved signed FP32 DSP backend and emits partial/final JSONL events.
+Reset, isolated relative/Unicode deployment, negative cases and reproducible
+clean/rebuild/restore pass. The user-approved ASCII temporary staging exception
+for the OEM module-path limitation is explicit, hash-verified and cleaned up.
+No microphone, production distribution, HMX or final real-time claim is made.
+[M4 model offload and transfer optimization](docs/apps/nemotron-m4.md) is accepted:
+exact FP32 packed/fused decoding and persistent mapped RPC I/O preserve all
+tokens/text and WER while improving paired warm end-to-end medians by6.7-8.7%.
+The16-fixture workload saves770 RPC calls with zero extra host RPC I/O memcpy
+bytes; CPU carry/control/frontend work is reported separately. The signed v17
+image, precision, cache flags and M1 waiver are unchanged. No HMX/on-chip-state
+claim is made.
+
+[M5 microphone capture and endpointing](docs/apps/nemotron-m5.md) adds bounded
+WASAPI input, tested16kHz conversion, separate project task-pool capture/inference,
+visible audio failures and privacy-preserving live statistics. Native tests pass;
+the required30-minute live acceptance remains blocked. After the initial queue
+overflow and a capture-discontinuity failure, the MMCSS retry completed30 minutes
+without audio loss or backlog, but failed the unchanged2MiB working-set growth
+gate (approximately7.03MiB steady-quarter growth). User-approved endpoint
+buffering preserves internal pauses and
+explicitly accounts for trimmed confirmed-endpoint silence. No M1/M6 latency
+gate, driver or signed DSP image is changed.
 
 | Material | Location or entry point |
 | --- | --- |

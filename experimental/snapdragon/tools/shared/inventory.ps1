@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 if ($CheckLayout) {
     $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
     $repo = (Resolve-Path (Join-Path $root '../..')).Path
-    foreach ($directory in 'src/apps/whisper','src/apps/ocr','src/apps/translate','src/tools/probe','src/shared','tools/whisper','tools/ocr','tools/translate','tools/shared','docs/apps','docs/platform') {
+    foreach ($directory in 'src/apps/whisper','src/apps/ocr','src/apps/translate','src/apps/nemotron','src/tools/probe','src/shared','tools/whisper','tools/ocr','tools/translate','tools/nemotron','tools/shared','docs/apps','docs/platform') {
         if (-not (Test-Path (Join-Path $root $directory) -PathType Container)) { throw ('Missing directory: ' + $directory) }
     }
     foreach ($directory in 'src/tools/whisper','src/tools/ocr','src/tools/gemma') {
@@ -29,7 +29,7 @@ if ($CheckLayout) {
         foreach ($include in [regex]::Matches($text, '(?m)^\s*#include\s+"([^"]+)"')) {
             $name = $include.Groups[1].Value
             $found = $false
-            foreach ($directory in @($source.DirectoryName, (Join-Path $repo 'src/shared'), (Join-Path $root 'src/shared'), (Join-Path $root 'src/apps/translate'), (Join-Path $root 'src/apps/whisper'), (Join-Path $root 'src/apps/ocr'), (Join-Path $root 'src/tools/probe'))) {
+            foreach ($directory in @($source.DirectoryName, (Join-Path $repo 'src/shared'), (Join-Path $root 'src/shared'), (Join-Path $root 'src/apps/translate'), (Join-Path $root 'src/apps/whisper'), (Join-Path $root 'src/apps/ocr'), (Join-Path $root 'src/apps/nemotron'), (Join-Path $root 'src/tools/probe'))) {
                 if (Test-Path (Join-Path $directory $name) -PathType Leaf) { $found = $true; break }
             }
             if (-not $found) { throw ('Missing include in {0}: {1}' -f $source.FullName,$name) }

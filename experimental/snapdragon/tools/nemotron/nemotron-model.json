@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "model": {
+    "repository": "nvidia/nemotron-3.5-asr-streaming-0.6b",
+    "revision": "ea30d66debe3740a08b573244286791d423d6b3e",
+    "license": "OpenMDW-1.1"
+  },
+  "reference": {
+    "backend": "transformers",
+    "attention_backend": "sdpa",
+    "packages": {
+      "torch": "2.14.0",
+      "transformers": "5.17.0",
+      "numpy": "2.4.3",
+      "PyYAML": "6.0.3",
+      "librosa": "0.11.0"
+    },
+    "torch_runtime": "2.14.0+cpu",
+    "nemo_repository": "NVIDIA-NeMo/Speech",
+    "nemo_revision": "2dabd0ac0355edb47b49b82a2948344f990e5c9b",
+    "nemo_base_version": "3.1.0",
+    "nemo_parity": "not_verified"
+  },
+  "profile": {
+    "language": "de-DE",
+    "prompt_id": 9,
+    "att_context_size": [56, 3],
+    "chunk_ms": 320,
+    "sample_rate": 16000,
+    "greedy": true,
+    "long_sequence_chunks": 64,
+    "tolerances": {
+      "frontend": {"atol": 0.00002, "rtol": 0.00002},
+      "encoder": {"atol": 0.005, "rtol": 0.005},
+      "cache": {"atol": 0.005, "rtol": 0.005},
+      "decoder": {"atol": 0.005, "rtol": 0.005},
+      "tokens": "exact"
+    }
+  },
+  "license_artifact": {
+    "url": "https://openmdw.ai/license/1-1/",
+    "file": "OpenMDW-1.1.html",
+    "size": 54206,
+    "sha256": "c3d44ac8c354901453976e25a970ea70f29da9ff9ac2b56a4712facfac051e8c"
+  },
+  "nemo_sources": [
+    {"source": "nemo/package_info.py", "file": "package_info.py", "size": 2302, "sha256": "4ee08dfab3750257da4fb685fb16263e61dc844b0480a97bf6644ad0fb7bc946"},
+    {"source": "nemo/collections/asr/models/rnnt_bpe_models_prompt.py", "file": "rnnt_bpe_models_prompt.py", "size": 27359, "sha256": "d45198c6fa15be5b7d10c36b2a7ce261da26bb3a0b67ed8c33afa8a406f01eb9"},
+    {"source": "nemo/collections/asr/parts/mixins/streaming.py", "file": "streaming.py", "size": 6263, "sha256": "d9c2a6fbebc8219d3f8ca05c39b9346956528adfd6f792276350a74c43e57c29"},
+    {"source": "examples/asr/asr_cache_aware_streaming/speech_to_text_cache_aware_streaming_infer.py", "file": "speech_to_text_cache_aware_streaming_infer.py", "size": 25389, "sha256": "4bc27322d44c28406938afdd0bcb5fa68193972b037450ef41007e670c110740"}
+  ],
+  "files": [
+    {"name": "README.md", "role": "license_metadata", "size": 54239, "git_blob_sha1": "0895dd071a831de8198d84ce219cd0640d8c8999", "sha256": "a3344caadf796c084c6b90a9fa5978068fd45e3a019790bebe50489bb3c0f7b7"},
+    {"name": "config.json", "role": "config", "size": 1376, "git_blob_sha1": "3ba627e56b655f0600b652b273c6d1e05fbc78e4", "sha256": "62d186fd91f518e00e7867500f1f5819225e8ee95ea3e21b546514bf2048e845"},
+    {"name": "generation_config.json", "role": "config", "size": 193, "git_blob_sha1": "b7ca70126139d1bfe866146bb414f372903effdb", "sha256": "993e5d4cb74a6fe9d6e7084a76b3313c1446740679be4676570c23b664fdc07e"},
+    {"name": "processor_config.json", "role": "config", "size": 2519, "git_blob_sha1": "d430fe73aa4a2a97b2a0ea606f768b5e71765c3d", "sha256": "ec47870f1091ea4f25539208387b45b902c92d0e3f997a30061ef88f73437ab0"},
+    {"name": "tokenizer.json", "role": "tokenizer", "size": 752051, "git_blob_sha1": "425c659bba34d7116233c6e102d2948c26e114f7", "sha256": "3f3d481deb073b64c2082e8c7860d487a3a62774bf4e9e4faac83007e181f246"},
+    {"name": "tokenizer_config.json", "role": "tokenizer", "size": 881, "git_blob_sha1": "33e468c971b257265e23a56ca113d2e86b363b30", "sha256": "5c641c5b3f50702a60082690d27c1ce7fcb5a92c4a624793bcae0f21eda3d6e0"},
+    {"name": "model.safetensors", "role": "transformers_weights", "size": 2552062944, "sha256": "9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174"},
+    {"name": "nemotron-3.5-asr-streaming-0.6b.nemo", "role": "nemo_weights", "size": 2368284501, "sha256": "210214ed94039bf6bfbb9a047c7fa289628db75b103e2bf6381fa78285436a74"}
+  ]
+}

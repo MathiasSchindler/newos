@@ -242,6 +242,7 @@ typedef u64 (*QnnLogCreate)(QnnLogCallback, u32, QnnLogHandle *);
 typedef u64 (*QnnLogFree)(QnnLogHandle);
 typedef u64 (*QnnBackendCreate)(QnnLogHandle, const QnnBackendConfig **, QnnBackendHandle *);
 typedef u64 (*QnnBackendFree)(QnnBackendHandle);
+typedef u64 (*QnnBackendRegisterOpPackage)(QnnBackendHandle, const char *, const char *, const char *);
 typedef u64 (*QnnDeviceCreate)(QnnLogHandle, const QnnDeviceConfig **, QnnDeviceHandle *);
 typedef u64 (*QnnDeviceFree)(QnnDeviceHandle);
 typedef u64 (*QnnProfileCreate)(QnnBackendHandle, u32, QnnProfileHandle *);
@@ -283,7 +284,7 @@ typedef struct QnnInterfaceV2 {
     QnnUnusedFunction backend_set_config;
     QnnUnusedFunction backend_get_api_version;
     QnnUnusedFunction backend_get_build_id;
-    QnnUnusedFunction backend_register_op_package;
+    QnnBackendRegisterOpPackage backend_register_op_package;
     QnnUnusedFunction backend_get_supported_operations;
     QnnUnusedFunction backend_validate_op_config;
     QnnBackendFree backend_free;
