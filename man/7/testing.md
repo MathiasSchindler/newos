@@ -52,6 +52,9 @@ selected hosted or native freestanding output directory. It generates its own
 TrueType data, so no installed font or external font library is required. It
 checks file and borrowed-memory loading, exact raster coverage, glyph caching,
 fallbacks, malformed input, and concurrent prefetch where native threads exist.
+Raster memory checks cover overflowing vector growth, exact filled/hollow
+coverage, scratch reuse and growth, recovery after allocation/input errors, and
+bitmap ownership across arena resets and destruction.
 
 ## CONTRIBUTOR NOTES
 

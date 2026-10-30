@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "fr_outline.h"
+#include "runtime.h"
 
 typedef struct {
     uint8_t *pixels;
@@ -18,6 +19,7 @@ void fr_bitmap_init(FrBitmap *bitmap);
 void fr_bitmap_free(FrBitmap *bitmap);
 int fr_bitmap_alloc(FrBitmap *bitmap, int width, int height);
 int fr_raster_outline_box(const FrOutline *outline, int *out_left, int *out_top, int *out_width, int *out_height);
-int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline);
+/* scratch is a dedicated arena, reset by each call; bitmap pixels remain heap-owned. */
+int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline, RtArena *scratch);
 
 #endif

@@ -1,4 +1,5 @@
 #include "fontrender/font_backend.h"
+#include "fontrender/fr_raster.h"
 #include "fontrender/fr_ttf.h"
 #include "platform.h"
 #include "runtime.h"
@@ -96,6 +97,149 @@ static void make_font(unsigned char data[TEST_FONT_SIZE]) {
     tool_store_u16_be(data + TEST_GLYF + 46, 1);
 }
 
+static int make_ring_outline(FrOutline *outline, int size) {
+    static const int points[8][2] = {
+        {0, 0}, {4, 0}, {4, 4}, {0, 4},
+        {1, 1}, {1, 3}, {3, 3}, {3, 1}
+    };
+    size_t i;
+
+    fr_outline_reset(outline);
+    for (i = 0; i < 8; ++i) {
+        CHECK(fr_outline_add_point(outline,
+                                   (points[i][0] * size / 4 - size / 2) * FR_OUTLINE_ONE,
+                                   (points[i][1] * size / 4 - size / 2) * FR_OUTLINE_ONE,
+                                   FR_OUTLINE_POINT_ON_CURVE) == 0,
+              "could not build raster outline");
+    }
+    CHECK(fr_outline_add_contour(outline, 0, 4) == 0 &&
+          fr_outline_add_contour(outline, 4, 4) == 0, "could not build raster contours");
+    return 0;
+}
+
+static int check_ring_bitmap(const FrBitmap *bitmap, int size) {
+    int x;
+    int y;
+
+    CHECK(bitmap->pixels != 0 && bitmap->width == size && bitmap->height == size &&
+          bitmap->stride == size && bitmap->left == -size / 2 && bitmap->top == size / 2,
+          "incorrect ring raster metrics");
+    for (y = 0; y < size; ++y) {
+        for (x = 0; x < size; ++x) {
+            int hole = x >= size / 4 && x < size * 3 / 4 &&
+                       y >= size / 4 && y < size * 3 / 4;
+            CHECK(bitmap->pixels[(size_t)y * (size_t)bitmap->stride + (size_t)x] ==
+                  (hole ? 0 : 255), "incorrect ring raster coverage");
+        }
+    }
+    return 0;
+}
+
+static int check_raster_memory(void) {
+    FrOutline outline;
+    FrOutlinePoint *points;
+    FrOutlineContour *contours;
+    FrBitmap bitmap;
+    FrBitmap saved;
+    RtArena scratch;
+    RtArena failing;
+    RtArenaBlock *blocks;
+    uint8_t *pixels;
+    size_t point_capacity;
+    size_t contour_capacity;
+    size_t default_block_size;
+    unsigned int i;
+
+    fr_outline_init(&outline);
+    fr_bitmap_init(&bitmap);
+    rt_arena_init(&scratch, 16384u);
+    /* Reject backing-block header overflow without requesting OS pages. */
+    rt_arena_init(&failing, SIZE_MAX - 15u);
+    CHECK(make_ring_outline(&outline, 16) == 0, "could not build small raster outline");
+
+    points = outline.points;
+    contours = outline.contours;
+    point_capacity = outline.point_capacity;
+    contour_capacity = outline.contour_capacity;
+    CHECK(fr_outline_reserve(&outline, SIZE_MAX, contour_capacity) != 0 &&
+          fr_outline_reserve(&outline, point_capacity, SIZE_MAX) != 0,
+          "overflowing outline allocation succeeded");
+    CHECK(outline.points == points && outline.contours == contours &&
+          outline.point_capacity == point_capacity && outline.contour_capacity == contour_capacity &&
+          fr_outline_validate(&outline) == 0, "failed outline growth damaged existing storage");
+
+    CHECK(fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          check_ring_bitmap(&bitmap, 16) == 0, "initial scratch rendering failed");
+    blocks = scratch.blocks;
+    CHECK(blocks != 0, "raster scratch was not allocated");
+    for (i = 0; i < 16; ++i) {
+        void *probe = rt_arena_alloc(&scratch, 16);
+        CHECK(probe != 0, "scratch was not reset after rendering");
+        memset(probe, 0xa5, 16);
+        CHECK(fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+              check_ring_bitmap(&bitmap, 16) == 0, "reused scratch changed rendering");
+        CHECK(scratch.blocks == blocks, "repeated rendering allocated more scratch blocks");
+    }
+
+    pixels = bitmap.pixels;
+    CHECK(fr_raster_render(&bitmap, &outline, &failing) != 0 &&
+          bitmap.pixels == pixels && check_ring_bitmap(&bitmap, 16) == 0,
+          "scratch allocation failure damaged the previous bitmap");
+    CHECK(failing.blocks == 0, "failed scratch allocation retained a block");
+    rt_arena_destroy(&failing);
+
+    default_block_size = scratch.default_block_size;
+    scratch.default_block_size = SIZE_MAX - 15u;
+    CHECK(make_ring_outline(&outline, 128) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) != 0 &&
+          bitmap.pixels == pixels && check_ring_bitmap(&bitmap, 16) == 0,
+          "partial scratch allocation failure damaged the previous bitmap");
+    CHECK(make_ring_outline(&outline, 16) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          check_ring_bitmap(&bitmap, 16) == 0 && scratch.blocks == blocks,
+          "scratch was not reset after partial allocation failure");
+    scratch.default_block_size = default_block_size;
+
+    CHECK(make_ring_outline(&outline, 128) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          check_ring_bitmap(&bitmap, 128) == 0, "scratch growth changed rendering");
+    CHECK(scratch.blocks != blocks, "large raster did not grow scratch storage");
+    blocks = scratch.blocks;
+    saved = bitmap;
+    fr_bitmap_init(&bitmap);
+    CHECK(make_ring_outline(&outline, 16) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          check_ring_bitmap(&bitmap, 16) == 0, "rendering after scratch growth failed");
+    CHECK(scratch.blocks == blocks && check_ring_bitmap(&saved, 128) == 0,
+          "scratch reuse changed an independently owned bitmap");
+
+    pixels = bitmap.pixels;
+    outline.contours[0].point_count = outline.point_count + 1;
+    CHECK(fr_raster_render(&bitmap, &outline, &scratch) != 0 && bitmap.pixels == pixels,
+          "invalid outline damaged the previous bitmap");
+    CHECK(make_ring_outline(&outline, 8192) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) != 0 &&
+          bitmap.pixels == pixels && check_ring_bitmap(&bitmap, 16) == 0,
+          "oversized raster damaged the previous bitmap");
+    CHECK(make_ring_outline(&outline, 16) == 0 &&
+          fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          check_ring_bitmap(&bitmap, 16) == 0, "scratch did not recover after rendering errors");
+
+    fr_outline_reset(&outline);
+    CHECK(fr_raster_render(&bitmap, &outline, &scratch) == 0 &&
+          bitmap.pixels == 0 && bitmap.width == 0 && bitmap.height == 0,
+          "empty raster retained pixels from an earlier render");
+    CHECK(scratch.blocks == blocks, "empty raster discarded reusable scratch");
+    rt_arena_destroy(&scratch);
+    CHECK(scratch.blocks == 0 && check_ring_bitmap(&saved, 128) == 0,
+          "destroying scratch damaged an independently owned bitmap");
+    fr_bitmap_free(&saved);
+    fr_bitmap_free(&bitmap);
+    fr_outline_free(&outline);
+    rt_write_line(1, "raster memory tests passed");
+    return 0;
+}
+
 static int check_font(FrFont *font) {
     const uint32_t codepoints[] = {'A', '?', ' '};
     const FrGlyph *glyph;
@@ -150,6 +294,7 @@ int main(int argc, char **argv) {
     unsigned int i;
 
     CHECK(argc == 2, "expected a scratch font path");
+    CHECK(check_raster_memory() == 0, "raster memory regression failed");
     make_font(data);
     memcpy(original, data, sizeof(data));
     CHECK(fr_ttf_open_memory(&ttf, data, sizeof(data)) == FR_TTF_OK,

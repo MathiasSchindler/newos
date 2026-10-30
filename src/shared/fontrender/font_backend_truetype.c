@@ -87,6 +87,7 @@ struct FrFont {
     FrSimpleDecodePoint *simple_points;
     size_t simple_buffer_capacity;
     FrOutline scratch_outlines[FR_COMPOUND_RECURSION_LIMIT + 1u];
+    RtArena raster_scratch;
     FrGlyphCacheEntry entries[FR_GLYPH_CACHE_CAP];
     FrOutlineCacheEntry outline_entries[FR_OUTLINE_CACHE_CAP];
     FrLookupCacheEntry lookup_entries[FR_LOOKUP_CACHE_CAP];
@@ -186,10 +187,6 @@ static int fr_reserve_simple_decode_buffers(FrFont *font, size_t point_count) {
     if (point_count <= font->simple_buffer_capacity) {
         return 0;
     }
-    if (point_count > SIZE_MAX / sizeof(*font->simple_points)) {
-        return -1;
-    }
-
     new_capacity = font->simple_buffer_capacity != 0u ? font->simple_buffer_capacity : 256u;
     while (new_capacity < point_count) {
         if (new_capacity > SIZE_MAX / 2u) {
@@ -199,8 +196,8 @@ static int fr_reserve_simple_decode_buffers(FrFont *font, size_t point_count) {
         new_capacity *= 2u;
     }
 
-    grown_points = (FrSimpleDecodePoint *)rt_realloc(font->simple_points,
-                                                                   new_capacity * sizeof(*font->simple_points));
+    grown_points = (FrSimpleDecodePoint *)rt_realloc_array(font->simple_points, new_capacity,
+                                                          sizeof(*font->simple_points));
     if (grown_points == NULL) {
         return -1;
     }
@@ -999,7 +996,7 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
         status = 0;
         goto cleanup;
     }
-    if (fr_raster_render(&bitmap, outline) != 0) {
+    if (fr_raster_render(&bitmap, outline, &font->raster_scratch) != 0) {
         tool_format_unsigned_base(requested_codepoint, 16, 1, codepoint_text, sizeof(codepoint_text));
         rt_write_cstr(2, "fontrender: failed to rasterize glyph ");
         rt_write_uint(2, glyph_index);
@@ -1047,6 +1044,7 @@ static int fr_font_open_impl(FrFont **out_font, const char *font_path, const voi
     }
     memset(font, 0, sizeof(*font));
     platform_mutex_init(&font->mutex);
+    rt_arena_init(&font->raster_scratch, 0u);
 
     result = from_memory ? fr_ttf_open_memory(&font->ttf, data, size) : fr_ttf_open(&font->ttf, font_path);
     if (result != FR_TTF_OK) {
@@ -1098,6 +1096,7 @@ void fr_font_close(FrFont *font) {
         fr_outline_free(&font->scratch_outlines[i]);
     }
     rt_free(font->simple_points);
+    rt_arena_destroy(&font->raster_scratch);
     fr_ttf_close(font->ttf);
     rt_free(font);
 }

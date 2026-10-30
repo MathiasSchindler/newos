@@ -24,5 +24,6 @@ if ! "$TEST_BIN_DIR/fontrendertest" "$WORK_DIR/font.ttf" > "$WORK_DIR/result.out
     fail "font renderer regression failed"
 fi
 assert_file_contains "$WORK_DIR/result.out" '^fontrender tests passed$' "font renderer regression failed"
+assert_file_contains "$WORK_DIR/result.out" '^raster memory tests passed$' "raster memory regression failed"
 assert_file_contains "$WORK_DIR/result.err" 'malformed font' "font renderer did not report malformed input"
 assert_file_contains "$WORK_DIR/result.err" 'missing U+10FFFF' "font renderer did not report a missing fallback"

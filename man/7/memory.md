@@ -193,6 +193,9 @@ element-count allocation. Byte buffers that grow by byte capacity, such as
 streaming input buffers, may still use `rt_malloc` or `rt_realloc` directly when
 there is no element-size multiplication to centralize.
 
+Font outline/decode vectors and bitmap storage also use checked array helpers;
+raster sample-event and scanline arrays use `rt_arena_alloc_array`.
+
 The expected effect of this migration is correctness and consistency rather
 than a user-visible speedup. Successful allocation sizes are the same as before,
 so steady-state runtime and memory use should be unchanged. Binary-size deltas
@@ -225,6 +228,13 @@ rewinds all allocations in existing backing blocks as a group. Subsequent
 allocations scan those reset blocks before obtaining more pages, so a repeated
 phase with the same high-water mark reuses its mappings. Blocks remain attached
 until `rt_arena_destroy` returns their backing pages to the platform.
+
+The font renderer uses one arena per font for sample-event and scanline scratch.
+Each render resets that arena on entry and exit, including failure paths;
+font close destroys it. The existing font mutex protects arena use. Cached
+glyph bitmaps, outlines, and growing edge lists retain independent heap storage.
+The low-level raster entry point accepts a dedicated caller-owned arena and
+never stores returned bitmap pixels in it.
 
 Good arena candidates include:
 

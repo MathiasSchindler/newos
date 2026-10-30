@@ -73,10 +73,6 @@ static int fr_reserve_array(void **items, size_t element_size, size_t *capacity,
     if (required_count <= *capacity) {
         return 0;
     }
-    if (required_count > SIZE_MAX / element_size) {
-        return -1;
-    }
-
     new_capacity = *capacity != 0u ? *capacity : 8u;
     while (new_capacity < required_count) {
         if (new_capacity > SIZE_MAX / 2u) {
@@ -85,11 +81,7 @@ static int fr_reserve_array(void **items, size_t element_size, size_t *capacity,
         }
         new_capacity *= 2u;
     }
-    if (new_capacity > SIZE_MAX / element_size) {
-        return -1;
-    }
-
-    grown = rt_realloc(*items, new_capacity * element_size);
+    grown = rt_realloc_array(*items, new_capacity, element_size);
     if (grown == NULL) {
         return -1;
     }
@@ -458,7 +450,8 @@ static int fr_edge_sample_range(const FrEdge *edge, int64_t first_sample_y, int6
 
 static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int height,
                                        FrRowEdgeSpan **out_add_spans, size_t **out_add_indices,
-                                       FrRowEdgeSpan **out_remove_spans, size_t **out_remove_indices) {
+                                       FrRowEdgeSpan **out_remove_spans, size_t **out_remove_indices,
+                                       RtArena *scratch) {
     size_t sample_count;
     int64_t first_sample_y;
     const int64_t sample_step = (int64_t)FR_OUTLINE_ONE / (int64_t)FR_RASTER_SUBSAMPLES;
@@ -488,15 +481,11 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
         return 0;
     }
 
-    add_spans = (FrRowEdgeSpan *)rt_malloc_array(sample_count, sizeof(*add_spans));
-    remove_spans = (FrRowEdgeSpan *)rt_malloc_array(sample_count, sizeof(*remove_spans));
-    add_counts = (size_t *)rt_malloc_array(sample_count, sizeof(*add_counts));
-    remove_counts = (size_t *)rt_malloc_array(sample_count, sizeof(*remove_counts));
+    add_spans = (FrRowEdgeSpan *)rt_arena_alloc_array(scratch, sample_count, sizeof(*add_spans));
+    remove_spans = (FrRowEdgeSpan *)rt_arena_alloc_array(scratch, sample_count, sizeof(*remove_spans));
+    add_counts = (size_t *)rt_arena_alloc_array(scratch, sample_count, sizeof(*add_counts));
+    remove_counts = (size_t *)rt_arena_alloc_array(scratch, sample_count, sizeof(*remove_counts));
     if (add_spans == NULL || remove_spans == NULL || add_counts == NULL || remove_counts == NULL) {
-        rt_free(remove_counts);
-        rt_free(add_counts);
-        rt_free(remove_spans);
-        rt_free(add_spans);
         return -1;
     }
 
@@ -528,23 +517,14 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
     }
 
     if (total_adds != 0u) {
-        add_indices = (size_t *)rt_malloc(total_adds * sizeof(*add_indices));
+        add_indices = (size_t *)rt_arena_alloc_array(scratch, total_adds, sizeof(*add_indices));
         if (add_indices == NULL) {
-            rt_free(remove_counts);
-            rt_free(add_counts);
-            rt_free(remove_spans);
-            rt_free(add_spans);
             return -1;
         }
     }
     if (total_removes != 0u) {
-        remove_indices = (size_t *)rt_malloc(total_removes * sizeof(*remove_indices));
+        remove_indices = (size_t *)rt_arena_alloc_array(scratch, total_removes, sizeof(*remove_indices));
         if (remove_indices == NULL) {
-            rt_free(add_indices);
-            rt_free(remove_counts);
-            rt_free(add_counts);
-            rt_free(remove_spans);
-            rt_free(add_spans);
             return -1;
         }
     }
@@ -568,8 +548,6 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
         }
     }
 
-    rt_free(remove_counts);
-    rt_free(add_counts);
     *out_add_spans = add_spans;
     *out_add_indices = add_indices;
     *out_remove_spans = remove_spans;
@@ -848,8 +826,6 @@ void fr_bitmap_free(FrBitmap *bitmap) {
 
 int fr_bitmap_alloc(FrBitmap *bitmap, int width, int height) {
     FrBitmap fresh;
-    size_t total_bytes;
-
     if (bitmap == NULL || width < 0 || height < 0 || width > FR_RASTER_MAX_DIMENSION || height > FR_RASTER_MAX_DIMENSION) {
         return -1;
     }
@@ -857,20 +833,14 @@ int fr_bitmap_alloc(FrBitmap *bitmap, int width, int height) {
         return -1;
     }
     if (width != 0 && height != 0) {
-        if ((size_t)width > SIZE_MAX / (size_t)height) {
+        if ((size_t)width > FR_RASTER_MAX_PIXELS / (size_t)height) {
             return -1;
         }
-        total_bytes = (size_t)width * (size_t)height;
-        if (total_bytes > FR_RASTER_MAX_PIXELS) {
-            return -1;
-        }
-    } else {
-        total_bytes = 0u;
     }
 
     fr_bitmap_init(&fresh);
-    if (total_bytes != 0u) {
-        fresh.pixels = (uint8_t *)rt_malloc(total_bytes);
+    if (width != 0) {
+        fresh.pixels = (uint8_t *)rt_malloc_array((size_t)height, (size_t)width);
         if (fresh.pixels == NULL) {
             return -1;
         }
@@ -930,8 +900,8 @@ int fr_raster_outline_box(const FrOutline *outline, int *out_left, int *out_top,
     return 0;
 }
 
-int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
-    FrEdgeList edges;
+int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline, RtArena *scratch) {
+    FrEdgeList edges = {0};
     FrBitmap fresh;
     int32_t min_x;
     int32_t min_y;
@@ -952,18 +922,21 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
     size_t sample_count;
     size_t sample_index;
     int active_winding = 0;
+    int status = -1;
     int64_t sample_y;
     const int64_t sample_step = (int64_t)FR_OUTLINE_ONE / (int64_t)FR_RASTER_SUBSAMPLES;
 
-    if (bitmap == NULL) {
+    if (bitmap == NULL || scratch == NULL) {
         return -1;
     }
+    rt_arena_reset(scratch);
+    fr_bitmap_init(&fresh);
     if (fr_build_edges(outline, &edges, &min_x, &min_y, &max_x, &max_y) != 0) {
-        return -1;
+        goto cleanup;
     }
     if (edges.count == 0u) {
-        fr_edge_list_free(&edges);
-        return fr_bitmap_alloc(bitmap, 0, 0);
+        status = fr_bitmap_alloc(bitmap, 0, 0);
+        goto cleanup;
     }
 
     left = fr_fixed_floor_to_int(min_x);
@@ -971,48 +944,28 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
     top = fr_fixed_ceil_to_int(max_y);
     bottom = fr_fixed_floor_to_int(min_y);
     if (right < left || top < bottom) {
-        fr_edge_list_free(&edges);
-        return -1;
+        goto cleanup;
     }
 
-    fr_bitmap_init(&fresh);
     if (fr_bitmap_alloc(&fresh, right - left, top - bottom) != 0) {
-        fr_edge_list_free(&edges);
-        return -1;
+        goto cleanup;
     }
-    if (fr_build_sample_edge_events(&edges, bottom, fresh.height, &add_spans, &add_indices, &remove_spans, &remove_indices) != 0) {
-        fr_bitmap_free(&fresh);
-        fr_edge_list_free(&edges);
-        return -1;
+    if (fr_build_sample_edge_events(&edges, bottom, fresh.height, &add_spans, &add_indices,
+                                   &remove_spans, &remove_indices, scratch) != 0) {
+        goto cleanup;
     }
     if (edges.count != 0u) {
-        active_edges = (FrActiveEdge *)rt_malloc(edges.count * sizeof(*active_edges));
-        active_positions = (size_t *)rt_malloc(edges.count * sizeof(*active_positions));
+        active_edges = (FrActiveEdge *)rt_arena_alloc_array(scratch, edges.count, sizeof(*active_edges));
+        active_positions = (size_t *)rt_arena_alloc_array(scratch, edges.count, sizeof(*active_positions));
         if (active_edges == NULL || active_positions == NULL) {
-            rt_free(active_positions);
-            rt_free(active_edges);
-            rt_free(remove_indices);
-            rt_free(remove_spans);
-            rt_free(add_indices);
-            rt_free(add_spans);
-            fr_bitmap_free(&fresh);
-            fr_edge_list_free(&edges);
-            return -1;
+            goto cleanup;
         }
         memset(active_positions, 0xFF, edges.count * sizeof(*active_positions));
     }
     if (fresh.width != 0) {
-        row_coverage = (uint16_t *)rt_malloc((size_t)fresh.width * sizeof(*row_coverage));
+        row_coverage = (uint16_t *)rt_arena_alloc_array(scratch, (size_t)fresh.width, sizeof(*row_coverage));
         if (row_coverage == NULL) {
-            rt_free(active_positions);
-            rt_free(active_edges);
-            rt_free(remove_indices);
-            rt_free(remove_spans);
-            rt_free(add_indices);
-            rt_free(add_spans);
-            fr_bitmap_free(&fresh);
-            fr_edge_list_free(&edges);
-            return -1;
+            goto cleanup;
         }
     }
 
@@ -1088,15 +1041,14 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
         }
     }
 
-    rt_free(row_coverage);
-    rt_free(active_positions);
-    rt_free(active_edges);
-    rt_free(remove_indices);
-    rt_free(remove_spans);
-    rt_free(add_indices);
-    rt_free(add_spans);
-    fr_edge_list_free(&edges);
     fr_bitmap_free(bitmap);
     *bitmap = fresh;
-    return 0;
+    fr_bitmap_init(&fresh);
+    status = 0;
+
+cleanup:
+    fr_bitmap_free(&fresh);
+    fr_edge_list_free(&edges);
+    rt_arena_reset(scratch);
+    return status;
 }

@@ -96,6 +96,10 @@ multiple tools can reuse:
   render-oriented tools and UI work. Uses the shared runtime directly for
   allocation and memory operations, and `platform.h` for file I/O and mutexes;
   no renderer-specific platform hooks or initialization step are required.
+  Array growth uses checked runtime allocation helpers. Each font owns a
+  reusable arena for raster sample-event and scanline buffers, reset after
+  each render under the font mutex and destroyed at font close. Glyph-cache
+  bitmaps and outlines remain separately heap-owned.
 
 - **tool_util.h** - common tool argument parsing, error reporting, and small
   direct mechanics that recur across tools, such as byte-order loads/stores,
