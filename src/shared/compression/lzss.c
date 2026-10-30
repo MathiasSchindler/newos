@@ -351,7 +351,7 @@ int compression_lzss_decompress_profile(unsigned int profile_id, const unsigned 
                 input_offset += 2U;
                 distance = ((token & 0x00ffU) | ((token >> profile.length_bits) & (((1U << (16U - profile.length_bits)) - 1U) & 0xff00U))) + 1U;
                 length = ((token >> 8U) & compression_lzss_length_mask(&profile)) + COMPRESSION_LZSS_MIN_MATCH;
-                if (distance > output_offset || output_offset + (size_t)length > output_capacity) {
+                if (distance > output_offset || (size_t)length > output_capacity - output_offset) {
                     return -1;
                 }
                 for (index = 0U; index < length; ++index) {

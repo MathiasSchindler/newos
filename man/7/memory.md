@@ -271,12 +271,12 @@ single-threaded freestanding tool; it should not pay for atomics or mutexes.
 
 The normal Linux x86-64 project-linker build compiles separate no-lock and
 atomic-lock `memory.c` objects. It selects the locked object only for current
-tools whose worker bodies can allocate: `zip`, `bzip2`, `bunzip2`, `expack`, and
-`pgpmsg`. `sort` and the checksum tools use preallocated or fixed worker state
-and retain the no-lock allocator. The macOS project-linked build still selects
-the platform-mutex allocator globally as a bring-up safety policy; narrowing its
-LTO object grouping remains an implementation task rather than an achieved
-zero-cost property.
+tools whose worker bodies can allocate: `zip`, `unzip`, `bzip2`, `bunzip2`,
+`expack`, `pgpmsg`, `sort`, and `grep`. The checksum tools use preallocated or
+fixed worker state and retain the no-lock allocator. The macOS project-linked
+build still selects the platform-mutex allocator globally as a bring-up safety
+policy; narrowing its LTO object grouping remains an implementation task rather
+than an achieved zero-cost property.
 
 ## DEBUGGING MODES
 

@@ -621,7 +621,10 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
                 if (root_count > 1U) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "multiple document elements"); break; }
                 if (options != 0 && options->root_name != 0 && rt_strcmp(name, options->root_name) != 0) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "unexpected root element"); break; }
             }
-            if (options != 0 && options->max_depth > 0U && stack.count + 1U > options->max_depth) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "maximum depth exceeded"); break; }
+            {
+                size_t max_depth = (options != 0 && options->max_depth > 0U) ? options->max_depth : (size_t)XML_MAX_DEPTH;
+                if (stack.count + 1U > max_depth) { free_attrs(attrs, attr_count); rt_free(name); stream_error(&stream, "maximum depth exceeded"); break; }
+            }
             if (stream_emit_event(callback, user_data, empty ? XML_TOKEN_EMPTY : XML_TOKEN_START, name, rt_strlen(name), attrs, attr_count, 0U, markup_line, markup_column, stack.count, 0) != 0) {
                 free_attrs(attrs, attr_count);
                 rt_free(name);

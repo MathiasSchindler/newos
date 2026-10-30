@@ -22,6 +22,7 @@ int fr_font_open(FrFont **out_font, const char *font_path);
 /* The input data must remain valid until fr_font_close. */
 int fr_font_open_memory(FrFont **out_font, const void *data, size_t size);
 void fr_font_close(FrFont *font);
+/* Returned glyph pointers remain valid until fr_font_close or 8192 subsequent cache misses. */
 const FrGlyph *fr_font_get_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style);
 int fr_font_prefetch_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style);
 int fr_font_prefetch_codepoints(FrFont *font, const uint32_t *codepoints, size_t codepoint_count,

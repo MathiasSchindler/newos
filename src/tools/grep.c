@@ -481,7 +481,9 @@ static int grep_stream(int fd,
         return 0;
     }
 
-    if (options->before_context > GREP_CONTEXT_CAPACITY) {
+    if (options->count_only || options->list_files || options->quiet) {
+        before_capacity = 0U;
+    } else if (options->before_context > GREP_CONTEXT_CAPACITY) {
         before_capacity = GREP_CONTEXT_CAPACITY;
     } else {
         before_capacity = (size_t)options->before_context;

@@ -1966,6 +1966,10 @@ int platform_get_uname(
 }
 
 #if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__) || defined(__SSP_EXPLICIT__)
+typedef long (__stdcall *WindowsBCryptGenRandomFn)(void *algorithm, unsigned char *buffer, unsigned long count, unsigned long flags);
+__declspec(dllimport) void *__stdcall LoadLibraryA(const char *name);
+__declspec(dllimport) void *__stdcall GetProcAddress(void *module, const char *name);
+
 __attribute__((noreturn, no_stack_protector))
 void __stack_chk_fail(void) {
     static const char message[] = "newos: stack check failure\r\n";
@@ -1978,13 +1982,33 @@ void __stack_chk_fail(void) {
 
 __attribute__((no_stack_protector))
 void __newos_stack_guard_init(long argc, char **argv) {
-    unsigned long guard = 0xf00dfeedUL;
+    unsigned long guard = 0;
+    void *bcrypt_module = LoadLibraryA("bcrypt.dll");
+    WindowsBCryptGenRandomFn gen_random = 0;
 
-    guard ^= (unsigned long)(size_t)&guard;
-    guard ^= (unsigned long)(size_t)argv;
-    guard ^= (unsigned long)argc * 0x9e3779b97f4a7c15UL;
+    if (bcrypt_module != 0) {
+        union {
+            void *ptr;
+            WindowsBCryptGenRandomFn fn;
+        } resolved;
+        resolved.ptr = GetProcAddress(bcrypt_module, "BCryptGenRandom");
+        gen_random = resolved.fn;
+    }
+    if (gen_random == 0 || gen_random(0, (unsigned char *)&guard, (unsigned long)sizeof(guard), 0x00000002UL) != 0) {
+        long long qpc = 0;
+        WinFileTime ft = {0, 0};
+
+        (void)QueryPerformanceCounter(&qpc);
+        GetSystemTimeAsFileTime(&ft);
+        guard = 0xf00dfeedUL;
+        guard ^= (unsigned long)GetCurrentProcessId() * 0xbf58476d1ce4e5b9UL;
+        guard ^= (unsigned long)qpc ^ ((unsigned long)ft.low << 16) ^ (unsigned long)ft.high;
+        guard ^= (unsigned long)(size_t)&guard;
+        guard ^= (unsigned long)(size_t)argv;
+        guard ^= (unsigned long)argc * 0x9e3779b97f4a7c15UL;
+    }
     guard &= ~0xffUL;
-    __stack_chk_guard = guard == 0 ? 0xf00dfeedUL : guard;
+    __stack_chk_guard = guard == 0 ? 0xf00dfeed00UL : guard;
 }
 #endif
 

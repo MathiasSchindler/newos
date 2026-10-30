@@ -1002,7 +1002,8 @@ static int extract_archive(int archive_fd,
                 }
                 link_path = stripped_link;
             }
-            if (tar_validate_extract_target(output_path, 0) != 0) {
+            if (tar_validate_extract_target(link_path, 0) != 0 ||
+                tar_validate_extract_target(output_path, 0) != 0) {
                 return -1;
             }
             ensure_parent_dirs(output_path);
@@ -1020,6 +1021,7 @@ static int extract_archive(int archive_fd,
 
         {
             int out_fd;
+            unsigned int file_mode;
             unsigned char data[TAR_IO_BUFFER_SIZE];
             unsigned long long remaining = size;
 
@@ -1027,7 +1029,14 @@ static int extract_archive(int archive_fd,
                 return -1;
             }
             ensure_parent_dirs(output_path);
-            out_fd = platform_open_write(output_path, 0644U);
+            if (tar_path_exists(output_path)) {
+                (void)platform_remove_file(output_path);
+            }
+            file_mode = (unsigned int)(archive_parse_octal(header->mode, sizeof(header->mode)) & 0777ULL);
+            if (file_mode == 0U) {
+                file_mode = 0644U;
+            }
+            out_fd = platform_open_write(output_path, file_mode);
             if (out_fd < 0) {
                 return -1;
             }
@@ -1042,7 +1051,7 @@ static int extract_archive(int archive_fd,
             }
 
             platform_close(out_fd);
-            (void)platform_change_mode(output_path, (unsigned int)archive_parse_octal(header->mode, sizeof(header->mode)));
+            (void)platform_change_mode(output_path, file_mode);
         }
 
         if (padding > 0ULL && skip_exact(archive_fd, padding) != 0) {

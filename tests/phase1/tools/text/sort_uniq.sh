@@ -89,6 +89,15 @@ printf 'café\ncafé\n' > "$WORK_DIR/normalized.txt"
 printf 'café\n' > "$WORK_DIR/normalized.expected"
 assert_files_equal "$WORK_DIR/normalized.expected" "$WORK_DIR/normalized.out" "sort --normalize did not treat canonically equivalent text as equal"
 
+awk 'BEGIN {
+    for (value = 17000; value >= 1; --value) {
+        printf "caf\303\251-%05d-0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\n", (value * 1664525 + 1013904223) % 100000
+    }
+}' > "$WORK_DIR/parallel_normalized.txt"
+env NEWOS_SORT_WORKERS=1 "${TEST_BIN_DIR}/sort" --normalize "$WORK_DIR/parallel_normalized.txt" > "$WORK_DIR/parallel_normalized_w1.out"
+env NEWOS_SORT_WORKERS=4 "${TEST_BIN_DIR}/sort" --normalize "$WORK_DIR/parallel_normalized.txt" > "$WORK_DIR/parallel_normalized_w4.out"
+assert_files_equal "$WORK_DIR/parallel_normalized_w1.out" "$WORK_DIR/parallel_normalized_w4.out" "sort --normalize produced different output at different worker counts"
+
 cat > "$WORK_DIR/key_fields.txt" <<'EOF'
 zeta:2:last
 alpha:10:middle

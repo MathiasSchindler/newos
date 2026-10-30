@@ -5,6 +5,10 @@
 #define CPIO_HEADER_SIZE 110U
 #define CPIO_NAME_CAPACITY 1024U
 #define CPIO_BUFFER_SIZE 4096U
+#define CPIO_MODE_TYPE_MASK 0170000ULL
+#define CPIO_MODE_DIR 0040000ULL
+#define CPIO_MODE_REGULAR 0100000ULL
+#define CPIO_MODE_SYMLINK 0120000ULL
 
 static const char *archive_path = "-";
 static int cpio_json;
@@ -156,6 +160,79 @@ static int create_archive(int argc, char **argv, int argi) {
     return status;
 }
 
+static int cpio_prepare_extract_target(const char *path, int expect_directory) {
+    char prefix[CPIO_NAME_CAPACITY];
+    PlatformDirEntry entry;
+    size_t used = 0U;
+    size_t i = 0U;
+
+    if (path == 0 || path[0] == '\0' || tool_path_is_unsafe_relative(path)) {
+        tool_write_error("cpio", "refusing unsafe path in archive: ", path != 0 ? path : "");
+        return -1;
+    }
+    if (path[1] == ':') {
+        tool_write_error("cpio", "refusing unsafe path in archive: ", path);
+        return -1;
+    }
+    for (i = 0U; path[i] != '\0'; ++i) {
+        if (path[i] == '\\') {
+            tool_write_error("cpio", "refusing unsafe path in archive: ", path);
+            return -1;
+        }
+    }
+
+    prefix[0] = '\0';
+    i = 0U;
+    while (path[i] != '\0') {
+        size_t start;
+        size_t length;
+        int is_final;
+        int need_directory;
+
+        while (path[i] == '/') i += 1U;
+        if (path[i] == '\0') break;
+        start = i;
+        while (path[i] != '\0' && path[i] != '/') i += 1U;
+        length = i - start;
+        if (length == 1U && path[start] == '.') continue;
+
+        if (used > 0U) {
+            if (used + 1U >= sizeof(prefix)) return -1;
+            prefix[used++] = '/';
+        }
+        if (used + length + 1U > sizeof(prefix)) return -1;
+        memcpy(prefix + used, path + start, length);
+        used += length;
+        prefix[used] = '\0';
+
+        is_final = (path[i] == '\0');
+        need_directory = !is_final || expect_directory;
+        if (platform_get_path_info(prefix, &entry) == 0) {
+            if (((unsigned long long)entry.mode & CPIO_MODE_TYPE_MASK) == CPIO_MODE_SYMLINK) {
+                tool_write_error("cpio", "refusing to extract through symlink: ", prefix);
+                return -1;
+            }
+            if (need_directory && !entry.is_dir) {
+                tool_write_error("cpio", "non-directory blocks extraction path: ", prefix);
+                return -1;
+            }
+            if (is_final && !expect_directory && entry.is_dir) {
+                tool_write_error("cpio", "cannot overwrite directory with file: ", prefix);
+                return -1;
+            }
+            if (is_final && !expect_directory) {
+                (void)platform_remove_file(prefix);
+            }
+        } else if (!is_final) {
+            if (platform_make_directory(prefix, 0755U) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static int read_archive(int extract) {
     int fd;
     int should_close;
@@ -165,7 +242,8 @@ static int read_archive(int extract) {
     for (;;) {
         char header[CPIO_HEADER_SIZE];
         char name[CPIO_NAME_CAPACITY];
-        unsigned long long mode, size, namesize;
+        const char *extract_name;
+        unsigned long long mode, size, namesize, file_type;
         int is_dir;
 
         if (read_exact(fd, header, sizeof(header)) != 0) break;
@@ -181,7 +259,8 @@ static int read_archive(int extract) {
         name[namesize - 1ULL] = '\0';
         if (skip_bytes(fd, pad4(CPIO_HEADER_SIZE + namesize)) != 0) { status = 1; break; }
         if (rt_strcmp(name, "TRAILER!!!") == 0) break;
-        is_dir = ((mode & 0170000ULL) == 0040000ULL);
+        file_type = mode & CPIO_MODE_TYPE_MASK;
+        is_dir = (file_type == CPIO_MODE_DIR);
         if (!extract) {
             if (cpio_json) {
                 if (write_json_entry(name, size, mode) != 0) { status = 1; break; }
@@ -191,16 +270,41 @@ static int read_archive(int extract) {
             if (skip_bytes(fd, size + pad4(size)) != 0) { status = 1; break; }
             continue;
         }
+        extract_name = name;
+        while (extract_name[0] == '.' && extract_name[1] == '/') {
+            extract_name += 2;
+            while (extract_name[0] == '/') extract_name += 1;
+        }
+        if (rt_strcmp(extract_name, ".") == 0 && is_dir) {
+            if (skip_bytes(fd, size + pad4(size)) != 0) { status = 1; break; }
+            continue;
+        }
+        if (!is_dir && file_type != CPIO_MODE_REGULAR && file_type != 0ULL) {
+            tool_write_error("cpio", "unsupported entry type in archive: ", name);
+            status = 1;
+            break;
+        }
+        if (cpio_prepare_extract_target(extract_name, is_dir) != 0) {
+            status = 1;
+            break;
+        }
         if (is_dir) {
-            (void)platform_make_directory(name, (unsigned int)(mode & 0777ULL));
+            if (!tool_path_is_directory(extract_name) &&
+                platform_make_directory(extract_name, (unsigned int)((mode & 0777ULL) != 0ULL ? (mode & 0777ULL) : 0755ULL)) != 0) {
+                status = 1;
+                break;
+            }
+            if (skip_bytes(fd, size + pad4(size)) != 0) { status = 1; break; }
         } else {
-            int out_fd = platform_open_write(name, (unsigned int)(mode & 0777ULL));
+            unsigned int file_mode = (unsigned int)((mode & 0777ULL) != 0ULL ? (mode & 0777ULL) : 0644ULL);
+            int out_fd = platform_open_write(extract_name, file_mode);
             if (out_fd < 0 || copy_bytes(fd, out_fd, size) != 0) {
                 status = 1;
                 if (out_fd >= 0) platform_close(out_fd);
                 break;
             }
             platform_close(out_fd);
+            (void)platform_change_mode(extract_name, file_mode);
             if (skip_bytes(fd, pad4(size)) != 0) { status = 1; break; }
         }
     }

@@ -48,3 +48,13 @@ assert_file_contains "$work_dir/utf16le.out" 'text depth=1 text="ok"' "XML tools
 printf '<?xml version="1.0" encoding="windows-1252"?><root>caf\351</root>\n' > "$work_dir/windows1252.xml"
 "${TEST_BIN_DIR}/xmltokens" "$work_dir/windows1252.xml" > "$work_dir/windows1252.out"
 assert_file_contains "$work_dir/windows1252.out" 'text depth=1 text="café"' "XML tools did not transcode Windows-1252 input"
+
+awk 'BEGIN {
+    for (i = 0; i < 130; ++i) printf "<a>";
+    for (i = 0; i < 130; ++i) printf "</a>";
+    printf "\n";
+}' > "$work_dir/deep-stream.xml"
+if "${TEST_BIN_DIR}/xmlcheck" --stream "$work_dir/deep-stream.xml" > /dev/null 2> "$work_dir/deep-stream.err"; then
+    fail "xmlcheck --stream accepted nesting beyond default maximum depth"
+fi
+assert_file_contains "$work_dir/deep-stream.err" "maximum depth exceeded" "streaming xmlcheck enforces default maximum depth"

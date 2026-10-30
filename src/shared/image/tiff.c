@@ -34,7 +34,7 @@ static int tiff_value_u32(const unsigned char *data,
             return 0;
         }
         offset = tiff_read_u32(value_field, little_endian);
-        if ((size_t)offset + 2U <= size) {
+        if ((size_t)offset <= size && size - (size_t)offset >= 2U) {
             *value_out = tiff_read_u16(data + offset, little_endian);
             return 0;
         }
@@ -44,7 +44,7 @@ static int tiff_value_u32(const unsigned char *data,
             return 0;
         }
         offset = tiff_read_u32(value_field, little_endian);
-        if ((size_t)offset + 4U <= size) {
+        if ((size_t)offset <= size && size - (size_t)offset >= 4U) {
             *value_out = tiff_read_u32(data + offset, little_endian);
             return 0;
         }
@@ -107,7 +107,7 @@ int image_tiff_extract_metadata(const unsigned char *data,
     }
 
     ifd_offset = tiff_read_u32(data + 4U, little_endian);
-    if ((size_t)ifd_offset + 2U > size) {
+    if ((size_t)ifd_offset > size || size - (size_t)ifd_offset < 2U) {
         return 0;
     }
     entry_count = tiff_read_u16(data + ifd_offset, little_endian);
@@ -167,7 +167,7 @@ static int bigtiff_value_u32(const unsigned char *data,
             return -1;
         }
         offset = tiff_read_u64_low(value_field, little_endian);
-        if ((size_t)offset + 2U <= size) {
+        if ((size_t)offset <= size && size - (size_t)offset >= 2U) {
             *value_out = tiff_read_u16(data + offset, little_endian);
             return 0;
         }
@@ -180,7 +180,7 @@ static int bigtiff_value_u32(const unsigned char *data,
             return -1;
         }
         offset = tiff_read_u64_low(value_field, little_endian);
-        if ((size_t)offset + 4U <= size) {
+        if ((size_t)offset <= size && size - (size_t)offset >= 4U) {
             *value_out = type == 16U ? tiff_read_u64_low(data + offset, little_endian) : tiff_read_u32(data + offset, little_endian);
             return 0;
         }
@@ -207,7 +207,7 @@ static int image_bigtiff_extract_metadata(const unsigned char *data,
         return 0;
     }
     ifd_offset = tiff_read_u64_low(data + 8U, little_endian);
-    if ((size_t)ifd_offset + 8U > size) {
+    if ((size_t)ifd_offset > size || size - (size_t)ifd_offset < 8U) {
         return 0;
     }
     if (!tiff_u64_high_is_zero(data + ifd_offset, little_endian)) {

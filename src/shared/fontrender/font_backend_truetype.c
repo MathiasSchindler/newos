@@ -12,6 +12,9 @@
 enum {
     FR_GLYPH_CACHE_CAP = 4096u,
     FR_GLYPH_CACHE_MASK = FR_GLYPH_CACHE_CAP - 1u,
+    FR_GLYPH_SLOT_CAP = FR_GLYPH_CACHE_CAP * 2u,
+    FR_GLYPH_SLOT_MASK = FR_GLYPH_SLOT_CAP - 1u,
+    FR_GLYPH_CACHE_PROBE_LIMIT = 64u,
     FR_OUTLINE_CACHE_CAP = 512u,
     FR_OUTLINE_CACHE_MASK = FR_OUTLINE_CACHE_CAP - 1u,
     FR_LOOKUP_CACHE_CAP = 1024u,
@@ -59,9 +62,17 @@ typedef struct {
 } FrSimpleDecodePoint;
 
 typedef struct {
-    uint32_t requested_codepoint;
     FrGlyph glyph;
     unsigned char *bitmap_storage;
+    uint16_t entry_index;
+    bool in_use;
+} FrGlyphSlot;
+
+typedef struct {
+    uint32_t requested_codepoint;
+    uint16_t pixel_size;
+    uint16_t style;
+    uint16_t slot_index;
     bool occupied;
 } FrGlyphCacheEntry;
 
@@ -84,11 +95,14 @@ struct FrFont {
     FrTtfInfo info;
     uint16_t fallback_glyph_index;
     bool have_fallback_glyph;
+    uint16_t next_glyph_slot;
+    uint16_t evict_cursor;
     FrSimpleDecodePoint *simple_points;
     size_t simple_buffer_capacity;
     FrOutline scratch_outlines[FR_COMPOUND_RECURSION_LIMIT + 1u];
     RtArena raster_scratch;
     FrGlyphCacheEntry entries[FR_GLYPH_CACHE_CAP];
+    FrGlyphSlot glyph_slots[FR_GLYPH_SLOT_CAP];
     FrOutlineCacheEntry outline_entries[FR_OUTLINE_CACHE_CAP];
     FrLookupCacheEntry lookup_entries[FR_LOOKUP_CACHE_CAP];
 };
@@ -304,35 +318,30 @@ static int fr_outline_copy_scaled(FrOutline *dst, const FrOutline *src, const Fr
 static FrGlyphCacheEntry *fr_find_glyph_cache_entry(FrFont *font, uint32_t codepoint,
                                                     uint16_t pixel_size, uint16_t style,
                                                     FrGlyphCacheEntry **out_victim) {
-    FrGlyphCacheEntry *start;
-    FrGlyphCacheEntry *entry;
-    FrGlyphCacheEntry *end;
+    size_t start_index;
+    size_t step;
 
     if (font == NULL || out_victim == NULL) {
         return NULL;
     }
 
-    start = &font->entries[fr_glyph_hash(codepoint, pixel_size, style)];
-    entry = start;
-    end = font->entries + FR_GLYPH_CACHE_CAP;
-    do {
+    start_index = fr_glyph_hash(codepoint, pixel_size, style);
+    for (step = 0u; step < FR_GLYPH_CACHE_PROBE_LIMIT; ++step) {
+        FrGlyphCacheEntry *entry = &font->entries[(start_index + step) & FR_GLYPH_CACHE_MASK];
+
         if (!entry->occupied) {
             *out_victim = entry;
             return NULL;
         }
         if (entry->requested_codepoint == codepoint &&
-            entry->glyph.pixel_size == pixel_size &&
-            entry->glyph.style == style) {
+            entry->pixel_size == pixel_size &&
+            entry->style == style) {
             *out_victim = entry;
             return entry;
         }
-        ++entry;
-        if (entry == end) {
-            entry = font->entries;
-        }
-    } while (entry != start);
+    }
 
-    *out_victim = start;
+    *out_victim = &font->entries[(start_index + (font->evict_cursor++ & (FR_GLYPH_CACHE_PROBE_LIMIT - 1u))) & FR_GLYPH_CACHE_MASK];
     return NULL;
 }
 
@@ -563,7 +572,7 @@ static int fr_decode_simple_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOutli
             }
 
             current_x += delta;
-            if (current_x < INT32_MIN || current_x > INT32_MAX) {
+            if (current_x < INT16_MIN || current_x > INT16_MAX) {
                 goto cleanup;
             }
             simple_points[i].x = (int32_t)current_x;
@@ -588,7 +597,7 @@ static int fr_decode_simple_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOutli
             }
 
             current_y += delta;
-            if (current_y < INT32_MIN || current_y > INT32_MAX) {
+            if (current_y < INT16_MIN || current_y > INT16_MAX) {
                 goto cleanup;
             }
             simple_points[i].y = (int32_t)current_y;
@@ -604,8 +613,8 @@ static int fr_decode_simple_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOutli
             FrOutlinePoint *dst_points = outline->points + base_point;
 
             for (i = 0u; i < point_count; ++i) {
-                dst_points[i].x = simple_points[i].x * FR_OUTLINE_ONE;
-                dst_points[i].y = simple_points[i].y * FR_OUTLINE_ONE;
+                dst_points[i].x = (int32_t)((int64_t)simple_points[i].x * (int64_t)FR_OUTLINE_ONE);
+                dst_points[i].y = (int32_t)((int64_t)simple_points[i].y * (int64_t)FR_OUTLINE_ONE);
                 dst_points[i].flags =
                     (simple_points[i].flag & FR_SIMPLE_FLAG_ON_CURVE) != 0u ? FR_OUTLINE_POINT_ON_CURVE : 0u;
                 dst_points[i].reserved[0] = 0u;
@@ -732,8 +741,8 @@ static int fr_decode_compound_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOut
             ptr += 8u;
         }
 
-        dx = (int32_t)arg1 * FR_OUTLINE_ONE;
-        dy = (int32_t)arg2 * FR_OUTLINE_ONE;
+        dx = (int32_t)((int64_t)arg1 * (int64_t)FR_OUTLINE_ONE);
+        dy = (int32_t)((int64_t)arg2 * (int64_t)FR_OUTLINE_ONE);
         if ((flags & FR_COMPOUND_SCALED_OFFSET) != 0u) {
             int32_t scaled_dx_x;
             int32_t scaled_dx_y;
@@ -980,18 +989,34 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
         goto cleanup;
     }
     if (outline->point_count == 0u) {
-        rt_free(entry->bitmap_storage);
-        entry->bitmap_storage = NULL;
+        uint16_t slot_index = font->next_glyph_slot;
+        FrGlyphSlot *slot = &font->glyph_slots[slot_index];
+
+        font->next_glyph_slot = (uint16_t)((font->next_glyph_slot + 1u) & FR_GLYPH_SLOT_MASK);
+        if (slot->in_use) {
+            FrGlyphCacheEntry *old_owner = &font->entries[slot->entry_index];
+            if (old_owner->occupied && old_owner->slot_index == slot_index) {
+                old_owner->occupied = false;
+            }
+            rt_free(slot->bitmap_storage);
+        }
+        slot->bitmap_storage = NULL;
+        slot->glyph.codepoint = render_codepoint;
+        slot->glyph.pixel_size = (uint16_t)pixel_size;
+        slot->glyph.style = style;
+        slot->glyph.advance = advance;
+        slot->glyph.left = 0;
+        slot->glyph.top = 0;
+        slot->glyph.width = 0;
+        slot->glyph.height = 0;
+        slot->glyph.bitmap = NULL;
+        slot->entry_index = (uint16_t)(entry - font->entries);
+        slot->in_use = true;
+
         entry->requested_codepoint = requested_codepoint;
-        entry->glyph.codepoint = render_codepoint;
-        entry->glyph.pixel_size = (uint16_t)pixel_size;
-        entry->glyph.style = style;
-        entry->glyph.advance = advance;
-        entry->glyph.left = 0;
-        entry->glyph.top = 0;
-        entry->glyph.width = 0;
-        entry->glyph.height = 0;
-        entry->glyph.bitmap = NULL;
+        entry->pixel_size = (uint16_t)pixel_size;
+        entry->style = style;
+        entry->slot_index = slot_index;
         entry->occupied = true;
         status = 0;
         goto cleanup;
@@ -1006,20 +1031,38 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
         goto cleanup;
     }
 
-    rt_free(entry->bitmap_storage);
-    entry->bitmap_storage = bitmap.pixels;
-    bitmap.pixels = NULL;
-    entry->requested_codepoint = requested_codepoint;
-    entry->glyph.codepoint = render_codepoint;
-    entry->glyph.pixel_size = (uint16_t)pixel_size;
-    entry->glyph.style = style;
-    entry->glyph.advance = advance;
-    entry->glyph.left = bitmap.left;
-    entry->glyph.top = bitmap.top;
-    entry->glyph.width = bitmap.width;
-    entry->glyph.height = bitmap.height;
-    entry->glyph.bitmap = entry->bitmap_storage;
-    entry->occupied = true;
+    {
+        uint16_t slot_index = font->next_glyph_slot;
+        FrGlyphSlot *slot = &font->glyph_slots[slot_index];
+
+        font->next_glyph_slot = (uint16_t)((font->next_glyph_slot + 1u) & FR_GLYPH_SLOT_MASK);
+        if (slot->in_use) {
+            FrGlyphCacheEntry *old_owner = &font->entries[slot->entry_index];
+            if (old_owner->occupied && old_owner->slot_index == slot_index) {
+                old_owner->occupied = false;
+            }
+            rt_free(slot->bitmap_storage);
+        }
+        slot->bitmap_storage = bitmap.pixels;
+        bitmap.pixels = NULL;
+        slot->glyph.codepoint = render_codepoint;
+        slot->glyph.pixel_size = (uint16_t)pixel_size;
+        slot->glyph.style = style;
+        slot->glyph.advance = advance;
+        slot->glyph.left = bitmap.left;
+        slot->glyph.top = bitmap.top;
+        slot->glyph.width = bitmap.width;
+        slot->glyph.height = bitmap.height;
+        slot->glyph.bitmap = slot->bitmap_storage;
+        slot->entry_index = (uint16_t)(entry - font->entries);
+        slot->in_use = true;
+
+        entry->requested_codepoint = requested_codepoint;
+        entry->pixel_size = (uint16_t)pixel_size;
+        entry->style = style;
+        entry->slot_index = slot_index;
+        entry->occupied = true;
+    }
     status = 0;
 
 cleanup:
@@ -1084,10 +1127,10 @@ void fr_font_close(FrFont *font) {
     if (font == NULL) {
         return;
     }
-    for (i = 0u; i < FR_GLYPH_CACHE_CAP; ++i) {
-        rt_free(font->entries[i].bitmap_storage);
-        font->entries[i].bitmap_storage = NULL;
-        font->entries[i].glyph.bitmap = NULL;
+    for (i = 0u; i < FR_GLYPH_SLOT_CAP; ++i) {
+        rt_free(font->glyph_slots[i].bitmap_storage);
+        font->glyph_slots[i].bitmap_storage = NULL;
+        font->glyph_slots[i].glyph.bitmap = NULL;
     }
     for (i = 0u; i < FR_OUTLINE_CACHE_CAP; ++i) {
         fr_outline_free(&font->outline_entries[i].outline);
@@ -1113,13 +1156,13 @@ static const FrGlyph *fr_font_get_glyph_unlocked(FrFont *font, uint32_t codepoin
     pixel_size_u16 = (uint16_t)pixel_size;
     entry = fr_find_glyph_cache_entry(font, codepoint, pixel_size_u16, style, &victim);
     if (entry != NULL) {
-        return &entry->glyph;
+        return &font->glyph_slots[entry->slot_index].glyph;
     }
 
     if (fr_load_cached_glyph(font, victim, codepoint, pixel_size, style) != 0) {
         return NULL;
     }
-    return &victim->glyph;
+    return &font->glyph_slots[victim->slot_index].glyph;
 }
 
 const FrGlyph *fr_font_get_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style) {

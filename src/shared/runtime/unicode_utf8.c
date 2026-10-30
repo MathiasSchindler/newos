@@ -564,11 +564,23 @@ int rt_word_next(const char *text, size_t text_length, size_t start, RtWordSpan 
     return 0;
 }
 
+#define RT_NORMALIZED_INLINE_CAPACITY 64U
+
 typedef struct {
     unsigned int *items;
     size_t count;
     size_t capacity;
+    unsigned int inline_items[RT_NORMALIZED_INLINE_CAPACITY];
 } RtNormalizedText;
+
+static void rt_normalized_free(RtNormalizedText *text) {
+    if (text->items != 0 && text->items != text->inline_items) {
+        rt_free(text->items);
+    }
+    text->items = 0;
+    text->count = 0U;
+    text->capacity = 0U;
+}
 
 static unsigned int rt_unicode_combining_class(unsigned int codepoint) {
     if ((codepoint >= 0x0300U && codepoint <= 0x0314U) ||
@@ -592,9 +604,17 @@ static int rt_normalized_append(RtNormalizedText *text, unsigned int codepoint) 
     unsigned int combining_class = rt_unicode_combining_class(codepoint);
 
     if (text->count == text->capacity) {
-        size_t new_capacity = text->capacity == 0U ? 32U : text->capacity * 2U;
-        unsigned int *new_items = (unsigned int *)rt_realloc_array(text->items, new_capacity, sizeof(unsigned int));
-        if (new_items == 0) return -1;
+        size_t new_capacity = text->capacity == 0U ? RT_NORMALIZED_INLINE_CAPACITY : text->capacity * 2U;
+        unsigned int *new_items;
+        if (new_capacity <= text->capacity) return -1;
+        if (text->items == text->inline_items) {
+            new_items = (unsigned int *)rt_malloc_array(new_capacity, sizeof(unsigned int));
+            if (new_items == 0) return -1;
+            memcpy(new_items, text->inline_items, text->count * sizeof(unsigned int));
+        } else {
+            new_items = (unsigned int *)rt_realloc_array(text->items, new_capacity, sizeof(unsigned int));
+            if (new_items == 0) return -1;
+        }
         text->items = new_items;
         text->capacity = new_capacity;
     }
@@ -697,7 +717,9 @@ static int rt_normalized_decompose(RtNormalizedText *text, unsigned int codepoin
 static int rt_normalized_decode(const char *source, size_t length, int ignore_case, RtNormalizedText *text) {
     size_t index = 0U;
 
-    rt_memset(text, 0, sizeof(*text));
+    text->items = text->inline_items;
+    text->count = 0U;
+    text->capacity = RT_NORMALIZED_INLINE_CAPACITY;
     while (index < length) {
         unsigned int codepoint;
         size_t before = index;
@@ -706,8 +728,7 @@ static int rt_normalized_decode(const char *source, size_t length, int ignore_ca
             codepoint = 0xfffdU;
         }
         if (rt_normalized_decompose(text, codepoint, ignore_case) != 0) {
-            rt_free(text->items);
-            rt_memset(text, 0, sizeof(*text));
+            rt_normalized_free(text);
             return -1;
         }
     }
@@ -723,7 +744,7 @@ int rt_unicode_normalized_compare(const char *left, size_t left_length, const ch
     if (left == 0 || right == 0 || result_out == 0) return -1;
     if (rt_normalized_decode(left, left_length, ignore_case, &normalized_left) != 0) return -1;
     if (rt_normalized_decode(right, right_length, ignore_case, &normalized_right) != 0) {
-        rt_free(normalized_left.items);
+        rt_normalized_free(&normalized_left);
         return -1;
     }
     for (index = 0U; index < normalized_left.count && index < normalized_right.count; ++index) {
@@ -733,8 +754,8 @@ int rt_unicode_normalized_compare(const char *left, size_t left_length, const ch
     if (result == 0 && normalized_left.count != normalized_right.count) {
         result = normalized_left.count < normalized_right.count ? -1 : 1;
     }
-    rt_free(normalized_left.items);
-    rt_free(normalized_right.items);
+    rt_normalized_free(&normalized_left);
+    rt_normalized_free(&normalized_right);
     *result_out = result;
     return 0;
 }
@@ -753,7 +774,7 @@ int rt_unicode_normalized_contains(const char *text, size_t text_length, const c
     if (text == 0 || needle == 0) return 0;
     if (rt_normalized_decode(text, text_length, ignore_case, &normalized_text) != 0) return 0;
     if (rt_normalized_decode(needle, needle_length, ignore_case, &normalized_needle) != 0) {
-        rt_free(normalized_text.items);
+        rt_normalized_free(&normalized_text);
         return 0;
     }
     if (normalized_needle.count == 0U) {
@@ -767,7 +788,7 @@ int rt_unicode_normalized_contains(const char *text, size_t text_length, const c
             }
         }
     }
-    rt_free(normalized_text.items);
-    rt_free(normalized_needle.items);
+    rt_normalized_free(&normalized_text);
+    rt_normalized_free(&normalized_needle);
     return found;
 }

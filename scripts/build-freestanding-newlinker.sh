@@ -237,7 +237,7 @@ variant_for_tool_source() {
 }
 tool_needs_allocator_lock() {
   case "$1" in
-    zip|bzip2|bunzip2|expack|pgpmsg) return 0 ;;
+    zip|unzip|bzip2|bunzip2|expack|pgpmsg|sort|grep) return 0 ;;
     *) return 1 ;;
   esac
 }

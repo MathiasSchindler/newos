@@ -64,12 +64,46 @@ void __stack_chk_fail(void) {
     }
 }
 
+static __attribute__((no_stack_protector))
+int newos_read_auxv_random(long argc, char **argv, unsigned long *guard) {
+    char **cursor;
+    const unsigned long *auxv;
+
+    if (argc < 0 || argv == 0 || guard == 0) {
+        return -1;
+    }
+    cursor = argv + argc;
+    if (*cursor != 0) {
+        return -1;
+    }
+    ++cursor;
+    while (*cursor != 0) {
+        ++cursor;
+    }
+    auxv = (const unsigned long *)(cursor + 1);
+    while (auxv[0] != 0UL) {
+        if (auxv[0] == 25UL && auxv[1] != 0UL) {
+            const unsigned char *random_bytes = (const unsigned char *)(uintptr_t)auxv[1];
+            unsigned char *out = (unsigned char *)guard;
+            unsigned long i;
+
+            for (i = 0; i < (unsigned long)sizeof(*guard); ++i) {
+                out[i] = random_bytes[i];
+            }
+            return 0;
+        }
+        auxv += 2;
+    }
+    return -1;
+}
+
 __attribute__((no_stack_protector))
 void __newos_stack_guard_init(long argc, char **argv) {
     unsigned long guard = 0;
     struct linux_timespec ts;
 
-    if (newos_read_stack_guard_random(&guard) != 0) {
+    if (newos_read_auxv_random(argc, argv, &guard) != 0 &&
+        newos_read_stack_guard_random(&guard) != 0) {
         long pid = linux_syscall0(LINUX_SYS_GETPID);
         long clock_rc = linux_syscall2(LINUX_SYS_CLOCK_GETTIME, 1, (long)&ts);
 

@@ -267,6 +267,21 @@ static int check_font(FrFont *font) {
           glyph->bitmap == 0 && glyph->advance == 20, "empty glyph failed");
     CHECK(fr_font_get_glyph(font, 'A', 0, 0) == 0, "accepted zero pixel size");
     CHECK(fr_font_get_glyph(font, 0x110000U, 32, 0) == 0, "accepted invalid codepoint");
+    {
+        const FrGlyph *held = fr_font_get_glyph(font, 'A', 32, 0);
+        const unsigned char *held_bitmap = held != 0 ? held->bitmap : 0;
+        uint16_t style;
+
+        CHECK(held != 0 && held_bitmap != 0 && held->style == 0 && held->bitmap[0] == 255,
+              "could not acquire held glyph for cache eviction check");
+        for (style = 1u; style <= 4096u; ++style) {
+            CHECK(fr_font_get_glyph(font, 'A', 32, style) != 0,
+                  "could not populate glyph cache across 4096 styles");
+        }
+        CHECK(held->style == 0 && held->width == 16 && held->height == 16 &&
+              held->bitmap == held_bitmap && held->bitmap[0] == 255,
+              "cache wraparound mutated or freed a held glyph");
+    }
     return 0;
 }
 
@@ -346,6 +361,14 @@ int main(int argc, char **argv) {
     tool_store_u32_be(data + TEST_CMAP + 48, 0);
     CHECK(fr_font_open_memory(&font, data, sizeof(data)) == 0, "could not open font without fallback");
     CHECK(fr_font_get_glyph(font, 0x10ffffU, 32, 0) == 0, "missing fallback was ignored");
+    fr_font_close(font);
+    font = 0;
+    memcpy(data, original, sizeof(data));
+    /* Set two X deltas of +20000 on simple glyph 1 so cumulative X = 40000 (> INT16_MAX). */
+    tool_store_u16_be(data + TEST_GLYF + 18, 20000);
+    tool_store_u16_be(data + TEST_GLYF + 20, 20000);
+    CHECK(fr_font_open_memory(&font, data, sizeof(data)) == 0, "could not open overflow-delta font");
+    CHECK(fr_font_get_glyph(font, '?', 32, 0) == 0, "accepted simple glyph coordinate exceeding 16-bit FWord range");
     fr_font_close(font);
     font = 0;
     memcpy(data, original, sizeof(data));

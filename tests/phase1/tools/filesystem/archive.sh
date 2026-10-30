@@ -207,3 +207,28 @@ ar_escape_status=0
 ) >/dev/null 2>&1 || ar_escape_status=$?
 [ "$ar_escape_status" -ne 0 ] || fail "ar should reject a member that escapes the extraction directory"
 [ ! -e "$WORK_DIR/ar_escape/outside.txt" ] || fail "ar extracted a file outside the current directory"
+
+mkdir -p "$WORK_DIR/cpio_src/sub" "$WORK_DIR/cpio_extract" "$WORK_DIR/cpio_escape/extract"
+printf 'cpio-hello\n' > "$WORK_DIR/cpio_src/sub/item.txt"
+(
+    cd "$WORK_DIR/cpio_src"
+    assert_command_succeeds "${TEST_BIN_DIR}/cpio" -o -F "$WORK_DIR/sample.cpio" sub sub/item.txt
+)
+(
+    cd "$WORK_DIR/cpio_extract"
+    assert_command_succeeds "${TEST_BIN_DIR}/cpio" -i -F "$WORK_DIR/sample.cpio"
+)
+assert_file_contains "$WORK_DIR/cpio_extract/sub/item.txt" '^cpio-hello$' "cpio -i did not restore the archived file"
+
+{
+    printf '07070100000001000081a40000000000000000000000010000000000000005000000000000000000000000000000000000001000000000../outside.txt\0\0evil\n\0\0\0'
+    printf '07070100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b00000000TRAILER!!!\0\0\0\0'
+} > "$WORK_DIR/cpio_escape/evil.cpio"
+cpio_escape_status=0
+(
+    cd "$WORK_DIR/cpio_escape/extract"
+    "${TEST_BIN_DIR}/cpio" -i -F "$WORK_DIR/cpio_escape/evil.cpio"
+) >/dev/null 2>&1 || cpio_escape_status=$?
+[ "$cpio_escape_status" -ne 0 ] || fail "cpio -i should reject an entry that escapes the extraction directory"
+[ ! -e "$WORK_DIR/cpio_escape/outside.txt" ] || fail "cpio -i wrote outside the extraction directory"
+
