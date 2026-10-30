@@ -89,7 +89,10 @@ The current repository already provides the core layers needed for server work:
 - `src/shared/ssh/` as the reusable SSH transport/client implementation used by
   the `ssh`, `sshd`, and `git` tools
 - `src/shared/runtime/` for memory, string, parse, and I/O support
-- `src/shared/tool_io.c`, `tool_cli.c`, `tool_fs.c`, and `tool_path.c` for cross-tool helper logic
+- `src/shared/tool_io.c` and `tool_file.c` for stream and whole-file I/O;
+  `tool_cli.c`, `tool_fs.c`, and `tool_path.c` for command/filesystem helpers
+- `src/shared/tool_buffer.c`, `tool_http.c`, and `tool_time.c` for concrete
+  buffer, HTTP/TLS connection, and date/duration helpers
 - `src/shared/crypto/` for reusable cryptographic primitives
 - `src/shared/tls/` for current client-side TLS state machines and records
 - `src/shared/simple_config.c` and `src/shared/server_log.c` for reusable daemon configuration and escaped logging

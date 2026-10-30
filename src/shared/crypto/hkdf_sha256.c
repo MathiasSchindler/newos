@@ -1,6 +1,6 @@
 #include "crypto/hkdf_sha256.h"
 #include "crypto/crypto_util.h"
-#include "crypto/hmac_sha256.h"
+#include "crypto/hmac_sha2.h"
 
 static void hkdf_sha256_prepare_key_block(
     unsigned char key_block[CRYPTO_SHA256_BLOCK_SIZE],

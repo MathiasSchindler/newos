@@ -336,7 +336,7 @@ $archiveSources = @(
     "src/shared/crypto/sha256.c"
 )
 $awkSources = @("src/tools/awk/awk_parse.c", "src/tools/awk/awk_exec.c")
-$xmlSources = @("src/shared/xml.c", "src/shared/xml_stream.c", "src/shared/xml_dtd.c", "src/shared/tool_xml.c")
+$xmlSources = @("src/shared/xml/xml.c", "src/shared/xml/xml_stream.c", "src/shared/xml/xml_dtd.c", "src/shared/xml/tool_xml.c")
 $editorSources = Add-Unique (@($variables["EDITOR_TOOL_SOURCES"]) + @($tuiSources))
 $mailSources = Add-Unique (@($variables["MAIL_TOOL_SOURCES"]) + @($tuiSources) + @($tlsSources) + @($cryptoSources) + @($windowsTlsSources))
 $nccSources = Add-Unique (@($compilerSources) + @($sharedSources) + @("src/shared/crypto/sha256.c"))
@@ -485,7 +485,7 @@ foreach ($tool in $selectedTools) {
         "pgp" { $sources += $pgpSources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "pgpquery" { $sources += $pgpquerySources + $runtimeSources; $linkFlags = $windowsTlsLdFlags }
         "pdf" { $sources += $pdfSources + $runtimeSources }
-        "bignum" { $extraCFlags += "-Wno-pedantic"; $sources += @("src/shared/bignum.c") + $runtimeSources }
+        "bignum" { $extraCFlags += "-Wno-pedantic"; $sources += @("src/shared/math/bignum.c") + $runtimeSources }
         "hash" { $sources += $hashSources + $runtimeSources }
         "regex" { $sources += $runtimeSources }
         "archive" { $sources += $archiveSources + $runtimeSources }

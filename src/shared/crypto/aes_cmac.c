@@ -1,6 +1,6 @@
 #include "crypto/aes_cmac.h"
 
-#include "crypto/aes128.h"
+#include "crypto/aes.h"
 #include "runtime.h"
 
 static void cmac_left_shift_one(const unsigned char in[16], unsigned char out[16]) {

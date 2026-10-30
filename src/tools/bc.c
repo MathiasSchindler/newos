@@ -1,7 +1,7 @@
 #include "platform.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "bignum.h"
+#include "math/bignum.h"
 
 #define BC_INPUT_CAPACITY 16384
 #define BC_MAX_SCALE 256

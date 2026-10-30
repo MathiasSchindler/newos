@@ -91,132 +91,65 @@ int tool_should_print_file_header(int verbose, int quiet, int path_count) {
     return path_count > 1;
 }
 
-int tool_starts_with(const char *text, const char *prefix) {
-    size_t index = 0U;
-
-    if (text == 0 || prefix == 0) {
-        return 0;
-    }
-
-    while (prefix[index] != '\0') {
-        if (text[index] != prefix[index]) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return 1;
-}
-
-int tool_token_equals(const char *text, size_t text_length, const char *token) {
-    size_t index = 0U;
-
-    if (text == 0 || token == 0) {
-        return 0;
-    }
-
-    while (index < text_length && token[index] != '\0') {
-        if (text[index] != token[index]) {
-            return 0;
-        }
-        index += 1U;
-    }
-
-    return index == text_length && token[index] == '\0';
-}
-
-int tool_parse_tabstop_list(const char *text, unsigned long long *stops, size_t max_stops, size_t *count_out) {
-    unsigned long long previous = 0ULL;
-    size_t count = 0U;
-    size_t start = 0U;
-    size_t index = 0U;
-
-    if (text == 0 || stops == 0 || count_out == 0 || max_stops == 0U) {
-        return -1;
-    }
-
-    while (1) {
-        char ch = text[index];
-        if (ch == ',' || ch == '\0') {
-            char token[32];
-            size_t length;
-            unsigned long long value = 0ULL;
-
-            if (count >= max_stops || index == start) {
-                return -1;
-            }
-            length = index - start;
-            if (length + 1U > sizeof(token)) {
-                return -1;
-            }
-            memcpy(token, text + start, length);
-            token[length] = '\0';
-            if (rt_parse_uint(token, &value) != 0 || value == 0ULL) {
-                return -1;
-            }
-            if (count > 0U && value <= previous) {
-                return -1;
-            }
-
-            stops[count++] = value;
-            previous = value;
-
-            if (ch == '\0') {
-                break;
-            }
-            start = index + 1U;
-        }
-        index += 1U;
-    }
-
-    *count_out = count;
-    return count > 0U ? 0 : -1;
-}
-
-unsigned long long tool_next_tabstop(const unsigned long long *stops, size_t stop_count, unsigned long long column) {
-    size_t index;
-
-    if (stop_count == 0U) {
-        return column + 8ULL - (column % 8ULL);
-    }
-
-    if (stop_count == 1U) {
-        unsigned long long stop = stops[0];
-        if (stop == 0ULL) {
-            return column + 1ULL;
-        }
-        return column + stop - (column % stop);
-    }
-
-    for (index = 0U; index < stop_count; ++index) {
-        if (stops[index] > column) {
-            return stops[index];
-        }
-    }
-
-    return column + 1ULL;
-}
-
-void tool_trim_whitespace(char *text) {
-    size_t start = 0U;
-    size_t end;
-    size_t out = 0U;
-
-    if (text == 0) {
+void tool_write_usage(const char *program_name, const char *usage_suffix) {
+    if (tool_json_is_enabled()) {
+        (void)tool_json_write_usage(program_name, usage_suffix);
         return;
     }
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_CYAN, "Usage:");
+    rt_write_char(2, ' ');
+    rt_write_cstr(2, program_name);
+    if (usage_suffix != 0 && usage_suffix[0] != '\0') {
+        rt_write_char(2, ' ');
+        rt_write_cstr(2, usage_suffix);
+    }
+    rt_write_char(2, '\n');
+}
 
-    end = rt_strlen(text);
-    while (text[start] != '\0' && rt_is_space(text[start])) {
-        start += 1U;
+void tool_write_error(const char *tool_name, const char *message, const char *detail) {
+    if (tool_json_is_enabled()) {
+        (void)tool_json_write_diagnostic(tool_name, "error", message, detail);
+        return;
     }
-    while (end > start && rt_is_space(text[end - 1U])) {
-        end -= 1U;
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, tool_name);
+    tool_write_styled(2, tool_get_global_color_mode(), TOOL_STYLE_BOLD_RED, ": ");
+    if (message != 0) {
+        rt_write_cstr(2, message);
+    }
+    if (detail != 0) {
+        rt_write_cstr(2, detail);
+    }
+    rt_write_char(2, '\n');
+}
+
+int tool_prompt_yes_no(const char *message, const char *path) {
+    char ch = '\0';
+    char answer = '\0';
+    long bytes_read;
+
+    if (message != 0) {
+        rt_write_cstr(2, message);
+    }
+    if (path != 0) {
+        rt_write_cstr(2, path);
+    }
+    rt_write_cstr(2, "? ");
+
+    for (;;) {
+        bytes_read = platform_read(0, &ch, 1U);
+        if (bytes_read <= 0) {
+            return 0;
+        }
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n') {
+            break;
+        }
+        if (answer == '\0' && ch != ' ' && ch != '\t') {
+            answer = ch;
+        }
     }
 
-    while (start + out < end) {
-        text[out] = text[start + out];
-        out += 1U;
-    }
-    text[out] = '\0';
+    return answer == 'y' || answer == 'Y';
 }

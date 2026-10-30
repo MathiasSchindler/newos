@@ -1,7 +1,7 @@
 #include "whisper_decoder.h"
 #include "whisper_artifact.h"
 #include "whisper_frontend.h"
-#include "math.h"
+#include "math/math.h"
 #include "concurrency.h"
 
 typedef unsigned char u8;

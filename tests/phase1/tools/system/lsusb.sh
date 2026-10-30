@@ -8,7 +8,7 @@ if command -v "${CC:-cc}" >/dev/null 2>&1; then
     assert_command_succeeds "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -fno-builtin \
         -iquote "$ROOT_DIR/src/shared" \
         "$ROOT_DIR/tests/fixtures/usb_descriptor_test.c" \
-        "$ROOT_DIR/src/shared/usb.c" \
+        "$ROOT_DIR/src/shared/usb_descriptor.c" \
         -o "$WORK_DIR/usb_descriptor_test"
     assert_command_succeeds "$WORK_DIR/usb_descriptor_test"
 else

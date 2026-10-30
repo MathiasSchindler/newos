@@ -54,11 +54,13 @@ grep_count=$("${TEST_BIN_DIR}/grep" -c Hello "$WORK_DIR/count.txt" | tr -d '\r\n
 assert_text_equals "$grep_count" '2' "grep -c reported the wrong match count"
 assert_command_succeeds "${TEST_BIN_DIR}/grep" -q Hello "$WORK_DIR/count.txt"
 
-printf 'X("src/shared/runtime/memory.c")\nX("src/shared/tool_io.c")\nX("src/shared/archive_util.c")\n' > "$WORK_DIR/manifest.txt"
-"${TEST_BIN_DIR}/grep" -oE '"src/shared/(runtime/[^"]+|tool_[^"]+|archive_util|bignum)\.c"' "$WORK_DIR/manifest.txt" > "$WORK_DIR/manifest.out"
+printf 'X("src/shared/runtime/memory.c")\nX("src/shared/tool_io.c")\nX("src/shared/archive_util.c")\nX("src/shared/math/bignum.c")\nX("src/shared/xml/xml.c")\n' > "$WORK_DIR/manifest.txt"
+"${TEST_BIN_DIR}/grep" -oE '"src/shared/(runtime/[^"]+|math/[^"]+|xml/[^"]+|tool_[^"]+|archive_util)\.c"' "$WORK_DIR/manifest.txt" > "$WORK_DIR/manifest.out"
 assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/runtime/memory.c"$' "grep -oE did not extract the runtime manifest entry"
 assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/tool_io.c"$' "grep -oE did not extract the tool manifest entry"
 assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/archive_util.c"$' "grep -oE did not extract the archive manifest entry"
+assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/math/bignum.c"$' "grep -oE did not extract the math manifest entry"
+assert_file_contains "$WORK_DIR/manifest.out" '^"src/shared/xml/xml.c"$' "grep -oE did not extract the XML manifest entry"
 
 printf 'abc123\nplain\n' > "$WORK_DIR/posix-ere.txt"
 "${TEST_BIN_DIR}/grep" -E '^[[:alpha:]]+[[:digit:]]+$' "$WORK_DIR/posix-ere.txt" > "$WORK_DIR/posix-ere.out"

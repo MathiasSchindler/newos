@@ -6,7 +6,7 @@
 #include "whisper_cpu_encoder.h"
 #include "whisper_hmx.h"
 #include "whisper_decoder.h"
-#include "math.h"
+#include "math/math.h"
 #include "platform.h"
 
 __declspec(dllimport) const char *__stdcall GetCommandLineA(void);

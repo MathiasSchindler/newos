@@ -1,6 +1,7 @@
+#include "xml/tool_xml.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static void write_assignment_prefix(const XmlNameStack *stack) {
     xml_write_name_stack_path(1, stack);

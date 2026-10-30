@@ -1,5 +1,5 @@
-#include "crypto/aes128.h"
-#include "crypto/aes128_gcm.h"
+#include "crypto/aes.h"
+#include "crypto/aes_gcm.h"
 #include "crypto/crypto_util.h"
 #include "crypto/curve25519.h"
 #include "crypto/ed25519.h"

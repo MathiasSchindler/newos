@@ -168,26 +168,26 @@ COMPILER_IMPL_INCLUDES := \
 	src/compiler/backend_internal.h \
 	src/compiler/parser_internal.h \
 	src/compiler/targets/target_info.h
-SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|bignum|math|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+SHARED_SOURCES := $(shell grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|math/[^"]+|xml/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|simple_config|server_log)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 SHARED_DEPS := $(SHARED_SOURCES) src/compiler/source_manifest.h
 IMAGE_SOURCES := $(shell grep -oE '"src/shared/(image/[^"]+|crypto/(sha256|p256))\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 IMAGE_TOOLS := imginfo imgcheck imgmeta c2pa
 PDF_SOURCES := $(shell grep -oE '"src/shared/pdf(_writer)?\.c"' src/compiler/source_manifest.h | tr -d '"')
 PDF_TOOLS := pdfinfo pdfjoin pdfsplit pdfinfoedit pdfextract pdfgrep pdfcheck
-PGP_SOURCES := $(shell grep -oE '"src/shared/(pgp|crypto/(aes128|aes128_gcm|sha1|sha256|sha512|hmac_sha256|hkdf_sha256|crypto_util|curve25519|ed25519|rsa)|compression/zlib)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
+PGP_SOURCES := $(shell grep -oE '"src/shared/(pgp|crypto/(aes|aes_gcm|sha1|sha256|sha512|hmac_sha2|hkdf_sha256|crypto_util|curve25519|ed25519|rsa)|compression/zlib)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 PGP_TOOLS := pgpkey pgpmsg
 CRYPTO_SOURCES := $(shell grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 TLS_SOURCES := $(shell grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u)
 PGPQUERY_TOOLS := pgpquery
 PGPQUERY_SOURCES := $(sort $(PGP_SOURCES) $(TLS_SOURCES) $(CRYPTO_SOURCES))
-USB_SOURCES := $(shell grep -oE '"src/shared/usb\.c"' src/compiler/source_manifest.h | tr -d '"')
+USB_SOURCES := $(shell grep -oE '"src/shared/usb_descriptor\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_USB_PLATFORM_SOURCES := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter arm64 aarch64,$(HOST_ARCH)),src/platform/macos/iokit.c src/platform/macos/usb.c,src/platform/posix/usb.c),$(if $(filter Linux,$(HOST_OS)),src/platform/linux/usb.c $(TARGET_ARCH_DIR)/syscall_stubs.S,src/platform/posix/usb.c))
 TARGET_USB_PLATFORM_SOURCES := src/platform/linux/usb.c
 MACOS_USB_PLATFORM_SOURCES := src/platform/macos/iokit.c src/platform/macos/usb.c
 
 TUI_SOURCES := $(shell grep -oE '"src/shared/tui\.c"' src/compiler/source_manifest.h | tr -d '"')
 FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/fontrender/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
-FONTRENDER_DEPS := $(FONTRENDER_SOURCES) $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
+FONTRENDER_DEPS := $(FONTRENDER_SOURCES) $(wildcard src/shared/fontrender/*.h)
 FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
 MATHTEST_SOURCE := tests/fixtures/math_test.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
@@ -229,8 +229,8 @@ SSH_CRYPTO_SOURCES := \
 SSH_CRYPTO_SOURCES := $(sort $(SSH_CRYPTO_SOURCES))
 SHELL_SOURCES := $(shell grep -oE '"src/tools/sh/shell_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
-WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/bignum.c src/platform/windows/core.c src/platform/windows/thread.c
-MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/bignum.c src/platform/macos/freestanding.c
+WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/windows/core.c src/platform/windows/thread.c
+MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/macos/freestanding.c
 MACOS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 MACOS_FREESTANDING_GIT_SOURCES := $(TLS_SOURCES) $(SSH_CLIENT_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c src/platform/macos/tls.c
 MACOS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/macos/tls.c
@@ -240,7 +240,7 @@ MACOS_FREESTANDING_IMAGE_SOURCES := $(IMAGE_SOURCES) src/shared/compression/crc3
 MACOS_FREESTANDING_PGP_SOURCES := $(PGP_SOURCES)
 MACOS_FREESTANDING_PGPQUERY_SOURCES := $(PGPQUERY_SOURCES) src/platform/macos/tls.c
 MACOS_FREESTANDING_PDF_SOURCES := $(PDF_SOURCES) src/shared/compression/zlib.c
-MACOS_FREESTANDING_XML_SOURCES := src/shared/xml.c src/shared/xml_stream.c src/shared/xml_dtd.c src/shared/tool_xml.c
+MACOS_FREESTANDING_XML_SOURCES := src/shared/xml/xml.c src/shared/xml/xml_stream.c src/shared/xml/xml_dtd.c src/shared/xml/tool_xml.c
 MACOS_FREESTANDING_NCC_SOURCES := $(COMPILER_SOURCES) $(LINKER_SIGNING_SOURCE) $(SHARED_SOURCES)
 MACOS_FREESTANDING_SSH_SOURCES := $(SSH_CLIENT_SOURCES) $(SSH_CRYPTO_SOURCES) $(SHARED_SOURCES)
 MACOS_FREESTANDING_SSHD_SOURCES := $(SSHD_TOOL_SOURCES) $(SSH_TRANSPORT_SOURCES) $(SSH_CRYPTO_SOURCES) $(SHARED_SOURCES)
@@ -492,7 +492,7 @@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos
 $(MACOS_BUILD_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) src/shared/platform.h src/shared/runtime.h src/shared/tool_util.h src/platform/macos/trace.h | $(MACOS_BUILD_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
 
-$(MACOS_FONTRENDER_OBJECTS) $(MACOS_FONTTEST_OBJECTS): MACOS_CFLAGS += -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender
+$(MACOS_FONTRENDER_OBJECTS) $(MACOS_FONTTEST_OBJECTS): MACOS_CFLAGS += -DFR_RASTER_DISABLE_SIMD=1
 $(MACOS_FONTRENDER_OBJECTS) $(MACOS_FONTTEST_OBJECTS): $(FONTRENDER_DEPS)
 
 $(addprefix $(MACOS_BUILD_DIR)/,fonttest fontrendertest): $(MACOS_BUILD_DIR)/%: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/%.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
@@ -705,10 +705,10 @@ else
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_PDF_OBJECTS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 endif
 
-$(BUILD_DIR)/bc: src/tools/bc.c src/shared/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+$(BUILD_DIR)/bc: src/tools/bc.c src/shared/math/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -Wno-pedantic $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/bc: src/tools/bc.c src/shared/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(TARGET_BUILD_DIR)/bc: src/tools/bc.c src/shared/math/bignum.h $(SHARED_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h $(TARGET_PLATFORM_SOURCES) $(TARGET_SPECIAL_PREREQS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 ifeq ($(TARGET_BUILD_DIR),$(INCEPTION_BUILD_DIR))
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) -Wno-pedantic $(FREESTANDING_CFLAGS) $< $(INCEPTION_REUSABLE_OBJECTS) $(INCEPTION_UNICODE_OBJECT) $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 else
@@ -722,16 +722,16 @@ $(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SO
 	mkdir -p $(dir $@) && $(CC) $(HOST_READELF_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(addprefix $(BUILD_DIR)/,fonttest fontrendertest): $(BUILD_DIR)/%: tests/fixtures/fontrender/%.c $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 $< $(FONTRENDER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
 $(addprefix $(TARGET_BUILD_DIR)/,fonttest fontrendertest): $(TARGET_BUILD_DIR)/%: tests/fixtures/fontrender/%.c $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 $< $(FONTRENDER_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
-$(BUILD_DIR)/mathtest: $(MATHTEST_SOURCE) src/shared/math.c src/shared/math.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)
-	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< src/shared/math.c -o $@
+$(BUILD_DIR)/mathtest: $(MATHTEST_SOURCE) src/shared/math/math.c src/shared/math/math.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< src/shared/math/math.c -o $@
 
-$(TARGET_BUILD_DIR)/mathtest: $(MATHTEST_SOURCE) src/shared/math.c src/shared/math.h src/platform/linux/stack_guard.c $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
-	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(filter-out $(FREESTANDING_LTO_FLAGS),$(FREESTANDING_CFLAGS)) $< src/shared/math.c src/platform/linux/stack_guard.c $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(filter-out $(FREESTANDING_LTO_FLAGS),$(TARGET_LDFLAGS)) -o $@
+$(TARGET_BUILD_DIR)/mathtest: $(MATHTEST_SOURCE) src/shared/math/math.c src/shared/math/math.h src/platform/linux/stack_guard.c $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(filter-out $(FREESTANDING_LTO_FLAGS),$(FREESTANDING_CFLAGS)) $< src/shared/math/math.c src/platform/linux/stack_guard.c $(TARGET_ARCH_DIR)/syscall_stubs.S $(TARGET_CRT) $(filter-out $(FREESTANDING_LTO_FLAGS),$(TARGET_LDFLAGS)) -o $@
 
 $(TARGET_BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_DEPS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/archive_util.h src/shared/crypto/sha256.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@

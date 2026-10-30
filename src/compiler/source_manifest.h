@@ -9,11 +9,12 @@
  *
  *   2. The root Makefile       - extracts each group with a $(shell grep …)
  *      one-liner.  Any change here is automatically picked up on the next make
- *      invocation; no Makefile variable needs to be touched manually.
+ *      invocation. Specialized platform profiles also keep explicit subsets.
  *
  * To add or remove a source file:
  *   - Edit the appropriate FOREACH_*_SOURCE macro below.
- *   - That is the *only* place the change is needed.
+ *   - Update explicit platform subsets when they need the source, and update
+ *     path filters when introducing a new source directory or naming pattern.
  *
  * Usage in C (X-macro pattern):
  *
@@ -78,13 +79,22 @@
     X("src/shared/runtime/io_loop.c") \
     X("src/shared/runtime/unicode_utf8.c") \
     X("src/shared/runtime/unicode.c") \
-    X("src/shared/math.c") \
+    X("src/shared/math/math.c") \
     X("src/shared/tool_json.c") \
     X("src/shared/tool_io.c") \
+    X("src/shared/tool_binary.c") \
+    X("src/shared/tool_buffer.c") \
+    X("src/shared/tool_format.c") \
+    X("src/shared/tool_http.c") \
+    X("src/shared/tool_object.c") \
+    X("src/shared/tool_parse.c") \
+    X("src/shared/tool_terminal.c") \
+    X("src/shared/tool_text.c") \
+    X("src/shared/tool_time.c") \
     X("src/shared/tool_file.c") \
     X("src/shared/tool_cli.c") \
     X("src/shared/tool_regex.c") \
-    X("src/shared/tool_xml.c") \
+    X("src/shared/xml/tool_xml.c") \
     X("src/shared/tool_path.c") \
     X("src/shared/tool_process.c") \
     X("src/shared/tool_fs.c") \
@@ -98,10 +108,10 @@
     X("src/shared/compression/lzss.c") \
     X("src/shared/compression/zlib.c") \
     X("src/shared/compression/zstd.c") \
-    X("src/shared/bignum.c") \
-    X("src/shared/xml.c") \
-    X("src/shared/xml_stream.c") \
-    X("src/shared/xml_dtd.c")
+    X("src/shared/math/bignum.c") \
+    X("src/shared/xml/xml.c") \
+    X("src/shared/xml/xml_stream.c") \
+    X("src/shared/xml/xml_dtd.c")
 
 /* ── image metadata utilities ───────────────────────────────────────────── */
 
@@ -127,9 +137,9 @@
 /* ── crypto primitives ───────────────────────────────────────────────────── */
 
 #define FOREACH_CRYPTO_SOURCE(X) \
-    X("src/shared/crypto/aes128.c") \
+    X("src/shared/crypto/aes.c") \
     X("src/shared/crypto/aes_cmac.c") \
-    X("src/shared/crypto/aes128_gcm.c") \
+    X("src/shared/crypto/aes_gcm.c") \
     X("src/shared/crypto/brainpoolp256r1.c") \
     X("src/shared/crypto/crypto_util.c") \
     X("src/shared/crypto/curve25519.c") \
@@ -137,7 +147,7 @@
     X("src/shared/crypto/sha1.c") \
     X("src/shared/crypto/sha256.c") \
     X("src/shared/crypto/sha512.c") \
-    X("src/shared/crypto/hmac_sha256.c") \
+    X("src/shared/crypto/hmac_sha2.c") \
     X("src/shared/crypto/hkdf_sha256.c") \
     X("src/shared/crypto/p256.c") \
     X("src/shared/crypto/p384.c") \
@@ -158,7 +168,7 @@
 /* -- USB descriptor parsing and platform transport ----------------------- */
 
 #define FOREACH_USB_SOURCE(X) \
-    X("src/shared/usb.c")
+    X("src/shared/usb_descriptor.c")
 
 /* ── terminal UI helpers ────────────────────────────────────────────────── */
 
@@ -182,12 +192,12 @@
 
 #define FOREACH_PGP_SOURCE(X) \
     X("src/shared/pgp.c") \
-    X("src/shared/crypto/aes128.c") \
-    X("src/shared/crypto/aes128_gcm.c") \
+    X("src/shared/crypto/aes.c") \
+    X("src/shared/crypto/aes_gcm.c") \
     X("src/shared/crypto/sha1.c") \
     X("src/shared/crypto/sha256.c") \
     X("src/shared/crypto/sha512.c") \
-    X("src/shared/crypto/hmac_sha256.c") \
+    X("src/shared/crypto/hmac_sha2.c") \
     X("src/shared/crypto/hkdf_sha256.c") \
     X("src/shared/crypto/crypto_util.c") \
     X("src/shared/crypto/curve25519.c") \

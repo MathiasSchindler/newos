@@ -1,5 +1,5 @@
-#ifndef NEWOS_CRYPTO_AES128_H
-#define NEWOS_CRYPTO_AES128_H
+#ifndef NEWOS_CRYPTO_AES_H
+#define NEWOS_CRYPTO_AES_H
 
 #include <stddef.h>
 

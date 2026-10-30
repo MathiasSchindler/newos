@@ -1,5 +1,5 @@
 #include "whisper_cpu.h"
-#include "math.h"
+#include "math/math.h"
 
 int whisper_cpu_projection(
     const float *weights, const float *bias, const float *input, float *output,

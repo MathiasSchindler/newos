@@ -8,7 +8,7 @@ phase1_math_setup bignum_library
 cat > "$WORK_DIR/test_bignum.c" <<'EOF'
 #include <stdio.h>
 #include <string.h>
-#include "bignum.h"
+#include "math/bignum.h"
 
 int rt_strcmp(const char *lhs, const char *rhs) {
     return strcmp(lhs, rhs);
@@ -303,7 +303,7 @@ EOF
 cc -std=c11 -Wall -Wextra -Wpedantic -O2 \
     -idirafter src/shared \
     -o "$WORK_DIR/test_bignum" "$WORK_DIR/test_bignum.c" \
-    src/shared/bignum.c || fail "bignum test compilation failed"
+    src/shared/math/bignum.c || fail "bignum test compilation failed"
 
 "$WORK_DIR/test_bignum" > "$WORK_DIR/test_output.txt" 2>&1 || {
     cat "$WORK_DIR/test_output.txt"

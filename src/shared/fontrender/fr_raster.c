@@ -3,7 +3,7 @@
 #include <limits.h>
 #include <stddef.h>
 
-#include "../math.h"
+#include "math/math.h"
 #include "runtime.h"
 
 #if !defined(FR_RASTER_DISABLE_SIMD)

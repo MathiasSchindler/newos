@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static int minify_one(const char *path) {
     XmlParser parser;

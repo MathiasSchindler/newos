@@ -73,7 +73,8 @@ When adding or extending userland tools:
 The project maintains shared implementation primitives in `src/shared/` that
 multiple tools can reuse:
 
-- **bignum.{c,h}** - freestanding arbitrary-precision signed integer arithmetic,
+- **math/** - binary64 helpers in `math.{c,h}` and freestanding
+  arbitrary-precision signed integer arithmetic in `bignum.{c,h}`. The latter is
   used by `bc`, `expr`, and `seq` to provide high-range numeric support without
   libc or heap allocation. The implementation uses base-1000000000
   representation with `BN_MAX_DIGITS` fixed-capacity limbs; the default is 8192
@@ -107,6 +108,9 @@ multiple tools can reuse:
   terminal raw-mode cleanup, and path-name tests. Keep these helpers boring and
   dependency-free; avoid moving command-specific policy or callback/context
   abstractions into the shared layer.
+  Implementations are grouped by their actual responsibility in `tool_*.c`;
+  see `project-layout(7)` for the map. XML parser, stream, DTD, and XML-specific
+  tool helpers live together under `xml/`, with their own headers.
 
 - **simple_config.{c,h}** and **server_log.{c,h}** - small shared config and
   escaped logging helpers used by `httpd`, `service`, and related daemon-style

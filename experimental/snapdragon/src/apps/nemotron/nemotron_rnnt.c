@@ -1,5 +1,5 @@
 #include "nemotron_rnnt.h"
-#include "math.h"
+#include "math/math.h"
 #include "runtime.h"
 
 static int rnnt_error(NmRnnt *state, const char *error) {

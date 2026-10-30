@@ -1,7 +1,7 @@
 #include "whisper_cpu_encoder.h"
 #include "whisper_cpu.h"
 #include "whisper_frontend.h"
-#include "math.h"
+#include "math/math.h"
 
 enum { WIDTH_CAPACITY = WHISPER_BASE_WIDTH, FRAMES = WHISPER_BASE_ENCODER_FRAMES,
        MEL_FRAMES = WHISPER_FRAME_COUNT, FFN_CAPACITY = WHISPER_BASE_FFN_WIDTH };

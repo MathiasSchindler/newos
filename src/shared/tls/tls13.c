@@ -1,7 +1,7 @@
 #include "tls/tls13.h"
 
 #include "crypto/hkdf_sha256.h"
-#include "crypto/hmac_sha256.h"
+#include "crypto/hmac_sha2.h"
 #include "runtime.h"
 
 static void store_be16(unsigned char *p, unsigned short v) {

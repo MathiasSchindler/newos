@@ -1,6 +1,6 @@
 #include "../nemotron_audio.h"
 #include "../nemotron_capture.h"
-#include "math.h"
+#include "math/math.h"
 #include "concurrency.h"
 
 static NmResampler first, second;

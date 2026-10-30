@@ -39,7 +39,7 @@ COMMON_CFLAGS ?= -std=c11 -Wall -Wextra -Wpedantic -Oz -ffreestanding -fno-built
 LDFLAGS ?= -nostdlib -static-pie -Wl,--gc-sections -Wl,-s
 endif
 
-SHARED_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|bignum|simple_config|server_log|xml|xml_stream|xml_dtd)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
+SHARED_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/(runtime/[^"]+|compression/[^"]+|math/[^"]+|xml/[^"]+|tool_[^"]+|archive_util|object_util|archive_zip|simple_config|server_log)\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
 TLS_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/tls/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
 CRYPTO_SOURCES := $(addprefix $(ROOT)/,$(shell cd $(ROOT) && grep -oE '"src/shared/crypto/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"' | sort -u))
 TARGET_PLATFORM_MANIFEST_SOURCES := $(shell cd $(ROOT) && grep -oE '"src/platform/linux/[^"]+\.c"|"src/arch/[^"]+/linux/[^"]+\.(c|S)"' src/compiler/source_manifest.h | tr -d '"')
@@ -60,7 +60,7 @@ FREESTANDING_C_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) $(TARGET_TLS_PLATFORM
 FREESTANDING_ASM_SOURCES := $(TARGET_PLATFORM_ASM_SOURCES) $(TARGET_CRT)
 source_object = $(OBJ_DIR)/$(patsubst %.S,%.o,$(patsubst %.c,%.o,$(patsubst $(ROOT)/%,%,$(1))))
 FREESTANDING_OBJECTS := $(foreach src,$(FREESTANDING_C_SOURCES) $(FREESTANDING_ASM_SOURCES),$(call source_object,$(src)))
-HOT_PATH_SOURCES := $(TLS_SOURCES) $(filter %/aes128.c %/aes128_gcm.c %/sha256.c,$(CRYPTO_SOURCES))
+HOT_PATH_SOURCES := $(TLS_SOURCES) $(filter %/aes.c %/aes_gcm.c %/sha256.c,$(CRYPTO_SOURCES))
 HOT_PATH_OBJECTS := $(foreach src,$(HOT_PATH_SOURCES),$(call source_object,$(src)))
 MACOS_CRT_OBJECT := $(call source_object,$(TARGET_CRT))
 

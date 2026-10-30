@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static void write_location(const XmlToken *token) {
     rt_write_uint(1, token->line);

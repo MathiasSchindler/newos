@@ -1,8 +1,8 @@
 #include "tls/tls12_client.h"
 
-#include "crypto/aes128_gcm.h"
+#include "crypto/aes_gcm.h"
 #include "crypto/crypto_util.h"
-#include "crypto/hmac_sha256.h"
+#include "crypto/hmac_sha2.h"
 #include "crypto/rsa.h"
 #include "crypto/sha512.h"
 #include "platform.h"

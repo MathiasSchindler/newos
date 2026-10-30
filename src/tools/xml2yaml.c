@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 
 static void write_indent(unsigned int depth) {

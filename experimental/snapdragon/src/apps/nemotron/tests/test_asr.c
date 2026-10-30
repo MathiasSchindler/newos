@@ -1,6 +1,6 @@
 #include "../nemotron_asr_runtime.h"
 #include "../nemotron_rnnt.h"
-#include "math.h"
+#include "math/math.h"
 
 static float logits[13088], encoder[640];
 static u32 tokens[32], predictions[32], choices[32], position, predicted, choice_count;

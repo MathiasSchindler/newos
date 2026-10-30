@@ -1,6 +1,6 @@
 #include <limits.h>
 
-#include "bignum.h"
+#include "math/bignum.h"
 #include "runtime.h"
 #include "tool_util.h"
 

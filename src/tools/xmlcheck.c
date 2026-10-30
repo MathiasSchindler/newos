@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static int check_one(const char *path, int buffered) {
     XmlParser parser;

@@ -1,6 +1,7 @@
+#include "xml/tool_xml.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 
 static void write_name_or_text(const XmlName *name, const char *replacement, int replace) {

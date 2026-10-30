@@ -1,4 +1,4 @@
-#include "../../src/shared/math.h"
+#include "../../src/shared/math/math.h"
 
 static int close_to(double actual, double expected, double tolerance) {
     return math_abs(actual - expected) <= tolerance;

@@ -24,34 +24,6 @@ void tool_close_input(int fd, int should_close) {
     }
 }
 
-int tool_path_is_directory(const char *path) {
-    int is_directory = 0;
-    return platform_path_is_directory(path, &is_directory) == 0 && is_directory;
-}
-
-int tool_should_replace_path(const char *source_path, const char *target_path, int source_is_directory, int no_clobber, int update_only, int interactive, const char *prompt_prefix) {
-    PlatformDirEntry source_info;
-    PlatformDirEntry target_info;
-
-    if (!tool_path_exists(target_path)) {
-        return 1;
-    }
-    if (no_clobber) {
-        return 0;
-    }
-    if (update_only &&
-        !source_is_directory &&
-        platform_get_path_info(source_path, &source_info) == 0 &&
-        platform_get_path_info(target_path, &target_info) == 0 &&
-        source_info.mtime <= target_info.mtime) {
-        return 0;
-    }
-    if (interactive) {
-        return tool_prompt_yes_no(prompt_prefix, target_path);
-    }
-    return 1;
-}
-
 static int tool_read_all_input_common(const char *path, unsigned char **data_out, size_t *size_out, const char *tool_name) {
     int fd;
     int should_close;
@@ -119,4 +91,29 @@ int tool_read_all_input(const char *path, unsigned char **data_out, size_t *size
 
 int tool_read_all_input_report(const char *path, unsigned char **data_out, size_t *size_out, const char *tool_name) {
     return tool_read_all_input_common(path, data_out, size_out, tool_name);
+}
+
+int tool_write_file_all(const char *path, const unsigned char *data, size_t size) {
+    int fd = platform_open_write(path, 0644U);
+    size_t written = 0U;
+
+    if (fd < 0) {
+        return -1;
+    }
+    while (written < size) {
+        long chunk = platform_write(fd, data + written, size - written);
+
+        if (chunk <= 0) {
+            platform_close(fd);
+            return -1;
+        }
+        written += (size_t)chunk;
+    }
+    return platform_close(fd) == 0 ? 0 : -1;
+}
+
+int tool_write_file_all_report(const char *path, const unsigned char *data, size_t size, const char *tool_name) {
+    if (tool_write_file_all(path, data, size) == 0) return 0;
+    tool_write_error(tool_name, "cannot write: ", path);
+    return -1;
 }

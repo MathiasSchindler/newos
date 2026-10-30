@@ -6,7 +6,7 @@ math - dependency-free binary64 helpers shared by project tools
 
 ## DESCRIPTION
 
-The project math layer lives in `src/shared/math.h` and `src/shared/math.c`. It provides a compact set of `double` operations for tools that need ordinary hardware floating-point calculations without libc or libm. The source is compiled directly into hosted and freestanding binaries and has no operating-system dependencies.
+The project math layer lives in `src/shared/math/math.h` and `src/shared/math/math.c`. It provides a compact set of `double` operations for tools that need ordinary hardware floating-point calculations without libc or libm. The source is compiled directly into hosted and freestanding binaries and has no operating-system dependencies.
 
 This is a project API rather than a complete ISO C `math.h`. Public names use the `math_` prefix so they do not collide with compiler builtins or a hosted system libm.
 

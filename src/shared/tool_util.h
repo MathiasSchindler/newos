@@ -2,7 +2,6 @@
 #define NEWOS_TOOL_UTIL_H
 
 #include "platform.h"
-#include "xml.h"
 
 #include <stddef.h>
 
@@ -23,7 +22,6 @@ int tool_store_fixed_record_text(char *records, size_t record_size, size_t max_r
 int tool_validate_absolute_program_path(const char *tool_name, const char *path);
 int tool_is_shell_builtin_name(const char *name);
 void tool_restore_terminal_mode_if_enabled(int fd, int *enabled_io, const PlatformTerminalState *state);
-int tool_xml_name_stack_push(XmlNameStack *stack, XmlName name, const char *tool_name);
 int tool_hex_value(char ch);
 int tool_base64_value(char ch);
 int tool_bytes_equal(const unsigned char *left, const unsigned char *right, size_t size);
@@ -105,30 +103,6 @@ void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter);
 int tool_record_reader_next(ToolRecordReader *reader, char *record, size_t record_size, int *has_record_out);
 int tool_record_reader_next_buffer(ToolRecordReader *reader, ToolByteBuffer *record, int *has_record_out);
 
-typedef enum {
-    TOOL_XML_KEY_ATTR = 1,
-    TOOL_XML_KEY_TEXT,
-    TOOL_XML_KEY_CHILD
-} ToolXmlKeyKind;
-
-typedef struct {
-    ToolXmlKeyKind kind;
-    const char *name;
-} ToolXmlKeySpec;
-
-typedef struct {
-    const char *key;
-    size_t key_length;
-    unsigned int active_child_depth;
-    int found;
-} ToolXmlKeyState;
-
-int tool_xml_key_parse(const char *text, ToolXmlKeySpec *spec, const char *tool_name);
-int tool_xml_selector_compile(XmlSelector *selector_out, const char *selector, const char *tool_name);
-void tool_xml_key_state_init(ToolXmlKeyState *state);
-void tool_xml_key_start(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
-void tool_xml_key_text(const ToolXmlKeySpec *spec, const XmlToken *token, unsigned int depth, unsigned int capture_depth, ToolXmlKeyState *state);
-void tool_xml_key_end(const ToolXmlKeySpec *spec, unsigned int depth, ToolXmlKeyState *state);
 
 typedef enum {
     TOOL_COLOR_NEVER = 0,
@@ -323,6 +297,9 @@ int tool_prompt_yes_no(const char *message, const char *path);
 
 int tool_apply_symbolic_mode(const char *text, unsigned int current_mode, unsigned int flags, unsigned int *mode_out);
 int tool_literal_prefix_matches(const char *pattern, const char *text, int ignore_case, size_t *consumed_out);
+#define TOOL_PATH_MODE_TYPE_MASK 0170000U
+#define TOOL_PATH_MODE_SYMLINK 0120000U
+
 const char *tool_base_name(const char *path);
 int tool_path_has_separator(const char *path);
 size_t tool_path_component_length(const char *path);

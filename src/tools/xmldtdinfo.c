@@ -1,7 +1,7 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
-#include "xml_dtd.h"
+#include "xml/xml.h"
+#include "xml/xml_dtd.h"
 
 static int info_from_dtd_file(const char *dtd_path) {
     XmlDtd dtd;

@@ -1,6 +1,7 @@
+#include "xml/tool_xml.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static int head_one(const char *selector, unsigned long long limit, const char *path, unsigned long long *written) {
     XmlParser parser;

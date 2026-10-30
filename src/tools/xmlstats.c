@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 
 #define XMLSTATS_INITIAL_NAMES 256

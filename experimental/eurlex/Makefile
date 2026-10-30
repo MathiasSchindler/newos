@@ -72,7 +72,7 @@ SHARED_C_SOURCES := \
     $(ROOT)/src/shared/archive_zip.c \
     $(ROOT)/src/shared/compression/crc32.c \
 	$(ROOT)/src/shared/compression/zlib.c \
-	$(ROOT)/src/shared/xml.c
+	$(ROOT)/src/shared/xml/xml.c
 HOST_PLATFORM_C_SOURCES := \
     $(ROOT)/src/platform/posix/fs.c \
     $(ROOT)/src/platform/posix/process.c \

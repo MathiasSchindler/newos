@@ -1,6 +1,7 @@
+#include "xml/tool_xml.h"
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 
 static void write_start_with_attr(const XmlToken *token, const char *attr_name, const char *value, int set_attr) {

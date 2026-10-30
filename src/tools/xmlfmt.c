@@ -1,6 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
-#include "xml.h"
+#include "xml/xml.h"
 
 static int format_one(const char *path, unsigned int indent_width) {
     XmlParser parser;

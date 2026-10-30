@@ -526,7 +526,7 @@ against the preserved symbol executable and its PDB. The raw export contains
 | `whisper_artifact_hash_update` | 2,929 | 17.73% |
 
 The two bit-conversion helpers alone represent 51.38% of application samples
-and 36.64% of all process samples. Their byte-copy loops in `src/shared/math.c`
+and 36.64% of all process samples. Their byte-copy loops in `src/shared/math/math.c`
 are the strongest exact-semantics CPU optimization candidate. The logarithm
 series is next; `sample_gumbel` calls two logarithms per vocabulary item when
 filling noise values. Available caller chains are incomplete, so these samples

@@ -1,3 +1,4 @@
+#include "xml/tool_xml.h"
 #include "runtime.h"
 #include "tool_util.h"
 #include "xml.h"

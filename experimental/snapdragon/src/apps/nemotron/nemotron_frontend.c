@@ -1,5 +1,5 @@
 #include "nemotron_frontend.h"
-#include "math.h"
+#include "math/math.h"
 #include "runtime.h"
 
 static int front_error(NmFrontend *state, const char *message) {

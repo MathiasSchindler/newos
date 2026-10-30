@@ -167,7 +167,7 @@ EOF
 fi
 
 cat > "$WORK_DIR/double_shared_math.c" <<'EOF'
-#include "math.h"
+#include "math/math.h"
 
 int main(void) {
     double root = math_sqrt(9.0);
@@ -188,7 +188,7 @@ int main(void) {
 EOF
 
 "${TEST_BIN_DIR}/ncc" --target "$RUN_TARGET" -Isrc/shared \
-    "$WORK_DIR/double_shared_math.c" src/shared/math.c -o "$WORK_DIR/double_shared_math_bin"
+    "$WORK_DIR/double_shared_math.c" src/shared/math/math.c -o "$WORK_DIR/double_shared_math_bin"
 actual_status=0
 "$WORK_DIR/double_shared_math_bin" || actual_status=$?
 assert_text_equals "$actual_status" "0" "compiler did not execute the shared binary64 math implementation correctly"
@@ -1194,8 +1194,8 @@ EOF
 compile_and_check_native "$WORK_DIR/signed_indexed_array_compare.c" "$WORK_DIR/signed_indexed_array_compare_bin" "0" "compiler treated an indexed signed int array expression as unsigned"
 
 cat > "$WORK_DIR/shared_crypto_api.c" <<'EOF'
-#include "crypto/aes128_gcm.h"
-#include "crypto/hmac_sha256.h"
+#include "crypto/aes_gcm.h"
+#include "crypto/hmac_sha2.h"
 #include "crypto/hkdf_sha256.h"
 #include "crypto/rsa.h"
 

@@ -1,4 +1,4 @@
-#include "crypto/hmac_sha256.h"
+#include "crypto/hmac_sha2.h"
 #include "crypto/crypto_util.h"
 
 static void hmac_sha256_prepare_key_block(

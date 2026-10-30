@@ -1,6 +1,6 @@
 #include "tls/tls13_record.h"
 
-#include "crypto/aes128_gcm.h"
+#include "crypto/aes_gcm.h"
 #include "runtime.h"
 static void store_be16(unsigned char *p, unsigned short v) {
 	p[0] = (unsigned char)(v >> 8);

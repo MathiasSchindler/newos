@@ -21,6 +21,10 @@ implementation files they live in a same-named subdirectory owned by that tool.
   subdirectory such as `src/tools/awk/`
 - `src/shared/` — reusable runtime helpers and cross-tool utilities; this is
   the home for genuinely shared code, not one-off private helper files
+- `src/shared/math/` — dependency-free binary64 helpers and fixed-capacity
+  arbitrary-precision integer arithmetic
+- `src/shared/xml/` — XML parsing, streaming, DTD support, and XML tool helpers;
+  XML-specific tool declarations live in `xml/tool_xml.h`, not `tool_util.h`
 - `src/shared/ssh/` — reusable SSH transport/client support shared by `ssh`,
   `sshd`, and Git-over-SSH remote operations
 - `src/compiler/` — the `ncc` frontend, IR, backends, and object writers
@@ -60,6 +64,38 @@ implementation files they live in a same-named subdirectory owned by that tool.
   generic tool code.
 - Legacy planning notes may still exist elsewhere in the tree, but the manual
   pages under `man/` should be treated as the current source of truth.
+
+## SHARED TOOL HELPERS
+
+The root-level `tool_*.c` files share concrete implementations, not interchangeable
+backends. Their declarations remain in `tool_util.h`, except for XML helpers:
+
+| Implementation | Contents |
+| --- | --- |
+| `tool_io.c` | Descriptor-based streaming, record readers, buffered output, and direct output helpers |
+| `tool_file.c` | Input opening/closing and whole-input reads / whole-file writes |
+| `tool_fs.c` | Copying, removal, tree walks, parent-directory creation, replacement policy, and symbolic permissions |
+| `tool_path.c` | Path names, joining, resolution, and filesystem identity checks |
+| `tool_cli.c` | Option iteration, usage/errors, interactive confirmation, and file-header policy |
+| `tool_json.c` | Shared structured-output mode and event writing |
+| `tool_buffer.c` | Byte buffers, arrays, fixed records, and bounded buffer appends |
+| `tool_binary.c` | Byte-order loads/stores, byte comparison, and hex/base64 digit conversion |
+| `tool_parse.c` | Numeric, address, size, and escaped-string parsing |
+| `tool_text.c` | Text comparison/matching, ASCII/UTF-8 predicates, word boundaries, display width, and tabstops |
+| `tool_regex.c` | Regular-expression compilation and matching |
+| `tool_format.c` | Integer-base, size, and block-size formatting; decimal digit counts |
+| `tool_time.c` | Timezones, durations, compact uptime, and civil-date arithmetic |
+| `tool_terminal.c` | Color/style policy, terminal-mode restoration, and pager sizing |
+| `tool_http.c` | HTTP status/header delimiters and direct HTTP/TLS connection operations |
+| `tool_object.c` | Object-symbol classification and display names |
+| `tool_process.c` | Process matching, signals, PID filters, program-path validation, and worker-count selection |
+
+Crypto filenames describe their implemented families: `crypto/aes.{c,h}` and
+`crypto/aes_gcm.{c,h}` support AES-128 and AES-256; `crypto/hmac_sha2.{c,h}`
+supports HMAC-SHA256 and HMAC-SHA384. Algorithm-specific public function names
+remain explicit. `usb_descriptor.c` pairs with `usb_descriptor.h` and contains
+descriptor parsing, not an OS USB transport backend. Renderer headers live
+directly beside their implementations in `fontrender/`.
 
 ## LIMITATIONS
 

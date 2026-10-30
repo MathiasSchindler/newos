@@ -1,3 +1,4 @@
+#include "concurrency.h"
 #include "runtime.h"
 #include "tool_util.h"
 
@@ -108,4 +109,65 @@ int tool_process_matches(const PlatformProcessEntry *entry, const ToolProcessMat
 
         return tool_regex_search(options->pattern, name, options->ignore_case, 0U, &start, &end) != 0 ||
             tool_regex_search(options->pattern, base, options->ignore_case, 0U, &start, &end) != 0;
+}
+
+int tool_validate_absolute_program_path(const char *tool_name, const char *path) {
+    if (path == 0 || path[0] != '/') {
+        tool_write_error(tool_name, "refusing non-absolute program path: ", path != 0 ? path : "(null)");
+        return -1;
+    }
+    return 0;
+}
+
+unsigned int tool_worker_count_from_env(const char *env_name, unsigned int default_max_workers) {
+    const char *value_text = platform_getenv(env_name);
+    unsigned long long value;
+    unsigned int platform_width;
+
+    if (value_text == 0 || value_text[0] == '\0') {
+        platform_width = platform_worker_thread_count();
+        if (platform_width == 0U) return 0U;
+        return platform_width > default_max_workers ? default_max_workers : platform_width;
+    }
+    if (rt_parse_uint(value_text, &value) != 0) {
+        return default_max_workers;
+    }
+    if (value > RT_TASK_POOL_MAX_WORKERS) {
+        return RT_TASK_POOL_MAX_WORKERS;
+    }
+    return (unsigned int)value;
+}
+
+int tool_parse_signal_name(const char *text, int *signal_out) {
+    return platform_parse_signal_name(text, signal_out);
+}
+
+const char *tool_signal_name(int signal_number) {
+    return platform_signal_name(signal_number);
+}
+
+void tool_write_signal_list(int fd) {
+    platform_write_signal_list(fd);
+}
+
+int tool_parse_pid_filter_list(const char *spec, int *pids_out, size_t max_count, size_t *count_out, const char *tool_name, int require_nonempty) {
+    size_t count = 0U;
+    size_t i = 0U;
+
+    while (spec[i] != '\0') {
+        char token[32];
+        size_t token_len = 0U;
+        long long pid_value = 0;
+
+        while (spec[i] == ',' || rt_is_space(spec[i])) i += 1U;
+        while (spec[i] != '\0' && spec[i] != ',' && token_len + 1U < sizeof(token)) token[token_len++] = spec[i++];
+        token[token_len] = '\0';
+        tool_trim_whitespace(token);
+        if (token[0] == '\0' || count >= max_count || tool_parse_int_arg(token, &pid_value, tool_name, "pid") != 0 || pid_value <= 0) return -1;
+        pids_out[count++] = (int)pid_value;
+        while (spec[i] != '\0' && spec[i] != ',') i += 1U;
+    }
+    if (require_nonempty && count == 0U) return -1;
+    *count_out = count;
+    return 0;
 }

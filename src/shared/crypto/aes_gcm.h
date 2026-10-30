@@ -1,8 +1,8 @@
-#ifndef NEWOS_CRYPTO_AES128_GCM_H
-#define NEWOS_CRYPTO_AES128_GCM_H
+#ifndef NEWOS_CRYPTO_AES_GCM_H
+#define NEWOS_CRYPTO_AES_GCM_H
 
 #include <stddef.h>
-#include "crypto/aes128.h"
+#include "crypto/aes.h"
 
 #define CRYPTO_AES128_GCM_TAG_SIZE 16
 #define CRYPTO_AES128_GCM_IV_SIZE 12

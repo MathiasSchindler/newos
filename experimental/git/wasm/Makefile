@@ -52,6 +52,15 @@ TOOL_SOURCES := \
 	$(ROOT)/src/shared/tool_cli.c \
 	$(ROOT)/src/shared/tool_file.c \
 	$(ROOT)/src/shared/tool_io.c \
+	$(ROOT)/src/shared/tool_binary.c \
+	$(ROOT)/src/shared/tool_buffer.c \
+	$(ROOT)/src/shared/tool_format.c \
+	$(ROOT)/src/shared/tool_http.c \
+	$(ROOT)/src/shared/tool_object.c \
+	$(ROOT)/src/shared/tool_parse.c \
+	$(ROOT)/src/shared/tool_terminal.c \
+	$(ROOT)/src/shared/tool_text.c \
+	$(ROOT)/src/shared/tool_time.c \
 	$(ROOT)/src/shared/tool_path.c \
 	$(ROOT)/src/shared/tool_fs.c \
 	$(ROOT)/src/shared/tool_regex.c \

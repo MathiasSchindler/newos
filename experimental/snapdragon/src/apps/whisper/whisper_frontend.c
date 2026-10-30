@@ -1,5 +1,5 @@
 #include "whisper_frontend.h"
-#include "math.h"
+#include "math/math.h"
 
 typedef unsigned char u8;
 typedef unsigned short u16;

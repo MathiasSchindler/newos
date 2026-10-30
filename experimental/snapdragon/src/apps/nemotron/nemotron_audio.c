@@ -1,7 +1,7 @@
 #include "nemotron_audio.h"
 #include "runtime.h"
 #include "platform.h"
-#include "math.h"
+#include "math/math.h"
 
 static int resample_error(NmResampler *state, const char *message) { state->error = message; return 0; }
 int nm_resampler_init(NmResampler *state, uint32_t rate, uint32_t channels, uint32_t format) {

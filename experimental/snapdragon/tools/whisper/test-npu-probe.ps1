@@ -103,7 +103,7 @@ try {
         experimental/snapdragon/src/apps/whisper/whisper_decoder.c `
         experimental/snapdragon/src/apps/whisper/whisper_decoder_qnn.c `
         experimental/snapdragon/src/apps/whisper/whisper_encoder_qnn.c `
-        src/shared/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
+        src/shared/math/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
         src/platform/windows/thread.c `
         -o $contextTestPath
     if ($LASTEXITCODE -ne 0) { throw "Failed to build context metadata test" }
@@ -118,7 +118,7 @@ try {
         experimental/snapdragon/src/apps/whisper/whisper_artifact.c `
         experimental/snapdragon/src/apps/whisper/whisper_model.c `
         experimental/snapdragon/src/apps/whisper/whisper_frontend.c `
-        src/shared/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
+        src/shared/math/math.c src/shared/runtime/memory.c src/shared/runtime/concurrency.c `
         src/platform/windows/thread.c `
         -o $decoderTestPath
     if ($LASTEXITCODE -ne 0) { throw "Failed to build decoder cleanup test" }

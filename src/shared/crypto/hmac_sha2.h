@@ -1,5 +1,5 @@
-#ifndef NEWOS_CRYPTO_HMAC_SHA256_H
-#define NEWOS_CRYPTO_HMAC_SHA256_H
+#ifndef NEWOS_CRYPTO_HMAC_SHA2_H
+#define NEWOS_CRYPTO_HMAC_SHA2_H
 
 #include <stddef.h>
 

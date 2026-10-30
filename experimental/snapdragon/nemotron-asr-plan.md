@@ -79,7 +79,7 @@ Nicht den gesamten Whisper-Stack fuer Nemotron parametrisierbar umbauen.
 
 ### newos-Substrat und Plattformgrenze
 
-[Runtime](../../src/shared/runtime.h), [Mathematik](../../src/shared/math.h)
+[Runtime](../../src/shared/runtime.h), [Mathematik](../../src/shared/math/math.h)
 und [Task-Pool](../../src/shared/concurrency.h) liefern Speicher, gepruefte
 Array-Allokation, I/O, UTF-8, numerische Funktionen und CPU-Parallelisierung.
 Diese Bausteine direkt einbinden, nicht privat nachbauen. Portable Frontend-,

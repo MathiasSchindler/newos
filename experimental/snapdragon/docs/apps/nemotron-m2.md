@@ -34,7 +34,7 @@ unchanged 320-ms final latency goal are preserved.
 ## Frontend contract
 
 [The portable frontend](../../src/apps/nemotron/nemotron_frontend.c) uses
-newos [math](../../../../src/shared/math.h) and runtime support. It retains
+newos [math](../../../../src/shared/math/math.h) and runtime support. It retains
 the previous raw sample for FP32 preemphasis0.97 and bounded centered STFT
 history. The frozen M0 symmetric400-sample Hann window is centered in a
 512-point FFT; Slaney128-mel coefficients are copied exactly from M0, not

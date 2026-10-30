@@ -1,4 +1,4 @@
-#include "crypto/aes128.h"
+#include "crypto/aes.h"
 #include "runtime.h"
 
 #ifdef CRYPTO_AES_TRACE

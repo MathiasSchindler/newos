@@ -85,7 +85,7 @@ try {
             @('experimental/snapdragon/src/apps/whisper/whisper_hmx.c', 'whisper_hmx.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_decoder.c', 'whisper_decoder.obj'),
             @('experimental/snapdragon/src/apps/whisper/whisper_frontend.c', 'whisper_frontend.obj'),
-            @('src/shared/math.c', 'shared_math.obj'),
+            @('src/shared/math/math.c', 'shared_math.obj'),
             @('src/shared/runtime/memory.c', 'runtime_memory.obj'),
             @('src/shared/runtime/concurrency.c', 'runtime_concurrency.obj'),
             @('src/platform/windows/thread.c', 'platform_thread.obj'),
@@ -300,7 +300,7 @@ try {
         "experimental/snapdragon/src/apps/whisper/whisper_decoder.c",
         "experimental/snapdragon/src/apps/whisper/whisper_decoder_qnn.c",
         "experimental/snapdragon/src/apps/whisper/whisper_encoder_qnn.c",
-        "src/shared/math.c",
+        "src/shared/math/math.c",
         "src/shared/runtime/memory.c",
         "src/shared/runtime/concurrency.c",
         "src/platform/windows/thread.c"
