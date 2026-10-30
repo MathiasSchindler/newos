@@ -47,6 +47,12 @@ compiler, math, platform, archive/compression, checksum, ELF inspection,
 process-state, metadata, image/C2PA, XML, daemon, service, TLS-backed network,
 and basic local network/build contracts.
 
+The `tools/platform/fontrender` group builds a focused renderer fixture for the
+selected hosted or native freestanding output directory. It generates its own
+TrueType data, so no installed font or external font library is required. It
+checks file and borrowed-memory loading, exact raster coverage, glyph caching,
+fallbacks, malformed input, and concurrent prefetch where native threads exist.
+
 ## CONTRIBUTOR NOTES
 
 - A failing run leaves logs under `tests/tmp/logs/<suite>.log`; start there

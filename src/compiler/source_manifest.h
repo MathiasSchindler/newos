@@ -168,8 +168,6 @@
 /* ── TrueType font rendering helpers ────────────────────────────────────── */
 
 #define FOREACH_FONTRENDER_SOURCE(X) \
-    X("src/shared/fontrender_runtime.c") \
-    X("src/shared/fontrender/fr_platform.c") \
     X("src/shared/fontrender/fr_raster.c") \
     X("src/shared/fontrender/fr_ttf.c") \
     X("src/shared/fontrender/font_backend_truetype.c")

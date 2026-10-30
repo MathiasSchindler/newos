@@ -91,8 +91,10 @@ multiple tools can reuse:
   invalid UTF-8, incomplete UTF-8, wide, and zero-width character handling for
   wrapping and table-oriented tools.
 
-- **fontrender_runtime.c** and **fontrender/** - embedded font-rendering support
-  for render-oriented tools and UI work, backed by the shared runtime.
+- **fontrender/** - TrueType parsing, glyph caching, and rasterization for
+  render-oriented tools and UI work. Uses the shared runtime directly for
+  allocation and memory operations, and `platform.h` for file I/O and mutexes;
+  no renderer-specific platform hooks or initialization step are required.
 
 - **tool_util.h** - common tool argument parsing, error reporting, and small
   direct mechanics that recur across tools, such as byte-order loads/stores,

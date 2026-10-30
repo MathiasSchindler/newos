@@ -2,7 +2,8 @@
 
 #include <stdbool.h>
 
-#include "fr_platform_internal.h"
+#include "platform.h"
+#include "runtime.h"
 
 #define FR_TTF_TAG(a, b, c, d) \
     ((((uint32_t)(uint8_t)(a)) << 24) | (((uint32_t)(uint8_t)(b)) << 16) | (((uint32_t)(uint8_t)(c)) << 8) | ((uint32_t)(uint8_t)(d)))
@@ -34,8 +35,7 @@ typedef struct {
 struct FrTtfFont {
     const uint8_t *data;
     size_t data_size;
-    FrPlatform platform;
-    FrPlatformFile loaded_file;
+    uint8_t *owned_data;
 
     const uint8_t *head;
     size_t head_length;
@@ -108,18 +108,40 @@ static bool fr_ttf_ranges_overlap(const FrTtfTable *a, const FrTtfTable *b) {
 }
 
 static FrTtfResult fr_ttf_load_file(FrTtfFont *font, const char *path) {
-    FrPlatformFileResult file_result;
+    int fd;
+    long long file_size;
+    uint8_t *data;
+    size_t offset = 0u;
 
-    file_result = fr_platform_load_file_with(&font->platform, path, &font->loaded_file);
-    if (file_result == FR_PLATFORM_FILE_ERR_NO_MEMORY) {
-        return FR_TTF_ERR_NO_MEMORY;
+    fd = platform_open_read(path);
+    if (fd < 0) {
+        return FR_TTF_ERR_IO;
     }
-    if (file_result != FR_PLATFORM_FILE_OK) {
+    file_size = platform_seek(fd, 0, PLATFORM_SEEK_END);
+    if (file_size < 0 || (unsigned long long)file_size > SIZE_MAX ||
+        platform_seek(fd, 0, PLATFORM_SEEK_SET) < 0) {
+        (void)platform_close(fd);
         return FR_TTF_ERR_IO;
     }
 
-    font->data = font->loaded_file.data;
-    font->data_size = font->loaded_file.size;
+    data = (uint8_t *)rt_malloc(file_size == 0 ? 1u : (size_t)file_size);
+    if (data == NULL) {
+        (void)platform_close(fd);
+        return FR_TTF_ERR_NO_MEMORY;
+    }
+    while (offset < (size_t)file_size) {
+        long bytes = platform_read(fd, data + offset, (size_t)file_size - offset);
+        if (bytes <= 0) {
+            rt_free(data);
+            (void)platform_close(fd);
+            return FR_TTF_ERR_IO;
+        }
+        offset += (size_t)bytes;
+    }
+    (void)platform_close(fd);
+    font->owned_data = data;
+    font->data = data;
+    font->data_size = (size_t)file_size;
     return FR_TTF_OK;
 }
 
@@ -161,7 +183,7 @@ static FrTtfResult fr_ttf_parse_directory(FrTtfFont *font, FrTtfTable **out_tabl
         return FR_TTF_ERR_MALFORMED;
     }
 
-    tables = (FrTtfTable *)fr_platform_calloc_with(&font->platform, (size_t)num_tables, sizeof(*tables));
+    tables = (FrTtfTable *)rt_malloc_array((size_t)num_tables, sizeof(*tables));
     if (tables == NULL) {
         return FR_TTF_ERR_NO_MEMORY;
     }
@@ -176,16 +198,16 @@ static FrTtfResult fr_ttf_parse_directory(FrTtfFont *font, FrTtfTable **out_tabl
         tables[i].length = length;
 
         if (!fr_ttf_range_valid(font->data_size, offset, length)) {
-            fr_platform_free_with(&font->platform, tables);
+            rt_free(tables);
             return FR_TTF_ERR_MALFORMED;
         }
         if (length != 0u && offset < table_bytes) {
-            fr_platform_free_with(&font->platform, tables);
+            rt_free(tables);
             return FR_TTF_ERR_MALFORMED;
         }
         for (j = 0u; j < i; ++j) {
             if (tables[j].tag == tables[i].tag) {
-                fr_platform_free_with(&font->platform, tables);
+                rt_free(tables);
                 return FR_TTF_ERR_MALFORMED;
             }
         }
@@ -194,7 +216,7 @@ static FrTtfResult fr_ttf_parse_directory(FrTtfFont *font, FrTtfTable **out_tabl
     for (i = 0u; i < num_tables; ++i) {
         for (j = (uint16_t)(i + 1u); j < num_tables; ++j) {
             if (fr_ttf_ranges_overlap(&tables[i], &tables[j])) {
-                fr_platform_free_with(&font->platform, tables);
+                rt_free(tables);
                 return FR_TTF_ERR_MALFORMED;
             }
         }
@@ -641,55 +663,55 @@ static FrTtfResult fr_ttf_parse(FrTtfFont *font) {
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('h', 'e', 'a', 'd'));
     result = fr_ttf_assign_table(font, table, &font->head, &font->head_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('m', 'a', 'x', 'p'));
     result = fr_ttf_assign_table(font, table, &font->maxp, &font->maxp_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('h', 'h', 'e', 'a'));
     result = fr_ttf_assign_table(font, table, &font->hhea, &font->hhea_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('h', 'm', 't', 'x'));
     result = fr_ttf_assign_table(font, table, &font->hmtx, &font->hmtx_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('c', 'm', 'a', 'p'));
     result = fr_ttf_assign_table(font, table, &font->cmap, &font->cmap_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('l', 'o', 'c', 'a'));
     result = fr_ttf_assign_table(font, table, &font->loca, &font->loca_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('g', 'l', 'y', 'f'));
     result = fr_ttf_assign_table(font, table, &font->glyf, &font->glyf_length);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, tables);
+        rt_free(tables);
         return result;
     }
     table = fr_ttf_find_table(tables, num_tables, FR_TTF_TAG('n', 'a', 'm', 'e'));
     if (table != NULL) {
         result = fr_ttf_assign_table(font, table, &font->name, &font->name_length);
         if (result != FR_TTF_OK) {
-            fr_platform_free_with(&font->platform, tables);
+            rt_free(tables);
             return result;
         }
     }
 
-    fr_platform_free_with(&font->platform, tables);
+    rt_free(tables);
 
     result = fr_ttf_parse_head(font);
     if (result != FR_TTF_OK) {
@@ -821,7 +843,6 @@ static FrTtfResult fr_ttf_lookup_cmap4(const FrTtfFont *font, uint32_t codepoint
 
 FrTtfResult fr_ttf_open(FrTtfFont **out_font, const char *path) {
     FrTtfFont *font;
-    FrPlatform platform;
     FrTtfResult result;
 
     if (out_font == NULL || path == NULL) {
@@ -829,16 +850,15 @@ FrTtfResult fr_ttf_open(FrTtfFont **out_font, const char *path) {
     }
     *out_font = NULL;
 
-    fr_platform_resolve(&platform);
-    font = (FrTtfFont *)fr_platform_calloc_with(&platform, 1u, sizeof(*font));
+    font = (FrTtfFont *)rt_malloc(sizeof(*font));
     if (font == NULL) {
         return FR_TTF_ERR_NO_MEMORY;
     }
-    font->platform = platform;
+    memset(font, 0, sizeof(*font));
 
     result = fr_ttf_load_file(font, path);
     if (result != FR_TTF_OK) {
-        fr_platform_free_with(&font->platform, font);
+        rt_free(font);
         return result;
     }
 
@@ -854,7 +874,6 @@ FrTtfResult fr_ttf_open(FrTtfFont **out_font, const char *path) {
 
 FrTtfResult fr_ttf_open_memory(FrTtfFont **out_font, const void *data, size_t size) {
     FrTtfFont *font;
-    FrPlatform platform;
     FrTtfResult result;
 
     if (out_font == NULL || data == NULL) {
@@ -862,12 +881,11 @@ FrTtfResult fr_ttf_open_memory(FrTtfFont **out_font, const void *data, size_t si
     }
     *out_font = NULL;
 
-    fr_platform_resolve(&platform);
-    font = (FrTtfFont *)fr_platform_calloc_with(&platform, 1u, sizeof(*font));
+    font = (FrTtfFont *)rt_malloc(sizeof(*font));
     if (font == NULL) {
         return FR_TTF_ERR_NO_MEMORY;
     }
-    font->platform = platform;
+    memset(font, 0, sizeof(*font));
     font->data = (const uint8_t *)data;
     font->data_size = size;
 
@@ -885,10 +903,8 @@ void fr_ttf_close(FrTtfFont *font) {
     if (font == NULL) {
         return;
     }
-    if (font->loaded_file.data != NULL) {
-        fr_platform_unload_file_with(&font->platform, &font->loaded_file);
-    }
-    fr_platform_free_with(&font->platform, font);
+    rt_free(font->owned_data);
+    rt_free(font);
 }
 
 const char *fr_ttf_result_string(FrTtfResult result) {
@@ -1001,7 +1017,7 @@ FrTtfResult fr_ttf_get_glyph(const FrTtfFont *font, uint16_t glyph_index, FrTtfG
     }
 
     glyph_length = (size_t)(next_offset - glyph_offset);
-    fr_platform_memset_with(&font->platform, out_glyph, 0, sizeof(*out_glyph));
+    memset(out_glyph, 0, sizeof(*out_glyph));
     out_glyph->glyph_index = glyph_index;
     out_glyph->data = glyph_length == 0u ? NULL : font->glyf + glyph_offset;
     out_glyph->data_length = glyph_length;

@@ -3,7 +3,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "fr_platform_internal.h"
+#include "platform.h"
+#include "runtime.h"
+#include "tool_util.h"
 #include "fontrender/fr_raster.h"
 #include "fontrender/fr_ttf.h"
 
@@ -77,8 +79,7 @@ typedef struct {
 } FrLookupCacheEntry;
 
 struct FrFont {
-    FrPlatform platform;
-    void *mutex;
+    PlatformMutex mutex;
     FrTtfFont *ttf;
     FrTtfInfo info;
     uint16_t fallback_glyph_index;
@@ -90,21 +91,6 @@ struct FrFont {
     FrOutlineCacheEntry outline_entries[FR_OUTLINE_CACHE_CAP];
     FrLookupCacheEntry lookup_entries[FR_LOOKUP_CACHE_CAP];
 };
-
-#define FR_FONT_LOG(font, ...) \
-    fr_platform_log_with(&(font)->platform, FR_PLATFORM_LOG_ERROR, "font_backend_truetype", __VA_ARGS__)
-
-static void fr_font_lock(FrFont *font) {
-    if (font != NULL && font->mutex != NULL && font->platform.mutex_lock != NULL) {
-        font->platform.mutex_lock(font->platform.user_data, font->mutex);
-    }
-}
-
-static void fr_font_unlock(FrFont *font) {
-    if (font != NULL && font->mutex != NULL && font->platform.mutex_unlock != NULL) {
-        font->platform.mutex_unlock(font->platform.user_data, font->mutex);
-    }
-}
 
 static uint16_t fr_read_u16(const uint8_t *ptr) {
     return (uint16_t)(((uint16_t)ptr[0] << 8) | (uint16_t)ptr[1]);
@@ -213,7 +199,7 @@ static int fr_reserve_simple_decode_buffers(FrFont *font, size_t point_count) {
         new_capacity *= 2u;
     }
 
-    grown_points = (FrSimpleDecodePoint *)fr_platform_realloc_with(&font->platform, font->simple_points,
+    grown_points = (FrSimpleDecodePoint *)rt_realloc(font->simple_points,
                                                                    new_capacity * sizeof(*font->simple_points));
     if (grown_points == NULL) {
         return -1;
@@ -263,10 +249,10 @@ static int fr_outline_copy(FrOutline *dst, const FrOutline *src) {
     point_bytes = src->point_count * sizeof(*src->points);
     contour_bytes = src->contour_count * sizeof(*src->contours);
     if (point_bytes != 0u) {
-        fr_platform_memcpy(dst->points, src->points, point_bytes);
+        memcpy(dst->points, src->points, point_bytes);
     }
     if (contour_bytes != 0u) {
-        fr_platform_memcpy(dst->contours, src->contours, contour_bytes);
+        memcpy(dst->contours, src->contours, contour_bytes);
     }
     dst->point_count = src->point_count;
     dst->contour_count = src->contour_count;
@@ -311,7 +297,7 @@ static int fr_outline_copy_scaled(FrOutline *dst, const FrOutline *src, const Fr
 
     contour_bytes = src->contour_count * sizeof(*src->contours);
     if (contour_bytes != 0u) {
-        fr_platform_memcpy(dst->contours, src->contours, contour_bytes);
+        memcpy(dst->contours, src->contours, contour_bytes);
     }
     dst->point_count = src->point_count;
     dst->contour_count = src->contour_count;
@@ -693,17 +679,18 @@ static int fr_decode_compound_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOut
         have_instructions = have_instructions || (flags & FR_COMPOUND_HAVE_INSTRUCTIONS) != 0u;
 
         if (component_glyph_index >= font->info.num_glyphs) {
-            FR_FONT_LOG(font, "compound glyph references invalid component %u\n",
-                    (unsigned int)component_glyph_index);
+            rt_write_cstr(2, "fontrender: compound glyph references invalid component ");
+            rt_write_uint(2, component_glyph_index);
+            rt_write_char(2, '\n');
             return -1;
         }
         if ((flags & FR_COMPOUND_ARGS_ARE_XY) == 0u) {
-            FR_FONT_LOG(font, "matched-point compound glyphs are not supported yet\n");
+            tool_write_error("fontrender", "matched-point compound glyphs are not supported yet", NULL);
             return -1;
         }
         if ((flags & FR_COMPOUND_SCALED_OFFSET) != 0u &&
             (flags & FR_COMPOUND_UNSCALED_OFFSET) != 0u) {
-            FR_FONT_LOG(font, "invalid compound glyph offset flags\n");
+            tool_write_error("fontrender", "invalid compound glyph offset flags", NULL);
             return -1;
         }
 
@@ -769,8 +756,9 @@ static int fr_decode_compound_glyph(FrFont *font, const FrTtfGlyph *glyph, FrOut
         component_outline = &font->scratch_outlines[depth];
         fr_outline_reset(component_outline);
         if (fr_get_glyph_outline(font, component_glyph_index, component_outline, stack, depth) != 0) {
-            FR_FONT_LOG(font, "failed to decode compound component %u\n",
-                    (unsigned int)component_glyph_index);
+            rt_write_cstr(2, "fontrender: failed to decode compound component ");
+            rt_write_uint(2, component_glyph_index);
+            rt_write_char(2, '\n');
             return -1;
         }
         if (fr_outline_append_transformed(outline, component_outline, m00, m01, m10, m11, dx, dy) != 0) {
@@ -805,13 +793,14 @@ static int fr_decode_glyph_outline_uncached(FrFont *font, uint16_t glyph_index, 
         return -1;
     }
     if (depth >= FR_COMPOUND_RECURSION_LIMIT) {
-        FR_FONT_LOG(font, "compound glyph recursion limit exceeded\n");
+        tool_write_error("fontrender", "compound glyph recursion limit exceeded", NULL);
         return -1;
     }
     for (i = 0u; i < depth; ++i) {
         if (stack[i] == glyph_index) {
-            FR_FONT_LOG(font, "cyclic compound glyph reference for glyph %u\n",
-                    (unsigned int)glyph_index);
+            rt_write_cstr(2, "fontrender: cyclic compound glyph reference for glyph ");
+            rt_write_uint(2, glyph_index);
+            rt_write_char(2, '\n');
             return -1;
         }
     }
@@ -819,8 +808,10 @@ static int fr_decode_glyph_outline_uncached(FrFont *font, uint16_t glyph_index, 
 
     result = fr_ttf_get_glyph(font->ttf, glyph_index, &glyph);
     if (result != FR_TTF_OK) {
-        FR_FONT_LOG(font, "fr_ttf_get_glyph(%u) failed: %s\n",
-                (unsigned int)glyph_index, fr_ttf_result_string(result));
+        rt_write_cstr(2, "fontrender: failed to read glyph ");
+        rt_write_uint(2, glyph_index);
+        rt_write_cstr(2, ": ");
+        rt_write_line(2, fr_ttf_result_string(result));
         return -1;
     }
     if (glyph.data == NULL || glyph.data_length == 0u || glyph.number_of_contours == 0) {
@@ -833,8 +824,11 @@ static int fr_decode_glyph_outline_uncached(FrFont *font, uint16_t glyph_index, 
         return fr_decode_compound_glyph(font, &glyph, outline, stack, depth + 1u);
     }
 
-    FR_FONT_LOG(font, "unsupported glyph contour type %d for glyph %u\n",
-            glyph.number_of_contours, (unsigned int)glyph_index);
+    rt_write_cstr(2, "fontrender: unsupported glyph contour type ");
+    rt_write_int(2, glyph.number_of_contours);
+    rt_write_cstr(2, " for glyph ");
+    rt_write_uint(2, glyph_index);
+    rt_write_char(2, '\n');
     return -1;
 }
 
@@ -892,6 +886,7 @@ static int fr_lookup_render_glyph(FrFont *font, uint32_t requested_codepoint,
     uint16_t glyph_index;
     FrLookupCacheEntry *entry;
     FrLookupCacheEntry *victim;
+    char codepoint_text[16];
 
     if (font == NULL || out_glyph_index == NULL || out_render_codepoint == NULL) {
         return -1;
@@ -915,13 +910,18 @@ static int fr_lookup_render_glyph(FrFont *font, uint32_t requested_codepoint,
         return 0;
     }
     if (result != FR_TTF_ERR_NOT_FOUND) {
-        FR_FONT_LOG(font, "glyph lookup for U+%04X failed: %s\n",
-                (unsigned int)requested_codepoint, fr_ttf_result_string(result));
+        tool_format_unsigned_base(requested_codepoint, 16, 1, codepoint_text, sizeof(codepoint_text));
+        rt_write_cstr(2, "fontrender: glyph lookup for U+");
+        rt_write_cstr(2, codepoint_text);
+        rt_write_cstr(2, " failed: ");
+        rt_write_line(2, fr_ttf_result_string(result));
         return -1;
     }
     if (!font->have_fallback_glyph) {
-        FR_FONT_LOG(font, "font has no '?' fallback for missing U+%04X\n",
-                (unsigned int)requested_codepoint);
+        tool_format_unsigned_base(requested_codepoint, 16, 1, codepoint_text, sizeof(codepoint_text));
+        rt_write_cstr(2, "fontrender: font has no '?' fallback for missing U+");
+        rt_write_cstr(2, codepoint_text);
+        rt_write_char(2, '\n');
         return -1;
     }
 
@@ -943,6 +943,7 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
     FrOutline *outline;
     FrBitmap bitmap;
     uint16_t stack[FR_COMPOUND_RECURSION_LIMIT];
+    char codepoint_text[16];
     int advance;
     int status = -1;
 
@@ -956,13 +957,15 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
         return -1;
     }
     if (fr_ttf_get_hmetric(font->ttf, glyph_index, &metric) != FR_TTF_OK) {
-        FR_FONT_LOG(font, "failed to load hmetric for glyph %u\n",
-                (unsigned int)glyph_index);
+        rt_write_cstr(2, "fontrender: failed to load hmetric for glyph ");
+        rt_write_uint(2, glyph_index);
+        rt_write_char(2, '\n');
         return -1;
     }
     if (fr_scale_units_round((int32_t)metric.advance_width, &scale, &advance) != 0) {
-        FR_FONT_LOG(font, "failed to scale advance for glyph %u\n",
-                (unsigned int)glyph_index);
+        rt_write_cstr(2, "fontrender: failed to scale advance for glyph ");
+        rt_write_uint(2, glyph_index);
+        rt_write_char(2, '\n');
         return -1;
     }
 
@@ -971,12 +974,16 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
     fr_bitmap_init(&bitmap);
 
     if (fr_load_glyph_outline_for_render(font, glyph_index, outline, &scale, stack) != 0) {
-        FR_FONT_LOG(font, "failed to load outline for glyph %u for U+%04X\n",
-                (unsigned int)glyph_index, (unsigned int)requested_codepoint);
+        tool_format_unsigned_base(requested_codepoint, 16, 1, codepoint_text, sizeof(codepoint_text));
+        rt_write_cstr(2, "fontrender: failed to load outline for glyph ");
+        rt_write_uint(2, glyph_index);
+        rt_write_cstr(2, " for U+");
+        rt_write_cstr(2, codepoint_text);
+        rt_write_char(2, '\n');
         goto cleanup;
     }
     if (outline->point_count == 0u) {
-        fr_platform_free_with(&font->platform, entry->bitmap_storage);
+        rt_free(entry->bitmap_storage);
         entry->bitmap_storage = NULL;
         entry->requested_codepoint = requested_codepoint;
         entry->glyph.codepoint = render_codepoint;
@@ -993,12 +1000,16 @@ static int fr_load_cached_glyph(FrFont *font, FrGlyphCacheEntry *entry,
         goto cleanup;
     }
     if (fr_raster_render(&bitmap, outline) != 0) {
-        FR_FONT_LOG(font, "failed to rasterize glyph %u for U+%04X\n",
-                (unsigned int)glyph_index, (unsigned int)requested_codepoint);
+        tool_format_unsigned_base(requested_codepoint, 16, 1, codepoint_text, sizeof(codepoint_text));
+        rt_write_cstr(2, "fontrender: failed to rasterize glyph ");
+        rt_write_uint(2, glyph_index);
+        rt_write_cstr(2, " for U+");
+        rt_write_cstr(2, codepoint_text);
+        rt_write_char(2, '\n');
         goto cleanup;
     }
 
-    fr_platform_free_with(&font->platform, entry->bitmap_storage);
+    rt_free(entry->bitmap_storage);
     entry->bitmap_storage = bitmap.pixels;
     bitmap.pixels = NULL;
     entry->requested_codepoint = requested_codepoint;
@@ -1022,7 +1033,6 @@ cleanup:
 
 static int fr_font_open_impl(FrFont **out_font, const char *font_path, const void *data, size_t size, bool from_memory) {
     FrFont *font;
-    FrPlatform platform;
     FrTtfResult result;
 
     if (out_font == NULL || (!from_memory && font_path == NULL) || (from_memory && data == NULL)) {
@@ -1030,40 +1040,28 @@ static int fr_font_open_impl(FrFont **out_font, const char *font_path, const voi
     }
     *out_font = NULL;
 
-    fr_platform_resolve(&platform);
-    font = (FrFont *)fr_platform_calloc_with(&platform, 1u, sizeof(*font));
+    font = (FrFont *)rt_malloc(sizeof(*font));
     if (font == NULL) {
+        tool_write_error("fontrender", "out of memory", NULL);
         return -1;
     }
-    font->platform = platform;
-    if (font->platform.mutex_create != NULL) {
-        font->mutex = font->platform.mutex_create(font->platform.user_data);
-        if (font->mutex == NULL) {
-            FR_FONT_LOG(font, "failed to create optional font mutex\n");
-            fr_platform_free_with(&font->platform, font);
-            return -1;
-        }
-    }
+    memset(font, 0, sizeof(*font));
+    platform_mutex_init(&font->mutex);
 
     result = from_memory ? fr_ttf_open_memory(&font->ttf, data, size) : fr_ttf_open(&font->ttf, font_path);
     if (result != FR_TTF_OK) {
-        FR_FONT_LOG(font, "failed to open %s: %s\n",
-                    from_memory ? "<memory>" : font_path, fr_ttf_result_string(result));
-        if (font->mutex != NULL) {
-            font->platform.mutex_destroy(font->platform.user_data, font->mutex);
-        }
-        fr_platform_free_with(&font->platform, font);
+        rt_write_cstr(2, "fontrender: failed to open ");
+        rt_write_cstr(2, from_memory ? "<memory>" : font_path);
+        rt_write_cstr(2, ": ");
+        rt_write_line(2, fr_ttf_result_string(result));
+        rt_free(font);
         return -1;
     }
     result = fr_ttf_get_info(font->ttf, &font->info);
     if (result != FR_TTF_OK) {
-        FR_FONT_LOG(font, "failed to read font info: %s\n",
-                    fr_ttf_result_string(result));
+        tool_write_error("fontrender", "failed to read font info: ", fr_ttf_result_string(result));
         fr_ttf_close(font->ttf);
-        if (font->mutex != NULL) {
-            font->platform.mutex_destroy(font->platform.user_data, font->mutex);
-        }
-        fr_platform_free_with(&font->platform, font);
+        rt_free(font);
         return -1;
     }
     if (fr_ttf_lookup_glyph(font->ttf, '?', &font->fallback_glyph_index) == FR_TTF_OK) {
@@ -1089,7 +1087,7 @@ void fr_font_close(FrFont *font) {
         return;
     }
     for (i = 0u; i < FR_GLYPH_CACHE_CAP; ++i) {
-        fr_platform_free_with(&font->platform, font->entries[i].bitmap_storage);
+        rt_free(font->entries[i].bitmap_storage);
         font->entries[i].bitmap_storage = NULL;
         font->entries[i].glyph.bitmap = NULL;
     }
@@ -1099,12 +1097,9 @@ void fr_font_close(FrFont *font) {
     for (i = 0u; i < sizeof(font->scratch_outlines) / sizeof(font->scratch_outlines[0]); ++i) {
         fr_outline_free(&font->scratch_outlines[i]);
     }
-    fr_platform_free_with(&font->platform, font->simple_points);
+    rt_free(font->simple_points);
     fr_ttf_close(font->ttf);
-    if (font->mutex != NULL) {
-        font->platform.mutex_destroy(font->platform.user_data, font->mutex);
-    }
-    fr_platform_free_with(&font->platform, font);
+    rt_free(font);
 }
 
 static const FrGlyph *fr_font_get_glyph_unlocked(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style) {
@@ -1131,18 +1126,24 @@ static const FrGlyph *fr_font_get_glyph_unlocked(FrFont *font, uint32_t codepoin
 const FrGlyph *fr_font_get_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style) {
     const FrGlyph *glyph;
 
-    fr_font_lock(font);
+    if (font == NULL) {
+        return NULL;
+    }
+    platform_mutex_lock(&font->mutex);
     glyph = fr_font_get_glyph_unlocked(font, codepoint, pixel_size, style);
-    fr_font_unlock(font);
+    platform_mutex_unlock(&font->mutex);
     return glyph;
 }
 
 int fr_font_prefetch_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style) {
     int status;
 
-    fr_font_lock(font);
+    if (font == NULL) {
+        return -1;
+    }
+    platform_mutex_lock(&font->mutex);
     status = fr_font_get_glyph_unlocked(font, codepoint, pixel_size, style) != NULL ? 0 : -1;
-    fr_font_unlock(font);
+    platform_mutex_unlock(&font->mutex);
     return status;
 }
 
@@ -1153,14 +1154,14 @@ int fr_font_prefetch_codepoints(FrFont *font, const uint32_t *codepoints, size_t
     if (font == NULL || (codepoint_count != 0u && codepoints == NULL)) {
         return -1;
     }
-    fr_font_lock(font);
+    platform_mutex_lock(&font->mutex);
     for (i = 0u; i < codepoint_count; ++i) {
         if (fr_font_get_glyph_unlocked(font, codepoints[i], pixel_size, style) == NULL) {
-            fr_font_unlock(font);
+            platform_mutex_unlock(&font->mutex);
             return -1;
         }
     }
-    fr_font_unlock(font);
+    platform_mutex_unlock(&font->mutex);
     return 0;
 }
 
@@ -1173,21 +1174,21 @@ int fr_font_line_height(FrFont *font, int pixel_size) {
         return pixel_size > 0 ? pixel_size + 6 : 6;
     }
 
-    fr_font_lock(font);
+    platform_mutex_lock(&font->mutex);
     line_units = (int32_t)font->info.ascender - (int32_t)font->info.descender + (int32_t)font->info.line_gap;
     if (line_units <= 0) {
         line_units = (int32_t)font->info.ascender - (int32_t)font->info.descender;
     }
     if (line_units <= 0) {
-        fr_font_unlock(font);
+        platform_mutex_unlock(&font->mutex);
         return pixel_size + 6;
     }
     if (fr_scale_init(&scale, pixel_size, font->info.units_per_em) != 0 ||
         fr_scale_units_round(line_units, &scale, &line_height) != 0 ||
         line_height <= 0) {
-        fr_font_unlock(font);
+        platform_mutex_unlock(&font->mutex);
         return pixel_size + 6;
     }
-    fr_font_unlock(font);
+    platform_mutex_unlock(&font->mutex);
     return line_height;
 }

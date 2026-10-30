@@ -4,7 +4,7 @@
 #include <stddef.h>
 
 #include "../math.h"
-#include "fr_platform_internal.h"
+#include "runtime.h"
 
 #if !defined(FR_RASTER_DISABLE_SIMD)
 #  if defined(__SSE2__)
@@ -89,7 +89,7 @@ static int fr_reserve_array(void **items, size_t element_size, size_t *capacity,
         return -1;
     }
 
-    grown = fr_platform_realloc(*items, new_capacity * element_size);
+    grown = rt_realloc(*items, new_capacity * element_size);
     if (grown == NULL) {
         return -1;
     }
@@ -154,7 +154,7 @@ static int fr_edge_list_reserve(FrEdgeList *edges, size_t required_count) {
 }
 
 static void fr_edge_list_free(FrEdgeList *edges) {
-    fr_platform_free(edges->items);
+    rt_free(edges->items);
     edges->items = NULL;
     edges->count = 0u;
     edges->capacity = 0u;
@@ -488,18 +488,20 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
         return 0;
     }
 
-    add_spans = (FrRowEdgeSpan *)fr_platform_calloc(sample_count, sizeof(*add_spans));
-    remove_spans = (FrRowEdgeSpan *)fr_platform_calloc(sample_count, sizeof(*remove_spans));
-    add_counts = (size_t *)fr_platform_calloc(sample_count, sizeof(*add_counts));
-    remove_counts = (size_t *)fr_platform_calloc(sample_count, sizeof(*remove_counts));
+    add_spans = (FrRowEdgeSpan *)rt_malloc_array(sample_count, sizeof(*add_spans));
+    remove_spans = (FrRowEdgeSpan *)rt_malloc_array(sample_count, sizeof(*remove_spans));
+    add_counts = (size_t *)rt_malloc_array(sample_count, sizeof(*add_counts));
+    remove_counts = (size_t *)rt_malloc_array(sample_count, sizeof(*remove_counts));
     if (add_spans == NULL || remove_spans == NULL || add_counts == NULL || remove_counts == NULL) {
-        fr_platform_free(remove_counts);
-        fr_platform_free(add_counts);
-        fr_platform_free(remove_spans);
-        fr_platform_free(add_spans);
+        rt_free(remove_counts);
+        rt_free(add_counts);
+        rt_free(remove_spans);
+        rt_free(add_spans);
         return -1;
     }
 
+    memset(add_counts, 0, sample_count * sizeof(*add_counts));
+    memset(remove_counts, 0, sample_count * sizeof(*remove_counts));
     first_sample_y = (int64_t)bottom * (int64_t)FR_OUTLINE_ONE + (int64_t)FR_OUTLINE_ONE / 16ll;
     for (i = 0u; i < edges->count; ++i) {
         size_t start;
@@ -526,23 +528,23 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
     }
 
     if (total_adds != 0u) {
-        add_indices = (size_t *)fr_platform_alloc(total_adds * sizeof(*add_indices));
+        add_indices = (size_t *)rt_malloc(total_adds * sizeof(*add_indices));
         if (add_indices == NULL) {
-            fr_platform_free(remove_counts);
-            fr_platform_free(add_counts);
-            fr_platform_free(remove_spans);
-            fr_platform_free(add_spans);
+            rt_free(remove_counts);
+            rt_free(add_counts);
+            rt_free(remove_spans);
+            rt_free(add_spans);
             return -1;
         }
     }
     if (total_removes != 0u) {
-        remove_indices = (size_t *)fr_platform_alloc(total_removes * sizeof(*remove_indices));
+        remove_indices = (size_t *)rt_malloc(total_removes * sizeof(*remove_indices));
         if (remove_indices == NULL) {
-            fr_platform_free(add_indices);
-            fr_platform_free(remove_counts);
-            fr_platform_free(add_counts);
-            fr_platform_free(remove_spans);
-            fr_platform_free(add_spans);
+            rt_free(add_indices);
+            rt_free(remove_counts);
+            rt_free(add_counts);
+            rt_free(remove_spans);
+            rt_free(add_spans);
             return -1;
         }
     }
@@ -566,8 +568,8 @@ static int fr_build_sample_edge_events(const FrEdgeList *edges, int bottom, int 
         }
     }
 
-    fr_platform_free(remove_counts);
-    fr_platform_free(add_counts);
+    rt_free(remove_counts);
+    rt_free(add_counts);
     *out_add_spans = add_spans;
     *out_add_indices = add_indices;
     *out_remove_spans = remove_spans;
@@ -718,8 +720,8 @@ void fr_outline_free(FrOutline *outline) {
     if (outline == NULL) {
         return;
     }
-    fr_platform_free(outline->points);
-    fr_platform_free(outline->contours);
+    rt_free(outline->points);
+    rt_free(outline->contours);
     fr_outline_init(outline);
 }
 
@@ -840,7 +842,7 @@ void fr_bitmap_free(FrBitmap *bitmap) {
     if (bitmap == NULL) {
         return;
     }
-    fr_platform_free(bitmap->pixels);
+    rt_free(bitmap->pixels);
     fr_bitmap_init(bitmap);
 }
 
@@ -868,7 +870,7 @@ int fr_bitmap_alloc(FrBitmap *bitmap, int width, int height) {
 
     fr_bitmap_init(&fresh);
     if (total_bytes != 0u) {
-        fresh.pixels = (uint8_t *)fr_platform_alloc(total_bytes);
+        fresh.pixels = (uint8_t *)rt_malloc(total_bytes);
         if (fresh.pixels == NULL) {
             return -1;
         }
@@ -984,30 +986,30 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
         return -1;
     }
     if (edges.count != 0u) {
-        active_edges = (FrActiveEdge *)fr_platform_alloc(edges.count * sizeof(*active_edges));
-        active_positions = (size_t *)fr_platform_alloc(edges.count * sizeof(*active_positions));
+        active_edges = (FrActiveEdge *)rt_malloc(edges.count * sizeof(*active_edges));
+        active_positions = (size_t *)rt_malloc(edges.count * sizeof(*active_positions));
         if (active_edges == NULL || active_positions == NULL) {
-            fr_platform_free(active_positions);
-            fr_platform_free(active_edges);
-            fr_platform_free(remove_indices);
-            fr_platform_free(remove_spans);
-            fr_platform_free(add_indices);
-            fr_platform_free(add_spans);
+            rt_free(active_positions);
+            rt_free(active_edges);
+            rt_free(remove_indices);
+            rt_free(remove_spans);
+            rt_free(add_indices);
+            rt_free(add_spans);
             fr_bitmap_free(&fresh);
             fr_edge_list_free(&edges);
             return -1;
         }
-        fr_platform_memset(active_positions, 0xFF, edges.count * sizeof(*active_positions));
+        memset(active_positions, 0xFF, edges.count * sizeof(*active_positions));
     }
     if (fresh.width != 0) {
-        row_coverage = (uint16_t *)fr_platform_alloc((size_t)fresh.width * sizeof(*row_coverage));
+        row_coverage = (uint16_t *)rt_malloc((size_t)fresh.width * sizeof(*row_coverage));
         if (row_coverage == NULL) {
-            fr_platform_free(active_positions);
-            fr_platform_free(active_edges);
-            fr_platform_free(remove_indices);
-            fr_platform_free(remove_spans);
-            fr_platform_free(add_indices);
-            fr_platform_free(add_spans);
+            rt_free(active_positions);
+            rt_free(active_edges);
+            rt_free(remove_indices);
+            rt_free(remove_spans);
+            rt_free(add_indices);
+            rt_free(add_spans);
             fr_bitmap_free(&fresh);
             fr_edge_list_free(&edges);
             return -1;
@@ -1023,7 +1025,7 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
         int subsample;
 
         if (fresh.width != 0) {
-            fr_platform_memset(row_coverage, 0, (size_t)fresh.width * sizeof(*row_coverage));
+            memset(row_coverage, 0, (size_t)fresh.width * sizeof(*row_coverage));
         }
 
         for (subsample = 0; subsample < FR_RASTER_SUBSAMPLES; ++subsample, ++sample_index) {
@@ -1086,13 +1088,13 @@ int fr_raster_render(FrBitmap *bitmap, const FrOutline *outline) {
         }
     }
 
-    fr_platform_free(row_coverage);
-    fr_platform_free(active_positions);
-    fr_platform_free(active_edges);
-    fr_platform_free(remove_indices);
-    fr_platform_free(remove_spans);
-    fr_platform_free(add_indices);
-    fr_platform_free(add_spans);
+    rt_free(row_coverage);
+    rt_free(active_positions);
+    rt_free(active_edges);
+    rt_free(remove_indices);
+    rt_free(remove_spans);
+    rt_free(add_indices);
+    rt_free(add_spans);
     fr_edge_list_free(&edges);
     fr_bitmap_free(bitmap);
     *bitmap = fresh;

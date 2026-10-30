@@ -1,5 +1,4 @@
 #include "fontrender/font_backend.h"
-#include "fontrender_runtime.h"
 #include "runtime.h"
 
 static void write_usage(const char *program) {
@@ -44,7 +43,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     pixel_size = (int)size_value;
-    if (fontrender_runtime_install() != 0 || fr_font_open(&font, argv[1]) != 0) {
+    if (fr_font_open(&font, argv[1]) != 0) {
         rt_write_cstr(2, "fonttest: could not open font\n");
         return 1;
     }

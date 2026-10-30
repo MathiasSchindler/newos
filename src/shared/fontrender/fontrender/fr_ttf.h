@@ -46,6 +46,7 @@ typedef struct {
 } FrTtfGlyph;
 
 FrTtfResult fr_ttf_open(FrTtfFont **out_font, const char *path);
+/* The input data must remain valid until fr_ttf_close. */
 FrTtfResult fr_ttf_open_memory(FrTtfFont **out_font, const void *data, size_t size);
 void fr_ttf_close(FrTtfFont *font);
 

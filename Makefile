@@ -186,8 +186,8 @@ TARGET_USB_PLATFORM_SOURCES := src/platform/linux/usb.c
 MACOS_USB_PLATFORM_SOURCES := src/platform/macos/iokit.c src/platform/macos/usb.c
 
 TUI_SOURCES := $(shell grep -oE '"src/shared/tui\.c"' src/compiler/source_manifest.h | tr -d '"')
-FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/(fontrender_runtime|fontrender/[^"]+)\.c"' src/compiler/source_manifest.h | tr -d '"')
-FONTRENDER_DEPS := $(FONTRENDER_SOURCES) src/shared/fontrender_runtime.h $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
+FONTRENDER_SOURCES := $(shell grep -oE '"src/shared/fontrender/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
+FONTRENDER_DEPS := $(FONTRENDER_SOURCES) $(wildcard src/shared/fontrender/*.h src/shared/fontrender/fontrender/*.h)
 FONTTEST_SOURCE := tests/fixtures/fontrender/fonttest.c
 MATHTEST_SOURCE := tests/fixtures/math_test.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
@@ -448,6 +448,8 @@ MACOS_RUNTIME_SHIM_SOURCE := src/platform/macos/newlinker_runtime.c
 macos_objects = $(patsubst %.c,$(MACOS_BUILD_DIR)/.obj/%.lto.o,$(filter %.c,$(sort $(1))))
 MACOS_PLATFORM_SOURCES := $(MACOS_FREESTANDING_RUNTIME_SOURCES) $(MACOS_RUNTIME_SHIM_SOURCE) $(MACOS_PROFILE_RUNTIME_SOURCE)
 MACOS_COMMON_OBJECTS := $(call macos_objects,$(MACOS_PLATFORM_SOURCES))
+MACOS_FONTRENDER_OBJECTS := $(call macos_objects,$(FONTRENDER_SOURCES))
+MACOS_FONTTEST_OBJECTS := $(call macos_objects,$(FONTTEST_SOURCE) tests/fixtures/fontrender/fontrendertest.c)
 MACOS_HASH_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_HASH_SOURCES) $(MACOS_PLATFORM_SOURCES))
 MACOS_GIT_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_GIT_SOURCES) $(MACOS_PLATFORM_SOURCES))
 MACOS_TLS_OBJECTS := $(call macos_objects,$(MACOS_FREESTANDING_TLS_SOURCES) $(MACOS_PLATFORM_SOURCES))
@@ -489,6 +491,12 @@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o: src/platform/macos
 
 $(MACOS_BUILD_DIR)/.obj/%.lto.o: %.c $$(wildcard $$*/*.c $$*/*.h) src/shared/platform.h src/shared/runtime.h src/shared/tool_util.h src/platform/macos/trace.h | $(MACOS_BUILD_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
+
+$(MACOS_FONTRENDER_OBJECTS) $(MACOS_FONTTEST_OBJECTS): MACOS_CFLAGS += -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender
+$(MACOS_FONTRENDER_OBJECTS) $(MACOS_FONTTEST_OBJECTS): $(FONTRENDER_DEPS)
+
+$(addprefix $(MACOS_BUILD_DIR)/,fonttest fontrendertest): $(MACOS_BUILD_DIR)/%: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/%.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/$*.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS)
 
 $(MACOS_BUILD_DIR)/.obj/src/platform/macos/profiler_runtime.lto.o: src/platform/macos/profiler_runtime.c | $(MACOS_BUILD_DIR)/.obj
 	mkdir -p $(dir $@) && $(MACOS_FREESTANDING_CC) $(MACOS_CFLAGS) -Isrc/shared -Isrc/compiler -Isrc/platform/macos -Isrc/arch/aarch64/macos -c $< -o $@
@@ -713,10 +721,10 @@ $(BUILD_DIR)/expack: src/tools/expack.c $(EXPACK_PRIVATE_SOURCES) $(SHARED_SOURC
 $(BUILD_DIR)/readelf: src/tools/readelf.c $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) src/shared/runtime.h src/shared/platform.h src/shared/tool_util.h src/shared/archive_util.h src/shared/crypto/sha256.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_READELF_CFLAGS) $< $(SHARED_SOURCES) $(PROFILE_RUNTIME_SOURCE) $(EXPACK_SIGNING_SOURCE) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+$(addprefix $(BUILD_DIR)/,fonttest fontrendertest): $(BUILD_DIR)/%: tests/fixtures/fontrender/%.c $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
 
-$(TARGET_BUILD_DIR)/fonttest: $(FONTTEST_SOURCE) $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+$(addprefix $(TARGET_BUILD_DIR)/,fonttest fontrendertest): $(TARGET_BUILD_DIR)/%: tests/fixtures/fontrender/%.c $(FONTRENDER_DEPS) $(SHARED_DEPS) src/shared/runtime.h src/shared/platform.h $(TARGET_PLATFORM_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) -DFR_RASTER_DISABLE_SIMD=1 -Isrc/shared/fontrender $< $(FONTRENDER_SOURCES) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(BUILD_DIR)/mathtest: $(MATHTEST_SOURCE) src/shared/math.c src/shared/math.h $(SELFHOST_CC_DEP) | $(BUILD_DIR)

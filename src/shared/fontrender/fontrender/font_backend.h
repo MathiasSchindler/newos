@@ -19,6 +19,7 @@ typedef struct {
 } FrGlyph;
 
 int fr_font_open(FrFont **out_font, const char *font_path);
+/* The input data must remain valid until fr_font_close. */
 int fr_font_open_memory(FrFont **out_font, const void *data, size_t size);
 void fr_font_close(FrFont *font);
 const FrGlyph *fr_font_get_glyph(FrFont *font, uint32_t codepoint, int pixel_size, uint16_t style);
