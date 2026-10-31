@@ -375,16 +375,6 @@ static int solve_append_text(char *buffer, size_t buffer_size, size_t *length_io
     return tool_buffer_append_text_checked(buffer, buffer_size, length_io, text);
 }
 
-static int solve_contains_char(const char *text, char ch) {
-    while (*text != '\0') {
-        if (*text == ch) {
-            return 1;
-        }
-        text += 1;
-    }
-    return 0;
-}
-
 static int solve_text_contains(const char *text, const char *needle) {
     size_t needle_len = rt_strlen(needle);
     size_t index;
@@ -753,7 +743,7 @@ static void solve_format_result_answer(const SolveEquation *equation, const Solv
     size_t length;
 
     solve_format_compact_decimal(result->root, options->scale, buffer, buffer_size);
-    if (solve_contains_char(buffer, '(') || solve_format_rational_parts(result->root, rational, sizeof(rational), &candidate) != 0) {
+    if (tool_contains_char(buffer, '(') || solve_format_rational_parts(result->root, rational, sizeof(rational), &candidate) != 0) {
         return;
     }
     if (solve_abs(candidate - result->root) > options->tolerance * 10.0) {

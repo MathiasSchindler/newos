@@ -377,12 +377,8 @@ static long macos_newlinker_trace_getpid_raw(void) {
 
 static unsigned long long macos_newlinker_trace_time_raw(void) {
 	struct macos_newlinker_timeval now;
-	register long x16 __asm__("x16") = DARWIN_SYS_GETTIMEOFDAY;
-	register long x0 __asm__("x0") = (long)&now;
-	register long x1 __asm__("x1") = 0;
 
-	__asm__ volatile("svc #0x80\n\tcneg %[ret], %[ret], cs" : [ret] "+r"(x0), "+r"(x1), "+r"(x16) : : "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x17", "memory", "cc");
-	if (x0 < 0) return 0ULL;
+	if (darwin_raw_syscall3(DARWIN_SYS_GETTIMEOFDAY, (long)&now, 0, 0) < 0) return 0ULL;
 	return ((unsigned long long)now.tv_sec * 1000000000ULL) + ((unsigned long long)now.tv_usec * 1000ULL);
 }
 
@@ -1173,7 +1169,8 @@ MACOS_NEWLINKER_EXPORT long sysconf(int name) {
 }
 
 MACOS_NEWLINKER_EXPORT int gettimeofday(void *time_value, void *time_zone) {
-	return darwin_syscall2(DARWIN_SYS_GETTIMEOFDAY, (long)time_value, (long)time_zone) < 0 ? -1 : 0;
+	/* The kernel ABI also accepts an optional mach_absolute_time output. */
+	return darwin_syscall3(DARWIN_SYS_GETTIMEOFDAY, (long)time_value, (long)time_zone, 0) < 0 ? -1 : 0;
 }
 
 MACOS_NEWLINKER_EXPORT void _exit(int status) {

@@ -90,7 +90,7 @@ static void solve_student_domain_notes(const SolveEquation *equation) {
         solve_sp_line(1, "Assumption: logarithm arguments must be positive.");
         any = 1;
     }
-    if (solve_contains_char(equation->left, '/') || solve_contains_char(equation->right, '/')) {
+    if (tool_contains_char(equation->left, '/') || tool_contains_char(equation->right, '/')) {
         solve_sp_line(1, "Assumption: denominator values equal to 0 are excluded.");
         any = 1;
     }

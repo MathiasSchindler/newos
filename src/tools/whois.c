@@ -8,19 +8,6 @@
 #define WHOIS_DEFAULT_TIMEOUT_SECONDS 10U
 #define WHOIS_MAX_TIMEOUT_SECONDS 300U
 
-static int write_all(int fd, const char *text, size_t length) {
-    size_t offset = 0U;
-
-    while (offset < length) {
-        long written = platform_write(fd, text + offset, length - offset);
-        if (written <= 0) {
-            return -1;
-        }
-        offset += (size_t)written;
-    }
-    return 0;
-}
-
 static void print_help(void) {
     rt_write_line(1, "whois - query a WHOIS server");
     rt_write_line(1, "Usage: whois [-R] [-h SERVER] [-p PORT] [-w SECONDS] [--json] QUERY");
@@ -223,7 +210,7 @@ static int query_whois_server(const char *server, unsigned int port, const char 
     if (tool_json_is_enabled()) {
         write_json_query_start(server, port, query);
     }
-    if (write_all(fd, query, rt_strlen(query)) != 0 || write_all(fd, "\r\n", 2U) != 0) {
+    if (rt_write_all(fd, query, rt_strlen(query)) != 0 || rt_write_all(fd, "\r\n", 2U) != 0) {
         (void)platform_close(fd);
         tool_write_error("whois", "write failed", 0);
         return 1;
@@ -267,7 +254,7 @@ static int query_whois_server(const char *server, unsigned int port, const char 
         if (tool_json_is_enabled()) {
             write_json_response_chunk(server, port, query, buffer, (size_t)count);
         } else {
-            if (write_all(1, buffer, (size_t)count) != 0) {
+            if (rt_write_all(1, buffer, (size_t)count) != 0) {
                 (void)platform_close(fd);
                 return 1;
             }

@@ -1872,7 +1872,7 @@ static int import_certificate_callback(const PgpCertificateInfo *certificate, vo
         return 0;
     }
     fd = platform_open_append(ctx->options->keyring_path, 0600U);
-    if (fd < 0 || certificate->end_offset < certificate->start_offset || tool_write_all_fd(fd, ctx->data + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
+    if (fd < 0 || certificate->end_offset < certificate->start_offset || rt_write_all(fd, ctx->data + certificate->start_offset, certificate->end_offset - certificate->start_offset) != 0 || platform_close(fd) != 0) {
         if (fd >= 0) (void)platform_close(fd);
         tool_write_error("pgpkey", "cannot write keyring: ", ctx->options->keyring_path);
         ctx->status = 1;

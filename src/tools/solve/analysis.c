@@ -1082,7 +1082,7 @@ static int solve_run_area_mode(const SolveOptions *options, int start, int argc,
         if (solve_parse_two_curves(start, argc, argv, first_expr, sizeof(first_expr), second_expr, sizeof(second_expr)) != 0) return 2;
         lo_text[0] = '\0';
         hi_text[0] = '\0';
-    } else if (solve_contains_char(options->range_spec, ':')) {
+    } else if (tool_contains_char(options->range_spec, ':')) {
         if (solve_split_integral_bounds(options->range_spec, lo_text, sizeof(lo_text), hi_text, sizeof(hi_text)) != 0) {
             tool_write_error("solve", "invalid --area bounds", options->range_spec);
             return 2;

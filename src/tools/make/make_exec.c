@@ -40,16 +40,6 @@ static int append_script_text(char *buffer, size_t buffer_size, size_t *used_io,
     return 0;
 }
 
-static int append_script_char(char *buffer, size_t buffer_size, size_t *used_io, char ch) {
-    if (*used_io + 2U > buffer_size) {
-        return -1;
-    }
-    buffer[*used_io] = ch;
-    *used_io += 1U;
-    buffer[*used_io] = '\0';
-    return 0;
-}
-
 static int execute_shell_command(MakeProgram *program, const char *command_text, int silent, int ignore_error, int force_run) {
     char *argv_exec[4];
     const char *shell = get_variable_value(program, "SHELL");
@@ -208,7 +198,7 @@ static int run_rule_commands(MakeProgram *program, MakeRule *rule) {
                 rt_write_line(1, command_ptr);
             }
             if (append_script_text(script, sizeof(script), &used, command_ptr) != 0 ||
-                append_script_char(script, sizeof(script), &used, '\n') != 0) {
+                tool_buffer_append_char_checked(script, sizeof(script), &used, '\n') != 0) {
                 return -1;
             }
         }

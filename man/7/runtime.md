@@ -20,7 +20,10 @@ hosted and freestanding builds.
   [memory](memory.md) for the allocator design
 - `string.c` — string copying, comparison, parsing, and path joining helpers
 - `parse.c` — numeric parsing used by command-line tools
-- `io.c` — small buffered I/O wrappers over the platform layer
+- `io.c` — descriptor writes, partial-write completion through `rt_write_all`,
+  and text/integer output over the platform layer. Tools use `rt_write_all`
+  directly for complete byte-buffer writes; record readers and buffered
+  streaming remain in `tool_io.c`.
 - `unicode.c` — UTF-8 decoding/encoding, validation, simple folding,
   whitespace/word classification, display width, and terminal text-segment scanning;
   common ASCII text is handled by fast paths before falling back to the Unicode

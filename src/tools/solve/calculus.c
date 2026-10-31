@@ -205,7 +205,7 @@ static int solve_run_eval_mode(const SolveOptions *options, const char *expr) {
     char text[96];
 
     if (options->have_at) {
-        if (solve_contains_char(options->at_spec, '=')) {
+        if (tool_contains_char(options->at_spec, '=')) {
             if (solve_parse_assignment_spec(options->at_spec, name, sizeof(name), value_text, sizeof(value_text)) != 0) {
                 tool_write_error("solve", "invalid --at assignment", options->at_spec);
                 return 2;

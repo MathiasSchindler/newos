@@ -20,19 +20,6 @@ static void print_help(const char *program_name) {
     rt_write_line(1, "Print the kernel message buffer, optionally follow new messages, or adjust the console log level.");
 }
 
-static int token_equals(const char *text, size_t length, const char *token) {
-    size_t i = 0U;
-
-    while (i < length && token[i] != '\0') {
-        if (text[i] != token[i]) {
-            return 0;
-        }
-        i += 1U;
-    }
-
-    return i == length && token[i] == '\0';
-}
-
 static int parse_level_token(const char *text, size_t length, unsigned int *level_out) {
     unsigned long long numeric = 0ULL;
     char token[16];
@@ -56,21 +43,21 @@ static int parse_level_token(const char *text, size_t length, unsigned int *leve
         return 0;
     }
 
-    if (token_equals(token, length, "emerg") || token_equals(token, length, "panic")) {
+    if (tool_token_equals(token, length, "emerg") || tool_token_equals(token, length, "panic")) {
         *level_out = 0U;
-    } else if (token_equals(token, length, "alert")) {
+    } else if (tool_token_equals(token, length, "alert")) {
         *level_out = 1U;
-    } else if (token_equals(token, length, "crit") || token_equals(token, length, "critical")) {
+    } else if (tool_token_equals(token, length, "crit") || tool_token_equals(token, length, "critical")) {
         *level_out = 2U;
-    } else if (token_equals(token, length, "err") || token_equals(token, length, "error")) {
+    } else if (tool_token_equals(token, length, "err") || tool_token_equals(token, length, "error")) {
         *level_out = 3U;
-    } else if (token_equals(token, length, "warn") || token_equals(token, length, "warning")) {
+    } else if (tool_token_equals(token, length, "warn") || tool_token_equals(token, length, "warning")) {
         *level_out = 4U;
-    } else if (token_equals(token, length, "notice")) {
+    } else if (tool_token_equals(token, length, "notice")) {
         *level_out = 5U;
-    } else if (token_equals(token, length, "info")) {
+    } else if (tool_token_equals(token, length, "info")) {
         *level_out = 6U;
-    } else if (token_equals(token, length, "debug")) {
+    } else if (tool_token_equals(token, length, "debug")) {
         *level_out = 7U;
     } else {
         return -1;

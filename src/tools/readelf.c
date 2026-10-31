@@ -595,13 +595,6 @@ static int read_region(int fd, unsigned long long offset, unsigned char *buffer,
     return archive_read_exact(fd, buffer, size);
 }
 
-static int read_file_region(int fd, unsigned long long offset, unsigned char *buffer, size_t size) {
-    if (platform_seek(fd, (long long)offset, PLATFORM_SEEK_SET) < 0) {
-        return -1;
-    }
-    return archive_read_exact(fd, buffer, size);
-}
-
 static void set_object_window(unsigned long long base, unsigned long long size) {
     readelf_object_base = base;
     readelf_object_size = size;
@@ -615,7 +608,7 @@ static int parse_macho_fat_header(int fd, MachFatInfo *fat) {
 
     file_size = platform_seek(fd, 0, PLATFORM_SEEK_END);
     if (file_size < 8) return -1;
-    if (read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
+    if (archive_read_file_region(fd, 0ULL, header, sizeof(header)) != 0) return -1;
     fat->magic = tool_read_u32_be(header + 0);
     if (fat->magic != MACHO_FAT_MAGIC && fat->magic != MACHO_FAT_MAGIC_64) return -1;
     fat->arch_count = tool_read_u32_be(header + 4);
@@ -624,7 +617,7 @@ static int parse_macho_fat_header(int fd, MachFatInfo *fat) {
     for (index = 0U; index < fat->arch_count; ++index) {
         unsigned char raw[32];
         unsigned long long entry_offset = 8ULL + (unsigned long long)index * (fat->is_64 ? 32ULL : 20ULL);
-        if (read_file_region(fd, entry_offset, raw, fat->is_64 ? 32U : 20U) != 0) return -1;
+        if (archive_read_file_region(fd, entry_offset, raw, fat->is_64 ? 32U : 20U) != 0) return -1;
         fat->arches[index].cputype = tool_read_u32_be(raw + 0);
         fat->arches[index].cpusubtype = tool_read_u32_be(raw + 4);
         fat->arches[index].offset = fat->is_64 ? tool_read_u64_be(raw + 8) : (unsigned long long)tool_read_u32_be(raw + 8);

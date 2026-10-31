@@ -266,7 +266,6 @@ size_t tool_buffer_append_uint(char *buffer, size_t buffer_size, size_t length, 
 size_t tool_buffer_append_padded_base(char *buffer, size_t buffer_size, size_t length, unsigned long long value, unsigned int base, unsigned int width);
 int tool_output_flush_buffer(int fd, unsigned char *buffer, size_t *length_io);
 int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size, size_t *length_io, const unsigned char *data, size_t data_size);
-int tool_write_all_fd(int fd, const unsigned char *data, size_t size);
 int tool_discard_input_bytes(int fd, unsigned long long count);
 void tool_write_hex_value(int fd, unsigned long long value);
 int tool_write_hex_bytes(int fd, const unsigned char *bytes, size_t size);

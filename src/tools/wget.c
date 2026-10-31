@@ -86,26 +86,6 @@ static size_t find_line_end(const char *text, size_t start) {
     return index;
 }
 
-static int parse_http_status(const char *headers) {
-    size_t index = 0;
-    int code = 0;
-    int saw_digit = 0;
-
-    while (headers[index] != '\0' && headers[index] != ' ') {
-        index += 1U;
-    }
-    while (headers[index] == ' ') {
-        index += 1U;
-    }
-    while (headers[index] >= '0' && headers[index] <= '9') {
-        saw_digit = 1;
-        code = (code * 10) + (int)(headers[index] - '0');
-        index += 1U;
-    }
-
-    return saw_digit ? code : -1;
-}
-
 static int parse_header_size_value(const char *text, size_t length, size_t *value_out) {
     size_t index = 0U;
     size_t value = 0U;
@@ -456,7 +436,7 @@ static int parse_http_headers(
     *content_length_out = 0U;
     *has_content_length_out = 0;
     *chunked_out = 0;
-    *status_code_out = parse_http_status(headers);
+    *status_code_out = tool_parse_http_status(headers);
     if (*status_code_out < 0) {
         return -1;
     }

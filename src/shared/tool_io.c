@@ -216,17 +216,6 @@ int tool_output_append_buffer(int fd, unsigned char *buffer, size_t buffer_size,
     return 0;
 }
 
-int tool_write_all_fd(int fd, const unsigned char *data, size_t size) {
-    size_t written = 0U;
-
-    while (written < size) {
-        long chunk = platform_write(fd, data + written, size - written);
-        if (chunk <= 0) return -1;
-        written += (size_t)chunk;
-    }
-    return 0;
-}
-
 int tool_discard_input_bytes(int fd, unsigned long long count) {
     unsigned char buffer[8192];
 

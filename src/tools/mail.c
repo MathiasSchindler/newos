@@ -1,5 +1,6 @@
 #include "platform.h"
 #include "runtime.h"
+#include "tool_util.h"
 #include "mail/imap.h"
 #include "tui.h"
 
@@ -165,16 +166,6 @@ static void mail_config_error_key(unsigned int line_number, const char *message,
     rt_write_cstr(2, "\n");
 }
 
-static int mail_config_line_has_char(const char *line, char needle) {
-    while (*line != '\0') {
-        if (*line == needle) {
-            return 1;
-        }
-        line += 1;
-    }
-    return 0;
-}
-
 static int mail_config_parse_buffer(MailConfig *config, char *buffer) {
     char *cursor = buffer;
     unsigned int line_number = 0U;
@@ -204,7 +195,7 @@ static int mail_config_parse_buffer(MailConfig *config, char *buffer) {
             equals += 1;
         }
         if (*equals != '=') {
-            if (mail_config_line_has_char(line, ':')) {
+            if (tool_contains_char(line, ':')) {
                 mail_config_error_line(line_number, "expected key=value, found ':' instead of '='");
             } else {
                 mail_config_error_line(line_number, "expected key=value");
