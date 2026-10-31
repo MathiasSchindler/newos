@@ -176,6 +176,8 @@ int pdf_keyword_at(const unsigned char *data, size_t size, size_t offset, const 
 int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, unsigned long long *value_out);
 void pdf_copy_name(const unsigned char *data, size_t size, size_t offset, char *buffer, size_t buffer_size);
 int pdf_find_top_key(const unsigned char *data, size_t size, const char *key, size_t *offset_out);
+/* Returns 1 for a direct top-level integer; on failure value_out is unchanged. */
+int pdf_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out);
 int pdf_stream_filter_kind(const unsigned char *dict, size_t dict_size);
 size_t pdf_stream_body_start(const unsigned char *data, size_t size, size_t stream_offset);
 void pdf_trim_stream_end(const unsigned char *data, size_t start, size_t *end_io);

@@ -2,18 +2,11 @@
 #include "runtime.h"
 #include "tool_util.h"
 
-static char tool_ascii_fold(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
 static int tool_strings_equal_ignore_case(const char *left, const char *right) {
     size_t i = 0U;
 
     while (left[i] != '\0' && right[i] != '\0') {
-        if (tool_ascii_fold(left[i]) != tool_ascii_fold(right[i])) {
+        if (tool_ascii_tolower(left[i]) != tool_ascii_tolower(right[i])) {
             return 0;
         }
         i += 1U;

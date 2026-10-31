@@ -24,7 +24,13 @@ hosted and freestanding builds.
   and text/integer output over the platform layer. Tools use `rt_write_all`
   directly for complete byte-buffer writes; record readers and buffered
   streaming remain in `tool_io.c`.
-- `unicode.c` — UTF-8 decoding/encoding, validation, simple folding,
+- `unicode_utf8.c` — UTF-8 lead-byte recognition, decoding/encoding and
+  validation, UTF-16 conversion, and Latin-1/Windows-1252 transcoding.
+  `rt_utf8_sequence_length` recognizes only the lead-byte shape; callers still
+  use `rt_utf8_decode` to validate a sequence. `rt_windows_1252_decode` supplies
+  the same byte-to-codepoint mapping to transcoding and `xmlrecode`, preserving
+  the undefined Windows-1252 entries as their C1 control codepoints.
+- `unicode.c` — simple folding,
   whitespace/word classification, display width, and terminal text-segment scanning;
   common ASCII text is handled by fast paths before falling back to the Unicode
   range tables
@@ -46,8 +52,16 @@ hosted and freestanding builds.
   TLS interface; X.509 verification caches the loaded trust bundle and parsed
   trust anchors within a process so tools with multiple HTTPS/TLS connections
   avoid repeated CA file reads, PEM decoding, and root-certificate parsing
-- `image/` — metadata probing and structural validation for common image containers and C2PA-related tooling
-- `xml.*`, `xml_stream.*`, and `xml_dtd.*` — reusable XML parsing, streaming, safety, and DTD support for the XML tool family
+- `image/` — metadata probing and structural validation for common image
+  containers and C2PA-related tooling; JPEG probing and validation share the
+  concrete start-of-frame marker predicate
+- `xml/` — reusable XML parsing, streaming, safety, and DTD support.
+  DOM and stream parsing share name-byte and character/codepoint predicates;
+  DTD parsing uses the same four-character XML whitespace rule, not the wider
+  general ASCII whitespace predicate.
+- `pdf.c` — shared PDF parsing, including top-level direct unsigned-integer
+  lookup used by stream decoding and `pdfextract`; indirect references and
+  nested dictionary values remain distinct from direct top-level values
 - `bignum.*` — fixed-capacity arbitrary-precision arithmetic used by math-oriented tools
 - `math.*` — dependency-free binary64 elementary, trigonometric, hyperbolic, rounding, and power helpers; see [math](math.md) for the supported numerical profile
 

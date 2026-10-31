@@ -43,6 +43,15 @@ PY
 "${TEST_BIN_DIR}/pdfextract" --stream 5 --raw "$WORK_DIR/extract.pdf" > "$WORK_DIR/raw.txt"
 assert_file_contains "$WORK_DIR/raw.txt" 'Raw PDF' "pdfextract --raw did not copy unfiltered stream"
 
+printf '%%PDF-1.7\n1 0 obj\n<< /Nested << /Length 1 >> /Length 5 >>\nstream\nabc\n\nendstream\nendobj\n%%%%EOF\n' > "$WORK_DIR/nested-length.pdf"
+printf 'abc\n\n' > "$WORK_DIR/nested-length.expected"
+"${TEST_BIN_DIR}/pdfextract" --stream 1 --raw "$WORK_DIR/nested-length.pdf" > "$WORK_DIR/nested-length.out"
+assert_files_equal "$WORK_DIR/nested-length.expected" "$WORK_DIR/nested-length.out" "pdfextract did not use the top-level direct Length or preserve payload newlines"
+printf '%%PDF-1.7\n1 0 obj\n<< /Length 2 0 R >>\nstream\nabc\nendstream\nendobj\n2 0 obj\n3\nendobj\n%%%%EOF\n' > "$WORK_DIR/indirect-length.pdf"
+printf 'abc' > "$WORK_DIR/indirect-length.expected"
+"${TEST_BIN_DIR}/pdfextract" --stream 1 --raw "$WORK_DIR/indirect-length.pdf" > "$WORK_DIR/indirect-length.out"
+assert_files_equal "$WORK_DIR/indirect-length.expected" "$WORK_DIR/indirect-length.out" "pdfextract treated an indirect Length reference as a direct integer"
+
 "${TEST_BIN_DIR}/pdfextract" --stream 6 --decoded "$WORK_DIR/extract.pdf" > "$WORK_DIR/decoded.txt"
 assert_file_contains "$WORK_DIR/decoded.txt" 'Decoded PDF' "pdfextract --decoded did not inflate FlateDecode stream"
 

@@ -41,6 +41,8 @@ int rt_is_digit_string(const char *text);
 int rt_parse_pid_value(const char *text);
 void rt_trim_newline(char *text);
 int rt_parse_uint(const char *text, unsigned long long *value_out);
+/* Recognizes lead-byte shape (1-4, or 0); does not validate a UTF-8 sequence. */
+size_t rt_utf8_sequence_length(unsigned char lead);
 int rt_utf8_decode(const char *text, size_t text_length, size_t *index_io, unsigned int *codepoint_out);
 int rt_utf8_validate(const char *text, size_t text_length);
 unsigned long long rt_utf8_codepoint_count(const char *text, size_t text_length);
@@ -57,6 +59,7 @@ typedef enum {
 
 int rt_utf16_decode(const unsigned char *source, size_t source_length, size_t *index_io, int big_endian, unsigned int *codepoint_out);
 int rt_utf16_encode(unsigned int codepoint, int big_endian, unsigned char *buffer, size_t buffer_size, size_t *length_out);
+unsigned int rt_windows_1252_decode(unsigned char byte);
 int rt_transcode_to_utf8(const unsigned char *source, size_t source_length, RtTextEncoding encoding, char **output_out, size_t *output_length_out);
 int rt_transcode_from_utf8(const char *source, size_t source_length, RtTextEncoding encoding, unsigned char **output_out, size_t *output_length_out);
 unsigned int rt_unicode_simple_fold(unsigned int codepoint);

@@ -147,6 +147,13 @@ typedef struct {
 
 typedef int (*XmlStreamEventCallback)(const XmlStreamEvent *event, void *user_data);
 
+/* Byte predicates do not validate UTF-8; codepoint checks use XML 1.0 ranges. */
+int xml_is_space(char ch);
+int xml_is_name_start(char ch);
+int xml_is_name_char(char ch);
+int xml_is_ascii_char_allowed(char ch);
+int xml_is_codepoint_allowed(unsigned long value);
+
 void xml_parser_init(XmlParser *parser, const char *input, size_t length);
 void xml_parser_free(XmlParser *parser);
 int xml_next_token(XmlParser *parser, XmlToken *token);

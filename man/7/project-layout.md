@@ -81,7 +81,7 @@ backends. Their declarations remain in `tool_util.h`, except for XML helpers:
 | `tool_buffer.c` | Byte buffers, arrays, fixed records, and bounded buffer appends |
 | `tool_binary.c` | Byte-order loads/stores, byte comparison, and hex/base64 digit conversion |
 | `tool_parse.c` | Numeric, address, size, and escaped-string parsing |
-| `tool_text.c` | Text comparison/matching, ASCII/UTF-8 predicates, word boundaries, display width, and tabstops |
+| `tool_text.c` | Text comparison/matching, ASCII folding shared by process/regex matching, ASCII/UTF-8 predicates, word boundaries, display width, and tabstops |
 | `tool_regex.c` | Regular-expression compilation and matching |
 | `tool_format.c` | Integer-base, size, and block-size formatting; decimal digit counts |
 | `tool_time.c` | Timezones, durations, compact uptime, and civil-date arithmetic |

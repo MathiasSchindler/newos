@@ -15,6 +15,10 @@ cat > "$WORK_DIR/unicode_runtime_test.c" <<'EOF'
 
 void *rt_realloc(void *pointer, size_t size) { return realloc(pointer, size); }
 void rt_free(void *pointer) { free(pointer); }
+void *rt_malloc_array(size_t count, size_t item_size) {
+    if (item_size != 0U && count > ((size_t)-1) / item_size) return 0;
+    return malloc(count * item_size);
+}
 void *rt_realloc_array(void *pointer, size_t count, size_t item_size) {
     if (item_size != 0U && count > ((size_t)-1) / item_size) return 0;
     return realloc(pointer, count * item_size);

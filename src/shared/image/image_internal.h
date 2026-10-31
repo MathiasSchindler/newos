@@ -27,6 +27,7 @@ void image_set_c2pa(ImageInfo *info, const ImageC2paInfo *c2pa);
 int image_probe_png(const unsigned char *data, size_t size, ImageInfo *info);
 int image_probe_gif(const unsigned char *data, size_t size, ImageInfo *info);
 int image_probe_jpeg(const unsigned char *data, size_t size, ImageInfo *info);
+int image_jpeg_is_sof_marker(unsigned char marker);
 int image_probe_tiff(const unsigned char *data, size_t size, ImageInfo *info);
 int image_probe_webp(const unsigned char *data, size_t size, ImageInfo *info);
 int image_probe_bmp(const unsigned char *data, size_t size, ImageInfo *info);

@@ -4,16 +4,16 @@
 #include "xml.h"
 
 
-static int xml_is_space(char ch) {
+int xml_is_space(char ch) {
     return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
 }
 
-static int xml_is_ascii_char_allowed(char ch) {
+int xml_is_ascii_char_allowed(char ch) {
     unsigned char uch = (unsigned char)ch;
     return uch >= 0x20U || ch == '\t' || ch == '\n' || ch == '\r';
 }
 
-static int xml_is_codepoint_allowed(unsigned long value) {
+int xml_is_codepoint_allowed(unsigned long value) {
     return value == 0x9UL || value == 0xAUL || value == 0xDUL ||
         (value >= 0x20UL && value <= 0xD7FFUL) ||
         (value >= 0xE000UL && value <= 0xFFFDUL) ||
@@ -61,12 +61,12 @@ static int xml_name_equals_ascii_ci(const XmlName *name, const char *text) {
     return text[name->length] == '\0';
 }
 
-static int xml_is_name_start(char ch) {
+int xml_is_name_start(char ch) {
     unsigned char uch = (unsigned char)ch;
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == ':' || uch >= 0x80U;
 }
 
-static int xml_is_name_char(char ch) {
+int xml_is_name_char(char ch) {
     return xml_is_name_start(ch) || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.';
 }
 

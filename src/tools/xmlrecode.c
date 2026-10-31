@@ -121,17 +121,6 @@ static void write_utf8_codepoint(unsigned int codepoint) {
     if (rt_utf8_encode(codepoint, encoded, sizeof(encoded), &length) == 0) rt_write_all(1, encoded, length);
 }
 
-static unsigned int windows_1252_codepoint(unsigned char ch) {
-    static const unsigned int table[32] = {
-        0x20acU, 0x0081U, 0x201aU, 0x0192U, 0x201eU, 0x2026U, 0x2020U, 0x2021U,
-        0x02c6U, 0x2030U, 0x0160U, 0x2039U, 0x0152U, 0x008dU, 0x017dU, 0x008fU,
-        0x0090U, 0x2018U, 0x2019U, 0x201cU, 0x201dU, 0x2022U, 0x2013U, 0x2014U,
-        0x02dcU, 0x2122U, 0x0161U, 0x203aU, 0x0153U, 0x009dU, 0x017eU, 0x0178U
-    };
-    if (ch >= 0x80U && ch <= 0x9fU) return table[ch - 0x80U];
-    return (unsigned int)ch;
-}
-
 static int write_replacement_decl(const unsigned char *buffer, size_t length, size_t *index_io) {
     size_t index = 0U;
     if (length < 5U || buffer[0] != '<' || buffer[1] != '?' || buffer[2] != 'x' || buffer[3] != 'm' || buffer[4] != 'l') return 0;
@@ -179,7 +168,7 @@ static int recode_one(const char *path, int have_from, XmlRecodeEncoding from) {
     }
     (void)write_replacement_decl(buffer, length, &i);
     while (i < length) {
-        unsigned int codepoint = from == XML_RECODE_WINDOWS_1252 ? windows_1252_codepoint(buffer[i]) : (unsigned int)buffer[i];
+        unsigned int codepoint = from == XML_RECODE_WINDOWS_1252 ? rt_windows_1252_decode(buffer[i]) : (unsigned int)buffer[i];
         write_utf8_codepoint(codepoint);
         i += 1U;
     }

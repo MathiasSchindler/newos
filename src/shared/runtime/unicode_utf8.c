@@ -1,6 +1,6 @@
 #include "runtime.h"
 
-static size_t rt_utf8_sequence_length(unsigned char lead) {
+size_t rt_utf8_sequence_length(unsigned char lead) {
     if ((lead & 0x80U) == 0U) {
         return 1U;
     }
@@ -231,7 +231,7 @@ int rt_utf16_encode(unsigned int codepoint, int big_endian, unsigned char *buffe
     return 0;
 }
 
-static unsigned int rt_windows_1252_decode(unsigned char byte) {
+unsigned int rt_windows_1252_decode(unsigned char byte) {
     static const unsigned short mapping[32] = {
         0x20acU, 0x0081U, 0x201aU, 0x0192U, 0x201eU, 0x2026U, 0x2020U, 0x2021U,
         0x02c6U, 0x2030U, 0x0160U, 0x2039U, 0x0152U, 0x008dU, 0x017dU, 0x008fU,

@@ -195,13 +195,6 @@ static size_t tool_regex_decode_codepoint(const char *text, unsigned int *codepo
     return index;
 }
 
-static char tool_regex_to_lower_ascii(char ch) {
-    if (ch >= 'A' && ch <= 'Z') {
-        return (char)(ch - 'A' + 'a');
-    }
-    return ch;
-}
-
 static int tool_regex_codepoints_equal(unsigned int lhs, unsigned int rhs, int ignore_case) {
     if (ignore_case) {
         lhs = rt_unicode_simple_fold(lhs);
@@ -449,7 +442,7 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, unsign
     char compare_ch = (char)(ch <= 0x7fU ? ch : 0);
 
     if (ignore_case && ch <= 0x7fU) {
-        compare_ch = tool_regex_to_lower_ascii(compare_ch);
+        compare_ch = tool_ascii_tolower(compare_ch);
     }
 
     if (pattern == 0 || atom_len < 2U || pattern[0] != '[') {
@@ -499,7 +492,7 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, unsign
         }
 
         if (ignore_case) {
-            current = tool_regex_to_lower_ascii(current);
+            current = tool_ascii_tolower(current);
         }
 
         if (i + 1U < atom_len && pattern[i] == '-' && pattern[i + 1U] != ']') {
@@ -515,7 +508,7 @@ static int tool_regex_class_matches(const char *pattern, size_t atom_len, unsign
             }
 
             if (ignore_case) {
-                range_end = tool_regex_to_lower_ascii(range_end);
+                range_end = tool_ascii_tolower(range_end);
             }
 
             if (current <= compare_ch && compare_ch <= range_end) {

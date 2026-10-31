@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
+#include "xml.h"
 #include "xml_dtd.h"
 
 
@@ -25,12 +26,8 @@ static char *dtd_slice_dup(const char *text, size_t length) {
     return copy;
 }
 
-static int dtd_is_space(char ch) {
-    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n';
-}
-
 static void dtd_skip_space(const char *text, size_t length, size_t *pos) {
-    while (*pos < length && dtd_is_space(text[*pos])) *pos += 1U;
+    while (*pos < length && xml_is_space(text[*pos])) *pos += 1U;
 }
 
 static int dtd_name_char(char ch) {
@@ -191,7 +188,7 @@ static int dtd_parse_element_decl(XmlDtd *dtd, const char *text, size_t length, 
     dtd_skip_space(text, length, &pos);
     content_start = pos;
     content_end = length;
-    while (content_end > content_start && dtd_is_space(text[content_end - 1U])) content_end -= 1U;
+    while (content_end > content_start && xml_is_space(text[content_end - 1U])) content_end -= 1U;
     if (content_end == content_start) {
         tool_write_error(tool_name, "empty ELEMENT declaration", 0);
         return -1;
@@ -232,7 +229,7 @@ static int dtd_parse_attlist_decl(XmlDtd *dtd, const char *text, size_t length, 
                 pos += 1U;
             } while (pos < length && depth > 0U);
         } else {
-            while (pos < length && !dtd_is_space(text[pos])) pos += 1U;
+            while (pos < length && !xml_is_space(text[pos])) pos += 1U;
         }
         attr_type_length = (size_t)(text + pos - attr_type);
         dtd_skip_space(text, length, &pos);
@@ -275,9 +272,9 @@ int xml_dtd_parse_subset(XmlDtd *dtd, const char *text, size_t length, const cha
         if (pos + 2U > length || text[pos] != '<' || text[pos + 1U] != '!') return -1;
         decl_start = pos + 2U;
         if (dtd_find_decl_end(text, length, decl_start, &decl_end) != 0) return -1;
-        if (decl_start + 7U <= decl_end && rt_strncmp(text + decl_start, "ELEMENT", 7U) == 0 && dtd_is_space(text[decl_start + 7U])) {
+        if (decl_start + 7U <= decl_end && rt_strncmp(text + decl_start, "ELEMENT", 7U) == 0 && xml_is_space(text[decl_start + 7U])) {
             if (dtd_parse_element_decl(dtd, text + decl_start + 7U, decl_end - decl_start - 7U, tool_name) != 0) return -1;
-        } else if (decl_start + 7U <= decl_end && rt_strncmp(text + decl_start, "ATTLIST", 7U) == 0 && dtd_is_space(text[decl_start + 7U])) {
+        } else if (decl_start + 7U <= decl_end && rt_strncmp(text + decl_start, "ATTLIST", 7U) == 0 && xml_is_space(text[decl_start + 7U])) {
             if (dtd_parse_attlist_decl(dtd, text + decl_start + 7U, decl_end - decl_start - 7U, tool_name) != 0) return -1;
         }
         pos = decl_end + 1U;
@@ -465,9 +462,9 @@ static int validate_token(const XmlDtd *dtd, const XmlToken *token, const char *
             size_t pos = 0U;
             while (pos < value_length) {
                 size_t start;
-                while (pos < value_length && dtd_is_space(value[pos])) pos += 1U;
+                while (pos < value_length && xml_is_space(value[pos])) pos += 1U;
                 start = pos;
-                while (pos < value_length && !dtd_is_space(value[pos])) pos += 1U;
+                while (pos < value_length && !xml_is_space(value[pos])) pos += 1U;
                 if (pos > start && string_list_add(refs, value + start, pos - start) != 0) return -1;
             }
         }

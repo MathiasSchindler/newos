@@ -49,6 +49,34 @@ printf '<?xml version="1.0" encoding="windows-1252"?><root>caf\351</root>\n' > "
 "${TEST_BIN_DIR}/xmltokens" "$work_dir/windows1252.xml" > "$work_dir/windows1252.out"
 assert_file_contains "$work_dir/windows1252.out" 'text depth=1 text="café"' "XML tools did not transcode Windows-1252 input"
 
+printf '<?xml version="1.0" encoding="windows-1252"?><root>\200\201\202\203\204\205\206\207\210\211\212\213\214\215\216\217\220\221\222\223\224\225\226\227\230\231\232\233\234\235\236\237</root>\n' > "$work_dir/windows1252-all.xml"
+printf '<?xml version="1.0" encoding="UTF-8"?><root>\342\202\254\302\201\342\200\232\306\222\342\200\236\342\200\246\342\200\240\342\200\241\313\206\342\200\260\305\240\342\200\271\305\222\302\215\305\275\302\217\302\220\342\200\230\342\200\231\342\200\234\342\200\235\342\200\242\342\200\223\342\200\224\313\234\342\204\242\305\241\342\200\272\305\223\302\235\305\276\305\270</root>\n' > "$work_dir/windows1252-all.expected"
+for recode_mode in detected explicit; do
+    if [ "$recode_mode" = explicit ]; then
+        "${TEST_BIN_DIR}/xmlrecode" --from windows-1252 "$work_dir/windows1252-all.xml" > "$work_dir/windows1252-all.out"
+    else
+        "${TEST_BIN_DIR}/xmlrecode" "$work_dir/windows1252-all.xml" > "$work_dir/windows1252-all.out"
+    fi
+    assert_files_equal "$work_dir/windows1252-all.expected" "$work_dir/windows1252-all.out" "xmlrecode changed a Windows-1252 mapping or declaration rewrite"
+done
+
+printf '<r:_name xmlns:r="urn:r"><n.0-name a="&#x9;">&#xD7FF;&#xE000;&#xFFFD;&#x10000;&#x10FFFF;</n.0-name></r:_name>\n' > "$work_dir/predicate-valid.xml"
+printf '<\303\251.0-name/>\n' > "$work_dir/predicate-utf8-name.xml"
+assert_command_succeeds "${TEST_BIN_DIR}/xmlcheck" --buffered "$work_dir/predicate-utf8-name.xml"
+printf '<root>\013</root>\n' > "$work_dir/predicate-control.xml"
+printf '<root>&#xD800;</root>\n' > "$work_dir/predicate-surrogate.xml"
+printf '<root>&#x110000;</root>\n' > "$work_dir/predicate-range.xml"
+printf '<root>\300\257</root>\n' > "$work_dir/predicate-overlong.xml"
+for parse_mode in --buffered --stream; do
+    assert_command_succeeds "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$work_dir/predicate-valid.xml"
+    for invalid_xml in control surrogate range overlong; do
+        if "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$work_dir/predicate-$invalid_xml.xml" > /dev/null 2> "$work_dir/predicate-invalid.err"; then
+            fail "xmlcheck accepted an invalid character or codepoint"
+        fi
+        [ -s "$work_dir/predicate-invalid.err" ] || fail "xmlcheck did not diagnose invalid character input"
+    done
+done
+
 awk 'BEGIN {
     for (i = 0; i < 130; ++i) printf "<a>";
     for (i = 0; i < 130; ++i) printf "</a>";

@@ -29,23 +29,6 @@ typedef struct {
     size_t capacity;
 } StringStack;
 
-static int stream_is_space(char ch) { return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'; }
-static int stream_is_name_start(char ch) {
-    unsigned char uch = (unsigned char)ch;
-    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || ch == '_' || ch == ':' || uch >= 0x80U;
-}
-static int stream_is_name_char(char ch) { return stream_is_name_start(ch) || (ch >= '0' && ch <= '9') || ch == '-' || ch == '.'; }
-static int stream_char_allowed(char ch) {
-    unsigned char uch = (unsigned char)ch;
-    return uch >= 0x20U || ch == '\t' || ch == '\n' || ch == '\r';
-}
-static int stream_codepoint_allowed(unsigned long value) {
-    return value == 0x9UL || value == 0xAUL || value == 0xDUL ||
-        (value >= 0x20UL && value <= 0xD7FFUL) ||
-        (value >= 0xE000UL && value <= 0xFFFDUL) ||
-        (value >= 0x10000UL && value <= 0x10FFFFUL);
-}
-
 static void stream_error(XmlStream *stream, const char *message) {
     if (stream->error[0] == '\0') {
         rt_copy_string(stream->error, sizeof(stream->error), message);
@@ -69,7 +52,7 @@ static void stream_note_utf8_byte(XmlStream *stream, unsigned char byte, unsigne
 
     if (stream->utf8_remaining == 0U) {
         if (byte < 0x80U) {
-            if (!stream_codepoint_allowed((unsigned long)byte)) {
+            if (!xml_is_codepoint_allowed((unsigned long)byte)) {
                 stream_error(stream, "invalid XML character");
             }
             return;
@@ -102,7 +85,7 @@ static void stream_note_utf8_byte(XmlStream *stream, unsigned char byte, unsigne
     stream->utf8_remaining -= 1U;
     if (stream->utf8_remaining == 0U &&
         (stream->utf8_codepoint < stream->utf8_min ||
-         !stream_codepoint_allowed((unsigned long)stream->utf8_codepoint))) {
+         !xml_is_codepoint_allowed((unsigned long)stream->utf8_codepoint))) {
         stream_utf8_error(stream, stream->utf8_line, stream->utf8_column);
     }
 }
@@ -155,7 +138,7 @@ static int stream_expect(XmlStream *stream, char expected, const char *message) 
 static int stream_skip_space(XmlStream *stream) {
     char ch;
     int result;
-    while ((result = stream_peek(stream, &ch)) == 1 && stream_is_space(ch)) {
+    while ((result = stream_peek(stream, &ch)) == 1 && xml_is_space(ch)) {
         stream_get(stream, &ch);
     }
     return result < 0 ? -1 : 0;
@@ -190,11 +173,11 @@ static char *stream_parse_name(XmlStream *stream) {
     size_t capacity = 0U;
     char ch;
     int result;
-    if (stream_peek(stream, &ch) != 1 || !stream_is_name_start(ch)) {
+    if (stream_peek(stream, &ch) != 1 || !xml_is_name_start(ch)) {
         stream_error(stream, "expected XML name");
         return 0;
     }
-    while ((result = stream_peek(stream, &ch)) == 1 && stream_is_name_char(ch)) {
+    while ((result = stream_peek(stream, &ch)) == 1 && xml_is_name_char(ch)) {
         stream_get(stream, &ch);
         if (dynamic == 0 && length < sizeof(local) - 1U) {
             local[length++] = ch;
@@ -265,18 +248,18 @@ static int stream_parse_reference(XmlStream *stream, size_t *bytes_read_out) {
             stream_get(stream, &ch);
             bytes_read += 1U;
         }
-        if (digits == 0 || !stream_codepoint_allowed(value)) {
+        if (digits == 0 || !xml_is_codepoint_allowed(value)) {
             stream_error(stream, "invalid character reference");
             return -1;
         }
     } else {
         char name[6];
         size_t length = 0U;
-        while (stream_is_name_char(ch)) {
+        while (xml_is_name_char(ch)) {
             if (length + 1U < sizeof(name)) name[length] = ch;
             length += 1U;
             if (stream_peek(stream, &ch) != 1) break;
-            if (!stream_is_name_char(ch)) break;
+            if (!xml_is_name_char(ch)) break;
             stream_get(stream, &ch);
             bytes_read += 1U;
         }
@@ -303,7 +286,7 @@ static int stream_parse_until(XmlStream *stream, const char *end, const char *er
     size_t matched = 0U;
     char ch;
     while (stream_get(stream, &ch) == 1) {
-        if (!stream_char_allowed(ch)) {
+        if (!xml_is_ascii_char_allowed(ch)) {
             stream_error(stream, "invalid XML character");
             return -1;
         }
@@ -324,7 +307,7 @@ static int stream_parse_until_count(XmlStream *stream, const char *end, const ch
     size_t end_length = rt_strlen(end);
     char ch;
     while (stream_get(stream, &ch) == 1) {
-        if (!stream_char_allowed(ch)) {
+        if (!xml_is_ascii_char_allowed(ch)) {
             stream_error(stream, "invalid XML character");
             return -1;
         }
@@ -352,11 +335,11 @@ static int stream_parse_text(XmlStream *stream, int in_document, size_t *length_
     while (stream_peek(stream, &ch) == 1 && ch != '<') {
         stream_get(stream, &ch);
         length += 1U;
-        if (!stream_char_allowed(ch)) {
+        if (!xml_is_ascii_char_allowed(ch)) {
             stream_error(stream, "invalid XML character");
             return -1;
         }
-        if (!stream_is_space(ch)) {
+        if (!xml_is_space(ch)) {
             blank = 0;
             if (!in_document) {
                 stream_error(stream, "text outside document element");
@@ -385,7 +368,7 @@ static int stream_parse_comment(XmlStream *stream) {
     char ch;
     int dash_count = 0;
     while (stream_get(stream, &ch) == 1) {
-        if (!stream_char_allowed(ch)) {
+        if (!xml_is_ascii_char_allowed(ch)) {
             stream_error(stream, "invalid XML character");
             return -1;
         }
@@ -483,7 +466,7 @@ static int stream_parse_attributes(XmlStream *stream, XmlAttribute **attrs_out, 
             goto fail;
         }
         while (stream_get(stream, &ch) == 1 && ch != quote) {
-            if (!stream_char_allowed(ch)) { stream_error(stream, "invalid XML character"); goto fail; }
+            if (!xml_is_ascii_char_allowed(ch)) { stream_error(stream, "invalid XML character"); goto fail; }
             if (ch == '<') { stream_error(stream, "attribute value contains '<'"); goto fail; }
             if (ch == '&' && stream_parse_reference(stream, 0) != 0) goto fail;
         }

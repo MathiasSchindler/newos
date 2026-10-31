@@ -1,6 +1,6 @@
 #include "image_internal.h"
 
-static int is_jpeg_sof(unsigned char marker) {
+int image_jpeg_is_sof_marker(unsigned char marker) {
     return (marker >= 0xc0U && marker <= 0xc3U) ||
            (marker >= 0xc5U && marker <= 0xc7U) ||
            (marker >= 0xc9U && marker <= 0xcbU) ||
@@ -43,7 +43,7 @@ int image_probe_jpeg(const unsigned char *data, size_t size, ImageInfo *info) {
         if (segment_size < 2U) {
             break;
         }
-        if (is_jpeg_sof(marker)) {
+        if (image_jpeg_is_sof_marker(marker)) {
             if (offset + 8U <= size) {
                 image_set_bit_depth(info, data[offset + 2U]);
                 image_set_dimensions(info, image_read_u16_be(data + offset + 5U), image_read_u16_be(data + offset + 3U));

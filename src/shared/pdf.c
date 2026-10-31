@@ -446,7 +446,7 @@ static int pdf_find_top_number_value(const unsigned char *data, size_t size, con
     return pdf_parse_fixed(data, size, &offset, value_out) == 0;
 }
 
-static int pdf_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
+int pdf_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
     size_t key_offset;
     size_t offset;
     size_t after_value;

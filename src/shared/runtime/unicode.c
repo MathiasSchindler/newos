@@ -5,22 +5,6 @@ typedef struct {
     unsigned int last;
 } UnicodeRange;
 
-static size_t rt_utf8_sequence_length(unsigned char lead) {
-    if ((lead & 0x80U) == 0U) {
-        return 1U;
-    }
-    if ((lead & 0xE0U) == 0xC0U) {
-        return 2U;
-    }
-    if ((lead & 0xF0U) == 0xE0U) {
-        return 3U;
-    }
-    if ((lead & 0xF8U) == 0xF0U) {
-        return 4U;
-    }
-    return 0U;
-}
-
 static int codepoint_in_ranges(unsigned int codepoint, const UnicodeRange *ranges, size_t range_count) {
     size_t low = 0U;
     size_t high = range_count;

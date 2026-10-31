@@ -16,29 +16,6 @@ static void print_usage(void) {
     tool_write_usage("pdfextract", "--stream OBJ[:GEN] [--raw|--decoded] PDF | --metadata PDF | --list-streams PDF");
 }
 
-static int px_find_top_u64_direct_value(const unsigned char *data, size_t size, const char *key, unsigned long long *value_out) {
-    size_t key_offset;
-    size_t offset;
-    size_t after_value;
-    unsigned long long value;
-
-    if (!pdf_find_top_key(data, size, key, &key_offset)) return 0;
-    offset = pdf_skip_ws(data, size, key_offset + rt_strlen(key));
-    if (pdf_parse_u64(data, size, &offset, &value) != 0) return 0;
-    after_value = pdf_skip_ws(data, size, offset);
-    if (after_value < size && pdf_is_digit(data[after_value])) {
-        size_t ref_offset = after_value;
-        unsigned long long generation;
-
-        if (pdf_parse_u64(data, size, &ref_offset, &generation) == 0) {
-            ref_offset = pdf_skip_ws(data, size, ref_offset);
-            if (pdf_keyword_at(data, size, ref_offset, "R")) return 0;
-        }
-    }
-    *value_out = value;
-    return 1;
-}
-
 static void write_filter_value(const unsigned char *dict, size_t dict_size) {
     size_t key_offset;
     size_t offset;
@@ -178,7 +155,7 @@ static int stream_raw_size(const PdfDocument *document, const PdfObjectSpan *obj
     content_start = pdf_stream_body_start(document->data, document->size, object->stream_offset);
     if (content_start > object->endstream_offset) return -1;
     content_end = object->endstream_offset;
-    if (px_find_top_u64_direct_value(dict, dict_size, "/Length", &stream_length) && stream_length <= (unsigned long long)(document->size - content_start)) {
+    if (pdf_find_top_u64_direct_value(dict, dict_size, "/Length", &stream_length) && stream_length <= (unsigned long long)(document->size - content_start)) {
         content_end = content_start + (size_t)stream_length;
     } else {
         pdf_trim_stream_end(document->data, content_start, &content_end);

@@ -173,13 +173,6 @@ int image_validate_png(const unsigned char *data, size_t size, const ImageValida
     return 0;
 }
 
-static int jpeg_is_sof_marker(unsigned char marker) {
-    return (marker >= 0xc0U && marker <= 0xc3U) ||
-           (marker >= 0xc5U && marker <= 0xc7U) ||
-           (marker >= 0xc9U && marker <= 0xcbU) ||
-           (marker >= 0xcdU && marker <= 0xcfU);
-}
-
 static int jpeg_marker_has_no_payload(unsigned char marker) {
     return marker == 0x01U || (marker >= 0xd0U && marker <= 0xd9U);
 }
@@ -257,7 +250,7 @@ int image_validate_jpeg(const unsigned char *data, size_t size, ImageValidation 
             image_validation_set_offset(validation, IMAGE_FORMAT_JPEG, "JPEG segment length exceeds file size", offset);
             return -1;
         }
-        if (jpeg_is_sof_marker(marker)) {
+        if (image_jpeg_is_sof_marker(marker)) {
             if (segment_size < 8U) {
                 image_validation_set(validation, IMAGE_FORMAT_JPEG, 0, "JPEG SOF segment is too short");
                 return -1;
