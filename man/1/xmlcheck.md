@@ -19,6 +19,7 @@ The `xmlcheck` tool checks whether XML input is well-formed. It reads one or mor
 ## CURRENT CAPABILITIES
 
 - validate element nesting and document-root structure
+- accept UTF-8 element and attribute names in both streaming and buffered modes
 - detect duplicate attributes on the same element
 - detect malformed comments, CDATA sections, processing instructions, DOCTYPE declarations, and entity references
 - reject malformed UTF-8 byte sequences and XML-disallowed Unicode code points

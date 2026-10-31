@@ -548,8 +548,9 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
         unsigned long long markup_column = stream.column;
 
         stream_get(&stream, &ch);
-        if (stream_get(&stream, &ch) != 1) { stream_error(&stream, "unterminated markup"); break; }
+        if (stream_peek(&stream, &ch) != 1) { stream_error(&stream, "unterminated markup"); break; }
         if (ch == '/') {
+            stream_get(&stream, &ch);
             char *name = stream_parse_name(&stream);
             if (name == 0) break;
             if (stream_skip_space(&stream) != 0 || stream_expect(&stream, '>', "expected '>' after end tag") != 0) { rt_free(name); break; }
@@ -562,10 +563,12 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
             rt_free(stack.items[--stack.count]);
             rt_free(name);
         } else if (ch == '?') {
+            stream_get(&stream, &ch);
             if (options != 0 && !options->allow_pi) { stream_error(&stream, "processing instruction is not allowed"); break; }
             if (stream_parse_pi(&stream, at_start) != 0) break;
             if (stream_emit_event(callback, user_data, XML_TOKEN_PI, 0, 0U, 0, 0U, 0U, markup_line, markup_column, stack.count, 0) != 0) { stream_error(&stream, "stream callback failed"); break; }
         } else if (ch == '!') {
+            stream_get(&stream, &ch);
             if (stream_get(&stream, &ch) != 1) { stream_error(&stream, "unterminated markup"); break; }
             if (ch == '-') {
                 if (options != 0 && !options->allow_comments) { stream_error(&stream, "comment is not allowed"); break; }
@@ -592,8 +595,6 @@ int xml_stream_visit_document_with_options(const char *path, const char *tool_na
             XmlAttribute *attrs;
             size_t attr_count;
             int empty = 0;
-            stream.pos -= 1U;
-            stream.column -= 1ULL;
             name = stream_parse_name(&stream);
             if (name == 0) break;
             if (stream_parse_attributes(&stream, &attrs, &attr_count) != 0) { rt_free(name); break; }

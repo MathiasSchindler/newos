@@ -63,6 +63,106 @@ done
 printf '<r:_name xmlns:r="urn:r"><n.0-name a="&#x9;">&#xD7FF;&#xE000;&#xFFFD;&#x10000;&#x10FFFF;</n.0-name></r:_name>\n' > "$work_dir/predicate-valid.xml"
 printf '<\303\251.0-name/>\n' > "$work_dir/predicate-utf8-name.xml"
 assert_command_succeeds "${TEST_BIN_DIR}/xmlcheck" --buffered "$work_dir/predicate-utf8-name.xml"
+printf '<\303\251/>\n' > "$work_dir/utf8-name-two.xml"
+printf '<\346\274\242/>\n' > "$work_dir/utf8-name-three.xml"
+printf '<\360\240\200\200/>\n' > "$work_dir/utf8-name-four.xml"
+printf '<\303\251><\303\251/></\303\251>\n' > "$work_dir/utf8-name-two-paired.xml"
+printf '<\346\274\242><\346\274\242/></\346\274\242>\n' > "$work_dir/utf8-name-three-paired.xml"
+printf '<\360\240\200\200><\360\240\200\200/></\360\240\200\200>\n' > "$work_dir/utf8-name-four-paired.xml"
+printf '<?xml version="1.0" encoding="UTF-8"?>\n<\303\251/>\n' > "$work_dir/utf8-name-declaration.xml"
+printf '<\303\251:r xmlns:\303\251="urn:r"><\346\274\242/></\303\251:r>\n' > "$work_dir/utf8-name-qualified.xml"
+printf '<a\303\251 a="\346\274\242">\360\240\200\200</a\303\251>\n' > "$work_dir/utf8-name-mixed.xml"
+printf '<\303\251 \346\274\242="v">\360\240\200\200<\303\251/><\360\240\200\200/><!--\303\251--><![CDATA[\346\274\242]]><?\303\251 x?></\303\251>\n' > "$work_dir/utf8-name-events.xml"
+printf '<?xml version="1.0"?><!DOCTYPE root [<!ELEMENT root ANY>]><root><!--\303\251--><![CDATA[\346\274\242]]><?\303\251 x?></root>\n' > "$work_dir/utf8-markup.xml"
+{
+    printf '<\303\251'
+    awk 'BEGIN { for (i = 0; i < 260; ++i) printf "a"; }'
+    printf '/>\n'
+} > "$work_dir/utf8-name-long.xml"
+# Place the UTF-8 lead or preceding '<' at offset 8191, the buffer's last byte.
+for boundary in 8184 8185; do
+    for utf8_width in two three four; do
+        {
+            printf '<root>'
+            awk -v padding="$boundary" 'BEGIN { for (i = 0; i < padding; ++i) printf "x"; }'
+            case "$utf8_width" in
+                two) printf '<\303\251/>' ;;
+                three) printf '<\346\274\242/>' ;;
+                four) printf '<\360\240\200\200/>' ;;
+            esac
+            printf '</root>\n'
+        } > "$work_dir/utf8-boundary-$boundary-$utf8_width.xml"
+    done
+done
+for parse_mode in --buffered --stream; do
+    for valid_utf8 in "$work_dir/predicate-utf8-name.xml" "$work_dir"/utf8-name-*.xml "$work_dir"/utf8-boundary-*.xml "$work_dir/utf8-markup.xml"; do
+        assert_command_succeeds "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$valid_utf8"
+    done
+done
+assert_command_succeeds "${TEST_BIN_DIR}/xmlcheck" "$work_dir/utf8-name-two.xml"
+printf '<\303\251/>\n' | "${TEST_BIN_DIR}/xmlcheck" --stream
+
+"${TEST_BIN_DIR}/xmlcount" "$work_dir/utf8-name-events.xml" > "$work_dir/utf8-events-count.out"
+printf 'elements 3\nattributes 1\ntext 2\ncomments 1\ncdata 1\npi 1\ndoctype 0\nmax-depth 2\n' > "$work_dir/utf8-events-count.expected"
+assert_files_equal "$work_dir/utf8-events-count.expected" "$work_dir/utf8-events-count.out" "XML streaming events changed for UTF-8 names or markup"
+"${TEST_BIN_DIR}/xmlcount" "$work_dir/utf8-markup.xml" > "$work_dir/utf8-markup-count.out"
+printf 'elements 1\nattributes 0\ntext 1\ncomments 1\ncdata 1\npi 2\ndoctype 1\nmax-depth 1\n' > "$work_dir/utf8-markup-count.expected"
+assert_files_equal "$work_dir/utf8-markup-count.expected" "$work_dir/utf8-markup-count.out" "XML streaming markup dispatch changed event counts"
+"${TEST_BIN_DIR}/xmlstats" "$work_dir/utf8-name-events.xml" > "$work_dir/utf8-events-stats.out"
+assert_file_contains "$work_dir/utf8-events-stats.out" '^elements 3$' "xmlstats lost UTF-8 elements"
+assert_file_contains "$work_dir/utf8-events-stats.out" '^attributes 1$' "xmlstats lost a UTF-8 attribute"
+assert_file_contains "$work_dir/utf8-events-stats.out" '^text-bytes 7$' "xmlstats changed UTF-8 text byte counts"
+assert_file_contains "$work_dir/utf8-events-stats.out" "$(printf '^    \303\251 2$')" "xmlstats changed a two-byte UTF-8 element name"
+assert_file_contains "$work_dir/utf8-events-stats.out" "$(printf '^    \360\240\200\200 1$')" "xmlstats changed a four-byte UTF-8 element name"
+assert_file_contains "$work_dir/utf8-events-stats.out" "$(printf '^    \346\274\242 1$')" "xmlstats changed a three-byte UTF-8 attribute name"
+for parse_mode in --buffered --stream; do
+    assert_command_succeeds "${TEST_BIN_DIR}/xmlsafe" "$parse_mode" "$work_dir/utf8-name-two-paired.xml"
+    assert_command_succeeds "${TEST_BIN_DIR}/xmlsafe" "$parse_mode" --allow-comments --allow-pi "$work_dir/utf8-name-events.xml"
+    if "${TEST_BIN_DIR}/xmlsafe" "$parse_mode" "$work_dir/utf8-name-events.xml" > /dev/null 2> "$work_dir/utf8-events-safe.err"; then
+        fail "xmlsafe accepted a disallowed comment after a UTF-8 element name"
+    fi
+    assert_file_contains "$work_dir/utf8-events-safe.err" "comment is not allowed" "xmlsafe changed comment rejection after a UTF-8 name"
+done
+assert_command_succeeds "${TEST_BIN_DIR}/xmlvalidate" --stream --root "$(printf '\303\251')" "$work_dir/utf8-name-two-paired.xml"
+
+printf '<\200/>\n' > "$work_dir/utf8-invalid-continuation.xml"
+printf '<\300\257/>\n' > "$work_dir/utf8-invalid-overlong.xml"
+printf '<\355\240\200/>\n' > "$work_dir/utf8-invalid-surrogate.xml"
+printf '<\364\220\200\200/>\n' > "$work_dir/utf8-invalid-range.xml"
+printf '<\303/>\n' > "$work_dir/utf8-invalid-truncated.xml"
+printf '<\343\200A/>\n' > "$work_dir/utf8-invalid-interrupted.xml"
+for parse_mode in --buffered --stream; do
+    for invalid_utf8 in "$work_dir"/utf8-invalid-*.xml; do
+        if "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$invalid_utf8" > /dev/null 2> "$work_dir/utf8-invalid.err"; then
+            fail "xmlcheck accepted malformed UTF-8 in an element name"
+        fi
+        assert_file_contains "$work_dir/utf8-invalid.err" 'invalid UTF-8 sequence' "xmlcheck did not diagnose malformed UTF-8 in an element name"
+    done
+done
+
+printf '<\303\251>\n<\303x/></\303\251>\n' > "$work_dir/utf8-diagnostic.xml"
+for parse_mode in --buffered --stream; do
+    if "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$work_dir/utf8-diagnostic.xml" > /dev/null 2> "$work_dir/utf8-diagnostic.err"; then
+        fail "xmlcheck accepted malformed UTF-8 after a valid UTF-8 element name"
+    fi
+    assert_file_contains "$work_dir/utf8-diagnostic.err" ':2:2: invalid UTF-8 sequence' "xmlcheck changed the UTF-8 error location"
+done
+
+printf '<\303' > "$work_dir/unfinished-utf8-name.xml"
+for parse_mode in --buffered --stream; do
+    for unfinished_markup in '<' '</' '<?' '<!' '<!-' '<![' '<!D' '<1root/>' '< root/>'; do
+        printf '%s' "$unfinished_markup" > "$work_dir/unfinished-markup.xml"
+        if "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$work_dir/unfinished-markup.xml" > /dev/null 2> "$work_dir/unfinished-markup.err"; then
+            fail "xmlcheck accepted invalid or unfinished markup"
+        fi
+        [ -s "$work_dir/unfinished-markup.err" ] || fail "xmlcheck did not diagnose invalid or unfinished markup"
+    done
+    if "${TEST_BIN_DIR}/xmlcheck" "$parse_mode" "$work_dir/unfinished-utf8-name.xml" > /dev/null 2> "$work_dir/unfinished-markup.err"; then
+        fail "xmlcheck accepted an unfinished UTF-8 element name"
+    fi
+    [ -s "$work_dir/unfinished-markup.err" ] || fail "xmlcheck did not diagnose an unfinished UTF-8 element name"
+done
+
 printf '<root>\013</root>\n' > "$work_dir/predicate-control.xml"
 printf '<root>&#xD800;</root>\n' > "$work_dir/predicate-surrogate.xml"
 printf '<root>&#x110000;</root>\n' > "$work_dir/predicate-range.xml"
