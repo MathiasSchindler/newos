@@ -85,6 +85,10 @@ check. Both positive executables import only KERNEL32.
   tool's public entry point kept in `src/tools/<tool>.c`.
 - Code in this layer should go through `platform.h` for OS interaction rather
   than calling libc or POSIX APIs directly.
+- Match syscall argument lists to the kernel ABI, not just the public C
+  prototype. For example, macOS `gettimeofday` takes an optional third
+  `mach_absolute_time` pointer; the runtime passes null when that output is
+  not requested.
 
 ## LIMITATIONS
 
