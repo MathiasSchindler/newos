@@ -39,19 +39,6 @@ static void print_usage(const char *program_name) {
 }
 
 
-static const char *option_attached_value(const char *arg, const char *short_name, const char *long_name) {
-    size_t short_len = rt_strlen(short_name);
-    size_t long_len = rt_strlen(long_name);
-
-    if (tool_starts_with(arg, short_name) && arg[short_len] != '\0') {
-        return arg + short_len;
-    }
-    if (tool_starts_with(arg, long_name) && arg[long_len] == '=') {
-        return arg + long_len + 1U;
-    }
-    return 0;
-}
-
 static int is_prefix_marker_char(char ch) {
     return ch == '#' || ch == '>' || ch == '*' || ch == '/' ||
            ch == '-' || ch == ';' || ch == '%' || ch == '|' ||
@@ -386,7 +373,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-w", "--width")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-w", "--width")) != 0) {
             if (tool_parse_uint_arg(value_text, &options.width, "fmt", "width") != 0 || options.width == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -409,7 +396,7 @@ int main(int argc, char **argv) {
             rt_copy_string(options.prefix_filter, sizeof(options.prefix_filter), argv[argi + 1]);
             options.have_prefix_filter = 1;
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-p", "--prefix")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-p", "--prefix")) != 0) {
             rt_copy_string(options.prefix_filter, sizeof(options.prefix_filter), value_text);
             options.have_prefix_filter = 1;
             argi += 1;

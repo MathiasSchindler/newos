@@ -17,6 +17,26 @@ printf 'foo bar baz\n' > "$WORK_DIR/fmt.txt"
 printf 'foo\nbar\nbaz\n' > "$WORK_DIR/fmt.expected"
 assert_files_equal "$WORK_DIR/fmt.expected" "$WORK_DIR/fmt.out" "fmt did not reflow the line into the requested width"
 
+for width_arg in -w6 --width=6; do
+    "${TEST_BIN_DIR}/fmt" "$width_arg" "$WORK_DIR/fmt.txt" > "$WORK_DIR/fmt_attached.out"
+    assert_files_equal "$WORK_DIR/fmt.expected" "$WORK_DIR/fmt_attached.out" "fmt attached width changed output"
+done
+"${TEST_BIN_DIR}/fmt" -w6 --prefix= "$WORK_DIR/fmt.txt" > "$WORK_DIR/fmt_empty_prefix.out"
+assert_files_equal "$WORK_DIR/fmt.expected" "$WORK_DIR/fmt_empty_prefix.out" "fmt did not preserve an empty attached prefix"
+for invalid_width in --width= --widthmore=6; do
+    if "${TEST_BIN_DIR}/fmt" "$invalid_width" "$WORK_DIR/fmt.txt" > "$WORK_DIR/fmt_invalid.out" 2> "$WORK_DIR/fmt_invalid.err"; then
+        fail "fmt accepted an invalid attached width"
+    fi
+    assert_file_contains "$WORK_DIR/fmt_invalid.err" 'Usage:' "fmt did not diagnose an invalid attached width"
+done
+
+printf '# foo bar baz\nplain text\n' > "$WORK_DIR/fmt_prefix.txt"
+"${TEST_BIN_DIR}/fmt" -w6 -p '#' "$WORK_DIR/fmt_prefix.txt" > "$WORK_DIR/fmt_prefix.expected"
+for prefix_arg in '-p#' '--prefix=#'; do
+    "${TEST_BIN_DIR}/fmt" -w6 "$prefix_arg" "$WORK_DIR/fmt_prefix.txt" > "$WORK_DIR/fmt_prefix.out"
+    assert_files_equal "$WORK_DIR/fmt_prefix.expected" "$WORK_DIR/fmt_prefix.out" "fmt attached prefix changed output"
+done
+
 printf '界界界a\n' > "$WORK_DIR/fold_unicode.txt"
 "${TEST_BIN_DIR}/fold" -w 6 "$WORK_DIR/fold_unicode.txt" > "$WORK_DIR/fold_unicode.out"
 assert_file_contains "$WORK_DIR/fold_unicode.out" '^界界界$' "fold did not wrap on Unicode display-width boundaries"

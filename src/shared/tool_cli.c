@@ -81,6 +81,19 @@ int tool_opt_require_value(ToolOptState *s) {
     return 0;
 }
 
+const char *tool_option_attached_value(const char *arg, const char *short_name, const char *long_name) {
+    size_t short_len = rt_strlen(short_name);
+    size_t long_len = rt_strlen(long_name);
+
+    if (tool_starts_with(arg, short_name) && arg[short_len] != '\0') {
+        return arg + short_len;
+    }
+    if (tool_starts_with(arg, long_name) && arg[long_len] == '=') {
+        return arg + long_len + 1U;
+    }
+    return 0;
+}
+
 int tool_should_print_file_header(int verbose, int quiet, int path_count) {
     if (verbose) {
         return 1;

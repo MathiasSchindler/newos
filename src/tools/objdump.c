@@ -8,17 +8,6 @@
 #define OBJDUMP_NAME_TABLE_CAPACITY 65536U
 #define OBJDUMP_MACHO_MAX_COMMANDS 256U
 
-#define MACHO_ARM64_RELOC_UNSIGNED 0U
-#define MACHO_ARM64_RELOC_SUBTRACTOR 1U
-#define MACHO_ARM64_RELOC_BRANCH26 2U
-#define MACHO_ARM64_RELOC_PAGE21 3U
-#define MACHO_ARM64_RELOC_PAGEOFF12 4U
-#define MACHO_ARM64_RELOC_GOT_LOAD_PAGE21 5U
-#define MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12 6U
-#define MACHO_ARM64_RELOC_POINTER_TO_GOT 7U
-#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21 8U
-#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12 9U
-#define MACHO_ARM64_RELOC_ADDEND 10U
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_CSTRING_LITERALS 2U
 #define MACHO_S_4BYTE_LITERALS 3U
@@ -96,21 +85,6 @@ static const char *macho_section_type_name(unsigned int type) {
     if (type == MACHO_S_16BYTE_LITERALS) return "literal16";
     if (type == MACHO_S_THREAD_LOCAL_ZEROFILL) return "tlv-zerofill";
     return "other";
-}
-
-static const char *macho_arm64_relocation_name(unsigned int type) {
-    if (type == MACHO_ARM64_RELOC_UNSIGNED) return "UNSIGNED";
-    if (type == MACHO_ARM64_RELOC_SUBTRACTOR) return "SUBTRACTOR";
-    if (type == MACHO_ARM64_RELOC_BRANCH26) return "BRANCH26";
-    if (type == MACHO_ARM64_RELOC_PAGE21) return "PAGE21";
-    if (type == MACHO_ARM64_RELOC_PAGEOFF12) return "PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGE21) return "GOT_LOAD_PAGE21";
-    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12) return "GOT_LOAD_PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_POINTER_TO_GOT) return "POINTER_TO_GOT";
-    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21) return "TLVP_LOAD_PAGE21";
-    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12) return "TLVP_LOAD_PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_ADDEND) return "ADDEND";
-    return "UNKNOWN";
 }
 
 static int macho_section_is_zerofill(const MachSectionInfo *section) {
@@ -698,7 +672,7 @@ static void print_macho_relocations(int fd, const MachSectionInfo *sections, uns
             type = (info >> 28U) & 0x0fU;
             tool_write_hex_value(1, (unsigned long long)address);
             rt_write_cstr(1, " ");
-            rt_write_cstr(1, macho_arm64_relocation_name(type));
+            rt_write_cstr(1, tool_macho_arm64_relocation_name(type));
             rt_write_cstr(1, " length=");
             rt_write_uint(1, (unsigned long long)length);
             rt_write_cstr(1, " pcrel=");
@@ -775,7 +749,7 @@ static int json_macho_relocations(int fd, const char *path, const MachSectionInf
             external = (info >> 27U) & 1U;
             type = (info >> 28U) & 0x0fU;
             if (external) symbol = macho_symbol_name_at(fd, symtab, symbolnum, strings, string_size);
-            if (json_relocation_event(path, sections[section_index].segment, sections[section_index].section, address, macho_arm64_relocation_name(type), (info >> 25U) & 3U, (info >> 24U) & 1U, external, symbol, symbolnum) != 0) return -1;
+            if (json_relocation_event(path, sections[section_index].segment, sections[section_index].section, address, tool_macho_arm64_relocation_name(type), (info >> 25U) & 3U, (info >> 24U) & 1U, external, symbol, symbolnum) != 0) return -1;
         }
     }
     return 0;

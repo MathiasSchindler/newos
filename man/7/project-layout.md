@@ -76,7 +76,7 @@ backends. Their declarations remain in `tool_util.h`, except for XML helpers:
 | `tool_file.c` | Input opening/closing and whole-input reads / whole-file writes |
 | `tool_fs.c` | Copying, removal, tree walks, parent-directory creation, replacement policy, and symbolic permissions |
 | `tool_path.c` | Path names, joining, resolution, and filesystem identity checks |
-| `tool_cli.c` | Option iteration, usage/errors, interactive confirmation, and file-header policy |
+| `tool_cli.c` | Option iteration and attached values, usage/errors, interactive confirmation, and file-header policy |
 | `tool_json.c` | Shared structured-output mode and event writing |
 | `tool_buffer.c` | Byte buffers, arrays, fixed records, and bounded buffer appends |
 | `tool_binary.c` | Byte-order loads/stores, byte comparison, and hex/base64 digit conversion |
@@ -87,7 +87,7 @@ backends. Their declarations remain in `tool_util.h`, except for XML helpers:
 | `tool_time.c` | Timezones, durations, compact uptime, and civil-date arithmetic |
 | `tool_terminal.c` | Color/style policy, terminal-mode restoration, and pager sizing |
 | `tool_http.c` | HTTP status/header delimiters and direct HTTP/TLS connection operations |
-| `tool_object.c` | Object-symbol classification and display names |
+| `tool_object.c` | Object-symbol classification, display names, and Mach-O ARM64 relocation names |
 | `tool_process.c` | Process matching, signals, PID filters, program-path validation, and worker-count selection |
 
 Crypto filenames describe their implemented families: `crypto/aes.{c,h}` and

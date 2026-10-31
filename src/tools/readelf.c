@@ -67,18 +67,6 @@
 #define MACHO_CODE_SIGNATURE_SLOT_CMS_SIGNATURE 0x10000U
 #define MACHO_CODE_SIGNATURE_HASH_SHA256 2U
 
-#define MACHO_ARM64_RELOC_UNSIGNED 0U
-#define MACHO_ARM64_RELOC_SUBTRACTOR 1U
-#define MACHO_ARM64_RELOC_BRANCH26 2U
-#define MACHO_ARM64_RELOC_PAGE21 3U
-#define MACHO_ARM64_RELOC_PAGEOFF12 4U
-#define MACHO_ARM64_RELOC_GOT_LOAD_PAGE21 5U
-#define MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12 6U
-#define MACHO_ARM64_RELOC_POINTER_TO_GOT 7U
-#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21 8U
-#define MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12 9U
-#define MACHO_ARM64_RELOC_ADDEND 10U
-
 #define MACHO_S_ZEROFILL 1U
 #define MACHO_S_CSTRING_LITERALS 2U
 #define MACHO_S_4BYTE_LITERALS 3U
@@ -392,21 +380,6 @@ static const char *macho_section_type_name(unsigned int type) {
     if (type == MACHO_S_16BYTE_LITERALS) return "LITERAL16";
     if (type == MACHO_S_THREAD_LOCAL_ZEROFILL) return "TLV_ZEROFILL";
     return "OTHER";
-}
-
-static const char *macho_arm64_relocation_name(unsigned int type) {
-    if (type == MACHO_ARM64_RELOC_UNSIGNED) return "UNSIGNED";
-    if (type == MACHO_ARM64_RELOC_SUBTRACTOR) return "SUBTRACTOR";
-    if (type == MACHO_ARM64_RELOC_BRANCH26) return "BRANCH26";
-    if (type == MACHO_ARM64_RELOC_PAGE21) return "PAGE21";
-    if (type == MACHO_ARM64_RELOC_PAGEOFF12) return "PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGE21) return "GOT_LOAD_PAGE21";
-    if (type == MACHO_ARM64_RELOC_GOT_LOAD_PAGEOFF12) return "GOT_LOAD_PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_POINTER_TO_GOT) return "POINTER_TO_GOT";
-    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGE21) return "TLVP_LOAD_PAGE21";
-    if (type == MACHO_ARM64_RELOC_TLVP_LOAD_PAGEOFF12) return "TLVP_LOAD_PAGEOFF12";
-    if (type == MACHO_ARM64_RELOC_ADDEND) return "ADDEND";
-    return "UNKNOWN";
 }
 
 static const char *elf_type_name(unsigned short type) {
@@ -2551,7 +2524,7 @@ static int json_macho_relocations(int fd, const char *path, const MachSectionInf
             if (tool_json_field_string(1, "segment", sections[section_index].segment) != 0) return -1;
             if (tool_json_field_string(1, "section", sections[section_index].section) != 0) return -1;
             if (tool_json_field_uint(1, "offset", address) != 0) return -1;
-            if (tool_json_field_string(1, "type", macho_arm64_relocation_name(type)) != 0) return -1;
+            if (tool_json_field_string(1, "type", tool_macho_arm64_relocation_name(type)) != 0) return -1;
             if (tool_json_field_uint(1, "length", (info >> 25U) & 3U) != 0) return -1;
             if (tool_json_field_bool(1, "pcrel", ((info >> 24U) & 1U) != 0U) != 0) return -1;
             if (tool_json_field_bool(1, "external", external != 0U) != 0) return -1;
@@ -2634,7 +2607,7 @@ static void print_macho_relocations(int fd, const MachSectionInfo *sections, uns
             rt_write_cstr(1, "  ");
             tool_write_hex_value(1, (unsigned long long)address);
             rt_write_cstr(1, "  ");
-            rt_write_cstr(1, macho_arm64_relocation_name(type));
+            rt_write_cstr(1, tool_macho_arm64_relocation_name(type));
             rt_write_cstr(1, "  ");
             rt_write_uint(1, (unsigned long long)length);
             rt_write_cstr(1, "      ");

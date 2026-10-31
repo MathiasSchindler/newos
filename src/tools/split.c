@@ -76,19 +76,6 @@ static int ensure_output_open(int *fd_out,
 }
 
 
-static const char *option_attached_value(const char *arg, const char *short_name, const char *long_name) {
-    size_t short_len = rt_strlen(short_name);
-    size_t long_len = rt_strlen(long_name);
-
-    if (tool_starts_with(arg, short_name) && arg[short_len] != '\0') {
-        return arg + short_len;
-    }
-    if (tool_starts_with(arg, long_name) && arg[long_len] == '=') {
-        return arg + long_len + 1U;
-    }
-    return 0;
-}
-
 static int compute_chunk_limit(int fd, unsigned long long chunk_count, unsigned long long *limit_out) {
     long long start;
     long long end;
@@ -313,7 +300,7 @@ int main(int argc, char **argv) {
             mode = SPLIT_MODE_LINES;
             chunk_count = 0ULL;
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-l", "--lines")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-l", "--lines")) != 0) {
             if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -329,7 +316,7 @@ int main(int argc, char **argv) {
             mode = SPLIT_MODE_BYTES;
             chunk_count = 0ULL;
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-b", "--bytes")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-b", "--bytes")) != 0) {
             if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -345,7 +332,7 @@ int main(int argc, char **argv) {
             mode = SPLIT_MODE_LINE_BYTES;
             chunk_count = 0ULL;
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-C", "--line-bytes")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-C", "--line-bytes")) != 0) {
             if (tool_parse_size_value(value_text, &limit) != 0 || limit == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -360,7 +347,7 @@ int main(int argc, char **argv) {
             }
             mode = SPLIT_MODE_BYTES;
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-n", "--number")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-n", "--number")) != 0) {
             if (tool_parse_uint_arg(value_text, &chunk_count, "split", "chunks") != 0 || chunk_count == 0ULL) {
                 print_usage(argv[0]);
                 return 1;
@@ -375,7 +362,7 @@ int main(int argc, char **argv) {
                 return 1;
             }
             argi += 2;
-        } else if ((value_text = option_attached_value(argv[argi], "-a", "--suffix-length")) != 0) {
+        } else if ((value_text = tool_option_attached_value(argv[argi], "-a", "--suffix-length")) != 0) {
             if (tool_parse_uint_arg(value_text, &suffix_length, "split", "suffix length") != 0 || suffix_length == 0ULL) {
                 print_usage(argv[0]);
                 return 1;

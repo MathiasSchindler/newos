@@ -193,6 +193,8 @@ void tool_opt_init(ToolOptState *s, int argc, char **argv,
                    const char *prog, const char *usage_suffix);
 int  tool_opt_next(ToolOptState *s);
 int  tool_opt_require_value(ToolOptState *s);
+/* Returns a pointer into arg; an empty --name= value is still attached. */
+const char *tool_option_attached_value(const char *arg, const char *short_name, const char *long_name);
 int tool_should_print_file_header(int verbose, int quiet, int path_count);
 int tool_parse_uint_arg(const char *text, unsigned long long *value_out, const char *tool_name, const char *what);
 int tool_parse_int_arg(const char *text, long long *value_out, const char *tool_name, const char *what);
@@ -281,6 +283,7 @@ int tool_stream_from_line(int input_fd, int output_fd, unsigned long long start_
 int tool_stream_from_byte(int input_fd, int output_fd, unsigned long long start_byte);
 void tool_format_block_size(unsigned long long value, int human_readable, unsigned long long block_size, char *buffer, size_t buffer_size);
 int tool_symbol_type_is_function(const char *type);
+const char *tool_macho_arm64_relocation_name(unsigned int type);
 const char *tool_display_symbol_name(const char *name);
 const char *tool_newlinker_text_symbol_name(const char *section);
 int tool_buffer_append_char_checked(char *buffer, size_t buffer_size, size_t *length_io, char ch);
