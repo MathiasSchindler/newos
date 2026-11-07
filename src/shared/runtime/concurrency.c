@@ -4,6 +4,8 @@
 #define RT_TASK_WORK_PARALLEL 1U
 #define RT_TASK_WORK_GROUP 2U
 #define RT_TASK_POOL_CHUNKS_PER_WORKER 8U
+#define RT_TASK_CLAIM_LOCK 0x80000000U
+#define RT_TASK_CLAIM_CLOSED 0xffffffffU
 #ifndef RT_TASK_WORKER_SPIN_LIMIT
 #define RT_TASK_WORKER_SPIN_LIMIT 0U
 #endif
@@ -11,7 +13,6 @@
 #define RT_TASK_JOIN_SPIN_LIMIT 0U
 #endif
 
-#if RT_TASK_WORKER_SPIN_LIMIT > 0U || RT_TASK_JOIN_SPIN_LIMIT > 0U
 static void rt_task_pool_cpu_relax(void) {
 #if defined(__x86_64__) || defined(__i386__)
     __asm__ __volatile__("pause" ::: "memory");
@@ -21,7 +22,6 @@ static void rt_task_pool_cpu_relax(void) {
     __asm__ __volatile__("" ::: "memory");
 #endif
 }
-#endif
 
 static void rt_task_pool_clear(RtTaskPool *pool) {
     rt_memset(pool, 0, sizeof(*pool));
@@ -226,13 +226,26 @@ static int rt_task_worker_main(void *arg) {
         observed_generation = generation;
         for (;;) {
             unsigned int participant_index;
-            unsigned int active_workers = __atomic_load_n(&pool->active_workers, __ATOMIC_ACQUIRE);
+            unsigned int active_workers;
 
             participant_index = __atomic_load_n(&pool->claimed_workers, __ATOMIC_ACQUIRE);
-            if (participant_index >= active_workers) {
+            if (participant_index == RT_TASK_CLAIM_CLOSED) {
                 break;
             }
-            if (__atomic_compare_exchange_n(&pool->claimed_workers, &participant_index, participant_index + 1U, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            if (participant_index & RT_TASK_CLAIM_LOCK) {
+                rt_task_pool_cpu_relax();
+                continue;
+            }
+            if (__atomic_compare_exchange_n(&pool->claimed_workers, &participant_index,
+                    participant_index | RT_TASK_CLAIM_LOCK, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                /* Recheck the generation while claims and dispatch metadata are locked. */
+                active_workers = __atomic_load_n(&pool->active_workers, __ATOMIC_ACQUIRE);
+                if (__atomic_load_n(&pool->generation, __ATOMIC_ACQUIRE) != observed_generation ||
+                    participant_index >= active_workers) {
+                    __atomic_store_n(&pool->claimed_workers, participant_index, __ATOMIC_RELEASE);
+                    break;
+                }
+                __atomic_store_n(&pool->claimed_workers, participant_index + 1U, __ATOMIC_RELEASE);
                 rt_task_pool_run_work(pool, participant_index);
                 rt_task_pool_stat_add(&pool->stats.worker_completions, 1ULL);
                 if (__atomic_fetch_add(&pool->finished_workers, 1U, __ATOMIC_ACQ_REL) + 1U >= active_workers) {
@@ -282,6 +295,7 @@ int rt_task_pool_init(RtTaskPool *pool, unsigned int worker_count) {
     if (!platform_worker_threads_supported()) {
         worker_count = 1U;
     }
+    pool->claimed_workers = RT_TASK_CLAIM_CLOSED;
     pool->width = worker_count;
     pool->native_width = 1U;
     pool->workers[0].index = 0U;
@@ -450,10 +464,11 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
     if (pool->active_workers == 0U) {
         pool->active_workers = 1U;
     }
-    pool->claimed_workers = 1U;
+    __atomic_store_n(&pool->claimed_workers, RT_TASK_CLAIM_LOCK | 1U, __ATOMIC_RELEASE);
     pool->finished_workers = 0U;
     rt_task_pool_stat_add(&pool->stats.workers_woken, pool->active_workers > 1U ? (unsigned long long)(pool->active_workers - 1U) : 0ULL);
     __atomic_fetch_add(&pool->generation, 1U, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&pool->claimed_workers, 1U, __ATOMIC_RELEASE);
     if (pool->active_workers > 1U) {
         rt_task_pool_stat_add(&pool->stats.worker_wakes, 1ULL);
         platform_wake_word_count(&pool->generation, pool->active_workers - 1U);
@@ -507,6 +522,18 @@ static int rt_task_pool_dispatch(RtTaskPool *pool, unsigned int work_kind) {
         rt_task_pool_stat_add(&pool->stats.idle_worker_completions, (unsigned long long)pool->active_workers - workers_ran);
     }
 #endif
+    /* Close late claims before callers can replace callback arguments for the next job. */
+    for (;;) {
+        unsigned int claimed = __atomic_load_n(&pool->claimed_workers, __ATOMIC_ACQUIRE);
+        if (claimed & RT_TASK_CLAIM_LOCK) {
+            rt_task_pool_cpu_relax();
+            continue;
+        }
+        if (__atomic_compare_exchange_n(&pool->claimed_workers, &claimed, RT_TASK_CLAIM_CLOSED,
+                0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+            break;
+        }
+    }
     __atomic_store_n(&pool->work_kind, RT_TASK_WORK_NONE, __ATOMIC_RELEASE);
     return pool->first_error;
 }
