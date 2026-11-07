@@ -115,6 +115,23 @@ int rt_task_group_wait(RtTaskGroup *group);
 
 Two properties make this the right shape for this repository. First, every body and task receives an explicit `worker_index` in `[0, width)`. That index is how a worker reaches its own arena, scratch buffer, or output slot without any thread-local storage — the per-thread state problem is solved by passing the one integer that matters. Second, `rt_parallel_for` and `rt_task_group_wait` are structured: they return only when the work is done, so there is no detached lifetime, no cancellation unwinding, and no orphaned thread to leak. A tool's parallel region begins and ends on one stack frame.
 
+Dispatches on one pool must be serialized by the caller; nested dispatch on the
+same pool is not supported. Callback arguments and task records may be reused or
+released after the structured join returns. Internally, worker claims are closed
+before that return and stay closed while the next callback metadata is installed.
+Publishing a generation and reopening claims are coordinated with a short claim
+lock. A worker rechecks the generation under that lock, so a delayed claim from
+an earlier dispatch cannot acquire a participant slot in the next dispatch.
+
+The `taskclaimtest` fixture schedules this counter-reuse interleaving by pausing
+a native worker immediately before its claim CAS. A spare worker finishes the
+old dispatch, then the caller publishes the next one before the paused worker
+resumes. Its test-only builtin wrapper includes the real worker implementation;
+the production runtime has no scheduling hooks. The fixture also checks repeated
+parallel/group/serial transitions with different active widths. The scheduled
+case requires three native participants and reports when the backend cannot
+provide them.
+
 The `min_chunk` argument is a lower bound, not an exact claim size. The pool may raise very small requested chunks to keep the total number of atomic chunk claims bounded relative to the worker count. That keeps accidental `min_chunk=1` calls from turning the shared queue index into the workload, while still leaving enough chunks per worker for ordinary load balance.
 
 The return values deliberately stop short of cancellation semantics. If a worker reports an error, the pool records the first nonzero result, lets already-started work reach the structured join boundary, and returns that result to the caller. That is enough for malformed input, allocation failure, and tool diagnostics without making every parallel region a cancellation-unwind problem.
