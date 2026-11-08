@@ -193,6 +193,7 @@ MATHTEST_SOURCE := tests/fixtures/math_test.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
 CONCURRENCYTEST_SOURCE := tests/fixtures/platform/concurrencytest.c
 TASKCLAIMTEST_SOURCE := tests/fixtures/platform/taskclaimtest.c
+TOOLSHAREDTEST_SOURCE := tests/fixtures/tool_shared_test.c
 CONCURRENCYTEST_SOURCES := \
 	$(CONCURRENCYTEST_SOURCE) \
 	src/shared/runtime/concurrency.c \
@@ -230,8 +231,8 @@ SSH_CRYPTO_SOURCES := \
 SSH_CRYPTO_SOURCES := $(sort $(SSH_CRYPTO_SOURCES))
 SHELL_SOURCES := $(shell grep -oE '"src/tools/sh/shell_[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
 HOST_PLATFORM_SOURCES := $(shell grep -oE '"src/platform/posix/[^"]+\.c"' src/compiler/source_manifest.h | tr -d '"')
-WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/windows/core.c src/platform/windows/thread.c
-MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/macos/freestanding.c
+WINDOWS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_json_parser.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/windows/core.c src/platform/windows/thread.c
+MACOS_FREESTANDING_RUNTIME_SOURCES := src/shared/runtime/memory.c src/shared/runtime/string.c src/shared/runtime/parse.c src/shared/runtime/io.c src/shared/runtime/concurrency.c src/shared/runtime/io_loop.c src/shared/runtime/unicode_utf8.c src/shared/runtime/unicode.c src/shared/math/math.c src/shared/tool_json.c src/shared/tool_json_parser.c src/shared/tool_cli.c src/shared/tool_file.c src/shared/tool_io.c src/shared/tool_binary.c src/shared/tool_buffer.c src/shared/tool_format.c src/shared/tool_http.c src/shared/tool_object.c src/shared/tool_parse.c src/shared/tool_terminal.c src/shared/tool_text.c src/shared/tool_time.c src/shared/tool_path.c src/shared/tool_fs.c src/shared/tool_regex.c src/shared/tool_process.c src/shared/math/bignum.c src/platform/macos/freestanding.c
 MACOS_FREESTANDING_HASH_SOURCES := src/shared/hash_util.c src/shared/crypto/md5.c src/shared/crypto/sha1.c src/shared/crypto/sha256.c src/shared/crypto/sha512.c
 MACOS_FREESTANDING_GIT_SOURCES := $(TLS_SOURCES) $(SSH_CLIENT_SOURCES) $(SSH_CRYPTO_SOURCES) src/shared/compression/crc32.c src/shared/compression/zlib.c src/platform/macos/tls.c
 MACOS_FREESTANDING_TLS_SOURCES := $(TLS_SOURCES) $(CRYPTO_SOURCES) src/platform/macos/tls.c
@@ -289,10 +290,11 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .PHONY: all host freestanding selfhost selfhost-hosted test test-selfhost benchmark compiler-benchmark clean
 
 TEST_MATH_TARGETS := $(BUILD_DIR)/mathtest $(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/mathtest)
-TEST_RUNTIME_TARGETS := $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR)/taskclaimtest,$(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest $(TARGET_BUILD_DIR)/taskclaimtest))
+TEST_RUNTIME_TARGETS := $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR)/taskclaimtest $(MACOS_BUILD_DIR)/toolsharedtest,$(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest $(TARGET_BUILD_DIR)/taskclaimtest $(TARGET_BUILD_DIR)/toolsharedtest))
 
 test: $(DEFAULT_ALL_TARGETS) $(TEST_MATH_TARGETS) $(TEST_RUNTIME_TARGETS)
 	@for test_binary in $(TEST_MATH_TARGETS); do "$$test_binary"; done
+	@for test_binary in $(filter %/toolsharedtest,$(TEST_RUNTIME_TARGETS)); do "$$test_binary" || exit $$?; done
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
 
@@ -500,6 +502,11 @@ $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o): src/shared/runtime/co
 
 $(MACOS_BUILD_DIR)/taskclaimtest: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o) $(filter-out $(MACOS_BUILD_DIR)/.obj/src/shared/runtime/concurrency.lto.o,$(MACOS_COMMON_OBJECTS)) | $(MACOS_BUILD_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o) $(filter-out $(MACOS_BUILD_DIR)/.obj/src/shared/runtime/concurrency.lto.o,$(MACOS_COMMON_OBJECTS))
+
+$(MACOS_BUILD_DIR)/.obj/$(TOOLSHAREDTEST_SOURCE:.c=.lto.o) $(MACOS_BUILD_DIR)/.obj/src/shared/tool_json_parser.lto.o: src/shared/tool_json_parser.h
+
+$(MACOS_BUILD_DIR)/toolsharedtest: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TOOLSHAREDTEST_SOURCE:.c=.lto.o) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TOOLSHAREDTEST_SOURCE:.c=.lto.o) $(MACOS_COMMON_OBJECTS)
 
 $(addprefix $(MACOS_BUILD_DIR)/,fonttest fontrendertest): $(MACOS_BUILD_DIR)/%: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/%.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/$*.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS)
@@ -750,6 +757,12 @@ $(TARGET_BUILD_DIR)/concurrencytest: $(CONCURRENCYTEST_SOURCES) src/shared/runti
 
 $(BUILD_DIR)/taskclaimtest: $(TASKCLAIMTEST_SOURCE) src/shared/runtime/concurrency.c $(SHARED_DEPS) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(filter-out src/shared/runtime/concurrency.c,$(SHARED_SOURCES)) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(BUILD_DIR)/toolsharedtest: $(TOOLSHAREDTEST_SOURCE) $(SHARED_DEPS) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/toolsharedtest: $(TOOLSHAREDTEST_SOURCE) $(SHARED_DEPS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(TARGET_BUILD_DIR)/taskclaimtest: $(TASKCLAIMTEST_SOURCE) $(CONCURRENCYTEST_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/concurrency.h $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(filter-out $(FREESTANDING_LTO_FLAGS),$(FREESTANDING_CFLAGS)) -DNEWOS_RUNTIME_ALLOC_LOCK=1 $< $(filter-out $(CONCURRENCYTEST_SOURCE) src/shared/runtime/concurrency.c,$(CONCURRENCYTEST_SOURCES)) $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S) $(TARGET_CRT) $(filter-out $(FREESTANDING_LTO_FLAGS),$(TARGET_LDFLAGS)) -o $@

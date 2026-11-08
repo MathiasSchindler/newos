@@ -24,6 +24,54 @@ The userland has expanded substantially across filesystem, text, process, networ
 
 The repository also includes a lightweight manual browser and a growing set of manual pages for tools, subsystems, and design notes.
 
+## Shared downstream APIs
+
+Shared buffered decimal output is available through
+`tool_byte_buffer_append_uint` and `tool_output_buffer_write_uint` in
+[tool_util.h](src/shared/tool_util.h). These functions were promoted from
+Git's commit/reflog formatter and ripgrep's line-number writer respectively.
+They append unsigned decimal digits (including zero and the full 64-bit range),
+without a terminator, and return the underlying buffer/flush error. The stream
+version retains `ToolOutputBuffer` batching; it does not write each digit to the
+file descriptor. The focused `toolsharedtest` fixture covers their contracts.
+
+The strict token-based reader in
+[tool_json_parser.h](src/shared/tool_json_parser.h) was promoted from
+[OParl-Scan](https://github.com/MathiasSchindler/oparl-scan)'s two CC0 JSON
+parsers. All four downstream programs use this implementation directly.
+`ToolJson` borrows the UTF-8 source and owns a `ToolArray` of tokens; token
+offsets are source byte offsets and `next` skips a complete subtree. Parsing
+returns `0` or `-1`, frees tokens on failure, validates the whole input,
+allows depth 64 and at most 2,000,000 tokens, and rejects invalid UTF-8,
+surrogates, escapes, number grammar and trailing content. Free a successful
+parse before reusing the object. Typed extraction requires a successfully
+parsed document; string extraction rejects decoded NUL, insufficient capacity
+and wrong types. Unsigned extraction rejects signs, fractions, exponents and
+64-bit overflow. Missing members return `TOOL_JSON_NONE`.
+
+`tool_json_equals` and member lookup retain the original allocation-free
+255-byte decoded-string bound. Embedding's longer value comparisons use
+`tool_json_equals_alloc` explicitly; allocation failure reports the original
+JSON diagnostic and returns false. `tool_json_dup_string` returns owned
+memory or null for allocation/type/byte-budget errors; callers must handle
+that failure and free successful copies with `rt_free`. Its encoded-size
+budget retains the original factor-six check without multiplication overflow.
+`tool_json_append_string` preserves OParl-Scan's exact escaping while batching
+ordinary spans into a `ToolByteBuffer`; the existing fd JSON writer is unchanged.
+No jq/wtf parsing behavior is changed: their slice scanner and display-oriented
+control-character normalization are not equivalent to this strict API.
+
+The downstream FNV-1a and directory duplicates were investigated but remain
+downstream: actual call chains use them only in `oparl-index`, not in multiple
+programs. Linking their modules into `oparl-search` does not establish use.
+The differently seeded xmlstats hash is also unchanged.
+
+`toolsharedtest` covers the promoted APIs, including exact parser limits.
+Build its native macOS target with
+`make build/macos-aarch64/toolsharedtest`, or the Linux target with
+`make build/freestanding-linux-x86_64/toolsharedtest TARGET_ARCH=x86_64`.
+It also runs from `make test` on the native freestanding platforms.
+
 ## Testing
 
 The repository includes a structured shell-based test suite under [tests](tests).

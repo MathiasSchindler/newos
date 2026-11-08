@@ -59,6 +59,13 @@ int tool_byte_buffer_append_cstr(ToolByteBuffer *buffer, const char *text) {
     return tool_byte_buffer_append(buffer, text, rt_strlen(text));
 }
 
+int tool_byte_buffer_append_uint(ToolByteBuffer *buffer, unsigned long long value) {
+    char digits[32];
+
+    rt_unsigned_to_string(value, digits, sizeof(digits));
+    return tool_byte_buffer_append_cstr(buffer, digits);
+}
+
 int tool_byte_buffer_append_u16_be(ToolByteBuffer *buffer, unsigned int value) {
     unsigned char bytes[2];
 

@@ -1,10 +1,3 @@
-static int git_buffer_append_unsigned(GitBuffer *buffer, unsigned long long value) {
-    char digits[32];
-
-    rt_unsigned_to_string(value, digits, sizeof(digits));
-    return tool_byte_buffer_append_cstr(buffer, digits);
-}
-
 static const char *git_identity_value(const char *primary, const char *fallback, const char *default_value) {
     const char *value = platform_getenv(primary);
 
@@ -31,7 +24,7 @@ static int git_commit_append_identity_line(GitBuffer *commit, const char *prefix
         tool_byte_buffer_append_cstr(commit, " <") != 0 ||
         tool_byte_buffer_append_cstr(commit, email) != 0 ||
         tool_byte_buffer_append_cstr(commit, "> ") != 0 ||
-        git_buffer_append_unsigned(commit, timestamp) != 0 ||
+        tool_byte_buffer_append_uint(commit, timestamp) != 0 ||
         tool_byte_buffer_append_cstr(commit, " +0000\n") != 0) {
         return -1;
     }
@@ -124,7 +117,7 @@ static int git_reflog_append_hex(const GitRepo *repo, const char *log_name, cons
     }
     if (tool_byte_buffer_append_cstr(&line, old_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 || tool_byte_buffer_append_cstr(&line, new_hex) != 0 || tool_byte_buffer_append_char(&line, ' ') != 0 ||
         tool_byte_buffer_append_cstr(&line, name) != 0 || tool_byte_buffer_append_cstr(&line, " <") != 0 || tool_byte_buffer_append_cstr(&line, email) != 0 || tool_byte_buffer_append_cstr(&line, "> ") != 0 ||
-        git_buffer_append_unsigned(&line, (unsigned long long)platform_get_epoch_time()) != 0 || tool_byte_buffer_append_cstr(&line, " +0000\t") != 0 || tool_byte_buffer_append_cstr(&line, message != 0 ? message : "update") != 0 || tool_byte_buffer_append_char(&line, '\n') != 0) {
+        tool_byte_buffer_append_uint(&line, (unsigned long long)platform_get_epoch_time()) != 0 || tool_byte_buffer_append_cstr(&line, " +0000\t") != 0 || tool_byte_buffer_append_cstr(&line, message != 0 ? message : "update") != 0 || tool_byte_buffer_append_char(&line, '\n') != 0) {
         goto done;
     }
     fd = platform_open_append(path, 0644U);

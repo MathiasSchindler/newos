@@ -58,6 +58,31 @@ int tool_json_write_string(int fd, const char *text) {
     return tool_json_write_string_n(fd, text, text != 0 ? rt_strlen(text) : 0U);
 }
 
+int tool_json_append_string(ToolByteBuffer *buffer, const char *text) {
+    static const char hex[] = "0123456789abcdef";
+    const char *p = text;
+    if (tool_byte_buffer_append_char(buffer, '"') != 0) return -1;
+    while (*p) {
+        const char *start = p;
+        unsigned char ch;
+        char escape[6] = {'\\', 'u', '0', '0', '0', '0'};
+        size_t length = 6;
+        while (*p && (unsigned char)*p >= 32 && *p != '"' && *p != '\\') p++;
+        if (tool_byte_buffer_append(buffer, start, (size_t)(p - start)) != 0) return -1;
+        if (!*p) break;
+        ch = (unsigned char)*p++;
+        if (ch == '"' || ch == '\\' || ch == '\n' || ch == '\r' || ch == '\t') {
+            escape[1] = ch == '\n' ? 'n' : ch == '\r' ? 'r' : ch == '\t' ? 't' : (char)ch;
+            length = 2;
+        } else {
+            escape[4] = hex[ch >> 4];
+            escape[5] = hex[ch & 15];
+        }
+        if (tool_byte_buffer_append(buffer, escape, length) != 0) return -1;
+    }
+    return tool_byte_buffer_append_char(buffer, '"');
+}
+
 int tool_json_write_base64(int fd, const unsigned char *data, size_t length) {
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t index = 0U;

@@ -57,10 +57,12 @@ int tool_byte_buffer_append(ToolByteBuffer *buffer, const void *data, size_t siz
 int tool_byte_buffer_append_byte(ToolByteBuffer *buffer, unsigned int value);
 int tool_byte_buffer_append_char(ToolByteBuffer *buffer, char ch);
 int tool_byte_buffer_append_cstr(ToolByteBuffer *buffer, const char *text);
+int tool_byte_buffer_append_uint(ToolByteBuffer *buffer, unsigned long long value);
 int tool_byte_buffer_append_u16_be(ToolByteBuffer *buffer, unsigned int value);
 int tool_byte_buffer_append_u32_be(ToolByteBuffer *buffer, unsigned long long value);
 int tool_byte_buffer_terminate(ToolByteBuffer *buffer);
 int tool_byte_buffer_append_text(ToolByteBuffer *buffer, const char *text, size_t length);
+int tool_json_append_string(ToolByteBuffer *buffer, const char *text);
 
 typedef struct {
     unsigned char *data;
@@ -87,6 +89,7 @@ int tool_output_buffer_flush(ToolOutputBuffer *output);
 int tool_output_buffer_write(ToolOutputBuffer *output, const char *text, size_t length);
 int tool_output_buffer_write_char(ToolOutputBuffer *output, char ch);
 int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text);
+int tool_output_buffer_write_uint(ToolOutputBuffer *output, unsigned long long value);
 
 #define TOOL_RECORD_READER_BUFFER_SIZE 16384U
 
