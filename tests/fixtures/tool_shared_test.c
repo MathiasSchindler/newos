@@ -1,7 +1,6 @@
 #include "runtime.h"
 #include "tool_util.h"
 #include "tool_json_parser.h"
-#include "hash_util.h"
 
 static int check(int condition, const char *description) {
     if (condition) return 0;
@@ -107,45 +106,6 @@ static int json_case(void) {
     return failures;
 }
 
-static int directory_case(void) {
-    char root[96], parent[128], leaf[160], file[160], link[160], through[192], scratch[256];
-    PlatformDirEntry info;
-    int failures = 0, fd;
-    rt_memset(&info, 0, sizeof(info));
-    size_t length = tool_buffer_append_cstr(root, sizeof(root), 0, ".toolsharedtest-");
-    tool_buffer_append_uint(root, sizeof(root), length, (unsigned int)platform_get_process_id());
-    if (platform_make_directory(root, 0700U) != 0)
-        return check(0, "create unique directory test root");
-    rt_join_path(root, "parent", parent, sizeof(parent));
-    rt_join_path(parent, "leaf", leaf, sizeof(leaf));
-    rt_join_path(root, "file", file, sizeof(file));
-    rt_join_path(root, "link", link, sizeof(link));
-    rt_join_path(link, "child", through, sizeof(through));
-    failures += check(tool_ensure_directory(leaf, 0700U, scratch, sizeof(scratch)) == 0 &&
-                      tool_ensure_directory(leaf, 0755U, scratch, sizeof(scratch)) == 0 &&
-                      platform_get_path_info(leaf, &info) == 0 && info.is_dir,
-                      "create parents and accept an existing directory");
-#if !defined(_WIN32)
-    failures += check((info.mode & 0777U) == 0700U,
-                      "existing leaf permissions are not changed");
-    failures += check(platform_create_symbolic_link("parent", link) == 0 &&
-                      tool_ensure_directory(link, 0700U, scratch, sizeof(scratch)) == -2 &&
-                      tool_ensure_directory(through, 0700U, scratch, sizeof(scratch)) == -1,
-                      "Unix leaf and parent symlinks are rejected");
-    failures += check(platform_remove_file(link) == 0, "remove test symlink");
-#endif
-    fd = platform_open_create_exclusive(file, 0600U);
-    failures += check(fd >= 0 && platform_close(fd) == 0 &&
-                      tool_ensure_directory(file, 0700U, scratch, sizeof(scratch)) == -2 &&
-                      tool_ensure_directory(through, 0700U, scratch, 1U) == -1,
-                      "existing files and insufficient path scratch are rejected");
-    failures += check(platform_remove_file(file) == 0 &&
-                      platform_remove_directory(leaf) == 0 &&
-                      platform_remove_directory(parent) == 0 &&
-                      platform_remove_directory(root) == 0, "remove directory fixtures");
-    return failures;
-}
-
 int main(void) {
     ToolByteBuffer bytes;
     ToolOutputBuffer output;
@@ -175,11 +135,6 @@ int main(void) {
                       "stream decimal flush errors propagate");
 
     failures += json_case();
-    failures += directory_case();
-    failures += check(hash_fnv1a_string("") == 0xcbf29ce484222325ULL &&
-                      hash_fnv1a_string("foobar") == 0x85944171f73967e8ULL,
-                      "FNV-1a standard vectors preserve unsigned 64-bit wraparound");
-
     if (failures == 0) rt_write_line(1, "shared tool tests passed");
     return failures != 0;
 }

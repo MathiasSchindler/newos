@@ -17,7 +17,6 @@ int hash_sha1_stream(int fd, unsigned char out[HASH_SHA1_SIZE]);
 int hash_sha256_stream(int fd, unsigned char out[HASH_SHA256_SIZE]);
 int hash_sha512_stream(int fd, unsigned char out[HASH_SHA512_SIZE]);
 void hash_to_hex(const unsigned char *digest, size_t digest_size, char *hex_out);
-unsigned long long hash_fnv1a_string(const char *text);
 typedef int (*HashStreamFunction)(int fd, unsigned char *out);
 int hash_print_digest_line(const unsigned char *digest, size_t digest_size, const char *label, int binary_mode, int zero_terminated);
 int hash_compare_digest(const unsigned char *lhs, const unsigned char *rhs, size_t digest_size);

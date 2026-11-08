@@ -333,8 +333,6 @@ int tool_paths_equal(const char *left_path, const char *right_path);
 int tool_path_is_root(const char *path);
 int tool_path_is_same_or_child(const char *path, const char *prefix, char *scratch, size_t scratch_size);
 int tool_ensure_parent_dirs(const char *path, char *scratch, size_t scratch_size);
-/* -2: existing leaf fails the platform directory/type check; -1: creation/path error. */
-int tool_ensure_directory(const char *path, unsigned int mode, char *scratch, size_t scratch_size);
 int tool_decode_mount_field(const char *text, size_t text_length, char *buffer, size_t buffer_size);
 int tool_next_mount_field(const char *line, size_t line_length, size_t *index_io, char *buffer, size_t buffer_size);
 int tool_path_is_unsafe_relative(const char *path);

@@ -61,25 +61,13 @@ ordinary spans into a `ToolByteBuffer`; the existing fd JSON writer is unchanged
 No jq/wtf parsing behavior is changed: their slice scanner and display-oriented
 control-character normalization are not equivalent to this strict API.
 
-`tool_ensure_directory` in [tool_util.h](src/shared/tool_util.h) promotes the
-downstream directory mechanism without its tool-specific diagnostics. Existing
-directories retain their modes; missing parents use the existing 0755 policy,
-and a new leaf uses the requested mode. It returns `-2` for an existing leaf
-failing the platform directory/type check and `-1` for path/creation errors,
-including a concurrent leaf creation. Unix leaf/parent symlinks are rejected
-under the existing platform/parent-helper behavior; the Windows backend does
-not distinguish reparse points, so this API adds no stronger Windows guarantee.
-It does not validate ancestors of an already existing leaf or add race-free
-path traversal. The caller supplies parent-path scratch space.
+The downstream FNV-1a and directory duplicates were investigated but remain
+downstream: actual call chains use them only in `oparl-index`, not in multiple
+programs. Linking their modules into `oparl-search` does not establish use.
+The differently seeded xmlstats hash is also unchanged.
 
-`hash_fnv1a_string` in [hash_util.h](src/shared/hash_util.h) promotes the
-downstream index/search string hash: standard 64-bit FNV-1a, unsigned bytes,
-offset basis `14695981039346656037`, prime `1099511628211`, modulo-64-bit
-arithmetic and a terminating NUL excluded from the hash. It is not cryptographic.
-The differently seeded, length-based xmlstats hash is deliberately unchanged.
-
-`toolsharedtest` covers these APIs, including exact parser limits and Unix
-filesystem behavior. Build its native macOS target with
+`toolsharedtest` covers the promoted APIs, including exact parser limits.
+Build its native macOS target with
 `make build/macos-aarch64/toolsharedtest`, or the Linux target with
 `make build/freestanding-linux-x86_64/toolsharedtest TARGET_ARCH=x86_64`.
 It also runs from `make test` on the native freestanding platforms.

@@ -35,15 +35,6 @@ void hash_to_hex(const unsigned char *digest, size_t digest_size, char *hex_out)
     hex_out[digest_size * 2U] = '\0';
 }
 
-unsigned long long hash_fnv1a_string(const char *text) {
-    unsigned long long hash = 14695981039346656037ULL;
-    while (*text) {
-        hash ^= (unsigned char)*text++;
-        hash *= 1099511628211ULL;
-    }
-    return hash;
-}
-
 int hash_print_digest_line(const unsigned char *digest, size_t digest_size, const char *label, int binary_mode, int zero_terminated) {
     char hex[HASH_SHA512_SIZE * 2 + 1];
 

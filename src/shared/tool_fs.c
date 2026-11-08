@@ -376,14 +376,3 @@ int tool_ensure_parent_dirs(const char *path, char *scratch, size_t scratch_size
     }
     return 0;
 }
-
-int tool_ensure_directory(const char *path, unsigned int mode, char *scratch, size_t scratch_size) {
-    PlatformDirEntry info;
-    if (path == 0 || path[0] == '\0') return -1;
-    if (platform_get_path_info(path, &info) == 0) {
-        return info.is_dir && (info.mode & TOOL_PATH_MODE_TYPE_MASK) == 0040000U ? 0 : -2;
-    }
-    if (tool_ensure_parent_dirs(path, scratch, scratch_size) != 0 ||
-        platform_make_directory(path, mode) != 0) return -1;
-    return 0;
-}
