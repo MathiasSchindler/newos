@@ -103,6 +103,13 @@ int tool_output_buffer_write_cstr(ToolOutputBuffer *output, const char *text) {
     return tool_output_buffer_write(output, text, rt_strlen(text));
 }
 
+int tool_output_buffer_write_uint(ToolOutputBuffer *output, unsigned long long value) {
+    char digits[32];
+
+    rt_unsigned_to_string(value, digits, sizeof(digits));
+    return tool_output_buffer_write_cstr(output, digits);
+}
+
 void tool_record_reader_init(ToolRecordReader *reader, int fd, char delimiter) {
     reader->fd = fd;
     reader->delimiter = delimiter;

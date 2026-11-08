@@ -463,13 +463,6 @@ static unsigned long long count_line_matches(const RgOptions *options, const cha
 
 #define rg_use_color(options) tool_should_use_color_fd(1, (options)->color_mode)
 
-static int rg_write_uint_buffered(ToolOutputBuffer *output, unsigned long long value) {
-    char digits[32];
-
-    rt_unsigned_to_string(value, digits, sizeof(digits));
-    return tool_output_buffer_write_cstr(output, digits);
-}
-
 static int rg_can_use_simple_output(const RgOptions *options, int show_path) {
     return !show_path &&
            !options->column_numbers &&
@@ -487,7 +480,7 @@ static int rg_can_use_simple_output(const RgOptions *options, int show_path) {
 
 static int rg_write_simple_line(ToolOutputBuffer *output, const RgOptions *options, unsigned long long line_no, const char *line) {
     if (options->line_numbers &&
-        (rg_write_uint_buffered(output, line_no) != 0 || tool_output_buffer_write_char(output, ':') != 0)) {
+        (tool_output_buffer_write_uint(output, line_no) != 0 || tool_output_buffer_write_char(output, ':') != 0)) {
         return -1;
     }
     return tool_output_buffer_write_cstr(output, line) != 0 ||

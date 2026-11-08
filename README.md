@@ -26,6 +26,15 @@ The repository also includes a lightweight manual browser and a growing set of m
 
 ## Testing
 
+Shared buffered decimal output is available through
+`tool_byte_buffer_append_uint` and `tool_output_buffer_write_uint` in
+[tool_util.h](src/shared/tool_util.h). These functions were promoted from
+Git's commit/reflog formatter and ripgrep's line-number writer respectively.
+They append unsigned decimal digits (including zero and the full 64-bit range),
+without a terminator, and return the underlying buffer/flush error. The stream
+version retains `ToolOutputBuffer` batching; it does not write each digit to the
+file descriptor. The focused `toolsharedtest` fixture covers their contracts.
+
 The repository includes a structured shell-based test suite under [tests](tests).
 
 - the main entry point is `make test`

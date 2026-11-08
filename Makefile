@@ -193,6 +193,7 @@ MATHTEST_SOURCE := tests/fixtures/math_test.c
 THREADTEST_SOURCE := tests/fixtures/platform/threadtest.c
 CONCURRENCYTEST_SOURCE := tests/fixtures/platform/concurrencytest.c
 TASKCLAIMTEST_SOURCE := tests/fixtures/platform/taskclaimtest.c
+TOOLSHAREDTEST_SOURCE := tests/fixtures/tool_shared_test.c
 CONCURRENCYTEST_SOURCES := \
 	$(CONCURRENCYTEST_SOURCE) \
 	src/shared/runtime/concurrency.c \
@@ -289,10 +290,11 @@ HOST_COMPAT_TARGETS := $(if $(filter $(BUILD_DIR),$(DEFAULT_HOST_BUILD_DIR)),$(B
 .PHONY: all host freestanding selfhost selfhost-hosted test test-selfhost benchmark compiler-benchmark clean
 
 TEST_MATH_TARGETS := $(BUILD_DIR)/mathtest $(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/mathtest)
-TEST_RUNTIME_TARGETS := $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR)/taskclaimtest,$(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest $(TARGET_BUILD_DIR)/taskclaimtest))
+TEST_RUNTIME_TARGETS := $(if $(filter 1,$(LOCAL_MACOS_FREESTANDING)),$(MACOS_BUILD_DIR)/taskclaimtest $(MACOS_BUILD_DIR)/toolsharedtest,$(if $(filter Linux,$(HOST_OS)),$(TARGET_BUILD_DIR)/concurrencytest $(TARGET_BUILD_DIR)/taskclaimtest $(TARGET_BUILD_DIR)/toolsharedtest))
 
 test: $(DEFAULT_ALL_TARGETS) $(TEST_MATH_TARGETS) $(TEST_RUNTIME_TARGETS)
 	@for test_binary in $(TEST_MATH_TARGETS); do "$$test_binary"; done
+	@for test_binary in $(filter %/toolsharedtest,$(TEST_RUNTIME_TARGETS)); do "$$test_binary" || exit $$?; done
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" PHASE1_JOBS=$(PHASE1_JOBS) sh ./tests/phase1/run_phase1_tests.sh
 	NEWOS_TEST_BUILD_DIR="$(abspath $(TEST_FREESTANDING_BUILD_DIR))" sh ./tests/suites/freestanding.sh
 
@@ -500,6 +502,9 @@ $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o): src/shared/runtime/co
 
 $(MACOS_BUILD_DIR)/taskclaimtest: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o) $(filter-out $(MACOS_BUILD_DIR)/.obj/src/shared/runtime/concurrency.lto.o,$(MACOS_COMMON_OBJECTS)) | $(MACOS_BUILD_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TASKCLAIMTEST_SOURCE:.c=.lto.o) $(filter-out $(MACOS_BUILD_DIR)/.obj/src/shared/runtime/concurrency.lto.o,$(MACOS_COMMON_OBJECTS))
+
+$(MACOS_BUILD_DIR)/toolsharedtest: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TOOLSHAREDTEST_SOURCE:.c=.lto.o) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
+	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/$(TOOLSHAREDTEST_SOURCE:.c=.lto.o) $(MACOS_COMMON_OBJECTS)
 
 $(addprefix $(MACOS_BUILD_DIR)/,fonttest fontrendertest): $(MACOS_BUILD_DIR)/%: $(BUILD_DIR)/linker $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/%.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS) | $(MACOS_BUILD_DIR)
 	$(BUILD_DIR)/linker --target=mach-o-arm64 $(MACOS_LDFLAGS) $(MACOS_MAP_FLAG) --lto-cc="$(MACOS_FREESTANDING_CC)" -o $@ $(MACOS_BUILD_DIR)/.obj/src/platform/macos/newlinker_start.o $(MACOS_BUILD_DIR)/.obj/tests/fixtures/fontrender/$*.lto.o $(MACOS_FONTRENDER_OBJECTS) $(MACOS_COMMON_OBJECTS)
@@ -750,6 +755,12 @@ $(TARGET_BUILD_DIR)/concurrencytest: $(CONCURRENCYTEST_SOURCES) src/shared/runti
 
 $(BUILD_DIR)/taskclaimtest: $(TASKCLAIMTEST_SOURCE) src/shared/runtime/concurrency.c $(SHARED_DEPS) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
 	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(filter-out src/shared/runtime/concurrency.c,$(SHARED_SOURCES)) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(BUILD_DIR)/toolsharedtest: $(TOOLSHAREDTEST_SOURCE) $(SHARED_DEPS) $(HOST_PLATFORM_SOURCES) $(SELFHOST_CC_DEP) | $(BUILD_DIR)
+	mkdir -p $(dir $@) && $(CC) $(HOST_CFLAGS) $< $(SHARED_SOURCES) $(HOST_PLATFORM_SOURCES) -o $@
+
+$(TARGET_BUILD_DIR)/toolsharedtest: $(TOOLSHAREDTEST_SOURCE) $(SHARED_DEPS) $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
+	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(FREESTANDING_CFLAGS) $< $(FREESTANDING_REUSABLE_INPUTS) $(TARGET_CRT) $(TARGET_LDFLAGS) -o $@
 
 $(TARGET_BUILD_DIR)/taskclaimtest: $(TASKCLAIMTEST_SOURCE) $(CONCURRENCYTEST_SOURCES) src/shared/runtime.h src/shared/platform.h src/shared/concurrency.h $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S) $(TARGET_CRT) $(TARGET_ARCH_DIR)/syscall.h src/platform/linux/common.h | $(TARGET_BUILD_DIR)
 	mkdir -p $(dir $@) && $(TARGET_CC) $(TARGET_CC_TARGET_FLAG) $(CFLAGS) $(filter-out $(FREESTANDING_LTO_FLAGS),$(FREESTANDING_CFLAGS)) -DNEWOS_RUNTIME_ALLOC_LOCK=1 $< $(filter-out $(CONCURRENCYTEST_SOURCE) src/shared/runtime/concurrency.c,$(CONCURRENCYTEST_SOURCES)) $(wildcard $(TARGET_ARCH_DIR)/syscall_stubs.S) $(TARGET_CRT) $(filter-out $(FREESTANDING_LTO_FLAGS),$(TARGET_LDFLAGS)) -o $@
