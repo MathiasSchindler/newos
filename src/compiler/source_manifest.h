@@ -81,6 +81,7 @@
     X("src/shared/runtime/unicode.c") \
     X("src/shared/math/math.c") \
     X("src/shared/tool_json.c") \
+    X("src/shared/tool_json_parser.c") \
     X("src/shared/tool_io.c") \
     X("src/shared/tool_binary.c") \
     X("src/shared/tool_buffer.c") \
