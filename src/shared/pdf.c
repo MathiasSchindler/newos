@@ -2,6 +2,8 @@
 #include "compression/zlib.h"
 #include "runtime.h"
 
+#include <limits.h>
+
 #define PDF_FLATE_MAX_OUTPUT (64U * 1024U * 1024U)
 #define PDF_OBJECT_STREAM_MAX_OBJECTS 8192U
 #define PDF_XREF_STREAM_MAX_ENTRIES 65536ULL
@@ -133,21 +135,27 @@ int pdf_parse_u64(const unsigned char *data, size_t size, size_t *offset_io, uns
 }
 
 static int pdf_parse_fixed(const unsigned char *data, size_t size, size_t *offset_io, long long *value_out) {
+    const unsigned long long max_scaled = (unsigned long long)LLONG_MAX;
+    const unsigned long long max_whole = max_scaled / 1000ULL;
     size_t offset = pdf_skip_ws(data, size, *offset_io);
-    long long sign = 1LL;
-    long long whole = 0LL;
-    long long fraction = 0LL;
+    int negative = 0;
+    unsigned long long whole = 0ULL;
+    unsigned long long fraction = 0ULL;
+    unsigned long long scaled;
     int fraction_digits = 0;
     int saw_digit = 0;
 
     if (offset < size && data[offset] == (unsigned char)'-') {
-        sign = -1LL;
+        negative = 1;
         offset += 1U;
     } else if (offset < size && data[offset] == (unsigned char)'+') {
         offset += 1U;
     }
     while (offset < size && pdf_is_digit(data[offset])) {
-        whole = whole * 10LL + (long long)(data[offset] - (unsigned char)'0');
+        unsigned int digit = (unsigned int)(data[offset] - (unsigned char)'0');
+
+        if (whole > (max_whole - (unsigned long long)digit) / 10ULL) return -1;
+        whole = whole * 10ULL + (unsigned long long)digit;
         offset += 1U;
         saw_digit = 1;
     }
@@ -155,7 +163,7 @@ static int pdf_parse_fixed(const unsigned char *data, size_t size, size_t *offse
         offset += 1U;
         while (offset < size && pdf_is_digit(data[offset])) {
             if (fraction_digits < 3) {
-                fraction = fraction * 10LL + (long long)(data[offset] - (unsigned char)'0');
+                fraction = fraction * 10ULL + (unsigned long long)(data[offset] - (unsigned char)'0');
                 fraction_digits += 1;
             }
             offset += 1U;
@@ -164,11 +172,13 @@ static int pdf_parse_fixed(const unsigned char *data, size_t size, size_t *offse
     }
     if (!saw_digit) return -1;
     while (fraction_digits < 3) {
-        fraction *= 10LL;
+        fraction *= 10ULL;
         fraction_digits += 1;
     }
+    if (whole == max_whole && fraction > max_scaled % 1000ULL) return -1;
+    scaled = whole * 1000ULL + fraction;
     *offset_io = offset;
-    *value_out = sign * (whole * 1000LL + fraction);
+    *value_out = negative ? -(long long)scaled : (long long)scaled;
     return 0;
 }
 
@@ -513,6 +523,7 @@ static int pdf_find_top_u64_array_offset(const unsigned char *data, size_t size,
 }
 
 static int pdf_find_top_box_value(const unsigned char *data, size_t size, const char *key, long long values[4]) {
+    long long parsed[4];
     size_t key_offset;
     size_t offset;
     size_t index;
@@ -522,8 +533,9 @@ static int pdf_find_top_box_value(const unsigned char *data, size_t size, const 
     if (offset >= size || data[offset] != (unsigned char)'[') return 0;
     offset += 1U;
     for (index = 0U; index < 4U; ++index) {
-        if (pdf_parse_fixed(data, size, &offset, &values[index]) != 0) return 0;
+        if (pdf_parse_fixed(data, size, &offset, &parsed[index]) != 0) return 0;
     }
+    for (index = 0U; index < 4U; ++index) values[index] = parsed[index];
     return 1;
 }
 
@@ -1586,12 +1598,17 @@ int pdf_analyze(const unsigned char *data, size_t size, PdfInfo *info) {
 }
 
 long long pdf_abs_fixed(long long value) {
-    return value < 0LL ? -value : value;
+    if (value >= 0LL) return value;
+    if (value == LLONG_MIN) return LLONG_MAX;
+    return -value;
 }
 
 static int pdf_near_points(long long value, long long target) {
-    long long delta = value - target * 1000LL;
-    return pdf_abs_fixed(delta) <= 2000LL;
+    long long center;
+
+    if (target < 0LL || target > (LLONG_MAX - 2000LL) / 1000LL) return 0;
+    center = target * 1000LL;
+    return value >= center - 2000LL && value <= center + 2000LL;
 }
 
 static int pdf_page_matches(long long width, long long height, long long portrait_width, long long portrait_height) {

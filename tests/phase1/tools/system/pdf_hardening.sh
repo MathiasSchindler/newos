@@ -72,6 +72,40 @@ if "${TEST_BIN_DIR}/pdfsplit" --pages 1 -o "$WORK_DIR/split.pdf" "$WORK_DIR/encr
 fi
 assert_file_contains "$WORK_DIR/pdfsplit-encrypted.txt" 'encrypted PDF is not supported\|unsupported or unreadable PDF' "pdfsplit did not reject encrypted PDF"
 
+cat > "$WORK_DIR/fixed-bounds.pdf" <<'EOF'
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [-9000000000000000 -9223372036854775.807 9000000000000000 0] /CropBox [0 0 9223372036854775.807 -9223372036854775.807] /Rotate -9223372036854775.807 >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9223372036854775.808 792] /CropBox [0 0 -9223372036854775.808 792] /Rotate 999999999999999999999999999999 >>
+endobj
+trailer
+<< /Root 1 0 R /Size 5 >>
+startxref
+0
+%%EOF
+EOF
+
+"${TEST_BIN_DIR}/pdfinfo" --pages "$WORK_DIR/fixed-bounds.pdf" > "$WORK_DIR/fixed-bounds-pages.txt"
+assert_file_contains "$WORK_DIR/fixed-bounds-pages.txt" '1: obj 3 0 media=9223372036854775.807x9223372036854775.807pt format=custom rotate=-9223372036854775.807' "pdfinfo did not clamp wide box spans or preserve exact fixed bounds"
+if grep -q '2: obj 4 0.*media=\|2: obj 4 0.*rotate=' "$WORK_DIR/fixed-bounds-pages.txt"; then
+    fail "pdfinfo accepted overflowing fixed-point geometry"
+fi
+"${TEST_BIN_DIR}/pdfinfo" --json "$WORK_DIR/fixed-bounds.pdf" > "$WORK_DIR/fixed-bounds-json.txt"
+assert_file_contains "$WORK_DIR/fixed-bounds-json.txt" '"pages":2' "pdfinfo --json did not count fixed-bound pages"
+assert_file_contains "$WORK_DIR/fixed-bounds-json.txt" '"media_box":\[-9000000000000000,-9223372036854775.807,9000000000000000,0\]' "pdfinfo --json did not preserve extreme media box coordinates"
+assert_file_contains "$WORK_DIR/fixed-bounds-json.txt" '"crop_box":\[0,0,9223372036854775.807,-9223372036854775.807\]' "pdfinfo --json did not preserve exact fixed bounds"
+assert_file_contains "$WORK_DIR/fixed-bounds-json.txt" '"page_number":2,"object_number":4,"generation":0}' "pdfinfo --json emitted overflowing page geometry"
+"${TEST_BIN_DIR}/pdfcheck" "$WORK_DIR/fixed-bounds.pdf" > "$WORK_DIR/fixed-bounds-check.txt"
+assert_file_contains "$WORK_DIR/fixed-bounds-check.txt" 'ok: structure checks passed' "pdfcheck failed on overflowing page geometry"
+
 if ! command -v python3 >/dev/null 2>&1; then
     note "python3 not available; skipping generated PDF compression hardening fixtures"
     exit 0
