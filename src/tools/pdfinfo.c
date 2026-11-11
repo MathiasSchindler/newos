@@ -3,6 +3,8 @@
 #include "runtime.h"
 #include "tool_util.h"
 
+#include <limits.h>
+
 #define PDFINFO_INITIAL_CAPACITY 65536U
 
 typedef struct {
@@ -23,9 +25,11 @@ static int read_all_input(const char *path, unsigned char **data_out, size_t *si
 }
 
 static void write_fixed(long long value) {
-    long long absolute = pdf_abs_fixed(value);
-    unsigned long long whole = (unsigned long long)(absolute / 1000LL);
-    unsigned long long fraction = (unsigned long long)(absolute % 1000LL);
+    unsigned long long magnitude = value < 0LL
+        ? 0ULL - (unsigned long long)value
+        : (unsigned long long)value;
+    unsigned long long whole = magnitude / 1000ULL;
+    unsigned long long fraction = magnitude % 1000ULL;
 
     if (value < 0LL) rt_write_char(1, '-');
     rt_write_uint(1, whole);
@@ -37,12 +41,20 @@ static void write_fixed(long long value) {
     }
 }
 
+static long long box_span_fixed(long long first, long long second) {
+    unsigned long long span = first <= second
+        ? (unsigned long long)second - (unsigned long long)first
+        : (unsigned long long)first - (unsigned long long)second;
+
+    return span > (unsigned long long)LLONG_MAX ? LLONG_MAX : (long long)span;
+}
+
 static long long page_width(const PdfPageInfo *page) {
-    return pdf_abs_fixed(page->media_box[2] - page->media_box[0]);
+    return box_span_fixed(page->media_box[0], page->media_box[2]);
 }
 
 static long long page_height(const PdfPageInfo *page) {
-    return pdf_abs_fixed(page->media_box[3] - page->media_box[1]);
+    return box_span_fixed(page->media_box[1], page->media_box[3]);
 }
 
 static void write_bool_word(unsigned long long value) {
